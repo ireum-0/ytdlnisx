@@ -35,6 +35,9 @@ interface PlaylistGroupDao {
     @Query("SELECT * FROM playlist_group_members")
     fun getAllMembersFlow(): Flow<List<PlaylistGroupMember>>
 
+    @Query("SELECT * FROM playlist_group_members")
+    fun getAllMembers(): List<PlaylistGroupMember>
+
     @Query("SELECT playlistId FROM playlist_group_members WHERE groupId = :groupId")
     fun getMembersForGroupFlow(groupId: Long): Flow<List<Long>>
 
@@ -52,4 +55,10 @@ interface PlaylistGroupDao {
 
     @Query("SELECT groupId FROM playlist_group_members WHERE playlistId = :playlistId")
     fun getGroupIdsForPlaylist(playlistId: Long): List<Long>
+
+    @Query("DELETE FROM playlist_group_members")
+    fun clearMembers()
+
+    @Query("DELETE FROM playlist_groups")
+    fun clearGroups()
 }

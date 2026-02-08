@@ -79,6 +79,9 @@ interface HistoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insert(item: HistoryItem)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertAndGetId(item: HistoryItem): Long
+
     @Update
     fun update(item: HistoryItem)
 

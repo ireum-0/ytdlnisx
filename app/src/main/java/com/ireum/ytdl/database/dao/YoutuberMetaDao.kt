@@ -12,6 +12,9 @@ interface YoutuberMetaDao {
     @Query("SELECT * FROM youtuber_meta")
     fun getAllFlow(): Flow<List<YoutuberMeta>>
 
+    @Query("SELECT * FROM youtuber_meta")
+    fun getAll(): List<YoutuberMeta>
+
     @Query("SELECT * FROM youtuber_meta WHERE author = :author LIMIT 1")
     suspend fun getByAuthor(author: String): YoutuberMeta?
 
@@ -20,4 +23,7 @@ interface YoutuberMetaDao {
 
     @Query("DELETE FROM youtuber_meta WHERE author = :author")
     suspend fun deleteByAuthor(author: String)
+
+    @Query("DELETE FROM youtuber_meta")
+    suspend fun clearAll()
 }

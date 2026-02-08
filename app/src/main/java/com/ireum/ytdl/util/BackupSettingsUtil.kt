@@ -8,6 +8,10 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.SearchHistoryRepository
+import com.ireum.ytdl.database.dao.PlaylistDao
+import com.ireum.ytdl.database.dao.PlaylistGroupDao
+import com.ireum.ytdl.database.dao.YoutuberGroupDao
+import com.ireum.ytdl.database.dao.YoutuberMetaDao
 import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
@@ -184,6 +188,104 @@ object BackupSettingsUtil {
             }
             val arr = JsonArray()
             observeSourcesItems.forEach {
+                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
+            }
+            return arr
+        }
+        return JsonArray()
+    }
+
+    suspend fun backupPlaylists(playlistDao: PlaylistDao): JsonArray {
+        runCatching {
+            val items = withContext(Dispatchers.IO) {
+                playlistDao.getAllPlaylistsSync()
+            }
+            val arr = JsonArray()
+            items.forEach {
+                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
+            }
+            return arr
+        }
+        return JsonArray()
+    }
+
+    suspend fun backupPlaylistItems(playlistDao: PlaylistDao): JsonArray {
+        runCatching {
+            val items = withContext(Dispatchers.IO) {
+                playlistDao.getAllPlaylistItems()
+            }
+            val arr = JsonArray()
+            items.forEach {
+                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
+            }
+            return arr
+        }
+        return JsonArray()
+    }
+
+    suspend fun backupPlaylistGroups(playlistGroupDao: PlaylistGroupDao): JsonArray {
+        runCatching {
+            val items = withContext(Dispatchers.IO) {
+                playlistGroupDao.getGroups()
+            }
+            val arr = JsonArray()
+            items.forEach {
+                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
+            }
+            return arr
+        }
+        return JsonArray()
+    }
+
+    suspend fun backupPlaylistGroupMembers(playlistGroupDao: PlaylistGroupDao): JsonArray {
+        runCatching {
+            val items = withContext(Dispatchers.IO) {
+                playlistGroupDao.getAllMembers()
+            }
+            val arr = JsonArray()
+            items.forEach {
+                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
+            }
+            return arr
+        }
+        return JsonArray()
+    }
+
+    suspend fun backupYoutuberGroups(youtuberGroupDao: YoutuberGroupDao): JsonArray {
+        runCatching {
+            val items = withContext(Dispatchers.IO) {
+                youtuberGroupDao.getGroups()
+            }
+            val arr = JsonArray()
+            items.forEach {
+                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
+            }
+            return arr
+        }
+        return JsonArray()
+    }
+
+    suspend fun backupYoutuberGroupMembers(youtuberGroupDao: YoutuberGroupDao): JsonArray {
+        runCatching {
+            val items = withContext(Dispatchers.IO) {
+                youtuberGroupDao.getAllMembers()
+            }
+            val arr = JsonArray()
+            items.forEach {
+                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
+            }
+            return arr
+        }
+        return JsonArray()
+    }
+
+    suspend fun backupYoutuberMeta(youtuberMetaDao: YoutuberMetaDao): JsonArray {
+        runCatching {
+            val items = withContext(Dispatchers.IO) {
+                youtuberMetaDao.getAll()
+            }
+            val arr = JsonArray()
+            items.forEach {
                 arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
             }
             return arr

@@ -818,6 +818,8 @@
     <array name="backup_category_entries">
         <item>@string/settings</item>
         <item>@string/downloads</item>
+        <item>@string/playlist</item>
+        <item>@string/youtuber</item>
         <item>@string/in_queue</item>
         <item>@string/scheduled</item>
         <item>@string/cancelled</item>
@@ -833,6 +835,8 @@
     <array name="backup_category_values">
         <item>settings</item>
         <item>downloads</item>
+        <item>playlistData</item>
+        <item>youtuberData</item>
         <item>queued</item>
         <item>scheduled</item>
         <item>cancelled</item>

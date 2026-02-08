@@ -14,6 +14,10 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.dao.PlaylistDao
+import com.ireum.ytdl.database.dao.PlaylistGroupDao
+import com.ireum.ytdl.database.dao.YoutuberGroupDao
+import com.ireum.ytdl.database.dao.YoutuberMetaDao
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.repository.CommandTemplateRepository
 import com.ireum.ytdl.database.repository.CookieRepository
@@ -43,6 +47,10 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     private val commandTemplateRepository : CommandTemplateRepository
     private val searchHistoryRepository : SearchHistoryRepository
     private val observeSourcesRepository : ObserveSourcesRepository
+    private val playlistDao: PlaylistDao
+    private val playlistGroupDao: PlaylistGroupDao
+    private val youtuberGroupDao: YoutuberGroupDao
+    private val youtuberMetaDao: YoutuberMetaDao
 
     init {
         val dbManager = DBManager.getInstance(application)
@@ -52,12 +60,16 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         commandTemplateRepository = CommandTemplateRepository(dbManager.commandTemplateDao)
         searchHistoryRepository = SearchHistoryRepository(dbManager.searchHistoryDao)
         observeSourcesRepository = ObserveSourcesRepository(dbManager.observeSourcesDao, workManager, preferences)
+        playlistDao = dbManager.playlistDao
+        playlistGroupDao = dbManager.playlistGroupDao
+        youtuberGroupDao = dbManager.youtuberGroupDao
+        youtuberMetaDao = dbManager.youtuberMetaDao
     }
 
     suspend fun backup(items: List<String> = listOf()) : Result<String> {
         var list = items
         if (list.isEmpty()) {
-            list = listOf("settings", "downloads", "queued", "scheduled", "cancelled", "errored", "saved", "cookies", "templates", "shortcuts", "searchHistory", "observeSources")
+            list = listOf("settings", "downloads", "playlistData", "youtuberData", "queued", "scheduled", "cancelled", "errored", "saved", "cookies", "templates", "shortcuts", "searchHistory", "observeSources")
         }
 
         val json = JsonObject()
@@ -67,6 +79,17 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 when(it){
                     "settings" -> json.add("settings", BackupSettingsUtil.backupSettings(preferences))
                     "downloads" -> json.add("downloads", BackupSettingsUtil.backupHistory(historyRepository))
+                    "playlistData" -> {
+                        json.add("playlists", BackupSettingsUtil.backupPlaylists(playlistDao))
+                        json.add("playlist_items", BackupSettingsUtil.backupPlaylistItems(playlistDao))
+                        json.add("playlist_groups", BackupSettingsUtil.backupPlaylistGroups(playlistGroupDao))
+                        json.add("playlist_group_members", BackupSettingsUtil.backupPlaylistGroupMembers(playlistGroupDao))
+                    }
+                    "youtuberData" -> {
+                        json.add("youtuber_groups", BackupSettingsUtil.backupYoutuberGroups(youtuberGroupDao))
+                        json.add("youtuber_group_members", BackupSettingsUtil.backupYoutuberGroupMembers(youtuberGroupDao))
+                        json.add("youtuber_meta", BackupSettingsUtil.backupYoutuberMeta(youtuberMetaDao))
+                    }
                     "queued" -> json.add("queued", BackupSettingsUtil.backupQueuedDownloads(downloadRepository))
                     "scheduled" -> json.add("scheduled", BackupSettingsUtil.backupScheduledDownloads(downloadRepository))
                     "cancelled" -> json.add("cancelled", BackupSettingsUtil.backupCancelledDownloads(downloadRepository))
@@ -132,11 +155,111 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             }
 
 
+            val importedHistoryIdMap = linkedMapOf<Long, Long>()
             data.downloads?.apply {
                 withContext(Dispatchers.IO){
                     if (resetData) historyRepository.deleteAll(false)
-                    data.downloads!!.forEach {
-                        historyRepository.insert(it)
+                    data.downloads!!.forEach { historyItem ->
+                        val oldHistoryId = historyItem.id
+                        val newHistoryId = historyRepository.insertAndGetId(historyItem.copy(id = 0L))
+                        importedHistoryIdMap[oldHistoryId] = newHistoryId
+                    }
+                }
+            }
+
+            if (
+                data.playlists != null ||
+                data.playlistItems != null ||
+                data.playlistGroups != null ||
+                data.playlistGroupMembers != null
+            ) {
+                withContext(Dispatchers.IO) {
+                    if (resetData) {
+                        playlistGroupDao.clearMembers()
+                        playlistGroupDao.clearGroups()
+                        playlistDao.clearPlaylistItems()
+                        playlistDao.clearPlaylists()
+                    }
+
+                    val playlistIdMap = linkedMapOf<Long, Long>()
+                    data.playlists?.forEach { playlist ->
+                        val newPlaylistId = playlistDao.insertPlaylist(playlist.copy(id = 0L))
+                        playlistIdMap[playlist.id] = newPlaylistId
+                    }
+
+                    val playlistGroupIdMap = linkedMapOf<Long, Long>()
+                    data.playlistGroups?.forEach { group ->
+                        val newGroupId = playlistGroupDao.insertGroup(group.copy(id = 0L))
+                        playlistGroupIdMap[group.id] = newGroupId
+                    }
+
+                    data.playlistItems?.mapNotNull { item ->
+                        val mappedPlaylistId = playlistIdMap[item.playlistId] ?: item.playlistId
+                        val mappedHistoryId = importedHistoryIdMap[item.historyItemId] ?: item.historyItemId
+                        if (mappedPlaylistId <= 0L || mappedHistoryId <= 0L) null
+                        else com.ireum.ytdl.database.models.PlaylistItemCrossRef(
+                            playlistId = mappedPlaylistId,
+                            historyItemId = mappedHistoryId
+                        )
+                    }?.also { mappedItems ->
+                        if (mappedItems.isNotEmpty()) {
+                            playlistDao.insertPlaylistItems(mappedItems)
+                        }
+                    }
+
+                    data.playlistGroupMembers?.mapNotNull { member ->
+                        val mappedGroupId = playlistGroupIdMap[member.groupId] ?: member.groupId
+                        val mappedPlaylistId = playlistIdMap[member.playlistId] ?: member.playlistId
+                        if (mappedGroupId <= 0L || mappedPlaylistId <= 0L) null
+                        else com.ireum.ytdl.database.models.PlaylistGroupMember(
+                            groupId = mappedGroupId,
+                            playlistId = mappedPlaylistId
+                        )
+                    }?.also { mappedMembers ->
+                        if (mappedMembers.isNotEmpty()) {
+                            playlistGroupDao.insertMembers(mappedMembers)
+                        }
+                    }
+                }
+            }
+
+            if (
+                data.youtuberGroups != null ||
+                data.youtuberGroupMembers != null ||
+                data.youtuberMeta != null
+            ) {
+                withContext(Dispatchers.IO) {
+                    if (resetData) {
+                        youtuberGroupDao.clearMembers()
+                        youtuberGroupDao.clearGroups()
+                        youtuberMetaDao.clearAll()
+                    }
+
+                    val youtuberGroupIdMap = linkedMapOf<Long, Long>()
+                    data.youtuberGroups?.forEach { group ->
+                        val newGroupId = youtuberGroupDao.insertGroup(group.copy(id = 0L))
+                        youtuberGroupIdMap[group.id] = if (newGroupId > 0L) {
+                            newGroupId
+                        } else {
+                            youtuberGroupDao.getGroupByName(group.name)?.id ?: 0L
+                        }
+                    }
+
+                    data.youtuberGroupMembers?.mapNotNull { member ->
+                        val mappedGroupId = youtuberGroupIdMap[member.groupId] ?: member.groupId
+                        if (mappedGroupId <= 0L) null
+                        else com.ireum.ytdl.database.models.YoutuberGroupMember(
+                            groupId = mappedGroupId,
+                            author = member.author
+                        )
+                    }?.also { mappedMembers ->
+                        if (mappedMembers.isNotEmpty()) {
+                            youtuberGroupDao.insertMembers(mappedMembers)
+                        }
+                    }
+
+                    data.youtuberMeta?.forEach { meta ->
+                        youtuberMetaDao.upsert(meta)
                     }
                 }
             }

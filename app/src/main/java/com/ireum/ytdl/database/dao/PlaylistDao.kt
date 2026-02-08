@@ -55,6 +55,15 @@ interface PlaylistDao {
     @Query("SELECT * FROM playlists")
     fun getAllPlaylists(): Flow<List<Playlist>>
 
+    @Query("SELECT * FROM playlists")
+    fun getAllPlaylistsSync(): List<Playlist>
+
+    @Query("SELECT * FROM PlaylistItemCrossRef")
+    fun getAllPlaylistItems(): List<PlaylistItemCrossRef>
+
+    @Query("DELETE FROM playlists")
+    fun clearPlaylists()
+
     @Query(
         "SELECT p.id, p.name, p.description, " +
             "COUNT(pc.historyItemId) as itemCount, " +

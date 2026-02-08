@@ -6,6 +6,13 @@ import com.google.gson.JsonArray
 data class RestoreAppDataItem(
     var settings : List<BackupSettingsItem>? = null,
     var downloads: List<HistoryItem>? = null,
+    var playlists: List<Playlist>? = null,
+    var playlistItems: List<PlaylistItemCrossRef>? = null,
+    var playlistGroups: List<PlaylistGroup>? = null,
+    var playlistGroupMembers: List<PlaylistGroupMember>? = null,
+    var youtuberGroups: List<YoutuberGroup>? = null,
+    var youtuberGroupMembers: List<YoutuberGroupMember>? = null,
+    var youtuberMeta: List<YoutuberMeta>? = null,
     var queued: List<DownloadItem>? = null,
     var scheduled: List<DownloadItem>? = null,
     var cancelled: List<DownloadItem>? = null,

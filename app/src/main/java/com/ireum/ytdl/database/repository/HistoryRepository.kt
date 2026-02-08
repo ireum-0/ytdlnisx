@@ -178,6 +178,10 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         historyDao.insert(item)
     }
 
+    fun insertAndGetId(item: HistoryItem): Long {
+        return historyDao.insertAndGetId(item)
+    }
+
     suspend fun delete(item: HistoryItem, deleteFile: Boolean) {
         if (deleteFile) {
             item.downloadPath.forEach { FileUtil.deleteFile(it) }

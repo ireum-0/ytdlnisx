@@ -36,10 +36,17 @@ import com.ireum.ytdl.database.models.CommandTemplate
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.Playlist
+import com.ireum.ytdl.database.models.PlaylistGroup
+import com.ireum.ytdl.database.models.PlaylistGroupMember
+import com.ireum.ytdl.database.models.PlaylistItemCrossRef
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.models.SearchHistoryItem
 import com.ireum.ytdl.database.models.TemplateShortcut
+import com.ireum.ytdl.database.models.YoutuberGroup
+import com.ireum.ytdl.database.models.YoutuberGroupMember
+import com.ireum.ytdl.database.models.YoutuberMeta
 import com.ireum.ytdl.database.viewmodel.CommandTemplateViewModel
 import com.ireum.ytdl.database.viewmodel.CookieViewModel
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
@@ -302,13 +309,59 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
                     if (json.has("downloads")) {
                         restoreData.downloads = json.getAsJsonArray("downloads").map {
-                            val item =
-                                Gson().fromJson(it.toString().replace("^\"|\"$", ""), HistoryItem::class.java)
-                            item.id = 0L
-                            item
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), HistoryItem::class.java)
                         }
                         parsedDataMessage.appendLine("${getString(R.string.downloads)}: ${restoreData.downloads!!.size}")
 
+                    }
+
+                    if (json.has("playlists")) {
+                        restoreData.playlists = json.getAsJsonArray("playlists").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), Playlist::class.java)
+                        }
+                        parsedDataMessage.appendLine("${getString(R.string.playlist)}: ${restoreData.playlists!!.size}")
+                    }
+
+                    if (json.has("playlist_items")) {
+                        restoreData.playlistItems = json.getAsJsonArray("playlist_items").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), PlaylistItemCrossRef::class.java)
+                        }
+                        parsedDataMessage.appendLine("Playlist Items: ${restoreData.playlistItems!!.size}")
+                    }
+
+                    if (json.has("playlist_groups")) {
+                        restoreData.playlistGroups = json.getAsJsonArray("playlist_groups").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), PlaylistGroup::class.java)
+                        }
+                        parsedDataMessage.appendLine("Playlist Groups: ${restoreData.playlistGroups!!.size}")
+                    }
+
+                    if (json.has("playlist_group_members")) {
+                        restoreData.playlistGroupMembers = json.getAsJsonArray("playlist_group_members").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), PlaylistGroupMember::class.java)
+                        }
+                        parsedDataMessage.appendLine("Playlist Group Members: ${restoreData.playlistGroupMembers!!.size}")
+                    }
+
+                    if (json.has("youtuber_groups")) {
+                        restoreData.youtuberGroups = json.getAsJsonArray("youtuber_groups").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), YoutuberGroup::class.java)
+                        }
+                        parsedDataMessage.appendLine("Youtuber Groups: ${restoreData.youtuberGroups!!.size}")
+                    }
+
+                    if (json.has("youtuber_group_members")) {
+                        restoreData.youtuberGroupMembers = json.getAsJsonArray("youtuber_group_members").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), YoutuberGroupMember::class.java)
+                        }
+                        parsedDataMessage.appendLine("Youtuber Group Members: ${restoreData.youtuberGroupMembers!!.size}")
+                    }
+
+                    if (json.has("youtuber_meta")) {
+                        restoreData.youtuberMeta = json.getAsJsonArray("youtuber_meta").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), YoutuberMeta::class.java)
+                        }
+                        parsedDataMessage.appendLine("Youtuber Metadata: ${restoreData.youtuberMeta!!.size}")
                     }
 
                     if (json.has("queued")) {

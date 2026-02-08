@@ -51,6 +51,15 @@ interface YoutuberGroupDao {
     @Query("SELECT * FROM youtuber_group_members")
     fun getAllMembersFlow(): Flow<List<YoutuberGroupMember>>
 
+    @Query("SELECT * FROM youtuber_group_members")
+    fun getAllMembers(): List<YoutuberGroupMember>
+
     @Query("SELECT author FROM youtuber_group_members WHERE groupId = :groupId")
     fun getMembersForGroupFlow(groupId: Long): Flow<List<String>>
+
+    @Query("DELETE FROM youtuber_group_members")
+    fun clearMembers()
+
+    @Query("DELETE FROM youtuber_groups")
+    fun clearGroups()
 }
