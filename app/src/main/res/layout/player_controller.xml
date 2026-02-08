@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <RelativeLayout
+        android:id="@+id/player_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/player_controls_bg">
+
+        <LinearLayout
+            android:id="@+id/player_top_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="0dp"
+            android:paddingBottom="4dp"
+            android:layout_alignParentTop="true">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="12dp"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/player_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:textColor="@android:color/white"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/player_author"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="11sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <ImageButton
+                android:id="@+id/btn_subtitles"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/subtitles_toggle"
+                android:src="@drawable/ic_subtitles"
+                android:tint="@android:color/white" />
+
+            <ImageButton
+                android:id="@+id/btn_pip"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginStart="12dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/picture_in_picture"
+                android:src="@drawable/baseline_picture_in_picture_alt_24"
+                android:tint="@android:color/white" />
+
+            <ImageButton
+                android:id="@+id/btn_more"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginStart="12dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/more_options"
+                android:src="@drawable/ic_more"
+                android:tint="@android:color/white" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/player_center_controls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerInParent="true"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <ImageButton
+                android:id="@id/exo_prev"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginEnd="32dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/previous"
+                android:src="@drawable/ic_up"
+                android:tint="@android:color/white" />
+
+            <ImageButton
+                android:id="@id/exo_play_pause"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginHorizontal="24dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/play"
+                android:src="@drawable/ic_start"
+                android:tint="@android:color/white" />
+
+            <ImageButton
+                android:id="@id/exo_next"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="32dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/next"
+                android:src="@drawable/ic_down"
+                android:tint="@android:color/white" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/player_bottom_area"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentBottom="true"
+            android:orientation="vertical"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="0dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingBottom="2dp">
+
+                <TextView
+                    android:id="@id/exo_position"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="4dp"
+                    android:text="/"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@id/exo_duration"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+
+                <View
+                    android:layout_width="8dp"
+                    android:layout_height="0dp" />
+
+                <TextView
+                    android:id="@+id/btn_chapters"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:paddingHorizontal="6dp"
+                    android:paddingVertical="1dp"
+                    android:gravity="center"
+                    android:text="@string/chapters"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp"
+                    android:background="@drawable/player_speed_chip"
+                    android:visibility="gone" />
+
+                <View
+                    android:layout_width="8dp"
+                    android:layout_height="0dp" />
+
+                <TextView
+                    android:id="@+id/btn_speed"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:paddingHorizontal="6dp"
+                    android:paddingVertical="1dp"
+                    android:gravity="center"
+                    android:text="1.0x"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp"
+                    android:background="@drawable/player_speed_chip" />
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_weight="1" />
+
+                <ImageButton
+                    android:id="@+id/btn_rotate"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/rotate"
+                    android:src="@drawable/baseline_fullscreen_24"
+                    android:tint="@android:color/white" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="0dp"
+                android:paddingBottom="0dp">
+
+            </LinearLayout>
+
+        </LinearLayout>
+    </RelativeLayout>
+
+</FrameLayout>

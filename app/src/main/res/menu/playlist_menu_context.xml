@@ -1,0 +1,26 @@
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:context=".MainActivity" >
+
+    <item
+        android:id="@+id/add_to_playlist_group"
+        android:title="@string/add_to_group"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/remove_from_current_playlist_group"
+        android:title="@string/remove_from_current_group"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/rename_selected_playlist"
+        android:title="@string/rename_playlist"
+        app:showAsAction="ifRoom" />
+
+    <item
+        android:id="@+id/delete_selected_playlist"
+        android:title="@string/delete_playlist"
+        app:showAsAction="never" />
+
+</menu>
