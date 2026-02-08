@@ -32,6 +32,7 @@ import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.models.BackupSettingsItem
+import com.ireum.ytdl.database.models.BackupCustomThumbItem
 import com.ireum.ytdl.database.models.CommandTemplate
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.models.DownloadItem
@@ -313,6 +314,13 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                         }
                         parsedDataMessage.appendLine("${getString(R.string.downloads)}: ${restoreData.downloads!!.size}")
 
+                    }
+
+                    if (json.has("custom_thumbnails")) {
+                        restoreData.customThumbnails = json.getAsJsonArray("custom_thumbnails").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), BackupCustomThumbItem::class.java)
+                        }
+                        parsedDataMessage.appendLine("Custom thumbnails: ${restoreData.customThumbnails!!.size}")
                     }
 
                     if (json.has("playlists")) {

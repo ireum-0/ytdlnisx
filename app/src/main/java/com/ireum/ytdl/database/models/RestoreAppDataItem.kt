@@ -6,6 +6,7 @@ import com.google.gson.JsonArray
 data class RestoreAppDataItem(
     var settings : List<BackupSettingsItem>? = null,
     var downloads: List<HistoryItem>? = null,
+    var customThumbnails: List<BackupCustomThumbItem>? = null,
     var playlists: List<Playlist>? = null,
     var playlistItems: List<PlaylistItemCrossRef>? = null,
     var playlistGroups: List<PlaylistGroup>? = null,
@@ -29,4 +30,10 @@ data class BackupSettingsItem(
     var key: String,
     var value: String,
     var type: String?
+)
+
+data class BackupCustomThumbItem(
+    var historyId: Long,
+    var base64: String,
+    var extension: String = "jpg"
 )

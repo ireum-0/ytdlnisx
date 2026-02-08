@@ -194,6 +194,9 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private var lastScreenKey: ScreenKey? = null
     private var lastRecentMode: Boolean? = null
     private var pendingScrollToTop: Boolean = false
+    private var forceTopOnNextPagesUpdate: Boolean = false
+    private var firstYoutuberEntryPendingFix: Boolean = true
+    private var firstRecentEntryPendingFix: Boolean = true
     private var resetToAllOnResumeFromQueue: Boolean = false
     private var restoreScrollOnNextResume: Boolean = false
     private var isRestoringFromNavigationBack: Boolean = false
@@ -399,10 +402,24 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 if (tryApplyPendingRestore()) {
                     return@addLoadStateListener
                 }
+                if (pendingScrollToTop && !isRestoringFromNavigationBack && pendingRestoreEntry == null) {
+                    recyclerView.post {
+                        requestScrollToTop()
+                        recyclerView.post { forceScrollToTop() }
+                    }
+                    pendingScrollToTop = false
+                }
             }
         }
         downloadViewModel = ViewModelProvider(this)[DownloadViewModel::class.java]
         historyAdapter.addOnPagesUpdatedListener {
+            if (forceTopOnNextPagesUpdate) {
+                forceTopOnNextPagesUpdate = false
+                recyclerView.post {
+                    requestScrollToTop()
+                    recyclerView.post { forceScrollToTop() }
+                }
+            }
             if (fastScrollEnabled) return@addOnPagesUpdatedListener
             recyclerView.post {
                 if (fastScrollEnabled) return@post
@@ -606,8 +623,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             historyViewModel.isYoutuberSelectionMode.collectLatest { isSelectionMode ->
                 youtuberChip.isChecked = isSelectionMode || historyViewModel.authorFilter.value.isNotEmpty()
                 if (isSelectionMode && shouldAutoScrollToTop()) {
+                    forceTopOnNextPagesUpdate = true
                     pendingScrollToTop = true
                     requestScrollToTop()
+                    if (firstYoutuberEntryPendingFix) {
+                        firstYoutuberEntryPendingFix = false
+                        recyclerView.postDelayed({
+                            requestScrollToTop()
+                            recyclerView.post { forceScrollToTop() }
+                        }, 120L)
+                    }
                 }
                 if (!isSelectionMode) {
                     historyAdapter.clearYoutuberSelection()
@@ -630,8 +655,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     requestScrollToTop()
                 }
                 if (isRecentMode && shouldAutoScrollToTop()) {
+                    forceTopOnNextPagesUpdate = true
                     pendingScrollToTop = true
                     requestScrollToTop()
+                    if (firstRecentEntryPendingFix) {
+                        firstRecentEntryPendingFix = false
+                        recyclerView.postDelayed({
+                            requestScrollToTop()
+                            recyclerView.post { forceScrollToTop() }
+                        }, 120L)
+                    }
                 }
                 lastRecentMode = isRecentMode
                 if (isRecentMode) {
@@ -1140,6 +1173,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
     private fun requestScrollToTop() {
         if (!this::recyclerView.isInitialized) return
+        cancelPendingScrollRestore()
         lastStableScrollSnapshot = ScrollSnapshot(0, 0)
         val lm = recyclerView.layoutManager as? LinearLayoutManager
         val beforePos = lm?.findFirstVisibleItemPosition() ?: -1
@@ -1151,6 +1185,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             forceScrollToTop()
             recyclerView.post { forceScrollToTop() }
         }
+    }
+
+    private fun cancelPendingScrollRestore() {
+        pendingRestoreEntry = null
+        isRestoringFromNavigationBack = false
+        suppressAutoScrollForNextScreenChange = false
     }
 
     private fun shouldAutoScrollToTop(): Boolean {

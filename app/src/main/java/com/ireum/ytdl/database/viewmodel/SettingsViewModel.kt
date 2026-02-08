@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import android.util.Base64
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.preference.PreferenceManager
@@ -19,6 +20,7 @@ import com.ireum.ytdl.database.dao.PlaylistGroupDao
 import com.ireum.ytdl.database.dao.YoutuberGroupDao
 import com.ireum.ytdl.database.dao.YoutuberMetaDao
 import com.ireum.ytdl.database.models.RestoreAppDataItem
+import com.ireum.ytdl.database.models.BackupCustomThumbItem
 import com.ireum.ytdl.database.repository.CommandTemplateRepository
 import com.ireum.ytdl.database.repository.CookieRepository
 import com.ireum.ytdl.database.repository.DownloadRepository
@@ -106,6 +108,13 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             }
         }
 
+        if (list.contains("downloads")) {
+            val customThumbItems = backupCustomThumbnails()
+            if (customThumbItems.isNotEmpty()) {
+                json.add("custom_thumbnails", Gson().toJsonTree(customThumbItems).asJsonArray)
+            }
+        }
+
         val currentTime = Calendar.getInstance()
         val dir = File(FileUtil.getCachePath(application) + "/Backups")
         dir.mkdirs()
@@ -129,6 +138,8 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
     suspend fun restoreData(data: RestoreAppDataItem, context: Context, resetData: Boolean = false) : Boolean {
         val result = kotlin.runCatching {
+            val restoredCustomThumbByOldHistoryId = restoreCustomThumbnails(data.customThumbnails)
+
             data.settings?.apply {
                 val prefs = this
                 PreferenceManager.getDefaultSharedPreferences(context).edit(commit = true){
@@ -161,7 +172,13 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     if (resetData) historyRepository.deleteAll(false)
                     data.downloads!!.forEach { historyItem ->
                         val oldHistoryId = historyItem.id
-                        val newHistoryId = historyRepository.insertAndGetId(historyItem.copy(id = 0L))
+                        val newHistoryId = historyRepository.insertAndGetId(
+                            historyItem.copy(
+                                id = 0L,
+                                customThumb = restoredCustomThumbByOldHistoryId[oldHistoryId]
+                                    ?: historyItem.customThumb
+                            )
+                        )
                         importedHistoryIdMap[oldHistoryId] = newHistoryId
                     }
                 }
@@ -349,6 +366,59 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         }
 
         return result.isSuccess
+    }
+
+    private suspend fun backupCustomThumbnails(): List<BackupCustomThumbItem> {
+        return withContext(Dispatchers.IO) {
+            historyRepository.getAll()
+                .mapNotNull { historyItem ->
+                    val path = historyItem.customThumb
+                    if (path.isBlank()) return@mapNotNull null
+                    val file = File(path)
+                    if (!file.exists() || !file.isFile || !file.canRead()) return@mapNotNull null
+
+                    val bytes = runCatching { file.readBytes() }.getOrNull() ?: return@mapNotNull null
+                    val ext = file.extension.lowercase().ifBlank { "jpg" }
+                    BackupCustomThumbItem(
+                        historyId = historyItem.id,
+                        base64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                        extension = ext
+                    )
+                }
+        }
+    }
+
+    private suspend fun restoreCustomThumbnails(
+        customThumbs: List<BackupCustomThumbItem>?
+    ): Map<Long, String> {
+        if (customThumbs.isNullOrEmpty()) return emptyMap()
+
+        return withContext(Dispatchers.IO) {
+            val baseDir = application.getExternalFilesDir(null) ?: application.filesDir
+            val thumbDir = File(baseDir, "custom_thumbs")
+            if (!thumbDir.exists()) {
+                thumbDir.mkdirs()
+            }
+
+            val restored = linkedMapOf<Long, String>()
+            customThumbs.forEach { item ->
+                val decoded = runCatching { Base64.decode(item.base64, Base64.DEFAULT) }.getOrNull()
+                    ?: return@forEach
+                val extension = item.extension
+                    .lowercase()
+                    .replace(Regex("[^a-z0-9]"), "")
+                    .ifBlank { "jpg" }
+                val outFile = File(thumbDir, "restored_${item.historyId}.$extension")
+                val written = runCatching {
+                    outFile.writeBytes(decoded)
+                    outFile.absolutePath
+                }.getOrNull()
+                if (!written.isNullOrBlank()) {
+                    restored[item.historyId] = written
+                }
+            }
+            restored
+        }
     }
 
 }
