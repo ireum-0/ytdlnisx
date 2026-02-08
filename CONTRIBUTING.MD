@@ -1,29 +1,52 @@
-# Preface
-Before reading, you may know what yt-dlp is and what it does. In short, it's a CLI (command-line interface) program written in Python, which lets you download audios or videos from 1000+ websites.
+# YTDLnisX 기여 가이드
 
-For bug reports and feature requests, please search in issues first (including the closed ones). If there're no duplicates, feel free to submit an issue with an issue template.
+YTDLnisX에 기여해 주셔서 감사합니다.
+이 문서는 이 저장소에 이슈/PR을 올릴 때의 기준을 안내합니다.
 
-We will probably ignore and close your issue if it's not using the existing templates or doesn't contain a sufficient description.
+새 이슈나 PR을 만들기 전에, 기존 이슈(닫힌 이슈 포함)를 먼저 검색해 중복 여부를 확인해 주세요.
 
-For questions or any other ideas to improve, you can join or start a new discussion, talk in the Discord server or in the Telegram group.
+## 버그 제보
 
-## Bug report
-When submitting a bug report, please make sure your issue contains enough information for reproducing the problem, including the options or the custom command being used, the link to the video, and other fields in the issue template if there is one. A video recording of the problem can be very helpful.
+버그 제보 시 아래 정보를 가능한 한 함께 작성해 주세요.
 
-## Feature request
-YTDLnis is and will remain a simple GUI for yt-dlp, providing most of the functionality of yt-dlp as is, without modifications. Thus, we will not take requests for features that yt-dlp does not support.
+- 앱 버전 (예: `1.8.7.4`)
+- 기기 모델 / 안드로이드 버전
+- 재현 절차 (순서대로)
+- 관련 설정값 (다운로드 모드, 커스텀 명령, 폴더 설정 등)
+- 테스트한 URL (해당 시)
+- 로그, 스크린샷, 화면 녹화 (가능하면 첨부)
 
-The app has three download modes:
+재현 정보가 부족하면 확인 전 임시로 닫힐 수 있습니다.
 
-- <b>General mode</b>: Save as audio, download playlist, and many other options that can be used individually or combined for normal download tasks. Once the download is complete, YTDLnis will scan the files into the system media library, and store them in the download history.
-- <b>Custom command mode</b>: For advanced usage of yt-dlp, a user can create and store multiple command templates in the app, then select and use one of them directly to execute the yt-dlp command like in a terminal. In this mode, all of the GUI options and features in the general mode will be disabled.
-  Since most of the functions can be implemented in custom command mode, the "feature request" would be treated as adding a shortcut to the general mode. However, not all feature requests will be accepted and implemented in the app. Why not add an option for that?
-- <b>Terminal mode</b>: A CLI-like interface for using yt-dlp
+## 기능 요청
 
-## Pull request
-If you wish to contribute to the project by submitting code directly, please first leave a comment under the relevant issue or file a new issue and describe the changes you are about to make.
+기능 요청 시 아래 내용을 포함해 주세요.
 
-To avoid multiple pull requests resolving the same issue, let others know you are working on it by saying so in a comment or ask the issue to be assigned to yourself.
+- 어떤 사용자 문제를 해결하려는지
+- 현재 방식으로 해결이 어려운 이유
+- 기대하는 동작/화면 흐름
 
-## Building from Source
-Fork this project, import and compile it with the latest version of Android Studio Canary.
+yt-dlp에서 지원하지 않는 동작에 의존하는 요청은 반영이 어려울 수 있습니다.
+
+## Pull Request
+
+큰 변경을 시작하기 전에는 관련 이슈를 먼저 열거나, 기존 이슈에 작업 계획을 코멘트로 남겨 주세요.
+
+PR 작성 시 권장 사항:
+
+- 한 PR에는 한 가지 주제만 담기
+- 동작 변경점 요약 명확히 작성
+- 테스트/검증 내용 함께 작성
+- 사용자 영향이 있는 변경이면 문서(README/CHANGELOG 등)도 함께 업데이트
+
+## 릴리즈 메모/버전 관리
+
+현재 애플리케이션 ID:
+
+- `com.ireum.ytdl`
+
+릴리즈 준비 시 확인 사항:
+
+- `app/build.gradle` 버전 갱신
+- 릴리즈 APK 파일명과 버전 일치 확인
+- 사용자 영향 변경 시 README/CHANGELOG 동기화
