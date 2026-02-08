@@ -12,7 +12,7 @@ def properties = new Properties()
 def versionMajor = 1
 def versionMinor = 8
 def versionPatch = 7
-def versionBuild = 3 // bump for dogfood builds, public betas, etc.
+def versionBuild = 4 // bump for dogfood builds, public betas, etc.
 def isBeta = false
 
 def versionExt = ""
@@ -228,4 +228,3 @@ dependencies {
     implementation("org.greenrobot:eventbus:3.3.1")
     implementation("com.github.teamnewpipe:newpipeextractor:v0.25.0")
 }
-

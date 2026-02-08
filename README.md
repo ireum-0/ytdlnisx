@@ -28,27 +28,24 @@ YTDLnisX는 YTDLnis를 기반으로 한 비공식 포크(Unofficial fork) 프로
 본 프로젝트는 YTDLnis 기반의 비공식 포크이며, 원본 프로젝트에 대한 저작권 및 라이선스 고지를 유지합니다.
 또한 원본 프로젝트의 정책에 따라 "YTDLnis"라는 이름을 사용하지 않으며, 본 프로젝트는 **"YTDLnisX"**라는 별도 이름으로 배포됩니다.
 
-## 빌드
 
-디버그 빌드:
+## 설치
 
-```bash
-./gradlew :app:assembleDebug
-```
+GitHub Releases에서 APK를 내려받아 설치할 수 있습니다.
 
-릴리스 빌드:
-
-```bash
-./gradlew :app:assembleRelease
-```
-
-릴리스 빌드를 위해서는 keystore.properties 설정이 필요합니다.
+1. 아래 릴리즈 페이지로 이동합니다.
+   - https://github.com/ireum-0/ytdlnisx/releases
+2. 최신 릴리즈에서 기기에 맞는 APK를 다운로드합니다.
+   - 대부분의 최신 안드로이드 기기: `arm64-v8a`
+   - 어떤 기기든 설치 우선: `universal`
+3. 다운로드한 APK를 실행해 설치합니다.
+4. 설치가 막히면 기기 설정에서 "알 수 없는 앱 설치 허용"을 켠 뒤 다시 설치합니다.
 
 ## 패키지명
 
 현재 애플리케이션 ID:
 
-- com.ireum.ytdlnisx
+- com.ireum.ytdl
 
 ## 고지
 
