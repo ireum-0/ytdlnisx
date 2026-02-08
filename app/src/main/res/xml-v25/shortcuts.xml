@@ -7,7 +7,7 @@
         android:shortcutDisabledMessage="@string/search">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="com.ireum.ytdlnisx"
+            android:targetPackage="com.ireum.ytdl"
             android:targetClass="com.ireum.ytdl.MainActivity">
 
             <extra android:name="destination" android:value="Search" />
@@ -24,7 +24,7 @@
         android:shortcutDisabledMessage="@string/downloads">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="com.ireum.ytdlnisx"
+            android:targetPackage="com.ireum.ytdl"
             android:targetClass="com.ireum.ytdl.MainActivity">
 
             <extra android:name="destination" android:value="Downloads" />
@@ -40,7 +40,7 @@
         android:shortcutDisabledMessage="@string/download_queue">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="com.ireum.ytdlnisx"
+            android:targetPackage="com.ireum.ytdl"
             android:targetClass="com.ireum.ytdl.MainActivity">
 
             <extra android:name="destination" android:value="Queue" />
@@ -56,7 +56,7 @@
         android:shortcutDisabledMessage="@string/terminal">
         <intent
             android:action="android.intent.category.DEFAULT"
-            android:targetPackage="com.ireum.ytdlnisx"
+            android:targetPackage="com.ireum.ytdl"
             android:targetClass="com.ireum.ytdl.ui.more.terminal.TerminalActivity">
 
         </intent>
