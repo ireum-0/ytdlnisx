@@ -42,16 +42,6 @@
         app:showAsAction="never" />
 
     <item
-        android:id="@+id/add_to_playlist"
-        android:title="@string/add_to_playlist"
-        app:showAsAction="never" />
-
-    <item
-        android:id="@+id/remove_from_playlist"
-        android:title="@string/remove_from_playlist"
-        app:showAsAction="never" />
-
-    <item
         android:id="@+id/select_all"
         android:title="@string/select_all"
         app:showAsAction="never" />

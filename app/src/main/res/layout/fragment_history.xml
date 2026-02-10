@@ -78,11 +78,19 @@
                                 android:text="@string/youtuber"/>
 
                             <com.google.android.material.chip.Chip
+                                android:id="@+id/keyword_chip"
+                                style="@style/Widget.Material3.Chip.Filter"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/keywords"/>
+
+                            <com.google.android.material.chip.Chip
                                 android:id="@+id/playlist_chip"
                                 style="@style/Widget.Material3.Chip.Filter"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="@string/playlist"/>
+                                android:text="@string/playlist"
+                                android:visibility="gone"/>
 
                             <com.google.android.material.chip.Chip
                                 android:id="@+id/recent_chip"
@@ -105,6 +113,16 @@
                     android:textColor="?attr/colorOnSurfaceVariant"
                     android:layout_marginStart="16dp"
                     android:layout_marginTop="4dp"
+                    android:visibility="gone" />
+
+                <android.widget.TextView
+                    android:id="@+id/selected_keyword_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textSize="14sp"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:layout_marginStart="16dp"
+                    android:layout_marginTop="2dp"
                     android:visibility="gone" />
 
                 <android.widget.TextView

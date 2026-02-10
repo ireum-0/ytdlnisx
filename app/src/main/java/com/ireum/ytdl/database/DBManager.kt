@@ -11,6 +11,7 @@ import com.ireum.ytdl.database.dao.CommandTemplateDao
 import com.ireum.ytdl.database.dao.CookieDao
 import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.dao.HistoryDao
+import com.ireum.ytdl.database.dao.KeywordGroupDao
 import com.ireum.ytdl.database.dao.LogDao
 import com.ireum.ytdl.database.dao.ObserveSourcesDao
 import com.ireum.ytdl.database.dao.PlaylistDao
@@ -24,6 +25,8 @@ import com.ireum.ytdl.database.models.CommandTemplate
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.KeywordGroup
+import com.ireum.ytdl.database.models.KeywordGroupMember
 import com.ireum.ytdl.database.models.LogItem
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.models.Playlist
@@ -55,11 +58,13 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         PlaylistItemCrossRef::class,
         PlaylistGroup::class,
         PlaylistGroupMember::class,
+        KeywordGroup::class,
+        KeywordGroupMember::class,
         YoutuberGroup::class,
         YoutuberGroupMember::class,
         YoutuberMeta::class
     ],
-    version = 39,
+    version = 40,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),
@@ -103,6 +108,7 @@ abstract class DBManager : RoomDatabase(){
     abstract val observeSourcesDao: ObserveSourcesDao
     abstract val playlistDao: PlaylistDao
     abstract val playlistGroupDao: PlaylistGroupDao
+    abstract val keywordGroupDao: KeywordGroupDao
     abstract val youtuberGroupDao: YoutuberGroupDao
     abstract val youtuberMetaDao: YoutuberMetaDao
 

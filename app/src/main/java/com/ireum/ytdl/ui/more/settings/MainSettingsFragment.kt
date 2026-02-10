@@ -37,10 +37,8 @@ import com.ireum.ytdl.database.models.CommandTemplate
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
-import com.ireum.ytdl.database.models.Playlist
-import com.ireum.ytdl.database.models.PlaylistGroup
-import com.ireum.ytdl.database.models.PlaylistGroupMember
-import com.ireum.ytdl.database.models.PlaylistItemCrossRef
+import com.ireum.ytdl.database.models.KeywordGroup
+import com.ireum.ytdl.database.models.KeywordGroupMember
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.models.SearchHistoryItem
@@ -323,32 +321,18 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                         parsedDataMessage.appendLine("Custom thumbnails: ${restoreData.customThumbnails!!.size}")
                     }
 
-                    if (json.has("playlists")) {
-                        restoreData.playlists = json.getAsJsonArray("playlists").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), Playlist::class.java)
+                    if (json.has("keyword_groups")) {
+                        restoreData.keywordGroups = json.getAsJsonArray("keyword_groups").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), KeywordGroup::class.java)
                         }
-                        parsedDataMessage.appendLine("${getString(R.string.playlist)}: ${restoreData.playlists!!.size}")
+                        parsedDataMessage.appendLine("${getString(R.string.keywords)} Groups: ${restoreData.keywordGroups!!.size}")
                     }
 
-                    if (json.has("playlist_items")) {
-                        restoreData.playlistItems = json.getAsJsonArray("playlist_items").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), PlaylistItemCrossRef::class.java)
+                    if (json.has("keyword_group_members")) {
+                        restoreData.keywordGroupMembers = json.getAsJsonArray("keyword_group_members").map {
+                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), KeywordGroupMember::class.java)
                         }
-                        parsedDataMessage.appendLine("Playlist Items: ${restoreData.playlistItems!!.size}")
-                    }
-
-                    if (json.has("playlist_groups")) {
-                        restoreData.playlistGroups = json.getAsJsonArray("playlist_groups").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), PlaylistGroup::class.java)
-                        }
-                        parsedDataMessage.appendLine("Playlist Groups: ${restoreData.playlistGroups!!.size}")
-                    }
-
-                    if (json.has("playlist_group_members")) {
-                        restoreData.playlistGroupMembers = json.getAsJsonArray("playlist_group_members").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), PlaylistGroupMember::class.java)
-                        }
-                        parsedDataMessage.appendLine("Playlist Group Members: ${restoreData.playlistGroupMembers!!.size}")
+                        parsedDataMessage.appendLine("${getString(R.string.keywords)} Group Members: ${restoreData.keywordGroupMembers!!.size}")
                     }
 
                     if (json.has("youtuber_groups")) {

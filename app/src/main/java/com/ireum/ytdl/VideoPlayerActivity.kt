@@ -61,8 +61,6 @@ import androidx.recyclerview.widget.RecyclerView
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
-import com.ireum.ytdl.database.models.Playlist
-import com.ireum.ytdl.database.models.PlaylistItemCrossRef
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.ui.adapter.VideoQueueAdapter
 import com.ireum.ytdl.util.FileUtil
@@ -301,6 +299,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 .build()
             exoPlayer.setAudioAttributes(audioAttributes, true)
             exoPlayer.setHandleAudioBecomingNoisy(true)
+            runCatching { exoPlayer.setWakeMode(C.WAKE_MODE_NETWORK) }
         }
         setupMediaNotification()
         volumeNormalizationEnabled = PreferenceManager.getDefaultSharedPreferences(this)
@@ -532,6 +531,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (!isInPictureInPictureMode) {
             isBackgroundPlayback = false
             setMediaNotificationEnabled(false)
+            setPlaybackForegroundMode(false)
         }
     }
 
@@ -550,10 +550,15 @@ class VideoPlayerActivity : AppCompatActivity() {
         super.onStop()
         savePlaybackPositionForCurrentItem()
         commitRecentWatchIfEligible()
-        if (wasInPip && !isInPictureInPictureMode && !isBackgroundPlayback && !isEditVideoInfoDialogVisible) {
-            player?.pause()
-            finish()
-        } else if (isFinishing) {
+        if ((isBackgroundPlayback || isInPictureInPictureMode) && player?.isPlaying == true) {
+            setPlaybackForegroundMode(true)
+            PlaybackKeepAliveService.start(
+                context = this,
+                title = currentPlaybackTitle(),
+                content = currentPlaybackAuthor().ifBlank { currentPlaybackReason() }
+            )
+        }
+        if (isFinishing) {
             player?.pause()
         }
     }
@@ -565,6 +570,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         stopRecentWatchTimer()
         stopPlaybackStateUpdates()
         setMediaNotificationEnabled(false)
+        setPlaybackForegroundMode(false)
+        PlaybackKeepAliveService.stop(this)
         mediaSession?.release()
         mediaSession = null
         playerNotificationManager = null
@@ -602,11 +609,6 @@ class VideoPlayerActivity : AppCompatActivity() {
             updatePipActions()
             setMediaNotificationEnabled(true)
         } else {
-            if (wasInPip && !isBackgroundPlayback && !isEditVideoInfoDialogVisible) {
-                player?.pause()
-                finish()
-                return
-            }
             if (!isBackgroundPlayback) {
                 setMediaNotificationEnabled(false)
             }
@@ -1052,7 +1054,6 @@ class VideoPlayerActivity : AppCompatActivity() {
                 if (controlsLocked) getString(R.string.unlock_controls) else getString(R.string.lock_controls)
             )
             options.add(getString(R.string.video_info))
-            options.add(getString(R.string.add_to_playlist))
             options.add(getString(R.string.edit_video_info))
             MaterialAlertDialogBuilder(this)
                 .setItems(options.toTypedArray()) { _, which ->
@@ -1064,8 +1065,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                         4 -> toggleVolumeNormalization()
                         5 -> toggleControlsLock()
                         6 -> showVideoInfo()
-                        7 -> addCurrentToPlaylist()
-                        8 -> editCurrentVideoInfo()
+                        7 -> editCurrentVideoInfo()
                     }
                 }
                 .show()
@@ -1101,6 +1101,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun buildPipActions(): List<RemoteAction> {
         val actions = ArrayList<RemoteAction>()
         val isPlaying = player?.isPlaying == true
+        val hasNext = player?.hasNextMediaItem() == true
         val playPauseIcon = if (isPlaying) R.drawable.baseline_pause_24 else R.drawable.baseline_play_arrow_24
         val playPauseTitle = if (isPlaying) getString(R.string.pause) else getString(R.string.play)
         actions.add(createPipAction(
@@ -1113,6 +1114,15 @@ class VideoPlayerActivity : AppCompatActivity() {
             playPauseTitle,
             ACTION_PIP_PLAY_PAUSE
         ))
+        actions.add(
+            createPipAction(
+                R.drawable.ic_baseline_keyboard_arrow_right_24,
+                getString(R.string.pip_next),
+                ACTION_PIP_NEXT
+            ).apply {
+                isEnabled = hasNext
+            }
+        )
         return actions
     }
 
@@ -1128,6 +1138,11 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     private fun currentPlaybackTitle(): String {
+        val mediaId = player?.currentMediaItem?.mediaId?.toLongOrNull()
+        val queueTitle = mediaId?.let { id ->
+            queueItems.firstOrNull { it.id == id }?.title?.trim().orEmpty()
+        }.orEmpty()
+        if (queueTitle.isNotEmpty()) return queueTitle
         val title = titleView?.text?.toString()?.trim().orEmpty()
         return if (title.isNotEmpty()) title else getString(R.string.app_name)
     }
@@ -1178,69 +1193,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         val uri = player?.currentMediaItem?.localConfiguration?.uri?.toString()
         if (uri.isNullOrBlank()) return null
         return queueItems.firstOrNull { it.downloadPath.any { p -> p == uri || uri.endsWith(p) } }
-    }
-
-    private fun addCurrentToPlaylist() {
-        val item = currentHistoryItem()
-        val historyId = item?.id ?: -1L
-        if (historyId <= 0L) {
-            Toast.makeText(this, getString(R.string.no_match_found), Toast.LENGTH_SHORT).show()
-            return
-        }
-        lifecycleScope.launch {
-            val db = DBManager.getInstance(this@VideoPlayerActivity)
-            val playlists = withContext(Dispatchers.IO) { db.playlistDao.getAllPlaylists().first() }
-            val names = ArrayList<String>()
-            names.add(getString(R.string.new_playlist))
-            names.addAll(playlists.map { it.name })
-            MaterialAlertDialogBuilder(this@VideoPlayerActivity)
-                .setTitle(getString(R.string.add_to_playlist))
-                .setItems(names.toTypedArray()) { _, which ->
-                    if (which == 0) {
-                        showCreatePlaylistDialog(historyId)
-                    } else {
-                        val playlistId = playlists[which - 1].id
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            db.playlistDao.insertPlaylistItem(PlaylistItemCrossRef(playlistId, historyId))
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(
-                                    this@VideoPlayerActivity,
-                                    getString(R.string.added_to_playlist),
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                    }
-                }
-                .show()
-        }
-    }
-
-    private fun showCreatePlaylistDialog(historyId: Long) {
-        val input = android.widget.EditText(this).apply {
-            hint = getString(R.string.playlist_name)
-        }
-        MaterialAlertDialogBuilder(this)
-            .setTitle(getString(R.string.new_playlist))
-            .setView(input)
-            .setPositiveButton(getString(R.string.ok)) { _, _ ->
-                val name = input.text?.toString()?.trim().orEmpty()
-                if (name.isBlank()) return@setPositiveButton
-                lifecycleScope.launch(Dispatchers.IO) {
-                    val db = DBManager.getInstance(this@VideoPlayerActivity)
-                    val playlistId = db.playlistDao.insertPlaylist(Playlist(name = name, description = null))
-                    db.playlistDao.insertPlaylistItem(PlaylistItemCrossRef(playlistId, historyId))
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(
-                            this@VideoPlayerActivity,
-                            getString(R.string.added_to_playlist),
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-            }
-            .setNegativeButton(getString(R.string.cancel), null)
-            .show()
     }
 
     private fun editCurrentVideoInfo() {
@@ -1734,6 +1686,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         savePlaybackPositionForCurrentItem()
         player?.pause()
         setMediaNotificationEnabled(false)
+        setPlaybackForegroundMode(false)
+        PlaybackKeepAliveService.stop(this)
         finish()
     }
 
@@ -1873,8 +1827,20 @@ class VideoPlayerActivity : AppCompatActivity() {
             setupMediaNotification()
             playerNotificationManager?.setPlayer(player)
             playerNotificationManager?.invalidate()
+            if (isBackgroundPlayback || isInPictureInPictureMode) {
+                setPlaybackForegroundMode(true)
+                PlaybackKeepAliveService.start(
+                    context = this,
+                    title = currentPlaybackTitle(),
+                    content = currentPlaybackAuthor().ifBlank { currentPlaybackReason() }
+                )
+            }
         } else {
             playerNotificationManager?.setPlayer(null)
+            if (!isBackgroundPlayback && !isInPictureInPictureMode) {
+                setPlaybackForegroundMode(false)
+                PlaybackKeepAliveService.stop(this)
+            }
         }
     }
 
@@ -1932,12 +1898,26 @@ class VideoPlayerActivity : AppCompatActivity() {
                     updatePipActions()
                 }
             }
+            ACTION_PIP_NEXT -> {
+                val exo = player ?: return
+                if (exo.hasNextMediaItem()) {
+                    exo.seekToNextMediaItem()
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+                    updatePipActions()
+                }
+            }
             ACTION_PIP_BACKGROUND -> {
                 isBackgroundPlayback = true
                 setMediaNotificationEnabled(true)
+                setPlaybackForegroundMode(true)
                 moveTaskToBack(true)
             }
         }
+    }
+
+    private fun setPlaybackForegroundMode(enabled: Boolean) {
+        runCatching { player?.setForegroundMode(enabled) }
     }
 
     private fun initAspectControl(playerView: PlayerView) {
@@ -2298,6 +2278,11 @@ class VideoPlayerActivity : AppCompatActivity() {
         val authorFilter = intent.getStringExtra("context_author").orEmpty()
         val playlistId = intent.getLongExtra("context_playlist_id", -1L)
         val playlistName = intent.getStringExtra("context_playlist_name").orEmpty()
+        val keywordFilter = intent.getStringExtra("context_keyword").orEmpty()
+        val queryFilter = intent.getStringExtra("context_query").orEmpty()
+        val typeFilter = intent.getStringExtra("context_type").orEmpty()
+        val websiteFilter = intent.getStringExtra("context_website").orEmpty()
+        val searchFields = parseSearchFields(intent.getStringExtra("context_search_fields").orEmpty())
         val sortType = runCatching {
             HistoryRepository.HistorySortType.valueOf(
                 intent.getStringExtra("context_sort_type") ?: HistoryRepository.HistorySortType.DATE.name
@@ -2328,11 +2313,20 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
         lifecycleScope.launch {
             val items = withContext(Dispatchers.IO) {
-                when {
-                    playlistId > 0L -> db.playlistDao.getPlaylistWithHistoryItems(playlistId).first()
-                    authorFilter.isNotBlank() -> db.historyDao.getVideosByAuthor(authorFilter)
-                    else -> db.historyDao.getAllVideos()
-                }.asSequence()
+                val historyRepo = HistoryRepository(db.historyDao, db.playlistDao)
+                val ids = historyRepo.getFilteredIDs(
+                    query = queryFilter,
+                    type = typeFilter,
+                    author = authorFilter,
+                    keyword = keywordFilter,
+                    sortType = sortType,
+                    order = sortOrder,
+                    status = Unit,
+                    website = websiteFilter,
+                    playlistId = playlistId,
+                    searchFields = searchFields
+                )
+                historyRepo.getItemsFromIDs(ids).asSequence()
                     .filter { it.type == DownloadType.video }
                     .map { resolveLocalTreePath(db, it) }
                     .mapNotNull { item ->
@@ -2495,6 +2489,30 @@ class VideoPlayerActivity : AppCompatActivity() {
             else -> getString(R.string.queue_title_all)
         }
         queueTitle?.text = title
+    }
+
+    private fun parseSearchFields(raw: String): Set<HistoryRepository.SearchField> {
+        if (raw.isBlank()) {
+            return setOf(
+                HistoryRepository.SearchField.TITLE,
+                HistoryRepository.SearchField.KEYWORDS
+            )
+        }
+        val parsed = raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .mapNotNull { name ->
+                runCatching { HistoryRepository.SearchField.valueOf(name) }.getOrNull()
+            }
+            .toSet()
+        return if (parsed.isEmpty()) {
+            setOf(
+                HistoryRepository.SearchField.TITLE,
+                HistoryRepository.SearchField.KEYWORDS
+            )
+        } else {
+            parsed
+        }
     }
 
     private fun playSinglePath(path: String) {
@@ -3054,6 +3072,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     companion object {
         private const val ACTION_PIP_PLAY_PAUSE = "ytdlnisx.action.PIP_PLAY_PAUSE"
         private const val ACTION_PIP_BACKGROUND = "ytdlnisx.action.PIP_BACKGROUND"
+        private const val ACTION_PIP_NEXT = "ytdlnisx.action.PIP_NEXT"
         private const val ACTION_PLAYBACK_CLOSE = "ytdlnisx.action.PLAYBACK_CLOSE"
         private const val PREF_SUBTITLE_TEXT_SIZE = "subtitle_text_size_fraction"
         private const val PREF_SUBTITLE_FOREGROUND = "subtitle_foreground_color"

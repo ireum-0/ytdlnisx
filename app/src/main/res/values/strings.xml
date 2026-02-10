@@ -98,6 +98,7 @@
     <string name="group_badge">GROUP</string>
     <string name="youtuber_group_count_format">%1$d channels · %2$d videos</string>
     <string name="playlist_group_count_format">%1$d playlists · %2$d videos</string>
+    <string name="keyword_group_count_format">%1$d keywords · %2$d videos</string>
     <string name="no_groups">No groups yet</string>
     <string name="rename_group">Rename group</string>
     <string name="delete_group">Delete group</string>
@@ -571,6 +572,8 @@
     <string name="local_video_adding_progress">Adding videos\u2026 (%1$d/%2$d)</string>
     <string name="remove_from_playlist">Remove from playlist</string>
     <string name="remove_from_current_group">Remove from current group</string>
+    <string name="delete_keywords">Delete keywords</string>
+    <string name="confirm_delete_keywords_desc">Delete %1$d keyword(s) from all videos?</string>
     <string name="removed_from_playlist">Removed from playlist</string>
     <string name="rename_playlist">Rename playlist</string>
     <string name="delete_playlist">Delete playlist</string>
@@ -628,6 +631,7 @@
     <string name="next">Next</string>
     <string name="pip_close">Close</string>
     <string name="pip_background">Background playback</string>
+    <string name="pip_next">Next video</string>
     <string name="pip_expand">Full screen</string>
     <string name="rewind">Rewind</string>
     <string name="fast_forward">Fast forward</string>

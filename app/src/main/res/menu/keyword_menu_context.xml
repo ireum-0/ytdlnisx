@@ -1,0 +1,21 @@
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:context=".MainActivity" >
+
+    <item
+        android:id="@+id/add_to_keyword_group"
+        android:title="@string/add_to_group"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/remove_from_current_keyword_group"
+        android:title="@string/remove_from_current_group"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/delete_keywords"
+        android:title="@string/delete_keywords"
+        app:showAsAction="never" />
+
+</menu>

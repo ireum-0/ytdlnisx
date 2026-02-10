@@ -3,6 +3,7 @@
 import com.ireum.ytdl.database.DBManager.SORTING
 import com.ireum.ytdl.database.dao.HistoryDao
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.KeywordInfo
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.FileUtil
 import kotlinx.coroutines.flow.Flow
@@ -66,19 +67,21 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         query: String,
         type: String,
         author: String,
+        keyword: String = "",
         sortType: HistorySortType,
         order: SORTING,
         website: String,
         playlistId: Long,
         searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS)
     ) = historyDao.getPaginatedSource(
-        buildFilterQuery(query, type, author, sortType, order, website, playlistId, searchFields = searchFields)
+        buildFilterQuery(query, type, author, keyword, sortType, order, website, playlistId, searchFields = searchFields)
     )
 
     fun getFilteredIDs(
         query: String,
         type: String,
         author: String,
+        keyword: String = "",
         sortType: HistorySortType,
         order: SORTING,
         status: Any,
@@ -91,6 +94,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 query,
                 type,
                 author,
+                keyword,
                 sortType,
                 order,
                 website,
@@ -105,6 +109,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         query: String,
         type: String,
         author: String,
+        keyword: String = "",
         website: String,
         playlistId: Long,
         searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS)
@@ -114,6 +119,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 query,
                 type,
                 author,
+                keyword,
                 HistorySortType.DATE,
                 SORTING.DESC,
                 website,
@@ -171,6 +177,103 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             }
         }
         return map.values.map { it.toInfo() }.sortedBy { it.author.lowercase(Locale.getDefault()) }
+    }
+
+    fun getKeywordsWithInfoForHistoryIds(ids: List<Long>): List<KeywordInfo> {
+        if (ids.isEmpty()) return emptyList()
+        val map = linkedMapOf<String, KeywordInfoAccumulator>()
+        getItemsFromIDs(ids).forEach { item ->
+            val keywords = splitKeywords(item.keywords)
+            if (keywords.isEmpty()) return@forEach
+            val artistCreators = splitAuthors(item.artist)
+            val creators = if (artistCreators.isNotEmpty()) {
+                artistCreators
+            } else {
+                splitAuthors(item.author)
+            }
+            val itemThumb = item.customThumb
+                .takeIf { it.isNotBlank() && FileUtil.exists(it) }
+                ?: item.thumb
+            keywords.forEach { keyword ->
+                val acc = map.getOrPut(keyword) { KeywordInfoAccumulator(keyword) }
+                acc.videoCount += 1
+                acc.videoIds.add(item.id)
+                creators.forEach { creator ->
+                    val normalized = normalizeCreator(creator)
+                    if (normalized.isBlank()) return@forEach
+                    acc.creatorDisplayByNormalized.putIfAbsent(normalized, creator.trim().trim('"'))
+                }
+                if (item.time > acc.lastTime) {
+                    acc.lastTime = item.time
+                    acc.thumbnail = itemThumb.ifBlank { acc.thumbnail }
+                }
+                if (acc.firstTime == 0L || item.time < acc.firstTime) {
+                    acc.firstTime = item.time
+                }
+            }
+        }
+        val parentCandidatesByKeyword = mutableMapOf<String, MutableSet<String>>()
+        val accumulators = map.values.toList()
+        val accumulatorByKeyword = accumulators.associateBy { it.keyword }
+        for (i in accumulators.indices) {
+            val a = accumulators[i]
+            val aIds = a.videoIds
+            if (aIds.isEmpty()) continue
+            for (j in accumulators.indices) {
+                if (i == j) continue
+                val b = accumulators[j]
+                val bIds = b.videoIds
+                if (aIds.size >= bIds.size || bIds.isEmpty()) continue
+                if (bIds.containsAll(aIds)) {
+                    parentCandidatesByKeyword.getOrPut(a.keyword) { linkedSetOf() }.add(b.keyword)
+                }
+            }
+        }
+
+        val directParentsByKeyword = mutableMapOf<String, List<String>>()
+        parentCandidatesByKeyword.forEach { (childKeyword, parentCandidates) ->
+            val childIds = accumulatorByKeyword[childKeyword]?.videoIds.orEmpty()
+            val directParents = parentCandidates.filter { parent ->
+                val parentIds = accumulatorByKeyword[parent]?.videoIds.orEmpty()
+                parentCandidates.none { other ->
+                    if (other == parent) return@none false
+                    val otherIds = accumulatorByKeyword[other]?.videoIds.orEmpty()
+                    otherIds.isNotEmpty() &&
+                        otherIds.size <= parentIds.size &&
+                        otherIds.containsAll(childIds) &&
+                        parentIds.containsAll(otherIds)
+                }
+            }
+            directParentsByKeyword[childKeyword] = directParents
+        }
+
+        val directChildrenByKeyword = mutableMapOf<String, MutableList<String>>()
+        directParentsByKeyword.forEach { (childKeyword, directParents) ->
+            directParents.forEach { parentKeyword ->
+                directChildrenByKeyword.getOrPut(parentKeyword) { mutableListOf() }.add(childKeyword)
+            }
+        }
+
+        return accumulators
+            .map { it.toInfo(directParentsByKeyword[it.keyword].orEmpty(), directChildrenByKeyword[it.keyword].orEmpty()) }
+            .sortedBy { it.keyword.lowercase(Locale.getDefault()) }
+    }
+
+    suspend fun removeKeywordsFromAllHistory(targetKeywords: List<String>) {
+        if (targetKeywords.isEmpty()) return
+        val normalizedTargets = targetKeywords
+            .map { normalizeKeyword(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+        if (normalizedTargets.isEmpty()) return
+
+        historyDao.getAll().forEach { item ->
+            val existing = splitKeywords(item.keywords)
+            if (existing.isEmpty()) return@forEach
+            val remaining = existing.filterNot { normalizedTargets.contains(normalizeKeyword(it)) }
+            if (remaining.size == existing.size) return@forEach
+            historyDao.update(item.copy(keywords = remaining.joinToString(", ")))
+        }
     }
 
 
@@ -283,6 +386,38 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         )
     }
 
+    private data class KeywordInfoAccumulator(
+        val keyword: String,
+        var videoCount: Int = 0,
+        var thumbnail: String? = null,
+        var lastTime: Long = 0L,
+        var firstTime: Long = 0L,
+        val videoIds: MutableSet<Long> = linkedSetOf(),
+        val creatorDisplayByNormalized: MutableMap<String, String> = linkedMapOf()
+    ) {
+        fun toInfo(parentKeywords: List<String>, childKeywords: List<String>): KeywordInfo {
+            val uniqueCreator = if (creatorDisplayByNormalized.size == 1) {
+                creatorDisplayByNormalized.values.firstOrNull()
+            } else {
+                null
+            }
+            return KeywordInfo(
+                keyword = keyword,
+                videoCount = videoCount,
+                thumbnail = thumbnail,
+                lastTime = lastTime,
+                firstTime = firstTime,
+                uniqueCreator = uniqueCreator,
+                parentKeywords = parentKeywords
+                    .distinctBy { it.lowercase(Locale.getDefault()) }
+                    .sortedBy { it.lowercase(Locale.getDefault()) },
+                childKeywords = childKeywords
+                    .distinctBy { it.lowercase(Locale.getDefault()) }
+                    .sortedBy { it.lowercase(Locale.getDefault()) }
+            )
+        }
+    }
+
     private data class SearchToken(
         val text: String,
         val isExclude: Boolean
@@ -294,6 +429,22 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         return parseAuthorsWithQuotes(trimmed)
             .map { it.first }
             .filter { it.isNotBlank() }
+    }
+
+    private fun splitKeywords(raw: String): List<String> {
+        if (raw.isBlank()) return emptyList()
+        return raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase(Locale.getDefault()) }
+    }
+
+    private fun normalizeCreator(value: String): String {
+        return value.trim().trim('"').lowercase(Locale.getDefault())
+    }
+
+    private fun normalizeKeyword(value: String): String {
+        return value.trim().lowercase(Locale.getDefault())
     }
 
     private fun parseAuthorsWithQuotes(raw: String): List<Pair<String, Boolean>> {
@@ -337,6 +488,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         rawQuery: String,
         type: String,
         author: String,
+        keyword: String,
         sortType: HistorySortType,
         order: SORTING,
         website: String,
@@ -451,6 +603,14 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             args.add("%, $escapedQuoted%")
             args.add("%/$escapedQuoted%")
             args.add("%/ $escapedQuoted%")
+        }
+
+        if (keyword.isNotBlank()) {
+            val normalizedKeyword = keyword.trim().lowercase(Locale.getDefault()).replace(" ", "")
+            if (normalizedKeyword.isNotBlank()) {
+                appendClause("((',' || LOWER(REPLACE(keywords, ' ', '')) || ',') LIKE ?)")
+                args.add("%,$normalizedKeyword,%")
+            }
         }
 
         if (website.isNotBlank()) {

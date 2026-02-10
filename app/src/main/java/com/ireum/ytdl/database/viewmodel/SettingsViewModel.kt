@@ -15,6 +15,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.dao.KeywordGroupDao
 import com.ireum.ytdl.database.dao.PlaylistDao
 import com.ireum.ytdl.database.dao.PlaylistGroupDao
 import com.ireum.ytdl.database.dao.YoutuberGroupDao
@@ -49,8 +50,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     private val commandTemplateRepository : CommandTemplateRepository
     private val searchHistoryRepository : SearchHistoryRepository
     private val observeSourcesRepository : ObserveSourcesRepository
-    private val playlistDao: PlaylistDao
-    private val playlistGroupDao: PlaylistGroupDao
+    private val keywordGroupDao: KeywordGroupDao
     private val youtuberGroupDao: YoutuberGroupDao
     private val youtuberMetaDao: YoutuberMetaDao
 
@@ -62,8 +62,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         commandTemplateRepository = CommandTemplateRepository(dbManager.commandTemplateDao)
         searchHistoryRepository = SearchHistoryRepository(dbManager.searchHistoryDao)
         observeSourcesRepository = ObserveSourcesRepository(dbManager.observeSourcesDao, workManager, preferences)
-        playlistDao = dbManager.playlistDao
-        playlistGroupDao = dbManager.playlistGroupDao
+        keywordGroupDao = dbManager.keywordGroupDao
         youtuberGroupDao = dbManager.youtuberGroupDao
         youtuberMetaDao = dbManager.youtuberMetaDao
     }
@@ -71,21 +70,19 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     suspend fun backup(items: List<String> = listOf()) : Result<String> {
         var list = items
         if (list.isEmpty()) {
-            list = listOf("settings", "downloads", "playlistData", "youtuberData", "queued", "scheduled", "cancelled", "errored", "saved", "cookies", "templates", "shortcuts", "searchHistory", "observeSources")
+            list = listOf("settings", "downloads", "keywordData", "youtuberData", "queued", "scheduled", "cancelled", "errored", "saved", "cookies", "templates", "shortcuts", "searchHistory", "observeSources")
         }
 
         val json = JsonObject()
-        json.addProperty("app", "YTDLnisx_backup")
+        json.addProperty("app", "YTDLnisX_backup")
         list.forEach {
             runCatching {
                 when(it){
                     "settings" -> json.add("settings", BackupSettingsUtil.backupSettings(preferences))
                     "downloads" -> json.add("downloads", BackupSettingsUtil.backupHistory(historyRepository))
-                    "playlistData" -> {
-                        json.add("playlists", BackupSettingsUtil.backupPlaylists(playlistDao))
-                        json.add("playlist_items", BackupSettingsUtil.backupPlaylistItems(playlistDao))
-                        json.add("playlist_groups", BackupSettingsUtil.backupPlaylistGroups(playlistGroupDao))
-                        json.add("playlist_group_members", BackupSettingsUtil.backupPlaylistGroupMembers(playlistGroupDao))
+                    "keywordData" -> {
+                        json.add("keyword_groups", BackupSettingsUtil.backupKeywordGroups(keywordGroupDao))
+                        json.add("keyword_group_members", BackupSettingsUtil.backupKeywordGroupMembers(keywordGroupDao))
                     }
                     "youtuberData" -> {
                         json.add("youtuber_groups", BackupSettingsUtil.backupYoutuberGroups(youtuberGroupDao))
@@ -119,7 +116,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         val dir = File(FileUtil.getCachePath(application) + "/Backups")
         dir.mkdirs()
 
-        val saveFile = File("${dir.absolutePath}/YTDLnisx_Backup_${BuildConfig.VERSION_NAME}_${currentTime.get(
+        val saveFile = File("${dir.absolutePath}/YTDLnisX_Backup_${BuildConfig.VERSION_NAME}_${currentTime.get(
             Calendar.YEAR)}-${currentTime.get(Calendar.MONTH) + 1}-${currentTime.get(
             Calendar.DAY_OF_MONTH)}_${currentTime.get(Calendar.HOUR)}-${currentTime.get(Calendar.MINUTE)}-${currentTime.get(Calendar.SECOND)}.json")
 
@@ -184,57 +181,33 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 }
             }
 
-            if (
-                data.playlists != null ||
-                data.playlistItems != null ||
-                data.playlistGroups != null ||
-                data.playlistGroupMembers != null
-            ) {
+            if (data.keywordGroups != null || data.keywordGroupMembers != null) {
                 withContext(Dispatchers.IO) {
                     if (resetData) {
-                        playlistGroupDao.clearMembers()
-                        playlistGroupDao.clearGroups()
-                        playlistDao.clearPlaylistItems()
-                        playlistDao.clearPlaylists()
+                        keywordGroupDao.clearMembers()
+                        keywordGroupDao.clearGroups()
                     }
 
-                    val playlistIdMap = linkedMapOf<Long, Long>()
-                    data.playlists?.forEach { playlist ->
-                        val newPlaylistId = playlistDao.insertPlaylist(playlist.copy(id = 0L))
-                        playlistIdMap[playlist.id] = newPlaylistId
-                    }
-
-                    val playlistGroupIdMap = linkedMapOf<Long, Long>()
-                    data.playlistGroups?.forEach { group ->
-                        val newGroupId = playlistGroupDao.insertGroup(group.copy(id = 0L))
-                        playlistGroupIdMap[group.id] = newGroupId
-                    }
-
-                    data.playlistItems?.mapNotNull { item ->
-                        val mappedPlaylistId = playlistIdMap[item.playlistId] ?: item.playlistId
-                        val mappedHistoryId = importedHistoryIdMap[item.historyItemId] ?: item.historyItemId
-                        if (mappedPlaylistId <= 0L || mappedHistoryId <= 0L) null
-                        else com.ireum.ytdl.database.models.PlaylistItemCrossRef(
-                            playlistId = mappedPlaylistId,
-                            historyItemId = mappedHistoryId
-                        )
-                    }?.also { mappedItems ->
-                        if (mappedItems.isNotEmpty()) {
-                            playlistDao.insertPlaylistItems(mappedItems)
+                    val keywordGroupIdMap = linkedMapOf<Long, Long>()
+                    data.keywordGroups?.forEach { group ->
+                        val newGroupId = keywordGroupDao.insertGroup(group.copy(id = 0L))
+                        keywordGroupIdMap[group.id] = if (newGroupId > 0L) {
+                            newGroupId
+                        } else {
+                            keywordGroupDao.getGroupByName(group.name)?.id ?: 0L
                         }
                     }
 
-                    data.playlistGroupMembers?.mapNotNull { member ->
-                        val mappedGroupId = playlistGroupIdMap[member.groupId] ?: member.groupId
-                        val mappedPlaylistId = playlistIdMap[member.playlistId] ?: member.playlistId
-                        if (mappedGroupId <= 0L || mappedPlaylistId <= 0L) null
-                        else com.ireum.ytdl.database.models.PlaylistGroupMember(
+                    data.keywordGroupMembers?.mapNotNull { member ->
+                        val mappedGroupId = keywordGroupIdMap[member.groupId] ?: member.groupId
+                        if (mappedGroupId <= 0L) null
+                        else com.ireum.ytdl.database.models.KeywordGroupMember(
                             groupId = mappedGroupId,
-                            playlistId = mappedPlaylistId
+                            keyword = member.keyword
                         )
                     }?.also { mappedMembers ->
                         if (mappedMembers.isNotEmpty()) {
-                            playlistGroupDao.insertMembers(mappedMembers)
+                            keywordGroupDao.insertMembers(mappedMembers)
                         }
                     }
                 }

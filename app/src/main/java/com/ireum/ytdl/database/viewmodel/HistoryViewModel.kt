@@ -18,7 +18,6 @@ import com.ireum.ytdl.database.models.UiModel
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.HistoryRepository.HistorySortType
-import com.ireum.ytdl.database.repository.PlaylistRepository
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
 import kotlinx.coroutines.Dispatchers
@@ -46,18 +45,20 @@ import java.util.Locale
 @OptIn(ExperimentalCoroutinesApi::class)
 class HistoryViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: HistoryRepository
-    private val playlistRepository: PlaylistRepository
     val sortOrder = MutableStateFlow(SORTING.DESC)
     val sortType = MutableStateFlow(HistorySortType.DATE)
     val authorFilter = MutableStateFlow("")
+    val keywordFilter = MutableStateFlow("")
     val websiteFilter = MutableStateFlow("")
     val playlistFilter = MutableStateFlow(-1L)
     val statusFilter = MutableStateFlow(HistoryStatus.ALL)
-    val isYoutuberSelectionMode = MutableStateFlow(false)  // ?�튜�??�택 모드
+    val isYoutuberSelectionMode = MutableStateFlow(false)  // mode
     val isPlaylistSelectionMode = MutableStateFlow(false)
+    val isKeywordSelectionMode = MutableStateFlow(false)
     val isRecentMode = MutableStateFlow(false)
     val youtuberGroupFilter = MutableStateFlow(-1L)
     val playlistGroupFilter = MutableStateFlow(-1L)
+    val keywordGroupFilter = MutableStateFlow(-1L)
     private val queryFilter = MutableStateFlow("")
     val searchFieldsFilter = MutableStateFlow(
         setOf(
@@ -87,12 +88,10 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     var youtuberGroups: Flow<List<com.ireum.ytdl.database.models.YoutuberGroup>>
     var youtuberGroupMembers: Flow<List<com.ireum.ytdl.database.models.YoutuberGroupMember>>
     var playlistGroups: Flow<List<com.ireum.ytdl.database.models.PlaylistGroup>>
-    var playlistGroupMembers: Flow<List<com.ireum.ytdl.database.models.PlaylistGroupMember>>
+    var keywordGroups: Flow<List<com.ireum.ytdl.database.models.KeywordGroup>>
+    var keywordGroupMembers: Flow<List<com.ireum.ytdl.database.models.KeywordGroupMember>>
     private val youtuberMetaFlow: Flow<List<com.ireum.ytdl.database.models.YoutuberMeta>>
-    var playlistInfos: Flow<List<com.ireum.ytdl.database.models.PlaylistInfo>>
     private val recentItems: Flow<List<HistoryItem>>
-    private val recentPlaylists: Flow<List<com.ireum.ytdl.database.models.PlaylistInfo>>
-    private val playlistsByAuthor: Flow<List<com.ireum.ytdl.database.models.PlaylistInfo>>
     var totalCount = MutableStateFlow(0)
 
     data class HistoryFilters(
@@ -106,6 +105,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         ),
         var status: HistoryStatus = HistoryStatus.ALL,
         var author: String = "",
+        var keyword: String = "",
         var website: String = "",
         var playlistId: Long = -1L
     )
@@ -117,6 +117,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         val searchFields: Set<HistoryRepository.SearchField>,
         val status: HistoryStatus,
         val author: String,
+        val keyword: String,
         val website: String,
         val playlistId: Long
     )
@@ -131,16 +132,42 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         val fifth: E,
         val sixth: F
     )
+    data class Septuple<A, B, C, D, E, F, G>(
+        val first: A,
+        val second: B,
+        val third: C,
+        val fourth: D,
+        val fifth: E,
+        val sixth: F,
+        val seventh: G
+    )
+    data class Octuple<A, B, C, D, E, F, G, H>(
+        val first: A,
+        val second: B,
+        val third: C,
+        val fourth: D,
+        val fifth: E,
+        val sixth: F,
+        val seventh: G,
+        val eighth: H
+    )
+    data class ModeState(
+        val filters: HistoryFilters,
+        val isYoutuberMode: Boolean,
+        val isKeywordMode: Boolean,
+        val isRecent: Boolean,
+        val youtuberGroup: Long,
+        val keywordGroup: Long
+    )
 
     init {
         val db = DBManager.getInstance(application)
         val dao = db.historyDao
         val playlistDao = db.playlistDao
-        val playlistGroupDao = db.playlistGroupDao
+        val keywordGroupDao = db.keywordGroupDao
         val groupDao = db.youtuberGroupDao
         val metaDao = db.youtuberMetaDao
         repository = HistoryRepository(dao, playlistDao)
-        playlistRepository = PlaylistRepository(playlistDao, playlistGroupDao)
         websites = repository.websites
         authors = repository.authors
         youtuberMetaFlow = metaDao.getAllFlow()
@@ -157,16 +184,10 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         }
         youtuberGroups = groupDao.getGroupsFlow()
         youtuberGroupMembers = groupDao.getAllMembersFlow()
-        playlistGroups = playlistGroupDao.getGroupsFlow()
-        playlistGroupMembers = playlistGroupDao.getAllMembersFlow()
-        playlistInfos = playlistRepository.getPlaylistsWithInfo()
+        playlistGroups = flowOf(emptyList())
+        keywordGroups = keywordGroupDao.getGroupsFlow()
+        keywordGroupMembers = keywordGroupDao.getAllMembersFlow()
         recentItems = repository.getRecent(20)
-        recentPlaylists = playlistRepository.getRecentPlaylistsWithInfo(20)
-        playlistsByAuthor = authorFilter.flatMapLatest { author ->
-            if (author.isBlank()) flowOf(emptyList())
-            else playlistRepository.getPlaylistsWithInfoByAuthor(author)
-        }
-
         viewModelScope.launch {
             combine(repository.getAuthorsWithInfo(), youtuberMetaFlow) { infos, metas ->
                 val metaAuthors = metas.map { it.author }.toSet()
@@ -181,10 +202,10 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             combine(sortOrder, sortType, authorFilter, statusFilter, websiteFilter) { s: SORTING, st: HistorySortType, a: String, status: HistoryStatus, w: String ->
                 Quintuple(s, st, a, status, w)
             },
-            combine(queryFilter, typeFilter, playlistFilter, searchFieldsFilter) { q: String, t: String, p: Long, sf: Set<HistoryRepository.SearchField> ->
-                Quadruple(q, t, p, sf)
+            combine(queryFilter, typeFilter, playlistFilter, searchFieldsFilter, keywordFilter) { q: String, t: String, p: Long, sf: Set<HistoryRepository.SearchField>, k: String ->
+                Quintuple(q, t, p, sf, k)
             }
-        ) { quint: Quintuple<SORTING, HistorySortType, String, HistoryStatus, String>, quad: Quadruple<String, String, Long, Set<HistoryRepository.SearchField>> ->
+        ) { quint: Quintuple<SORTING, HistorySortType, String, HistoryStatus, String>, quad: Quintuple<String, String, Long, Set<HistoryRepository.SearchField>, String> ->
             HistoryFilters(
                 type = quad.second,
                 sortType = quint.second,
@@ -193,36 +214,54 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 searchFields = quad.fourth,
                 status = quint.fourth,
                 author = quint.third,
+                keyword = quad.fifth,
                 website = quint.fifth,
                 playlistId = quad.third
             )
         }
 
         val modeFlow = combine(
-            filtersFlow,
-            isYoutuberSelectionMode,
-            isPlaylistSelectionMode,
-            isRecentMode,
-            youtuberGroupFilter
-        ) { filters, isSelectionMode, isPlaylistMode, isRecent, youtuberGroup ->
-            Quintuple(filters, isSelectionMode, isPlaylistMode, isRecent, youtuberGroup)
+            combine(
+                filtersFlow,
+                isYoutuberSelectionMode,
+                isKeywordSelectionMode,
+                isRecentMode
+            ) { filters, isSelectionMode, isKeywordMode, isRecent ->
+                Quadruple(filters, isSelectionMode, isKeywordMode, isRecent)
+            },
+            youtuberGroupFilter,
+            keywordGroupFilter
+        ) { base, youtuberGroup, keywordGroup ->
+            ModeState(
+                filters = base.first,
+                isYoutuberMode = base.second,
+                isKeywordMode = base.third,
+                isRecent = base.fourth,
+                youtuberGroup = youtuberGroup,
+                keywordGroup = keywordGroup
+            )
         }
 
-        paginatedItems = combine(modeFlow, playlistGroupFilter) { mode, playlistGroup ->
-            Sextuple(mode.first, mode.second, mode.third, mode.fourth, mode.fifth, playlistGroup)
-        }.flatMapLatest { (filters, isSelectionMode, isPlaylistMode, isRecent, youtuberGroup, playlistGroup) ->
+        paginatedItems = modeFlow.flatMapLatest { mode ->
+            val filters = mode.filters
+            val isSelectionMode = mode.isYoutuberMode
+            val isKeywordMode = mode.isKeywordMode
+            val isRecent = mode.isRecent
+            val youtuberGroup = mode.youtuberGroup
+            val keywordGroup = mode.keywordGroup
             Log.d(
                 "HistoryPagingVM",
-                "switch filters=${filters} youtuberMode=$isSelectionMode playlistMode=$isPlaylistMode recent=$isRecent yGroup=$youtuberGroup pGroup=$playlistGroup"
+                "switch filters=${filters} youtuberMode=$isSelectionMode keywordMode=$isKeywordMode recent=$isRecent yGroup=$youtuberGroup kGroup=$keywordGroup"
             )
-            if (isPlaylistMode) {
-                Log.d("HistoryPagingVM", "branch=playlistMode group=$playlistGroup")
-                val filteredPlaylistsFlow = flow {
+            if (isKeywordMode) {
+                Log.d("HistoryPagingVM", "branch=keywordMode group=$keywordGroup")
+                val filteredKeywordsFlow = flow {
                     val ids = withContext(Dispatchers.IO) {
                         repository.getFilteredIDs(
                             filters.query,
                             filters.type,
                             filters.author,
+                            filters.keyword,
                             filters.sortType,
                             filters.sortOrder,
                             filters.status,
@@ -231,95 +270,99 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                             filters.searchFields
                         )
                     }
-                    val playlists = withContext(Dispatchers.IO) {
-                        playlistRepository.getPlaylistsWithInfoForHistoryIds(ids)
+                    val keywords = withContext(Dispatchers.IO) {
+                        repository.getKeywordsWithInfoForHistoryIds(ids)
                     }
-                    emit(playlists)
+                    emit(keywords)
                 }
-                if (playlistGroup >= 0L) {
-                    combine(filteredPlaylistsFlow, playlistGroupMembers) { playlists, members ->
-                        val memberIds = members.filter { it.groupId == playlistGroup }.map { it.playlistId }.toSet()
-                        val filtered = playlists.filter { memberIds.contains(it.id) }
+                if (keywordGroup >= 0L) {
+                    combine(filteredKeywordsFlow, keywordGroupMembers) { keywords, members ->
+                        val memberSet = members.filter { it.groupId == keywordGroup }.map { it.keyword }.toSet()
+                        val filtered = keywords.filter { memberSet.contains(it.keyword) }
                         val sorted = when (filters.sortType) {
-                            HistorySortType.DATE -> filtered.sortedBy { it.id }
-                            HistorySortType.TITLE -> filtered.sortedBy { it.name.lowercase() }
-                            HistorySortType.AUTHOR -> filtered.sortedBy { it.name.lowercase() }
-                            HistorySortType.DURATION -> filtered.sortedBy { it.itemCount }
+                            HistorySortType.DATE -> {
+                                if (filters.sortOrder == SORTING.DESC) {
+                                    filtered.sortedBy { it.lastTime }
+                                } else {
+                                    filtered.sortedBy { it.firstTime }
+                                }
+                            }
+                            HistorySortType.TITLE -> filtered.sortedBy { it.keyword.lowercase() }
+                            HistorySortType.DURATION -> filtered.sortedBy { it.videoCount }
+                            HistorySortType.AUTHOR -> filtered.sortedBy { it.keyword.lowercase() }
                         }.run {
                             if (filters.sortOrder == SORTING.DESC) this.asReversed() else this
                         }
-                        PagingData.from(sorted.map { UiModel.PlaylistInfoModel(it) as UiModel })
+                        PagingData.from(sorted.map { UiModel.KeywordInfoModel(it) as UiModel })
                     }
                 } else {
-                    combine(filteredPlaylistsFlow, playlistGroups, playlistGroupMembers) { playlists, groups, members ->
-                        val groupedIds = members.map { it.playlistId }.toSet()
-                        val ungrouped = playlists.filter { !groupedIds.contains(it.id) }
+                    combine(filteredKeywordsFlow, keywordGroups, keywordGroupMembers) { keywords, groups, members ->
+                        val groupedKeywords = members.map { it.keyword }.toSet()
+                        val keywordByName = keywords.associateBy { it.keyword }
+                        val visibleKeywordNames = keywords.filter { info ->
+                            val hasParentWithParent = info.parentKeywords.any { parent ->
+                                keywordByName[parent]?.parentKeywords?.isNotEmpty() == true
+                            }
+                            !hasParentWithParent
+                        }.map { it.keyword }.toSet()
+                        val ungrouped = keywords.filter {
+                            !groupedKeywords.contains(it.keyword) && visibleKeywordNames.contains(it.keyword)
+                        }
                         val sortedUngrouped = when (filters.sortType) {
-                            HistorySortType.DATE -> ungrouped.sortedBy { it.id }
-                            HistorySortType.TITLE -> ungrouped.sortedBy { it.name.lowercase() }
-                            HistorySortType.AUTHOR -> ungrouped.sortedBy { it.name.lowercase() }
-                            HistorySortType.DURATION -> ungrouped.sortedBy { it.itemCount }
+                            HistorySortType.DATE -> {
+                                if (filters.sortOrder == SORTING.DESC) {
+                                    ungrouped.sortedBy { it.lastTime }
+                                } else {
+                                    ungrouped.sortedBy { it.firstTime }
+                                }
+                            }
+                            HistorySortType.TITLE -> ungrouped.sortedBy { it.keyword.lowercase() }
+                            HistorySortType.DURATION -> ungrouped.sortedBy { it.videoCount }
+                            HistorySortType.AUTHOR -> ungrouped.sortedBy { it.keyword.lowercase() }
                         }.run {
                             if (filters.sortOrder == SORTING.DESC) this.asReversed() else this
                         }
 
                         val groupInfos = groups.map { group ->
-                            val memberIds = members.filter { it.groupId == group.id }.map { it.playlistId }.toSet()
-                            val memberInfos = playlists.filter { memberIds.contains(it.id) }
-                            val totalItems = memberInfos.sumOf { it.itemCount }
+                            val memberKeywords = members.filter { it.groupId == group.id }.map { it.keyword }.toSet()
+                            val memberInfos = keywords.filter { memberKeywords.contains(it.keyword) }
+                            val totalVideos = memberInfos.sumOf { it.videoCount }
                             val thumb = memberInfos.firstOrNull { !it.thumbnail.isNullOrBlank() }?.thumbnail
-                            com.ireum.ytdl.database.models.PlaylistGroupInfo(
+                            com.ireum.ytdl.database.models.KeywordGroupInfo(
                                 id = group.id,
                                 name = group.name,
-                                memberCount = memberIds.size,
-                                itemCount = totalItems,
+                                memberCount = memberKeywords.size,
+                                videoCount = totalVideos,
                                 thumbnail = thumb
                             )
-                        }.filter { it.memberCount > 0 && it.itemCount > 0 }.let { infos ->
-                            val sortedGroups = when (filters.sortType) {
-                                HistorySortType.DURATION -> infos.sortedBy { it.itemCount }
+                        }.filter { it.memberCount > 0 && it.videoCount > 0 }.let { infos ->
+                            when (filters.sortType) {
+                                HistorySortType.DURATION -> infos.sortedBy { it.videoCount }
                                 HistorySortType.TITLE -> infos.sortedBy { it.name.lowercase() }
                                 HistorySortType.AUTHOR -> infos.sortedBy { it.name.lowercase() }
                                 HistorySortType.DATE -> infos.sortedBy { it.name.lowercase() }
                             }.run {
                                 if (filters.sortOrder == SORTING.DESC) this.asReversed() else this
                             }
-                            sortedGroups
                         }
 
                         val list = ArrayList<UiModel>()
-                        list.addAll(groupInfos.map { UiModel.PlaylistGroupModel(it) })
-                        list.addAll(sortedUngrouped.map { UiModel.PlaylistInfoModel(it) })
+                        list.addAll(groupInfos.map { UiModel.KeywordGroupModel(it) })
+                        list.addAll(sortedUngrouped.map { UiModel.KeywordInfoModel(it) })
                         PagingData.from(list)
                     }
                 }
             } else if (isRecent) {
                 Log.d("HistoryPagingVM", "branch=recent")
-                combine(recentItems, recentPlaylists) { items, playlists ->
+                recentItems.map { items ->
                     val itemsMax = items.take(20)
-                    val playlistsMax = playlists.take(20)
                     fun recentTime(item: HistoryItem): Long {
                         return if (item.lastWatched > 0L) item.lastWatched else item.time
                     }
-                    val historyByPlaylist = itemsMax.groupBy { item ->
-                        playlistsMax.firstOrNull { pl -> item.downloadPath.any { path ->
-                            path.contains("/${pl.name}/") || path.contains("\\${pl.name}\\")
-                        } }?.id ?: -1L
-                    }
-                    val playlistLastTime = playlistsMax.associate { pl ->
-                        val last = historyByPlaylist[pl.id]?.maxOfOrNull { recentTime(it) } ?: 0L
-                        pl.id to last
-                    }
-                    val merged = ArrayList<UiModel>()
-                    merged.addAll(itemsMax.map { UiModel.HistoryItemModel(it) })
-                    merged.addAll(playlistsMax.map { UiModel.PlaylistInfoModel(it) })
-                    val sorted = merged.sortedByDescending { model ->
-                        when (model) {
-                            is UiModel.HistoryItemModel -> recentTime(model.historyItem)
-                            is UiModel.PlaylistInfoModel -> playlistLastTime[model.playlistInfo.id] ?: 0L
-                            else -> 0L
-                        }
-                    }.take(20)
+                    val sorted = itemsMax
+                        .sortedByDescending { recentTime(it) }
+                        .take(20)
+                        .map { UiModel.HistoryItemModel(it) as UiModel }
                     PagingData.from(sorted)
                 }
             } else if (isSelectionMode) {
@@ -330,6 +373,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                             filters.query,
                             filters.type,
                             filters.author,
+                            filters.keyword,
                             filters.sortType,
                             filters.sortOrder,
                             filters.status,
@@ -453,6 +497,12 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         authorFilter.value = filter
     }
 
+    fun setKeywordFilter(filter: String) {
+        if (keywordFilter.value == filter) return
+        Log.d("HistoryPagingVM", "setKeywordFilter='$filter'")
+        keywordFilter.value = filter
+    }
+
     fun setYoutuberGroupFilter(groupId: Long) {
         if (youtuberGroupFilter.value == groupId) return
         Log.d("HistoryPagingVM", "setYoutuberGroupFilter=$groupId")
@@ -460,9 +510,15 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setPlaylistGroupFilter(groupId: Long) {
-        if (playlistGroupFilter.value == groupId) return
-        Log.d("HistoryPagingVM", "setPlaylistGroupFilter=$groupId")
-        playlistGroupFilter.value = groupId
+        if (playlistGroupFilter.value == -1L) return
+        Log.d("HistoryPagingVM", "setPlaylistGroupFilter ignored (playlist feature disabled)")
+        playlistGroupFilter.value = -1L
+    }
+
+    fun setKeywordGroupFilter(groupId: Long) {
+        if (keywordGroupFilter.value == groupId) return
+        Log.d("HistoryPagingVM", "setKeywordGroupFilter=$groupId")
+        keywordGroupFilter.value = groupId
     }
 
     fun setWebsiteFilter(filter: String) {
@@ -472,9 +528,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setPlaylistFilter(playlistId: Long) {
-        if (playlistFilter.value == playlistId) return
-        Log.d("HistoryPagingVM", "setPlaylistFilter=$playlistId")
-        playlistFilter.value = playlistId
+        if (playlistFilter.value == -1L) return
+        Log.d("HistoryPagingVM", "setPlaylistFilter ignored (playlist feature disabled)")
+        playlistFilter.value = -1L
     }
 
     fun toggleYoutuberSelectionMode() {
@@ -489,14 +545,25 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun togglePlaylistSelectionMode() {
-        Log.d("HistoryPagingVM", "togglePlaylistSelectionMode=${!isPlaylistSelectionMode.value}")
-        isPlaylistSelectionMode.value = !isPlaylistSelectionMode.value
+        Log.d("HistoryPagingVM", "togglePlaylistSelectionMode ignored (playlist feature disabled)")
+        isPlaylistSelectionMode.value = false
     }
 
     fun setPlaylistSelectionMode(enabled: Boolean) {
-        if (isPlaylistSelectionMode.value == enabled) return
-        Log.d("HistoryPagingVM", "setPlaylistSelectionMode=$enabled")
-        isPlaylistSelectionMode.value = enabled
+        if (!isPlaylistSelectionMode.value) return
+        Log.d("HistoryPagingVM", "setPlaylistSelectionMode ignored (playlist feature disabled)")
+        isPlaylistSelectionMode.value = false
+    }
+
+    fun toggleKeywordSelectionMode() {
+        Log.d("HistoryPagingVM", "toggleKeywordSelectionMode=${!isKeywordSelectionMode.value}")
+        isKeywordSelectionMode.value = !isKeywordSelectionMode.value
+    }
+
+    fun setKeywordSelectionMode(enabled: Boolean) {
+        if (isKeywordSelectionMode.value == enabled) return
+        Log.d("HistoryPagingVM", "setKeywordSelectionMode=$enabled")
+        isKeywordSelectionMode.value = enabled
     }
 
     fun setRecentMode(enabled: Boolean) {
@@ -541,6 +608,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 filters.query,
                 filters.type,
                 filters.author,
+                filters.keyword,
                 filters.website,
                 filters.playlistId,
                 filters.searchFields
@@ -554,6 +622,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                     filters.query,
                     filters.type,
                     filters.author,
+                    filters.keyword,
                     filters.sortType,
                     filters.sortOrder,
                     filters.website,
@@ -595,19 +664,61 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-        val flow = if (filters.author.isNotBlank()) {
-            combine(playlistsByAuthor, baseFlow) { playlists, pagingData ->
-                var withHeaders = pagingData
-                playlists.asReversed().forEach { pl ->
-                    withHeaders = withHeaders.insertHeaderItem(item = UiModel.PlaylistInfoModel(pl))
-                }
-                withHeaders
-            }
-        } else {
-            baseFlow
+        if (filters.author.isBlank() && filters.keyword.isBlank()) {
+            return baseFlow
         }
 
-        return flow
+        val relatedKeywordsFlow = flow {
+            val relationIds = withContext(Dispatchers.IO) {
+                repository.getFilteredIDs(
+                    filters.query,
+                    filters.type,
+                    "",
+                    "",
+                    filters.sortType,
+                    filters.sortOrder,
+                    filters.status,
+                    filters.website,
+                    filters.playlistId,
+                    filters.searchFields
+                )
+            }
+            val allKeywords = withContext(Dispatchers.IO) {
+                repository.getKeywordsWithInfoForHistoryIds(relationIds)
+            }
+            val selectedKeyword = filters.keyword.trim()
+            val selectedKeywordInfo = allKeywords.firstOrNull { it.keyword.equals(selectedKeyword, ignoreCase = true) }
+            val related = when {
+                filters.author.isNotBlank() -> {
+                    val normalizedAuthor = normalizeCreator(filters.author)
+                    allKeywords.filter {
+                        val creator = it.uniqueCreator ?: return@filter false
+                        normalizeCreator(creator) == normalizedAuthor
+                    }
+                }
+                selectedKeywordInfo != null -> {
+                    val relatedNames = selectedKeywordInfo.childKeywords.toSet()
+                    allKeywords.filter { relatedNames.contains(it.keyword) }
+                }
+                else -> emptyList()
+            }
+            emit(related)
+        }
+
+        return combine(relatedKeywordsFlow, baseFlow) { keywords, pagingData ->
+            var withHeaders = pagingData
+            keywords
+                .sortedByDescending { it.videoCount }
+                .asReversed()
+                .forEach { info ->
+                    withHeaders = withHeaders.insertHeaderItem(item = UiModel.KeywordInfoModel(info))
+                }
+            withHeaders
+        }
+    }
+
+    private fun normalizeCreator(value: String): String {
+        return value.trim().trim('"').lowercase(Locale.getDefault())
     }
 
     fun getIDsBetweenTwoItems(firstID: Long, secondID: Long): List<Long> {
@@ -639,6 +750,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             searchFieldsFilter.value,
             statusFilter.value,
             authorFilter.value,
+            keywordFilter.value,
             websiteFilter.value,
             playlistFilter.value
         )
@@ -650,6 +762,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             filters.query,
             filters.type,
             filters.author,
+            filters.keyword,
             filters.sortType,
             filters.sortOrder,
             filters.status,
@@ -721,6 +834,12 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         cachedIdsKey = null
         cachedIds = null
         repository.clearDeletedHistory()
+    }
+
+    fun removeKeywordsFromAllHistory(targetKeywords: List<String>) = viewModelScope.launch(Dispatchers.IO) {
+        cachedIdsKey = null
+        cachedIds = null
+        repository.removeKeywordsFromAllHistory(targetKeywords)
     }
 
     private fun fetchMissingYoutuberMeta(
@@ -829,4 +948,6 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
 }
+
+
 

@@ -23,9 +23,9 @@ import androidx.recyclerview.widget.RecyclerView
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.KeywordInfo
 import com.ireum.ytdl.database.models.UiModel
 import com.ireum.ytdl.database.models.YoutuberInfo
-import com.ireum.ytdl.database.models.PlaylistInfo
 import com.ireum.ytdl.util.Extensions.loadThumbnail
 import com.ireum.ytdl.util.Extensions.popup
 import com.ireum.ytdl.util.FileUtil
@@ -56,6 +56,8 @@ class HistoryPaginatedAdapter(
     private val selectedYoutuberGroups: MutableSet<Long> = mutableSetOf()
     private val selectedPlaylists: MutableSet<Long> = mutableSetOf()
     private val selectedPlaylistGroups: MutableSet<Long> = mutableSetOf()
+    private val selectedKeywords: MutableSet<String> = mutableSetOf()
+    private val selectedKeywordGroups: MutableSet<Long> = mutableSetOf()
     private val sharedPreferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(activity)
     private var disableGeneratedThumbnails: Boolean = false
 
@@ -81,12 +83,12 @@ class HistoryPaginatedAdapter(
                 LayoutInflater.from(parent.context).inflate(R.layout.youtuber_group_card_item, parent, false),
                 onItemClickListener
             )
-            R.layout.playlist_card_item -> PlaylistInfoViewHolder(
-                LayoutInflater.from(parent.context).inflate(R.layout.playlist_card_item, parent, false),
+            R.layout.keyword_card_item -> KeywordInfoViewHolder(
+                LayoutInflater.from(parent.context).inflate(R.layout.keyword_card_item, parent, false),
                 onItemClickListener
             )
-            R.layout.playlist_group_card_item -> PlaylistGroupViewHolder(
-                LayoutInflater.from(parent.context).inflate(R.layout.playlist_group_card_item, parent, false),
+            R.layout.keyword_group_card_item -> KeywordGroupViewHolder(
+                LayoutInflater.from(parent.context).inflate(R.layout.keyword_group_card_item, parent, false),
                 onItemClickListener
             )
             else -> throw IllegalStateException("Unknown view type $viewType")
@@ -101,8 +103,8 @@ class HistoryPaginatedAdapter(
                 is UiModel.SeparatorModel -> (holder as SeparatorViewHolder).bind(uiModel.author)
                 is UiModel.YoutuberInfoModel -> (holder as YoutuberInfoViewHolder).bind(uiModel.youtuberInfo)
                 is UiModel.YoutuberGroupModel -> (holder as YoutuberGroupViewHolder).bind(uiModel.groupInfo)
-                is UiModel.PlaylistInfoModel -> (holder as PlaylistInfoViewHolder).bind(uiModel.playlistInfo)
-                is UiModel.PlaylistGroupModel -> (holder as PlaylistGroupViewHolder).bind(uiModel.groupInfo)
+                is UiModel.KeywordInfoModel -> (holder as KeywordInfoViewHolder).bind(uiModel.keywordInfo)
+                is UiModel.KeywordGroupModel -> (holder as KeywordGroupViewHolder).bind(uiModel.groupInfo)
             }
         }
     }
@@ -121,8 +123,8 @@ class HistoryPaginatedAdapter(
             is UiModel.HistoryItemModel -> (holder as? HistoryItemViewHolder)?.bindSelection(uiModel.historyItem.id)
             is UiModel.YoutuberInfoModel -> (holder as? YoutuberInfoViewHolder)?.setSelectionState(selectedYoutubers.contains(uiModel.youtuberInfo.author))
             is UiModel.YoutuberGroupModel -> (holder as? YoutuberGroupViewHolder)?.setSelectionState(selectedYoutuberGroups.contains(uiModel.groupInfo.id))
-            is UiModel.PlaylistInfoModel -> (holder as? PlaylistInfoViewHolder)?.setSelectionState(selectedPlaylists.contains(uiModel.playlistInfo.id))
-            is UiModel.PlaylistGroupModel -> (holder as? PlaylistGroupViewHolder)?.setSelectionState(selectedPlaylistGroups.contains(uiModel.groupInfo.id))
+            is UiModel.KeywordInfoModel -> (holder as? KeywordInfoViewHolder)?.setSelectionState(selectedKeywords.contains(uiModel.keywordInfo.keyword))
+            is UiModel.KeywordGroupModel -> (holder as? KeywordGroupViewHolder)?.setSelectionState(selectedKeywordGroups.contains(uiModel.groupInfo.id))
             is UiModel.SeparatorModel -> Unit
         }
     }
@@ -133,8 +135,8 @@ class HistoryPaginatedAdapter(
             is UiModel.SeparatorModel -> R.layout.separator_view
             is UiModel.YoutuberInfoModel -> R.layout.youtuber_card_item
             is UiModel.YoutuberGroupModel -> R.layout.youtuber_group_card_item
-            is UiModel.PlaylistInfoModel -> R.layout.playlist_card_item
-            is UiModel.PlaylistGroupModel -> R.layout.playlist_group_card_item
+            is UiModel.KeywordInfoModel -> R.layout.keyword_card_item
+            is UiModel.KeywordGroupModel -> R.layout.keyword_group_card_item
             null -> R.layout.history_card
         }
     }
@@ -298,6 +300,10 @@ class HistoryPaginatedAdapter(
         fun onPlaylistGroupSelected(groupId: Long)
         fun onPlaylistGroupSelectionChanged(selectedCount: Int)
         fun onPlaylistLongClick(playlistId: Long)
+        fun onKeywordSelected(keyword: String)
+        fun onKeywordSelectionChanged(selectedCount: Int)
+        fun onKeywordGroupSelected(groupId: Long)
+        fun onKeywordGroupSelectionChanged(selectedCount: Int)
     }
 
     inner class YoutuberInfoViewHolder(itemView: View, private val onItemClickListener: OnItemClickListener) : RecyclerView.ViewHolder(itemView) {
@@ -396,33 +402,45 @@ class HistoryPaginatedAdapter(
         }
     }
 
-    inner class PlaylistInfoViewHolder(itemView: View, private val onItemClickListener: OnItemClickListener) : RecyclerView.ViewHolder(itemView) {
-        private val thumbnail: ImageView = itemView.findViewById(R.id.playlist_thumbnail)
-        private val name: TextView = itemView.findViewById(R.id.playlist_name)
-        private val videoCount: TextView = itemView.findViewById(R.id.playlist_count)
+    inner class KeywordInfoViewHolder(itemView: View, private val onItemClickListener: OnItemClickListener) : RecyclerView.ViewHolder(itemView) {
+        private val thumbnail: ImageView = itemView.findViewById(R.id.youtuber_thumbnail)
+        private val name: TextView = itemView.findViewById(R.id.youtuber_name)
+        private val videoCount: TextView = itemView.findViewById(R.id.video_count)
         private val card: MaterialCardView? = itemView as? MaterialCardView
 
-        fun bind(playlistInfo: PlaylistInfo) {
-            name.text = playlistInfo.name
-            videoCount.text = "${playlistInfo.itemCount} videos"
+        fun bind(keywordInfo: KeywordInfo) {
+            name.text = keywordInfo.keyword
+            val details = mutableListOf<String>()
+            details.add("${keywordInfo.videoCount} videos")
+            keywordInfo.uniqueCreator?.takeIf { it.isNotBlank() }?.let {
+                details.add("creator: $it")
+            }
+            videoCount.text = details.joinToString("\n")
             val hideThumb = sharedPreferences.getStringSet("hide_thumbnails", emptySet())!!.contains("downloads")
-            playlistInfo.thumbnail?.takeIf { it.isNotBlank() }?.let { thumbnailUrl ->
+            keywordInfo.thumbnail?.takeIf { it.isNotBlank() }?.let { thumbnailUrl ->
                 thumbnail.visibility = View.VISIBLE
-                mainHandler.post { thumbnail.loadThumbnail(hideThumb, thumbnailUrl) }
+                mainHandler.post {
+                    val resolved = when {
+                        thumbnailUrl.startsWith("content://") || thumbnailUrl.startsWith("file://") -> thumbnailUrl
+                        thumbnailUrl.startsWith("http://") || thumbnailUrl.startsWith("https://") -> thumbnailUrl
+                        else -> File(thumbnailUrl).toURI().toString()
+                    }
+                    thumbnail.loadThumbnail(hideThumb, resolved)
+                }
             } ?: run {
                 thumbnail.visibility = View.GONE
             }
-            setSelectionState(selectedPlaylists.contains(playlistInfo.id))
+            setSelectionState(selectedKeywords.contains(keywordInfo.keyword))
 
             itemView.setOnClickListener {
-                if (selectedPlaylists.isNotEmpty()) {
-                    togglePlaylistSelection(playlistInfo.id, card)
+                if (selectedKeywords.isNotEmpty()) {
+                    toggleKeywordSelection(keywordInfo.keyword, card)
                 } else {
-                    onItemClickListener.onPlaylistSelected(playlistInfo.id)
+                    onItemClickListener.onKeywordSelected(keywordInfo.keyword)
                 }
             }
             itemView.setOnLongClickListener {
-                togglePlaylistSelection(playlistInfo.id, card)
+                toggleKeywordSelection(keywordInfo.keyword, card)
                 true
             }
         }
@@ -433,38 +451,45 @@ class HistoryPaginatedAdapter(
         }
     }
 
-    inner class PlaylistGroupViewHolder(itemView: View, private val onItemClickListener: OnItemClickListener) : RecyclerView.ViewHolder(itemView) {
-        private val thumbnail: ImageView = itemView.findViewById(R.id.playlist_group_thumbnail)
-        private val name: TextView = itemView.findViewById(R.id.playlist_group_name)
-        private val count: TextView = itemView.findViewById(R.id.playlist_group_count)
+    inner class KeywordGroupViewHolder(itemView: View, private val onItemClickListener: OnItemClickListener) : RecyclerView.ViewHolder(itemView) {
+        private val thumbnail: ImageView = itemView.findViewById(R.id.youtuber_group_thumbnail)
+        private val name: TextView = itemView.findViewById(R.id.youtuber_group_name)
+        private val count: TextView = itemView.findViewById(R.id.youtuber_group_count)
         private val card: MaterialCardView? = itemView as? MaterialCardView
 
-        fun bind(groupInfo: com.ireum.ytdl.database.models.PlaylistGroupInfo) {
+        fun bind(groupInfo: com.ireum.ytdl.database.models.KeywordGroupInfo) {
             name.text = groupInfo.name
             count.text = itemView.context.getString(
-                R.string.playlist_group_count_format,
+                R.string.keyword_group_count_format,
                 groupInfo.memberCount,
-                groupInfo.itemCount
+                groupInfo.videoCount
             )
             val hideThumb = sharedPreferences.getStringSet("hide_thumbnails", emptySet())!!.contains("downloads")
             groupInfo.thumbnail?.takeIf { it.isNotBlank() }?.let { thumbnailUrl ->
                 thumbnail.visibility = View.VISIBLE
-                mainHandler.post { thumbnail.loadThumbnail(hideThumb, thumbnailUrl) }
+                mainHandler.post {
+                    val resolved = when {
+                        thumbnailUrl.startsWith("content://") || thumbnailUrl.startsWith("file://") -> thumbnailUrl
+                        thumbnailUrl.startsWith("http://") || thumbnailUrl.startsWith("https://") -> thumbnailUrl
+                        else -> File(thumbnailUrl).toURI().toString()
+                    }
+                    thumbnail.loadThumbnail(hideThumb, resolved)
+                }
             } ?: run {
                 thumbnail.visibility = View.GONE
             }
 
-            setSelectionState(selectedPlaylistGroups.contains(groupInfo.id))
+            setSelectionState(selectedKeywordGroups.contains(groupInfo.id))
 
             itemView.setOnClickListener {
-                if (selectedPlaylistGroups.isNotEmpty()) {
-                    togglePlaylistGroupSelection(groupInfo.id, card)
+                if (selectedKeywordGroups.isNotEmpty()) {
+                    toggleKeywordGroupSelection(groupInfo.id, card)
                 } else {
-                    onItemClickListener.onPlaylistGroupSelected(groupInfo.id)
+                    onItemClickListener.onKeywordGroupSelected(groupInfo.id)
                 }
             }
             itemView.setOnLongClickListener {
-                togglePlaylistGroupSelection(groupInfo.id, card)
+                toggleKeywordGroupSelection(groupInfo.id, card)
                 true
             }
         }
@@ -481,8 +506,8 @@ class HistoryPaginatedAdapter(
                     (oldItem is UiModel.SeparatorModel && newItem is UiModel.SeparatorModel && oldItem.author == newItem.author) ||
                     (oldItem is UiModel.YoutuberInfoModel && newItem is UiModel.YoutuberInfoModel && oldItem.youtuberInfo.author == newItem.youtuberInfo.author) ||
                     (oldItem is UiModel.YoutuberGroupModel && newItem is UiModel.YoutuberGroupModel && oldItem.groupInfo.id == newItem.groupInfo.id) ||
-                    (oldItem is UiModel.PlaylistInfoModel && newItem is UiModel.PlaylistInfoModel && oldItem.playlistInfo.id == newItem.playlistInfo.id) ||
-                    (oldItem is UiModel.PlaylistGroupModel && newItem is UiModel.PlaylistGroupModel && oldItem.groupInfo.id == newItem.groupInfo.id)
+                    (oldItem is UiModel.KeywordInfoModel && newItem is UiModel.KeywordInfoModel && oldItem.keywordInfo.keyword == newItem.keywordInfo.keyword) ||
+                    (oldItem is UiModel.KeywordGroupModel && newItem is UiModel.KeywordGroupModel && oldItem.groupInfo.id == newItem.groupInfo.id)
         }
 
         @SuppressLint("DiffUtilEquals")
@@ -519,6 +544,20 @@ class HistoryPaginatedAdapter(
 
     fun getSelectedPlaylistGroups(): List<Long> = selectedPlaylistGroups.toList()
 
+    fun clearKeywordSelection() {
+        selectedKeywords.clear()
+        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+    }
+
+    fun getSelectedKeywords(): List<String> = selectedKeywords.toList()
+
+    fun clearKeywordGroupSelection() {
+        selectedKeywordGroups.clear()
+        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+    }
+
+    fun getSelectedKeywordGroups(): List<Long> = selectedKeywordGroups.toList()
+
     private fun toggleYoutuberSelection(author: String, card: MaterialCardView?) {
         if (selectedYoutuberGroups.isNotEmpty()) {
             selectedYoutuberGroups.clear()
@@ -551,36 +590,36 @@ class HistoryPaginatedAdapter(
         onItemClickListener.onYoutuberGroupSelectionChanged(selectedYoutuberGroups.size)
     }
 
-    private fun togglePlaylistSelection(playlistId: Long, card: MaterialCardView?) {
-        if (selectedPlaylistGroups.isNotEmpty()) {
-            selectedPlaylistGroups.clear()
-            onItemClickListener.onPlaylistGroupSelectionChanged(0)
+    private fun toggleKeywordSelection(keyword: String, card: MaterialCardView?) {
+        if (selectedKeywordGroups.isNotEmpty()) {
+            selectedKeywordGroups.clear()
+            onItemClickListener.onKeywordGroupSelectionChanged(0)
             notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
         }
-        if (selectedPlaylists.contains(playlistId)) {
-            selectedPlaylists.remove(playlistId)
+        if (selectedKeywords.contains(keyword)) {
+            selectedKeywords.remove(keyword)
         } else {
-            selectedPlaylists.add(playlistId)
+            selectedKeywords.add(keyword)
         }
-        card?.isChecked = selectedPlaylists.contains(playlistId)
+        card?.isChecked = selectedKeywords.contains(keyword)
         card?.strokeWidth = if (card?.isChecked == true) 5 else 0
-        onItemClickListener.onPlaylistSelectionChanged(selectedPlaylists.size)
+        onItemClickListener.onKeywordSelectionChanged(selectedKeywords.size)
     }
 
-    private fun togglePlaylistGroupSelection(groupId: Long, card: MaterialCardView?) {
-        if (selectedPlaylists.isNotEmpty()) {
-            selectedPlaylists.clear()
-            onItemClickListener.onPlaylistSelectionChanged(0)
+    private fun toggleKeywordGroupSelection(groupId: Long, card: MaterialCardView?) {
+        if (selectedKeywords.isNotEmpty()) {
+            selectedKeywords.clear()
+            onItemClickListener.onKeywordSelectionChanged(0)
             notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
         }
-        if (selectedPlaylistGroups.contains(groupId)) {
-            selectedPlaylistGroups.remove(groupId)
+        if (selectedKeywordGroups.contains(groupId)) {
+            selectedKeywordGroups.remove(groupId)
         } else {
-            selectedPlaylistGroups.add(groupId)
+            selectedKeywordGroups.add(groupId)
         }
-        card?.isChecked = selectedPlaylistGroups.contains(groupId)
+        card?.isChecked = selectedKeywordGroups.contains(groupId)
         card?.strokeWidth = if (card?.isChecked == true) 5 else 0
-        onItemClickListener.onPlaylistGroupSelectionChanged(selectedPlaylistGroups.size)
+        onItemClickListener.onKeywordGroupSelectionChanged(selectedKeywordGroups.size)
     }
 
     private fun parseDurationToMs(duration: String): Long {

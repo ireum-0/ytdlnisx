@@ -45,9 +45,4 @@
         android:title="@string/remove_duplicates"
         app:showAsAction="never" />
 
-    <item
-        android:id="@+id/rename_playlist"
-        android:title="@string/rename_playlist"
-        app:showAsAction="never" />
-
 </menu>
