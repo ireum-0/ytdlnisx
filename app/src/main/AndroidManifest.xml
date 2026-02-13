@@ -357,6 +357,7 @@
             android:name=".VideoPlayerActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
+            android:resizeableActivity="true"
             android:supportsPictureInPicture="true" />
 
         <activity-alias

@@ -7,6 +7,7 @@ import androidx.room.Query
 import androidx.room.Update
 import com.ireum.ytdl.database.models.YoutuberGroup
 import com.ireum.ytdl.database.models.YoutuberGroupMember
+import com.ireum.ytdl.database.models.YoutuberGroupRelation
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -33,8 +34,14 @@ interface YoutuberGroupDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     fun insertMembers(members: List<YoutuberGroupMember>)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    fun insertRelations(relations: List<YoutuberGroupRelation>)
+
     @Query("DELETE FROM youtuber_group_members WHERE groupId = :groupId")
     fun deleteMembersByGroup(groupId: Long)
+
+    @Query("DELETE FROM youtuber_group_relations WHERE parentGroupId = :groupId OR childGroupId = :groupId")
+    fun deleteRelationsByGroup(groupId: Long)
 
     @Query("DELETE FROM youtuber_group_members WHERE groupId = :groupId AND author IN (:authors)")
     fun deleteMembersByGroupAndAuthors(groupId: Long, authors: List<String>)
@@ -54,11 +61,29 @@ interface YoutuberGroupDao {
     @Query("SELECT * FROM youtuber_group_members")
     fun getAllMembers(): List<YoutuberGroupMember>
 
+    @Query("SELECT * FROM youtuber_group_relations")
+    fun getAllRelationsFlow(): Flow<List<YoutuberGroupRelation>>
+
+    @Query("SELECT * FROM youtuber_group_relations")
+    fun getAllRelations(): List<YoutuberGroupRelation>
+
+    @Query("SELECT parentGroupId FROM youtuber_group_relations WHERE childGroupId = :childGroupId")
+    fun getParentIdsForChild(childGroupId: Long): List<Long>
+
+    @Query("DELETE FROM youtuber_group_relations WHERE childGroupId = :childGroupId")
+    fun deleteRelationsForChild(childGroupId: Long)
+
+    @Query("DELETE FROM youtuber_group_relations WHERE childGroupId = :childGroupId AND parentGroupId NOT IN (:parentGroupIds)")
+    fun deleteRelationsForChildNotIn(childGroupId: Long, parentGroupIds: List<Long>)
+
     @Query("SELECT author FROM youtuber_group_members WHERE groupId = :groupId")
     fun getMembersForGroupFlow(groupId: Long): Flow<List<String>>
 
     @Query("DELETE FROM youtuber_group_members")
     fun clearMembers()
+
+    @Query("DELETE FROM youtuber_group_relations")
+    fun clearRelations()
 
     @Query("DELETE FROM youtuber_groups")
     fun clearGroups()

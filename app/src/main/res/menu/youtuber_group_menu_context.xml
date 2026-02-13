@@ -4,6 +4,16 @@
     tools:context=".MainActivity" >
 
     <item
+        android:id="@+id/show_youtuber_groups_on_first_list"
+        android:title="@string/show_on_first_list"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/hide_youtuber_groups_from_first_list"
+        android:title="@string/hide_from_first_list"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/rename_youtuber_group"
         android:title="@string/rename_group"
         app:showAsAction="ifRoom" />
@@ -11,6 +21,26 @@
     <item
         android:id="@+id/delete_youtuber_group"
         android:title="@string/delete_group"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/add_youtuber_groups_to_group"
+        android:title="@string/add_to_group"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/edit_parent_youtuber_group"
+        android:title="@string/edit_parent_groups"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/hide_youtuber_groups"
+        android:title="@string/hide_selected"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/unhide_youtuber_groups"
+        android:title="@string/unhide_selected"
         app:showAsAction="never" />
 
 </menu>

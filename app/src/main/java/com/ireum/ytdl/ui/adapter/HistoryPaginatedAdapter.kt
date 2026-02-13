@@ -292,6 +292,7 @@ class HistoryPaginatedAdapter(
         fun onCardClick(itemID: Long, filePresent: Boolean)
         fun onCardSelect(isChecked: Boolean, position: Int)
         fun onYoutuberSelected(youtuber: String)
+        fun onYoutuberLongClick(youtuberInfo: YoutuberInfo)
         fun onYoutuberSelectionChanged(selectedCount: Int)
         fun onYoutuberGroupSelected(groupId: Long)
         fun onYoutuberGroupSelectionChanged(selectedCount: Int)
@@ -301,6 +302,7 @@ class HistoryPaginatedAdapter(
         fun onPlaylistGroupSelectionChanged(selectedCount: Int)
         fun onPlaylistLongClick(playlistId: Long)
         fun onKeywordSelected(keyword: String)
+        fun onKeywordLongClick(keywordInfo: KeywordInfo)
         fun onKeywordSelectionChanged(selectedCount: Int)
         fun onKeywordGroupSelected(groupId: Long)
         fun onKeywordGroupSelectionChanged(selectedCount: Int)
@@ -334,7 +336,7 @@ class HistoryPaginatedAdapter(
             setSelectionState(selectedYoutubers.contains(youtuberInfo.author))
 
             itemView.setOnClickListener {
-                if (selectedYoutubers.isNotEmpty()) {
+                if (selectedYoutubers.isNotEmpty() || selectedYoutuberGroups.isNotEmpty()) {
                     toggleYoutuberSelection(youtuberInfo.author, card)
                 } else {
                     onItemClickListener.onYoutuberSelected(youtuberInfo.author)
@@ -384,7 +386,7 @@ class HistoryPaginatedAdapter(
             setSelectionState(selectedYoutuberGroups.contains(groupInfo.id))
 
             itemView.setOnClickListener {
-                if (selectedYoutuberGroups.isNotEmpty()) {
+                if (selectedYoutubers.isNotEmpty() || selectedYoutuberGroups.isNotEmpty()) {
                     toggleYoutuberGroupSelection(groupInfo.id, card)
                 } else {
                     onItemClickListener.onYoutuberGroupSelected(groupInfo.id)
@@ -433,14 +435,18 @@ class HistoryPaginatedAdapter(
             setSelectionState(selectedKeywords.contains(keywordInfo.keyword))
 
             itemView.setOnClickListener {
-                if (selectedKeywords.isNotEmpty()) {
+                if (selectedKeywords.isNotEmpty() || selectedKeywordGroups.isNotEmpty()) {
                     toggleKeywordSelection(keywordInfo.keyword, card)
                 } else {
                     onItemClickListener.onKeywordSelected(keywordInfo.keyword)
                 }
             }
             itemView.setOnLongClickListener {
-                toggleKeywordSelection(keywordInfo.keyword, card)
+                if (selectedKeywords.isNotEmpty()) {
+                    toggleKeywordSelection(keywordInfo.keyword, card)
+                } else {
+                    onItemClickListener.onKeywordLongClick(keywordInfo)
+                }
                 true
             }
         }
@@ -482,7 +488,7 @@ class HistoryPaginatedAdapter(
             setSelectionState(selectedKeywordGroups.contains(groupInfo.id))
 
             itemView.setOnClickListener {
-                if (selectedKeywordGroups.isNotEmpty()) {
+                if (selectedKeywords.isNotEmpty() || selectedKeywordGroups.isNotEmpty()) {
                     toggleKeywordGroupSelection(groupInfo.id, card)
                 } else {
                     onItemClickListener.onKeywordGroupSelected(groupInfo.id)
@@ -559,11 +565,6 @@ class HistoryPaginatedAdapter(
     fun getSelectedKeywordGroups(): List<Long> = selectedKeywordGroups.toList()
 
     private fun toggleYoutuberSelection(author: String, card: MaterialCardView?) {
-        if (selectedYoutuberGroups.isNotEmpty()) {
-            selectedYoutuberGroups.clear()
-            onItemClickListener.onYoutuberGroupSelectionChanged(0)
-            notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
-        }
         if (selectedYoutubers.contains(author)) {
             selectedYoutubers.remove(author)
         } else {
@@ -575,11 +576,6 @@ class HistoryPaginatedAdapter(
     }
 
     private fun toggleYoutuberGroupSelection(groupId: Long, card: MaterialCardView?) {
-        if (selectedYoutubers.isNotEmpty()) {
-            selectedYoutubers.clear()
-            onItemClickListener.onYoutuberSelectionChanged(0)
-            notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
-        }
         if (selectedYoutuberGroups.contains(groupId)) {
             selectedYoutuberGroups.remove(groupId)
         } else {
@@ -591,11 +587,6 @@ class HistoryPaginatedAdapter(
     }
 
     private fun toggleKeywordSelection(keyword: String, card: MaterialCardView?) {
-        if (selectedKeywordGroups.isNotEmpty()) {
-            selectedKeywordGroups.clear()
-            onItemClickListener.onKeywordGroupSelectionChanged(0)
-            notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
-        }
         if (selectedKeywords.contains(keyword)) {
             selectedKeywords.remove(keyword)
         } else {
@@ -607,11 +598,6 @@ class HistoryPaginatedAdapter(
     }
 
     private fun toggleKeywordGroupSelection(groupId: Long, card: MaterialCardView?) {
-        if (selectedKeywords.isNotEmpty()) {
-            selectedKeywords.clear()
-            onItemClickListener.onKeywordSelectionChanged(0)
-            notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
-        }
         if (selectedKeywordGroups.contains(groupId)) {
             selectedKeywordGroups.remove(groupId)
         } else {

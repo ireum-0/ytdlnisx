@@ -60,14 +60,28 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     val playlistGroupFilter = MutableStateFlow(-1L)
     val keywordGroupFilter = MutableStateFlow(-1L)
     private val queryFilter = MutableStateFlow("")
+    private val titleQueryFilter = MutableStateFlow("")
+    private val keywordQueryFilter = MutableStateFlow("")
+    private val creatorQueryFilter = MutableStateFlow("")
     val searchFieldsFilter = MutableStateFlow(
         setOf(
             HistoryRepository.SearchField.TITLE,
             HistoryRepository.SearchField.KEYWORDS
         )
     )
+    val includeChildCategoryVideosFilter = MutableStateFlow(false)
+    val hiddenYoutubersFilter = MutableStateFlow(setOf<String>())
+    val hiddenYoutuberGroupsFilter = MutableStateFlow(setOf<Long>())
+    val showHiddenOnlyFilter = MutableStateFlow(false)
+    val excludedChildKeywordsFilter = MutableStateFlow(setOf<String>())
+    val visibleChildYoutuberGroupsFilter = MutableStateFlow(setOf<Long>())
+    val visibleChildKeywordsFilter = MutableStateFlow(setOf<String>())
+    private val refreshTrigger = MutableStateFlow(0L)
     private val typeFilter = MutableStateFlow("")
     val queryFilterFlow = queryFilter.asStateFlow()
+    val titleQueryFilterFlow = titleQueryFilter.asStateFlow()
+    val keywordQueryFilterFlow = keywordQueryFilter.asStateFlow()
+    val creatorQueryFilterFlow = creatorQueryFilter.asStateFlow()
     val typeFilterFlow = typeFilter.asStateFlow()
     private var cachedIdsKey: HistoryFilters? = null
     private var cachedIds: List<Long>? = null
@@ -84,9 +98,11 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     var paginatedItems: Flow<PagingData<UiModel>>
     var websites: Flow<List<String>>
     var authors: Flow<List<String>>
+    var keywords: Flow<List<String>>
     var youtuberInfos: Flow<List<YoutuberInfo>>
     var youtuberGroups: Flow<List<com.ireum.ytdl.database.models.YoutuberGroup>>
     var youtuberGroupMembers: Flow<List<com.ireum.ytdl.database.models.YoutuberGroupMember>>
+    var youtuberGroupRelations: Flow<List<com.ireum.ytdl.database.models.YoutuberGroupRelation>>
     var playlistGroups: Flow<List<com.ireum.ytdl.database.models.PlaylistGroup>>
     var keywordGroups: Flow<List<com.ireum.ytdl.database.models.KeywordGroup>>
     var keywordGroupMembers: Flow<List<com.ireum.ytdl.database.models.KeywordGroupMember>>
@@ -99,6 +115,10 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         var sortType: HistorySortType = HistorySortType.DATE,
         var sortOrder: SORTING = SORTING.DESC,
         var query: String = "",
+        var titleQuery: String = "",
+        var keywordQuery: String = "",
+        var creatorQuery: String = "",
+        var includeChildCategoryVideos: Boolean = false,
         var searchFields: Set<HistoryRepository.SearchField> = setOf(
             HistoryRepository.SearchField.TITLE,
             HistoryRepository.SearchField.KEYWORDS
@@ -114,6 +134,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         val sortType: HistorySortType,
         val sortOrder: SORTING,
         val query: String,
+        val titleQuery: String,
+        val keywordQuery: String,
+        val creatorQuery: String,
         val searchFields: Set<HistoryRepository.SearchField>,
         val status: HistoryStatus,
         val author: String,
@@ -157,7 +180,14 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         val isKeywordMode: Boolean,
         val isRecent: Boolean,
         val youtuberGroup: Long,
-        val keywordGroup: Long
+        val keywordGroup: Long,
+        val hiddenYoutubers: Set<String>,
+        val hiddenYoutuberGroups: Set<Long>,
+        val showHiddenOnly: Boolean,
+        val excludedChildKeywords: Set<String>,
+        val visibleChildYoutuberGroups: Set<Long>,
+        val visibleChildKeywords: Set<String>,
+        val refreshToken: Long
     )
 
     init {
@@ -170,6 +200,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         repository = HistoryRepository(dao, playlistDao)
         websites = repository.websites
         authors = repository.authors
+        keywords = repository.keywords
         youtuberMetaFlow = metaDao.getAllFlow()
         youtuberInfos = combine(repository.getAuthorsWithInfo(), youtuberMetaFlow) { infos, metas ->
             val metaMap = metas.associateBy { it.author }
@@ -184,6 +215,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         }
         youtuberGroups = groupDao.getGroupsFlow()
         youtuberGroupMembers = groupDao.getAllMembersFlow()
+        youtuberGroupRelations = groupDao.getAllRelationsFlow()
         playlistGroups = flowOf(emptyList())
         keywordGroups = keywordGroupDao.getGroupsFlow()
         keywordGroupMembers = keywordGroupDao.getAllMembersFlow()
@@ -202,21 +234,34 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             combine(sortOrder, sortType, authorFilter, statusFilter, websiteFilter) { s: SORTING, st: HistorySortType, a: String, status: HistoryStatus, w: String ->
                 Quintuple(s, st, a, status, w)
             },
-            combine(queryFilter, typeFilter, playlistFilter, searchFieldsFilter, keywordFilter) { q: String, t: String, p: Long, sf: Set<HistoryRepository.SearchField>, k: String ->
-                Quintuple(q, t, p, sf, k)
+            combine(
+                combine(queryFilter, typeFilter, playlistFilter, searchFieldsFilter) { q: String, t: String, p: Long, sf: Set<HistoryRepository.SearchField> ->
+                    Quadruple(q, t, p, sf)
+                },
+                combine(keywordFilter, titleQueryFilter, keywordQueryFilter, creatorQueryFilter) { k: String, tq: String, kq: String, cq: String ->
+                    Quadruple(k, tq, kq, cq)
+                },
+                includeChildCategoryVideosFilter
+            ) { base, search, includeChild ->
+                Octuple(base.first, base.second, base.third, base.fourth, search.first, search.second, search.third, search.fourth) to includeChild
             }
-        ) { quint: Quintuple<SORTING, HistorySortType, String, HistoryStatus, String>, quad: Quintuple<String, String, Long, Set<HistoryRepository.SearchField>, String> ->
+        ) { quint: Quintuple<SORTING, HistorySortType, String, HistoryStatus, String>, pair: Pair<Octuple<String, String, Long, Set<HistoryRepository.SearchField>, String, String, String, String>, Boolean> ->
+            val oct = pair.first
             HistoryFilters(
-                type = quad.second,
+                type = oct.second,
                 sortType = quint.second,
                 sortOrder = quint.first,
-                query = quad.first,
-                searchFields = quad.fourth,
+                query = oct.first,
+                titleQuery = oct.sixth,
+                keywordQuery = oct.seventh,
+                creatorQuery = oct.eighth,
+                includeChildCategoryVideos = pair.second,
+                searchFields = oct.fourth,
                 status = quint.fourth,
                 author = quint.third,
-                keyword = quad.fifth,
+                keyword = oct.fifth,
                 website = quint.fifth,
-                playlistId = quad.third
+                playlistId = oct.third
             )
         }
 
@@ -230,15 +275,38 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 Quadruple(filters, isSelectionMode, isKeywordMode, isRecent)
             },
             youtuberGroupFilter,
-            keywordGroupFilter
-        ) { base, youtuberGroup, keywordGroup ->
+            keywordGroupFilter,
+            combine(
+                combine(
+                    hiddenYoutubersFilter,
+                    hiddenYoutuberGroupsFilter,
+                    showHiddenOnlyFilter,
+                    excludedChildKeywordsFilter
+                ) { hiddenY, hiddenGroups, showHiddenOnly, excludedChildren ->
+                    Quadruple(hiddenY, hiddenGroups, showHiddenOnly, excludedChildren)
+                },
+                combine(visibleChildYoutuberGroupsFilter, visibleChildKeywordsFilter) { visibleYoutuberGroups, visibleKeywords ->
+                    Pair(visibleYoutuberGroups, visibleKeywords)
+                }
+            ) { hidden, visible ->
+                Sextuple(hidden.first, hidden.second, hidden.third, hidden.fourth, visible.first, visible.second)
+            },
+            refreshTrigger
+        ) { base, youtuberGroup, keywordGroup, extra, refreshToken ->
             ModeState(
                 filters = base.first,
                 isYoutuberMode = base.second,
                 isKeywordMode = base.third,
                 isRecent = base.fourth,
                 youtuberGroup = youtuberGroup,
-                keywordGroup = keywordGroup
+                keywordGroup = keywordGroup,
+                hiddenYoutubers = extra.first,
+                hiddenYoutuberGroups = extra.second,
+                showHiddenOnly = extra.third,
+                excludedChildKeywords = extra.fourth,
+                visibleChildYoutuberGroups = extra.fifth,
+                visibleChildKeywords = extra.sixth,
+                refreshToken = refreshToken
             )
         }
 
@@ -249,6 +317,12 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             val isRecent = mode.isRecent
             val youtuberGroup = mode.youtuberGroup
             val keywordGroup = mode.keywordGroup
+            val hiddenYoutubers = mode.hiddenYoutubers
+            val hiddenYoutuberGroups = mode.hiddenYoutuberGroups
+            val showHiddenOnly = mode.showHiddenOnly
+            val excludedChildKeywords = mode.excludedChildKeywords
+            val visibleChildYoutuberGroups = mode.visibleChildYoutuberGroups
+            val visibleChildKeywords = mode.visibleChildKeywords
             Log.d(
                 "HistoryPagingVM",
                 "switch filters=${filters} youtuberMode=$isSelectionMode keywordMode=$isKeywordMode recent=$isRecent yGroup=$youtuberGroup kGroup=$keywordGroup"
@@ -262,6 +336,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                             filters.type,
                             filters.author,
                             filters.keyword,
+                            filters.titleQuery,
+                            filters.keywordQuery,
+                            filters.creatorQuery,
                             filters.sortType,
                             filters.sortOrder,
                             filters.status,
@@ -299,14 +376,15 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                     combine(filteredKeywordsFlow, keywordGroups, keywordGroupMembers) { keywords, groups, members ->
                         val groupedKeywords = members.map { it.keyword }.toSet()
                         val keywordByName = keywords.associateBy { it.keyword }
-                        val visibleKeywordNames = keywords.filter { info ->
-                            val hasParentWithParent = info.parentKeywords.any { parent ->
-                                keywordByName[parent]?.parentKeywords?.isNotEmpty() == true
+                        val visibleKeywordNames = keywords
+                            .filter { info ->
+                                info.parentKeywords.none { parent -> keywordByName.containsKey(parent) }
                             }
-                            !hasParentWithParent
-                        }.map { it.keyword }.toSet()
+                            .map { it.keyword }
+                            .toSet()
                         val ungrouped = keywords.filter {
-                            !groupedKeywords.contains(it.keyword) && visibleKeywordNames.contains(it.keyword)
+                            !groupedKeywords.contains(it.keyword) &&
+                                (visibleKeywordNames.contains(it.keyword) || visibleChildKeywords.contains(it.keyword))
                         }
                         val sortedUngrouped = when (filters.sortType) {
                             HistorySortType.DATE -> {
@@ -374,6 +452,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                             filters.type,
                             filters.author,
                             filters.keyword,
+                            filters.titleQuery,
+                            filters.keywordQuery,
+                            filters.creatorQuery,
                             filters.sortType,
                             filters.sortOrder,
                             filters.status,
@@ -387,40 +468,93 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                     }
                     emit(youtubers)
                 }
+                fun isYoutuberVisible(author: String): Boolean {
+                    val hidden = hiddenYoutubers.contains(author)
+                    return if (showHiddenOnly) hidden else !hidden
+                }
+                fun isGroupVisible(groupId: Long): Boolean {
+                    val hidden = hiddenYoutuberGroups.contains(groupId)
+                    return if (showHiddenOnly) hidden else !hidden
+                }
                 if (youtuberGroup >= 0L) {
-                    combine(filteredYoutubersFlow, youtuberGroupMembers, youtuberMetaFlow) { youtubers, members, metas ->
+                    combine(
+                        combine(filteredYoutubersFlow, youtuberGroupMembers, youtuberMetaFlow) { youtubers, members, metas ->
+                            Triple(youtubers, members, metas)
+                        },
+                        combine(youtuberGroups, youtuberGroupRelations) { groups, relations ->
+                            Pair(groups, relations)
+                        }
+                    ) { left, right ->
+                        val youtubers = left.first
+                        val members = left.second
+                        val metas = left.third
+                        val groups = right.first
+                        val relations = right.second
+                        val childrenByParent = relations.groupBy { it.parentGroupId }.mapValues { entry ->
+                            entry.value.map { it.childGroupId }
+                        }
                         val metaMap = metas.associateBy { it.author }
                         val enriched = youtubers.map { info ->
                             val iconUrl = metaMap[info.author]?.iconUrl.orEmpty()
                             if (iconUrl.isNotBlank()) info.copy(thumbnail = iconUrl) else info
                         }
-                        val memberSet = members.filter { it.groupId == youtuberGroup }.map { it.author }.toSet()
-                        val filtered = enriched.filter { memberSet.contains(it.author) }
+                        fun descendantGroups(startGroupId: Long): Set<Long> {
+                            val visited = linkedSetOf<Long>()
+                            val stack = ArrayDeque<Long>()
+                            stack.add(startGroupId)
+                            while (stack.isNotEmpty()) {
+                                val id = stack.removeFirst()
+                                if (!visited.add(id)) continue
+                                childrenByParent[id].orEmpty().forEach { stack.addLast(it) }
+                            }
+                            return visited
+                        }
+                        val childGroupIds = childrenByParent[youtuberGroup].orEmpty()
+                            .filter { isGroupVisible(it) }
+                            .toSet()
+                        val directMemberSet = members.filter { it.groupId == youtuberGroup }.map { it.author }.toSet()
+                        val filtered = enriched.filter { directMemberSet.contains(it.author) && isYoutuberVisible(it.author) }
                         val sorted = when (filters.sortType) {
                             HistorySortType.DATE -> {
-                                if (filters.sortOrder == SORTING.DESC) {
-                                    filtered.sortedBy { it.lastTime }
-                                } else {
-                                    filtered.sortedBy { it.firstTime }
-                                }
+                                if (filters.sortOrder == SORTING.DESC) filtered.sortedBy { it.lastTime } else filtered.sortedBy { it.firstTime }
                             }
                             HistorySortType.TITLE -> filtered.sortedBy { it.author.lowercase() }
                             HistorySortType.DURATION -> filtered.sortedBy { it.videoCount }
                             HistorySortType.AUTHOR -> filtered.sortedBy { it.author.lowercase() }
-                        }.run {
-                            if (filters.sortOrder == SORTING.DESC) this.asReversed() else this
-                        }
-                        PagingData.from(sorted.map { UiModel.YoutuberInfoModel(it) as UiModel })
+                        }.run { if (filters.sortOrder == SORTING.DESC) this.asReversed() else this }
+                        val groupInfos = groups
+                            .filter { childGroupIds.contains(it.id) }
+                            .map { group ->
+                                val memberAuthors = members
+                                    .filter { descendantGroups(group.id).contains(it.groupId) }
+                                    .map { it.author }
+                                    .filter { isYoutuberVisible(it) }
+                                    .toSet()
+                                val memberInfos = enriched.filter { memberAuthors.contains(it.author) }
+                                com.ireum.ytdl.database.models.YoutuberGroupInfo(
+                                    id = group.id,
+                                    name = group.name,
+                                    memberCount = memberAuthors.size,
+                                    videoCount = memberInfos.sumOf { it.videoCount },
+                                    thumbnail = memberInfos.firstOrNull { !it.thumbnail.isNullOrBlank() }?.thumbnail
+                                )
+                            }
+                            .filter { showHiddenOnly || (it.memberCount > 0 && it.videoCount > 0) }
+                            .sortedBy { it.name.lowercase() }
+                        val list = ArrayList<UiModel>()
+                        list.addAll(groupInfos.map { UiModel.YoutuberGroupModel(it) })
+                        list.addAll(sorted.map { UiModel.YoutuberInfoModel(it) })
+                        PagingData.from(list)
                     }
                 } else {
-                    combine(filteredYoutubersFlow, youtuberGroups, youtuberGroupMembers, youtuberMetaFlow) { youtubers, groups, members, metas ->
+                    combine(filteredYoutubersFlow, youtuberGroups, youtuberGroupMembers, youtuberMetaFlow, youtuberGroupRelations) { youtubers, groups, members, metas, relations ->
                         val metaMap = metas.associateBy { it.author }
                         val enriched = youtubers.map { info ->
                             val iconUrl = metaMap[info.author]?.iconUrl.orEmpty()
                             if (iconUrl.isNotBlank()) info.copy(thumbnail = iconUrl) else info
                         }
                         val groupedAuthors = members.map { it.author }.toSet()
-                        val ungrouped = enriched.filter { !groupedAuthors.contains(it.author) }
+                        val ungrouped = enriched.filter { !groupedAuthors.contains(it.author) && isYoutuberVisible(it.author) }
                         val sortedUngrouped = when (filters.sortType) {
                             HistorySortType.DATE -> {
                                 if (filters.sortOrder == SORTING.DESC) {
@@ -435,9 +569,35 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                         }.run {
                             if (filters.sortOrder == SORTING.DESC) this.asReversed() else this
                         }
+                        val childrenByParent = relations.groupBy { it.parentGroupId }.mapValues { entry ->
+                            entry.value.map { it.childGroupId }
+                        }
+                        val childGroupIds = relations.map { it.childGroupId }.toSet()
+                        fun descendantGroups(startGroupId: Long): Set<Long> {
+                            val visited = linkedSetOf<Long>()
+                            val stack = ArrayDeque<Long>()
+                            stack.add(startGroupId)
+                            while (stack.isNotEmpty()) {
+                                val id = stack.removeFirst()
+                                if (!visited.add(id)) continue
+                                childrenByParent[id].orEmpty().forEach { stack.addLast(it) }
+                            }
+                            return visited
+                        }
 
-                        val groupInfos = groups.map { group ->
-                            val memberAuthors = members.filter { it.groupId == group.id }.map { it.author }.toSet()
+                        val rootGroups = groups.filter { !childGroupIds.contains(it.id) && isGroupVisible(it.id) }
+                        val explicitlyVisibleChildGroups = groups.filter {
+                            childGroupIds.contains(it.id) &&
+                                visibleChildYoutuberGroups.contains(it.id) &&
+                                isGroupVisible(it.id)
+                        }
+                        val visibleGroups = (rootGroups + explicitlyVisibleChildGroups).distinctBy { it.id }
+                        val groupInfos = visibleGroups.map { group ->
+                            val memberAuthors = members
+                                .filter { descendantGroups(group.id).contains(it.groupId) }
+                                .map { it.author }
+                                .filter { isYoutuberVisible(it) }
+                                .toSet()
                             val memberInfos = enriched.filter { memberAuthors.contains(it.author) }
                             val totalVideos = memberInfos.sumOf { it.videoCount }
                             val thumb = memberInfos.firstOrNull { !it.thumbnail.isNullOrBlank() }?.thumbnail
@@ -448,7 +608,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                                 videoCount = totalVideos,
                                 thumbnail = thumb
                             )
-                        }.filter { it.memberCount > 0 && it.videoCount > 0 }.let { infos ->
+                        }.filter { showHiddenOnly || (it.memberCount > 0 && it.videoCount > 0) }.let { infos ->
                             val sortedGroups = when (filters.sortType) {
                                 HistorySortType.DURATION -> infos.sortedBy { it.videoCount }
                                 HistorySortType.TITLE -> infos.sortedBy { it.name.lowercase() }
@@ -468,7 +628,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 }
             } else {
                 Log.d("HistoryPagingVM", "branch=historyList")
-                historyListFlowFor(filters)
+                historyListFlowFor(filters, excludedChildKeywords)
             }
         }
             .onStart { Log.d("HistoryPagingVM", "paginatedItems collector start") }
@@ -501,6 +661,37 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         if (keywordFilter.value == filter) return
         Log.d("HistoryPagingVM", "setKeywordFilter='$filter'")
         keywordFilter.value = filter
+    }
+
+    fun setHiddenYoutubersFilter(hidden: Set<String>) {
+        if (hiddenYoutubersFilter.value == hidden) return
+        hiddenYoutubersFilter.value = hidden
+    }
+
+    fun setHiddenYoutuberGroupsFilter(hidden: Set<Long>) {
+        if (hiddenYoutuberGroupsFilter.value == hidden) return
+        hiddenYoutuberGroupsFilter.value = hidden
+    }
+
+    fun setShowHiddenOnlyFilter(enabled: Boolean) {
+        if (showHiddenOnlyFilter.value == enabled) return
+        showHiddenOnlyFilter.value = enabled
+    }
+
+    fun setExcludedChildKeywordsFilter(hidden: Set<String>) {
+        if (excludedChildKeywordsFilter.value == hidden) return
+        excludedChildKeywordsFilter.value = hidden
+        invalidateCachedIds(triggerRefresh = true)
+    }
+
+    fun setVisibleChildYoutuberGroupsFilter(visible: Set<Long>) {
+        if (visibleChildYoutuberGroupsFilter.value == visible) return
+        visibleChildYoutuberGroupsFilter.value = visible
+    }
+
+    fun setVisibleChildKeywordsFilter(visible: Set<String>) {
+        if (visibleChildKeywordsFilter.value == visible) return
+        visibleChildKeywordsFilter.value = visible
     }
 
     fun setYoutuberGroupFilter(groupId: Long) {
@@ -578,6 +769,21 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         queryFilter.value = filter
     }
 
+    fun setTitleQueryFilter(filter: String) {
+        if (titleQueryFilter.value == filter) return
+        titleQueryFilter.value = filter
+    }
+
+    fun setKeywordQueryFilter(filter: String) {
+        if (keywordQueryFilter.value == filter) return
+        keywordQueryFilter.value = filter
+    }
+
+    fun setCreatorQueryFilter(filter: String) {
+        if (creatorQueryFilter.value == filter) return
+        creatorQueryFilter.value = filter
+    }
+
     fun setSearchFieldsFilter(fields: Set<HistoryRepository.SearchField>) {
         val normalized = if (fields.isEmpty()) {
             setOf(
@@ -591,6 +797,12 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         searchFieldsFilter.value = normalized
     }
 
+    fun setIncludeChildCategoryVideosFilter(enabled: Boolean) {
+        if (includeChildCategoryVideosFilter.value == enabled) return
+        includeChildCategoryVideosFilter.value = enabled
+        invalidateCachedIds(triggerRefresh = true)
+    }
+
     @Suppress("unused")
     fun setTypeFilter(filter: String) {
         if (typeFilter.value == filter) return
@@ -602,13 +814,16 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         statusFilter.value = status
     }
 
-    private fun historyListFlowFor(filters: HistoryFilters): Flow<PagingData<UiModel>> {
+    private fun historyListFlowFor(filters: HistoryFilters, excludedChildKeywords: Set<String>): Flow<PagingData<UiModel>> {
         viewModelScope.launch(Dispatchers.IO) {
             totalCount.value = repository.getFilteredCount(
                 filters.query,
                 filters.type,
                 filters.author,
                 filters.keyword,
+                filters.titleQuery,
+                filters.keywordQuery,
+                filters.creatorQuery,
                 filters.website,
                 filters.playlistId,
                 filters.searchFields
@@ -622,7 +837,10 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                     filters.query,
                     filters.type,
                     filters.author,
-                    filters.keyword,
+                    if (filters.includeChildCategoryVideos && filters.keyword.isNotBlank()) "" else filters.keyword,
+                    filters.titleQuery,
+                    filters.keywordQuery,
+                    filters.creatorQuery,
                     filters.sortType,
                     filters.sortOrder,
                     filters.website,
@@ -675,6 +893,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                     filters.type,
                     "",
                     "",
+                    filters.titleQuery,
+                    filters.keywordQuery,
+                    filters.creatorQuery,
                     filters.sortType,
                     filters.sortOrder,
                     filters.status,
@@ -688,25 +909,86 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             }
             val selectedKeyword = filters.keyword.trim()
             val selectedKeywordInfo = allKeywords.firstOrNull { it.keyword.equals(selectedKeyword, ignoreCase = true) }
-            val related = when {
+            val relatedHeaderKeywords: List<com.ireum.ytdl.database.models.KeywordInfo>
+            val videoKeywordNamesLower: Set<String>
+            val excludedVideoKeywordNamesLower: Set<String>
+            when {
                 filters.author.isNotBlank() -> {
                     val normalizedAuthor = normalizeCreator(filters.author)
-                    allKeywords.filter {
+                    val related = allKeywords.filter {
                         val creator = it.uniqueCreator ?: return@filter false
                         normalizeCreator(creator) == normalizedAuthor
                     }
+                    val excludedRecursive = buildExcludedRecursiveForAuthor(
+                        authorKeywords = related,
+                        excludedChildKeywords = excludedChildKeywords,
+                        includeChildCategoryVideos = filters.includeChildCategoryVideos
+                    )
+                    relatedHeaderKeywords = related
+                    videoKeywordNamesLower = emptySet()
+                    excludedVideoKeywordNamesLower = excludedRecursive
+                        .map { it.lowercase(Locale.getDefault()) }
+                        .toSet()
                 }
                 selectedKeywordInfo != null -> {
-                    val relatedNames = selectedKeywordInfo.childKeywords.toSet()
-                    allKeywords.filter { relatedNames.contains(it.keyword) }
+                    val byName = allKeywords.associateBy { it.keyword }
+                    val excludedRecursive = buildExcludedRecursiveForKeyword(
+                        selectedKeywordInfo = selectedKeywordInfo,
+                        byName = byName,
+                        excludedChildKeywords = excludedChildKeywords,
+                        includeChildCategoryVideos = filters.includeChildCategoryVideos
+                    )
+                    val directChildren = selectedKeywordInfo.childKeywords.toSet()
+                    relatedHeaderKeywords = allKeywords.filter { directChildren.contains(it.keyword) }
+
+                    val videoNames = mutableSetOf(selectedKeywordInfo.keyword)
+                    if (filters.includeChildCategoryVideos) {
+                        val stack = ArrayDeque<String>()
+                        stack.addAll(selectedKeywordInfo.childKeywords)
+                        while (stack.isNotEmpty()) {
+                            val name = stack.removeFirst()
+                            if (!videoNames.add(name)) continue
+                            byName[name]?.childKeywords.orEmpty().forEach { stack.addLast(it) }
+                        }
+                    }
+                    videoKeywordNamesLower = videoNames.map { it.lowercase(Locale.getDefault()) }.toSet()
+                    excludedVideoKeywordNamesLower = excludedRecursive
+                        .map { it.lowercase(Locale.getDefault()) }
+                        .toSet()
                 }
-                else -> emptyList()
+                else -> {
+                    relatedHeaderKeywords = emptyList()
+                    videoKeywordNamesLower = emptySet()
+                    excludedVideoKeywordNamesLower = emptySet()
+                }
             }
-            emit(related)
+            emit(Triple(relatedHeaderKeywords, videoKeywordNamesLower, excludedVideoKeywordNamesLower))
         }
 
-        return combine(relatedKeywordsFlow, baseFlow) { keywords, pagingData ->
-            var withHeaders = pagingData
+        return combine(relatedKeywordsFlow, baseFlow) { related, pagingData ->
+            val keywords = related.first
+            val videoKeywords = related.second
+            val excludedVideoKeywords = related.third
+            var withHeaders = if (filters.keyword.isNotBlank() && videoKeywords.isNotEmpty()) {
+                pagingData.filter { model ->
+                    val item = (model as? UiModel.HistoryItemModel)?.historyItem ?: return@filter false
+                    splitKeywords(item.keywords).any { videoKeywords.contains(it.lowercase(Locale.getDefault())) }
+                }
+            } else {
+                pagingData
+            }
+            if (filters.author.isNotBlank() && excludedVideoKeywords.isNotEmpty()) {
+                withHeaders = withHeaders.filter { model ->
+                    val item = (model as? UiModel.HistoryItemModel)?.historyItem ?: return@filter false
+                    splitKeywords(item.keywords).none { excludedVideoKeywords.contains(it.lowercase(Locale.getDefault())) }
+                }
+            }
+            if (filters.keyword.isNotBlank() && excludedVideoKeywords.isNotEmpty()) {
+                withHeaders = withHeaders.filter { model ->
+                    val item = (model as? UiModel.HistoryItemModel)?.historyItem ?: return@filter false
+                    splitKeywords(item.keywords).none { excludedVideoKeywords.contains(it.lowercase(Locale.getDefault())) }
+                }
+            }
             keywords
                 .sortedByDescending { it.videoCount }
                 .asReversed()
@@ -719,6 +1001,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
 
     private fun normalizeCreator(value: String): String {
         return value.trim().trim('"').lowercase(Locale.getDefault())
+    }
+
+    private fun splitKeywords(raw: String): List<String> {
+        if (raw.isBlank()) return emptyList()
+        return raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
     }
 
     fun getIDsBetweenTwoItems(firstID: Long, secondID: Long): List<Long> {
@@ -747,6 +1036,10 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             sortType.value,
             sortOrder.value,
             queryFilter.value,
+            titleQueryFilter.value,
+            keywordQueryFilter.value,
+            creatorQueryFilter.value,
+            includeChildCategoryVideosFilter.value,
             searchFieldsFilter.value,
             statusFilter.value,
             authorFilter.value,
@@ -763,6 +1056,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             filters.type,
             filters.author,
             filters.keyword,
+            filters.titleQuery,
+            filters.keywordQuery,
+            filters.creatorQuery,
             filters.sortType,
             filters.sortOrder,
             filters.status,
@@ -770,13 +1066,161 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             filters.playlistId,
             filters.searchFields
         )
+        val finalIds = applyExcludedChildKeywordFilterToIds(
+            ids = ids,
+            filters = filters,
+            excludedChildKeywords = excludedChildKeywordsFilter.value
+        )
         cachedIdsKey = filters
-        cachedIds = ids
-        return ids
+        cachedIds = finalIds
+        return finalIds
+    }
+
+    private fun applyExcludedChildKeywordFilterToIds(
+        ids: List<Long>,
+        filters: HistoryFilters,
+        excludedChildKeywords: Set<String>
+    ): List<Long> {
+        if (ids.isEmpty()) return ids
+        if (filters.author.isBlank() && filters.keyword.isBlank()) return ids
+
+        val allKeywords = repository.getKeywordsWithInfoForHistoryIds(ids)
+        val excludedLower: Set<String> = when {
+            filters.keyword.isNotBlank() -> {
+                val selectedKeyword = filters.keyword.trim()
+                val selectedKeywordInfo = allKeywords.firstOrNull { it.keyword.equals(selectedKeyword, ignoreCase = true) }
+                    ?: return ids
+                val byName = allKeywords.associateBy { it.keyword }
+                buildExcludedRecursiveForKeyword(
+                    selectedKeywordInfo = selectedKeywordInfo,
+                    byName = byName,
+                    excludedChildKeywords = excludedChildKeywords,
+                    includeChildCategoryVideos = filters.includeChildCategoryVideos
+                ).map { it.lowercase(Locale.getDefault()) }.toSet()
+            }
+            filters.author.isNotBlank() -> {
+                val normalizedAuthor = normalizeCreator(filters.author)
+                val authorKeywords = allKeywords.filter {
+                    val creator = it.uniqueCreator ?: return@filter false
+                    normalizeCreator(creator) == normalizedAuthor
+                }
+                buildExcludedRecursiveForAuthor(
+                    authorKeywords = authorKeywords,
+                    excludedChildKeywords = excludedChildKeywords,
+                    includeChildCategoryVideos = filters.includeChildCategoryVideos
+                ).map { it.lowercase(Locale.getDefault()) }.toSet()
+            }
+            else -> emptySet()
+        }
+
+        if (excludedLower.isEmpty()) return ids
+        val itemsById = repository.getItemsFromIDs(ids).associateBy { it.id }
+        return ids.filter { id ->
+            val item = itemsById[id] ?: return@filter false
+            splitKeywords(item.keywords).none { excludedLower.contains(it.lowercase(Locale.getDefault())) }
+        }
+    }
+
+    private fun buildExcludedRecursiveForAuthor(
+        authorKeywords: List<com.ireum.ytdl.database.models.KeywordInfo>,
+        excludedChildKeywords: Set<String>,
+        includeChildCategoryVideos: Boolean
+    ): Set<String> {
+        if (authorKeywords.isEmpty()) return emptySet()
+        val byName = authorKeywords.associateBy { it.keyword }
+        val seeds = when {
+            excludedChildKeywords.isNotEmpty() -> {
+                authorKeywords
+                    .filter { excludedChildKeywords.contains(it.keyword) }
+                    .map { it.keyword }
+            }
+            !includeChildCategoryVideos -> {
+                authorKeywords
+                    .filter { info -> info.parentKeywords.none { byName.containsKey(it) } }
+                    .map { it.keyword }
+            }
+            else -> emptyList()
+        }
+        return collectRecursiveKeywords(seeds, byName)
+    }
+
+    private fun buildExcludedRecursiveForKeyword(
+        selectedKeywordInfo: com.ireum.ytdl.database.models.KeywordInfo,
+        byName: Map<String, com.ireum.ytdl.database.models.KeywordInfo>,
+        excludedChildKeywords: Set<String>,
+        includeChildCategoryVideos: Boolean
+    ): Set<String> {
+        val seeds = when {
+            excludedChildKeywords.isNotEmpty() -> {
+                selectedKeywordInfo.childKeywords.filter { excludedChildKeywords.contains(it) }
+            }
+            !includeChildCategoryVideos -> {
+                selectedKeywordInfo.childKeywords
+            }
+            else -> emptyList()
+        }
+        return collectRecursiveKeywords(seeds, byName)
+    }
+
+    private fun collectRecursiveKeywords(
+        seeds: List<String>,
+        byName: Map<String, com.ireum.ytdl.database.models.KeywordInfo>
+    ): Set<String> {
+        if (seeds.isEmpty()) return emptySet()
+        val out = linkedSetOf<String>()
+        val stack = ArrayDeque<String>()
+        seeds.forEach { stack.addLast(it) }
+        while (stack.isNotEmpty()) {
+            val keyword = stack.removeFirst()
+            if (!out.add(keyword)) continue
+            byName[keyword]?.childKeywords.orEmpty().forEach { stack.addLast(it) }
+        }
+        return out
     }
 
     fun getAll(): List<HistoryItem> {
         return repository.getAll()
+    }
+
+    suspend fun getKeywordInfoByNameForCurrentFilters(keyword: String): com.ireum.ytdl.database.models.KeywordInfo? {
+        val infos = getKeywordInfosForCurrentFilters()
+        return infos.firstOrNull { it.keyword.equals(keyword, ignoreCase = true) }
+    }
+
+    suspend fun getRootKeywordInfosByAuthorForCurrentFilters(author: String): List<com.ireum.ytdl.database.models.KeywordInfo> {
+        val infos = getKeywordInfosForCurrentFilters()
+        val normalizedAuthor = normalizeCreator(author)
+        val authorKeywords = infos.filter {
+            val creator = it.uniqueCreator ?: return@filter false
+            normalizeCreator(creator) == normalizedAuthor
+        }
+        val byName = authorKeywords.associateBy { it.keyword }
+        return authorKeywords
+            .filter { info -> info.parentKeywords.none { byName.containsKey(it) } }
+            .sortedByDescending { it.videoCount }
+    }
+
+    private suspend fun getKeywordInfosForCurrentFilters(): List<com.ireum.ytdl.database.models.KeywordInfo> {
+        val ids = withContext(Dispatchers.IO) {
+            repository.getFilteredIDs(
+                queryFilter.value,
+                typeFilter.value,
+                "",
+                "",
+                titleQueryFilter.value,
+                keywordQueryFilter.value,
+                creatorQueryFilter.value,
+                sortType.value,
+                sortOrder.value,
+                statusFilter.value,
+                websiteFilter.value,
+                playlistFilter.value,
+                searchFieldsFilter.value
+            )
+        }
+        return withContext(Dispatchers.IO) {
+            repository.getKeywordsWithInfoForHistoryIds(ids)
+        }
     }
 
     fun getByID(id: Long): HistoryItem {
@@ -784,27 +1228,23 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun insert(item: HistoryItem) = viewModelScope.launch(Dispatchers.IO) {
-        cachedIdsKey = null
-        cachedIds = null
         repository.insert(item)
+        invalidateCachedIds(triggerRefresh = true)
     }
 
     fun delete(item: HistoryItem, deleteFile: Boolean) = viewModelScope.launch(Dispatchers.IO) {
-        cachedIdsKey = null
-        cachedIds = null
         repository.delete(item, deleteFile)
+        invalidateCachedIds(triggerRefresh = true)
     }
 
     fun deleteAllWithIDs(ids: List<Long>, deleteFile: Boolean = false) = viewModelScope.launch(Dispatchers.IO) {
-        cachedIdsKey = null
-        cachedIds = null
         repository.deleteAllWithIDs(ids, deleteFile)
+        invalidateCachedIds(triggerRefresh = true)
     }
 
     fun deleteAllWithIDsCheckFiles(ids: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
-        cachedIdsKey = null
-        cachedIds = null
         repository.deleteAllWithIDsCheckFiles(ids)
+        invalidateCachedIds(triggerRefresh = true)
     }
 
     fun getDownloadPathsFromIDs(ids: List<Long>): List<List<String>> {
@@ -812,34 +1252,37 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun deleteAll(deleteFile: Boolean = false) = viewModelScope.launch(Dispatchers.IO) {
-        cachedIdsKey = null
-        cachedIds = null
         repository.deleteAll(deleteFile)
+        invalidateCachedIds(triggerRefresh = true)
     }
 
     fun deleteDuplicates() = viewModelScope.launch(Dispatchers.IO) {
-        cachedIdsKey = null
-        cachedIds = null
         repository.deleteDuplicates()
+        invalidateCachedIds(triggerRefresh = true)
     }
 
     fun update(item: HistoryItem) = viewModelScope.launch(Dispatchers.IO) {
         Log.d("HistoryPagingVM", "update id=${item.id} author='${item.author}' title='${item.title}'")
-        cachedIdsKey = null
-        cachedIds = null
         repository.update(item)
+        invalidateCachedIds(triggerRefresh = true)
     }
 
     fun clearDeleted() = viewModelScope.launch(Dispatchers.IO) {
-        cachedIdsKey = null
-        cachedIds = null
         repository.clearDeletedHistory()
+        invalidateCachedIds(triggerRefresh = true)
     }
 
     fun removeKeywordsFromAllHistory(targetKeywords: List<String>) = viewModelScope.launch(Dispatchers.IO) {
+        repository.removeKeywordsFromAllHistory(targetKeywords)
+        invalidateCachedIds(triggerRefresh = true)
+    }
+
+    private fun invalidateCachedIds(triggerRefresh: Boolean = false) {
         cachedIdsKey = null
         cachedIds = null
-        repository.removeKeywordsFromAllHistory(targetKeywords)
+        if (triggerRefresh) {
+            refreshTrigger.value = refreshTrigger.value + 1L
+        }
     }
 
     private fun fetchMissingYoutuberMeta(

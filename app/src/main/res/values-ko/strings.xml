@@ -459,6 +459,12 @@
     <string name="search_target_title">제목</string>
     <string name="search_target_keywords">키워드</string>
     <string name="search_target_creator">유튜버/아티스트</string>
+    <string name="include_child_category_videos">하위 항목에 포함된 동영상 표시</string>
+    <string name="show_hidden_only">숨김 항목만 표시</string>
+    <string name="display">표시</string>
+    <string name="hide_selected">선택 항목 숨기기</string>
+    <string name="unhide_selected">선택 항목 숨김 해제</string>
+    <string name="edit_parent_groups">상위 그룹 편집</string>
     <string name="websites">웹사이트</string>
     <string name="other_youtube_extractor_args">기타 YouTube 추출기 인자</string>
     <string name="items">항목(들)</string>
@@ -566,6 +572,8 @@
     <string name="local_video_adding_progress">영상 추가 중\u2026 (%1$d/%2$d)</string>
     <string name="remove_from_playlist">재생목록에서 제거</string>
     <string name="remove_from_current_group">현재 그룹에서 제거</string>
+    <string name="show_on_first_list">첫 목록에 표시</string>
+    <string name="hide_from_first_list">첫 목록에서 숨기기</string>
     <string name="delete_keywords">키워드 삭제</string>
     <string name="confirm_delete_keywords_desc">선택한 키워드 %1$d개를 모든 영상에서 삭제할까요?</string>
     <string name="removed_from_playlist">재생목록에서 제거됨</string>

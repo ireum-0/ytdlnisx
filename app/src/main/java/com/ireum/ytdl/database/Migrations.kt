@@ -164,6 +164,10 @@ object Migrations {
             database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_keyword_groups_name` ON `keyword_groups` (`name`)")
             database.execSQL("CREATE TABLE IF NOT EXISTS `keyword_group_members` (`groupId` INTEGER NOT NULL, `keyword` TEXT NOT NULL, PRIMARY KEY(`groupId`, `keyword`))")
             database.execSQL("CREATE INDEX IF NOT EXISTS `index_keyword_group_members_keyword` ON `keyword_group_members` (`keyword`)")
+        },
+        Migration(40, 41) { database ->
+            database.execSQL("CREATE TABLE IF NOT EXISTS `youtuber_group_relations` (`parentGroupId` INTEGER NOT NULL, `childGroupId` INTEGER NOT NULL, PRIMARY KEY(`parentGroupId`, `childGroupId`))")
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_youtuber_group_relations_childGroupId` ON `youtuber_group_relations` (`childGroupId`)")
         }
     )
 

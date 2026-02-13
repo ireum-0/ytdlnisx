@@ -25,6 +25,11 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             (authors + artists).distinct()
         }.distinct().sorted()
     }
+    val keywords = historyDao.observeAll().map { items ->
+        items.flatMap { item ->
+            splitKeywords(item.keywords)
+        }.distinct().sortedBy { it.lowercase(Locale.getDefault()) }
+    }
 
     val websites = historyDao.websites
 
@@ -68,13 +73,29 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         type: String,
         author: String,
         keyword: String = "",
+        titleQuery: String = "",
+        keywordQuery: String = "",
+        creatorQuery: String = "",
         sortType: HistorySortType,
         order: SORTING,
         website: String,
         playlistId: Long,
         searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS)
     ) = historyDao.getPaginatedSource(
-        buildFilterQuery(query, type, author, keyword, sortType, order, website, playlistId, searchFields = searchFields)
+        buildFilterQuery(
+            rawQuery = query,
+            type = type,
+            author = author,
+            keyword = keyword,
+            titleQuery = titleQuery,
+            keywordQuery = keywordQuery,
+            creatorQuery = creatorQuery,
+            sortType = sortType,
+            order = order,
+            website = website,
+            playlistId = playlistId,
+            searchFields = searchFields
+        )
     )
 
     fun getFilteredIDs(
@@ -82,6 +103,9 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         type: String,
         author: String,
         keyword: String = "",
+        titleQuery: String = "",
+        keywordQuery: String = "",
+        creatorQuery: String = "",
         sortType: HistorySortType,
         order: SORTING,
         status: Any,
@@ -95,6 +119,9 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 type,
                 author,
                 keyword,
+                titleQuery,
+                keywordQuery,
+                creatorQuery,
                 sortType,
                 order,
                 website,
@@ -110,6 +137,9 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         type: String,
         author: String,
         keyword: String = "",
+        titleQuery: String = "",
+        keywordQuery: String = "",
+        creatorQuery: String = "",
         website: String,
         playlistId: Long,
         searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS)
@@ -120,6 +150,9 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 type,
                 author,
                 keyword,
+                titleQuery,
+                keywordQuery,
+                creatorQuery,
                 HistorySortType.DATE,
                 SORTING.DESC,
                 website,
@@ -489,6 +522,9 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         type: String,
         author: String,
         keyword: String,
+        titleQuery: String,
+        keywordQuery: String,
+        creatorQuery: String,
         sortType: HistorySortType,
         order: SORTING,
         website: String,
@@ -505,42 +541,47 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             where.append(clause)
         }
 
-        val tokens = parseSearchTokens(rawQuery)
+        fun appendTokenClauses(tokens: List<SearchToken>, fields: Set<SearchField>) {
+            tokens.forEach { searchToken ->
+                val isExclude = searchToken.isExclude
+                val token = searchToken.text
+                if (token.isBlank()) return@forEach
+                val escaped = escapeLike(token)
+                val perTokenClauses = mutableListOf<String>()
+                if (fields.contains(SearchField.TITLE)) {
+                    perTokenClauses.add("title LIKE ? ESCAPE '\\'")
+                    args.add("%$escaped%")
+                }
+                if (fields.contains(SearchField.KEYWORDS)) {
+                    perTokenClauses.add("keywords LIKE ? ESCAPE '\\'")
+                    args.add("%$escaped%")
+                }
+                if (fields.contains(SearchField.CREATOR)) {
+                    perTokenClauses.add("(author LIKE ? ESCAPE '\\' OR artist LIKE ? ESCAPE '\\')")
+                    args.add("%$escaped%")
+                    args.add("%$escaped%")
+                }
+                if (perTokenClauses.isNotEmpty()) {
+                    val joined = perTokenClauses.joinToString(" OR ")
+                    if (isExclude) {
+                        appendClause("NOT ($joined)")
+                    } else {
+                        appendClause("($joined)")
+                    }
+                }
+            }
+        }
 
+        val genericTokens = parseSearchTokens(rawQuery)
         val effectiveSearchFields = if (searchFields.isEmpty()) {
             setOf(SearchField.TITLE, SearchField.KEYWORDS)
         } else {
             searchFields
         }
-
-        tokens.forEach { searchToken ->
-            val isExclude = searchToken.isExclude
-            val token = searchToken.text
-            if (token.isBlank()) return@forEach
-            val escaped = escapeLike(token)
-            val perTokenClauses = mutableListOf<String>()
-            if (effectiveSearchFields.contains(SearchField.TITLE)) {
-                perTokenClauses.add("title LIKE ? ESCAPE '\\'")
-                args.add("%$escaped%")
-            }
-            if (effectiveSearchFields.contains(SearchField.KEYWORDS)) {
-                perTokenClauses.add("keywords LIKE ? ESCAPE '\\'")
-                args.add("%$escaped%")
-            }
-            if (effectiveSearchFields.contains(SearchField.CREATOR)) {
-                perTokenClauses.add("(author LIKE ? ESCAPE '\\' OR artist LIKE ? ESCAPE '\\')")
-                args.add("%$escaped%")
-                args.add("%$escaped%")
-            }
-            if (perTokenClauses.isNotEmpty()) {
-                val joined = perTokenClauses.joinToString(" OR ")
-                if (isExclude) {
-                    appendClause("NOT ($joined)")
-                } else {
-                    appendClause("($joined)")
-                }
-            }
-        }
+        appendTokenClauses(genericTokens, effectiveSearchFields)
+        appendTokenClauses(parseSearchTokens(titleQuery), setOf(SearchField.TITLE))
+        appendTokenClauses(parseSearchTokens(keywordQuery), setOf(SearchField.KEYWORDS))
+        appendTokenClauses(parseSearchTokens(creatorQuery), setOf(SearchField.CREATOR))
 
         if (type.isNotBlank()) {
             appendClause("type = ?")

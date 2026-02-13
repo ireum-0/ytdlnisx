@@ -17,10 +17,8 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.MediaStore
-import android.text.InputType
 import android.text.TextWatcher
 import android.util.DisplayMetrics
-import android.util.Log
 import android.util.Patterns
 import android.util.TypedValue
 import android.graphics.Typeface
@@ -37,6 +35,7 @@ import android.widget.EditText
 import android.widget.AutoCompleteTextView
 import android.widget.ArrayAdapter
 import android.widget.FrameLayout
+import android.widget.ListView
 import android.widget.LinearLayout
 import android.widget.MultiAutoCompleteTextView
 import android.widget.ProgressBar
@@ -47,7 +46,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.view.ActionMode
-import androidx.appcompat.widget.SearchView
 import androidx.core.content.ContextCompat
 import androidx.core.os.bundleOf
 import androidx.core.view.children
@@ -151,11 +149,22 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private lateinit var selectionChips: LinearLayout
     private lateinit var sharedPreferences: SharedPreferences
     private var authorList: List<String> = emptyList()
+    private var keywordList: List<String> = emptyList()
     private var websiteList: List<String> = emptyList()
     private var playlistsCache: List<Playlist> = emptyList()
     private var youtuberGroupsCache: List<com.ireum.ytdl.database.models.YoutuberGroup> = emptyList()
+    private var youtuberGroupRelationsCache: List<com.ireum.ytdl.database.models.YoutuberGroupRelation> = emptyList()
     private var playlistGroupsCache: List<com.ireum.ytdl.database.models.PlaylistGroup> = emptyList()
     private var keywordGroupsCache: List<com.ireum.ytdl.database.models.KeywordGroup> = emptyList()
+    private var hiddenYoutubers: MutableSet<String> = linkedSetOf()
+    private var hiddenYoutuberGroups: MutableSet<Long> = linkedSetOf()
+    private var visibleChildYoutuberGroups: MutableSet<Long> = linkedSetOf()
+    private var visibleChildKeywords: MutableSet<String> = linkedSetOf()
+    private val prefHiddenYoutubersKey = "history_hidden_youtubers"
+    private val prefHiddenYoutuberGroupsKey = "history_hidden_youtuber_groups"
+    private val prefShowHiddenOnlyKey = "history_show_hidden_only"
+    private val prefVisibleChildYoutuberGroupsKey = "history_visible_child_youtuber_groups"
+    private val prefVisibleChildKeywordsKey = "history_visible_child_keywords"
     private var totalCount = 0
     private var actionMode: ActionMode? = null
     private var youtuberActionMode: ActionMode? = null
@@ -170,6 +179,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private lateinit var keywordChip: Chip
     private lateinit var playlistChip: Chip
     private lateinit var recentChip: Chip
+    private lateinit var selectedYoutuberText: TextView
     private lateinit var selectedKeywordText: TextView
     private lateinit var selectedPlaylistText: TextView
     private var addLocalJob: Job? = null
@@ -202,6 +212,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private var forceTopOnNextPagesUpdate: Boolean = false
     private var firstYoutuberEntryPendingFix: Boolean = true
     private var firstRecentEntryPendingFix: Boolean = true
+    private var lastYoutuberOriginGroupFilter: Long? = null
+    private var lastKeywordOriginGroupFilter: Long? = null
     private var resetToAllOnResumeFromQueue: Boolean = false
     private var restoreScrollOnNextResume: Boolean = false
     private var isRestoringFromNavigationBack: Boolean = false
@@ -226,6 +238,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val keywordGroup: Long,
         val playlistGroup: Long,
         val query: String,
+        val titleQuery: String,
+        val keywordQuery: String,
+        val creatorQuery: String,
+        val includeChildCategoryVideos: Boolean,
         val keyword: String,
         val searchFieldsKey: String,
         val type: String
@@ -246,6 +262,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val keywordGroup: Long,
         val playlistGroup: Long,
         val query: String,
+        val titleQuery: String,
+        val keywordQuery: String,
+        val creatorQuery: String,
+        val includeChildCategoryVideos: Boolean,
         val keyword: String,
         val searchFields: Set<HistoryRepository.SearchField>,
         val type: String
@@ -371,7 +391,36 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         keywordChip = view.findViewById(R.id.keyword_chip)
         playlistChip = view.findViewById(R.id.playlist_chip)
         recentChip = view.findViewById(R.id.recent_chip)
+        selectedYoutuberText = view.findViewById(R.id.selected_youtuber_text)
+        selectedYoutuberText.setOnLongClickListener {
+            val selectedAuthor = historyViewModel.authorFilter.value
+            if (selectedAuthor.isNotBlank()) {
+                showYoutuberChildKeywordSelectionDialog(selectedAuthor)
+                return@setOnLongClickListener true
+            }
+            val selectedGroupId = historyViewModel.youtuberGroupFilter.value
+            if (selectedGroupId >= 0L) {
+                showYoutuberChildGroupVisibilityDialog(selectedGroupId)
+                return@setOnLongClickListener true
+            }
+            true
+        }
         selectedKeywordText = view.findViewById(R.id.selected_keyword_text)
+        selectedKeywordText.setOnLongClickListener {
+            val selectedKeyword = historyViewModel.keywordFilter.value
+            if (selectedKeyword.isBlank()) return@setOnLongClickListener false
+            lifecycleScope.launch(Dispatchers.IO) {
+                val keywordInfo = historyViewModel.getKeywordInfoByNameForCurrentFilters(selectedKeyword)
+                withContext(Dispatchers.Main) {
+                    if (keywordInfo == null) {
+                        Toast.makeText(requireContext(), getString(R.string.no_results), Toast.LENGTH_SHORT).show()
+                    } else {
+                        showKeywordChildSelectionDialog(keywordInfo)
+                    }
+                }
+            }
+            true
+        }
         selectedPlaylistText = view.findViewById(R.id.selected_playlist_text)
 
         val isInNavBar = NavbarUtil.getNavBarItems(requireActivity()).any { n -> n.itemId == R.id.historyFragment && n.isVisible }
@@ -400,6 +449,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         noResults.isVisible = false
         historyViewModel = ViewModelProvider(this)[HistoryViewModel::class.java]
         playlistViewModel = ViewModelProvider(this)[PlaylistViewModel::class.java]
+        loadHiddenStateFromPrefs()
+        historyViewModel.setHiddenYoutubersFilter(hiddenYoutubers)
+        historyViewModel.setHiddenYoutuberGroupsFilter(hiddenYoutuberGroups)
+        historyViewModel.setVisibleChildYoutuberGroupsFilter(visibleChildYoutuberGroups)
+        historyViewModel.setVisibleChildKeywordsFilter(visibleChildKeywords)
+        historyViewModel.setShowHiddenOnlyFilter(sharedPreferences.getBoolean(prefShowHiddenOnlyKey, false))
         playlistChip.visibility = View.GONE
         selectedPlaylistText.visibility = View.GONE
         historyViewModel.setPlaylistFilter(-1L)
@@ -450,52 +505,49 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
         pagingJob?.cancel()
         pagingJob = viewLifecycleOwner.lifecycleScope.launch {
-            val collectorId = System.currentTimeMillis()
-            Log.d("HistoryPaging", "collector start id=$collectorId")
-            try {
-                historyViewModel.paginatedItems.collectLatest { data ->
-                    val screenKey = ScreenKey(
-                        sortType = historyViewModel.sortType.value,
-                        sortOrder = historyViewModel.sortOrder.value,
-                        author = historyViewModel.authorFilter.value,
-                        website = historyViewModel.websiteFilter.value,
-                        playlistId = historyViewModel.playlistFilter.value,
-                        status = historyViewModel.statusFilter.value,
-                        isYoutuberMode = historyViewModel.isYoutuberSelectionMode.value,
-                        isPlaylistMode = historyViewModel.isPlaylistSelectionMode.value,
-                        isKeywordMode = historyViewModel.isKeywordSelectionMode.value,
-                        isRecent = historyViewModel.isRecentMode.value,
-                        youtuberGroup = historyViewModel.youtuberGroupFilter.value,
-                        keywordGroup = historyViewModel.keywordGroupFilter.value,
-                        playlistGroup = historyViewModel.playlistGroupFilter.value,
-                        query = historyViewModel.queryFilterFlow.value,
-                        keyword = historyViewModel.keywordFilter.value,
-                        searchFieldsKey = historyViewModel.searchFieldsFilter.value
-                            .map { it.name }
-                            .sorted()
-                            .joinToString(","),
-                        type = historyViewModel.typeFilterFlow.value
-                    )
-                    val screenChanged = lastScreenKey != null && lastScreenKey != screenKey
-                    pendingScrollToTop = screenChanged &&
-                        !isRestoringFromNavigationBack &&
-                        !suppressAutoScrollForNextScreenChange
-                    lastScreenKey = screenKey
-                    lastPagingData = data
-                    Log.d("HistoryPaging", "submitData id=$collectorId data=${System.identityHashCode(data)}")
-                    historyAdapter.submitData(viewLifecycleOwner.lifecycle, data)
-                    if (suppressAutoScrollForNextScreenChange) {
-                        suppressAutoScrollForNextScreenChange = false
-                    }
-                    if (pendingRestoreEntry != null) {
-                        schedulePendingRestoreRetry()
-                    }
-                    if (!isRestoringFromNavigationBack && pendingScrollToTop) {
-                        recyclerView.post { requestScrollToTop() }
-                    }
+            historyViewModel.paginatedItems.collectLatest { data ->
+                val screenKey = ScreenKey(
+                    sortType = historyViewModel.sortType.value,
+                    sortOrder = historyViewModel.sortOrder.value,
+                    author = historyViewModel.authorFilter.value,
+                    website = historyViewModel.websiteFilter.value,
+                    playlistId = historyViewModel.playlistFilter.value,
+                    status = historyViewModel.statusFilter.value,
+                    isYoutuberMode = historyViewModel.isYoutuberSelectionMode.value,
+                    isPlaylistMode = historyViewModel.isPlaylistSelectionMode.value,
+                    isKeywordMode = historyViewModel.isKeywordSelectionMode.value,
+                    isRecent = historyViewModel.isRecentMode.value,
+                    youtuberGroup = historyViewModel.youtuberGroupFilter.value,
+                    keywordGroup = historyViewModel.keywordGroupFilter.value,
+                    playlistGroup = historyViewModel.playlistGroupFilter.value,
+                    query = historyViewModel.queryFilterFlow.value,
+                    titleQuery = historyViewModel.titleQueryFilterFlow.value,
+                    keywordQuery = historyViewModel.keywordQueryFilterFlow.value,
+                    creatorQuery = historyViewModel.creatorQueryFilterFlow.value,
+                    includeChildCategoryVideos = historyViewModel.includeChildCategoryVideosFilter.value,
+                    keyword = historyViewModel.keywordFilter.value,
+                    searchFieldsKey = historyViewModel.searchFieldsFilter.value
+                        .map { it.name }
+                        .sorted()
+                        .joinToString(","),
+                    type = historyViewModel.typeFilterFlow.value
+                )
+                val screenChanged = lastScreenKey != null && lastScreenKey != screenKey
+                pendingScrollToTop = screenChanged &&
+                    !isRestoringFromNavigationBack &&
+                    !suppressAutoScrollForNextScreenChange
+                lastScreenKey = screenKey
+                lastPagingData = data
+                historyAdapter.submitData(viewLifecycleOwner.lifecycle, data)
+                if (suppressAutoScrollForNextScreenChange) {
+                    suppressAutoScrollForNextScreenChange = false
                 }
-            } finally {
-                Log.d("HistoryPaging", "collector end id=$collectorId")
+                if (pendingRestoreEntry != null) {
+                    schedulePendingRestoreRetry()
+                }
+                if (!isRestoringFromNavigationBack && pendingScrollToTop) {
+                    recyclerView.post { requestScrollToTop() }
+                }
             }
         }
 
@@ -515,6 +567,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
 
         lifecycleScope.launch {
+            historyViewModel.keywords.collectLatest {
+                keywordList = it
+            }
+        }
+
+        lifecycleScope.launch {
             historyViewModel.websites.collectLatest { 
                 websiteList = it
             }
@@ -530,6 +588,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         lifecycleScope.launch {
             historyViewModel.youtuberGroups.collectLatest { groups ->
                 youtuberGroupsCache = groups
+            }
+        }
+
+        lifecycleScope.launch {
+            historyViewModel.youtuberGroupRelations.collectLatest { relations ->
+                youtuberGroupRelationsCache = relations
             }
         }
 
@@ -581,7 +645,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
         lifecycleScope.launch {
             historyViewModel.authorFilter.collectLatest { filter ->
-                val selectedYoutuberText = fragmentView.findViewById<TextView>(R.id.selected_youtuber_text)
                 if (filter.isEmpty()) {
                     selectedYoutuberText.visibility = View.GONE
                 } else {
@@ -595,13 +658,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             historyViewModel.youtuberGroupFilter.collectLatest { groupId ->
                 if (groupId < 0L) {
                     if (historyViewModel.authorFilter.value.isEmpty()) {
-                        fragmentView.findViewById<TextView>(R.id.selected_youtuber_text).visibility = View.GONE
+                        selectedYoutuberText.visibility = View.GONE
                     }
                 } else {
                     val groupName = youtuberGroupsCache.firstOrNull { it.id == groupId }?.name ?: groupId.toString()
-                    fragmentView.findViewById<TextView>(R.id.selected_youtuber_text).text =
-                        getString(R.string.group_prefix, groupName)
-                    fragmentView.findViewById<TextView>(R.id.selected_youtuber_text).visibility = View.VISIBLE
+                    selectedYoutuberText.text = getString(R.string.group_prefix, groupName)
+                    selectedYoutuberText.visibility = View.VISIBLE
                 }
             }
         }
@@ -1247,10 +1309,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         if (!this::recyclerView.isInitialized) return
         cancelPendingScrollRestore()
         lastStableScrollSnapshot = ScrollSnapshot(0, 0)
-        val lm = recyclerView.layoutManager as? LinearLayoutManager
-        val beforePos = lm?.findFirstVisibleItemPosition() ?: -1
-        val beforeTop = if (beforePos >= 0) lm?.findViewByPosition(beforePos)?.top ?: 0 else 0
-        Log.d("HistoryNavScroll", "requestScrollToTop before pos=$beforePos top=$beforeTop pending=$pendingScrollToTop restoring=$isRestoringFromNavigationBack")
         (topAppBar.parent as? AppBarLayout)?.setExpanded(true, false)
         recyclerView.stopScroll()
         recyclerView.post {
@@ -1285,6 +1343,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             keywordGroup = historyViewModel.keywordGroupFilter.value,
             playlistGroup = historyViewModel.playlistGroupFilter.value,
             query = historyViewModel.queryFilterFlow.value,
+            titleQuery = historyViewModel.titleQueryFilterFlow.value,
+            keywordQuery = historyViewModel.keywordQueryFilterFlow.value,
+            creatorQuery = historyViewModel.creatorQueryFilterFlow.value,
+            includeChildCategoryVideos = historyViewModel.includeChildCategoryVideosFilter.value,
             keyword = historyViewModel.keywordFilter.value,
             searchFields = historyViewModel.searchFieldsFilter.value,
             type = historyViewModel.typeFilterFlow.value
@@ -1307,6 +1369,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             keywordGroup = state.keywordGroup,
             playlistGroup = state.playlistGroup,
             query = state.query,
+            titleQuery = state.titleQuery,
+            keywordQuery = state.keywordQuery,
+            creatorQuery = state.creatorQuery,
+            includeChildCategoryVideos = state.includeChildCategoryVideos,
             keyword = state.keyword,
             searchFieldsKey = state.searchFields.map { it.name }.sorted().joinToString(","),
             type = state.type
@@ -1330,6 +1396,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         historyViewModel.setWebsiteFilter(state.website)
         historyViewModel.setStatusFilter(state.status)
         historyViewModel.setQueryFilter(state.query)
+        historyViewModel.setTitleQueryFilter(state.titleQuery)
+        historyViewModel.setKeywordQueryFilter(state.keywordQuery)
+        historyViewModel.setCreatorQueryFilter(state.creatorQuery)
+        historyViewModel.setIncludeChildCategoryVideosFilter(state.includeChildCategoryVideos)
         historyViewModel.setSearchFieldsFilter(state.searchFields)
         historyViewModel.setTypeFilter(state.type)
     }
@@ -1338,10 +1408,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val snapshot = captureCurrentVisibleScrollSnapshot()
         if (snapshot != null) {
             lastStableScrollSnapshot = snapshot
-            Log.d("HistoryNavScroll", "captureScrollSnapshot current pos=${snapshot.position} top=${snapshot.offset}")
             return snapshot
         }
-        Log.d("HistoryNavScroll", "captureScrollSnapshot fallback pos=${lastStableScrollSnapshot.position} top=${lastStableScrollSnapshot.offset}")
         return lastStableScrollSnapshot
     }
 
@@ -1355,7 +1423,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
     private fun requestRestoreScroll(scroll: ScrollSnapshot) {
         if (!this::recyclerView.isInitialized) return
-        Log.d("HistoryNavScroll", "requestRestoreScroll target pos=${scroll.position} top=${scroll.offset} itemCount=${historyAdapter.itemCount}")
         recyclerView.post {
             val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
             if (layoutManager != null) {
@@ -1364,9 +1431,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 layoutManager.scrollToPositionWithOffset(targetPosition, scroll.offset)
                 recyclerView.post {
                     layoutManager.scrollToPositionWithOffset(targetPosition, scroll.offset)
-                    val afterPos = layoutManager.findFirstVisibleItemPosition()
-                    val afterTop = if (afterPos >= 0) layoutManager.findViewByPosition(afterPos)?.top ?: 0 else 0
-                    Log.d("HistoryNavScroll", "requestRestoreScroll applied pos=$afterPos top=$afterTop")
                 }
                 lastStableScrollSnapshot = ScrollSnapshot(targetPosition, scroll.offset)
             } else {
@@ -1392,29 +1456,21 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val pending = pendingRestoreEntry ?: return false
         if (!force) {
             if (historyAdapter.itemCount <= 0) {
-                Log.d("HistoryNavScroll", "tryApplyPendingRestore skip: empty list")
                 return false
             }
             if (historyAdapter.itemCount <= pending.scroll.position) {
-                Log.d(
-                    "HistoryNavScroll",
-                    "tryApplyPendingRestore skip: itemCount=${historyAdapter.itemCount} < targetPos=${pending.scroll.position}"
-                )
                 return false
             }
             if (captureNavigationState() != pending.state) {
-                Log.d("HistoryNavScroll", "tryApplyPendingRestore skip: state mismatch")
                 return false
             }
             val targetScreenKey = toScreenKey(pending.state)
             if (lastScreenKey != targetScreenKey) {
-                Log.d("HistoryNavScroll", "tryApplyPendingRestore skip: screen mismatch")
                 return false
             }
         }
         pendingRestoreEntry = null
         isRestoringFromNavigationBack = false
-        Log.d("HistoryNavScroll", "tryApplyPendingRestore apply force=$force pos=${pending.scroll.position} top=${pending.scroll.offset}")
         requestRestoreScroll(pending.scroll)
         return true
     }
@@ -1424,11 +1480,58 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val state = captureNavigationState()
         val scroll = captureScrollSnapshot()
         navigationBackStack.addLast(NavigationEntry(state, scroll))
-        Log.d("HistoryNavScroll", "push stackSize=${navigationBackStack.size} pos=${scroll.position} top=${scroll.offset} yMode=${state.isYoutuberMode} yGroup=${state.youtuberGroup} author='${state.author}'")
     }
 
     private fun clearNavigationBackStack() {
         navigationBackStack.clear()
+    }
+
+    private fun totalYoutuberSelectionCount(): Int {
+        return historyAdapter.getSelectedYoutubers().size + historyAdapter.getSelectedYoutuberGroups().size
+    }
+
+    private fun totalKeywordSelectionCount(): Int {
+        return historyAdapter.getSelectedKeywords().size + historyAdapter.getSelectedKeywordGroups().size
+    }
+
+    private fun collectSelectedAuthorsIncludingGroups(onResult: (List<String>) -> Unit) {
+        val selectedAuthors = historyAdapter.getSelectedYoutubers()
+        val selectedGroupIds = historyAdapter.getSelectedYoutuberGroups()
+        lifecycleScope.launch(Dispatchers.IO) {
+            val merged = linkedSetOf<String>()
+            merged.addAll(selectedAuthors)
+            if (selectedGroupIds.isNotEmpty()) {
+                val members = DBManager.getInstance(requireContext())
+                    .youtuberGroupDao
+                    .getAllMembers()
+                    .filter { selectedGroupIds.contains(it.groupId) }
+                    .map { it.author }
+                merged.addAll(members)
+            }
+            withContext(Dispatchers.Main) {
+                onResult(merged.toList())
+            }
+        }
+    }
+
+    private fun collectSelectedKeywordsIncludingGroups(onResult: (List<String>) -> Unit) {
+        val selectedKeywords = historyAdapter.getSelectedKeywords()
+        val selectedGroupIds = historyAdapter.getSelectedKeywordGroups()
+        lifecycleScope.launch(Dispatchers.IO) {
+            val merged = linkedSetOf<String>()
+            merged.addAll(selectedKeywords)
+            if (selectedGroupIds.isNotEmpty()) {
+                val members = DBManager.getInstance(requireContext())
+                    .keywordGroupDao
+                    .getAllMembers()
+                    .filter { selectedGroupIds.contains(it.groupId) }
+                    .map { it.keyword }
+                merged.addAll(members)
+            }
+            withContext(Dispatchers.Main) {
+                onResult(merged.toList())
+            }
+        }
     }
 
     private fun resetToAllVideosState() {
@@ -1439,6 +1542,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         historyViewModel.setPlaylistGroupFilter(-1L)
         historyViewModel.setRecentMode(false)
         historyViewModel.setQueryFilter("")
+        historyViewModel.setTitleQueryFilter("")
+        historyViewModel.setKeywordQueryFilter("")
+        historyViewModel.setCreatorQueryFilter("")
+        historyViewModel.setIncludeChildCategoryVideosFilter(false)
         historyViewModel.setTypeFilter("")
         historyViewModel.setWebsiteFilter("")
         historyViewModel.setStatusFilter(HistoryViewModel.HistoryStatus.ALL)
@@ -1464,41 +1571,111 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
     }
 
-    private fun initMenu() {
-        val onActionExpandListener: MenuItem.OnActionExpandListener =
-            object : MenuItem.OnActionExpandListener {
-                override fun onMenuItemActionExpand(menuItem: MenuItem): Boolean {
-                    val searchView = menuItem.actionView as? SearchView
-                    val currentQuery = historyViewModel.queryFilterFlow.value
-                    searchView?.setQuery(currentQuery, false)
-                    return true
-                }
-                override fun onMenuItemActionCollapse(menuItem: MenuItem): Boolean = true
+    private fun configureTokenAutocomplete(
+        inputView: AutoCompleteTextView,
+        suggestionsProvider: () -> List<String>
+    ) {
+        val adapter = ArrayAdapter<String>(
+            requireContext(),
+            android.R.layout.simple_dropdown_item_1line,
+            mutableListOf()
+        )
+        var tokenRange: Pair<Int, Int>? = null
+        inputView.threshold = 1
+        inputView.setAdapter(adapter)
+        fun updateSuggestions() {
+            val text = inputView.text?.toString().orEmpty()
+            val cursor = inputView.selectionStart.coerceAtLeast(0)
+            val range = extractSearchTokenBounds(text, cursor)
+            if (range == null) {
+                tokenRange = null
+                adapter.clear()
+                inputView.dismissDropDown()
+                return
             }
-        topAppBar.menu.findItem(R.id.search_history).setOnActionExpandListener(onActionExpandListener)
-        val searchView = topAppBar.menu.findItem(R.id.search_history).actionView as SearchView?
-        searchView!!.inputType = InputType.TYPE_CLASS_TEXT
-        searchView.queryHint = getString(R.string.search_history_hint)
-        searchView.setOnCloseListener {
-            historyViewModel.setQueryFilter("")
-            false
+            val token = text.substring(range.first, cursor.coerceIn(range.first, range.second))
+            val normalizedToken = token.removePrefix("-").trim()
+            if (normalizedToken.isBlank()) {
+                tokenRange = null
+                adapter.clear()
+                inputView.dismissDropDown()
+                return
+            }
+            val suggestions = suggestionsProvider()
+                .asSequence()
+                .filter { it.isNotBlank() }
+                .distinctBy { it.lowercase(Locale.getDefault()) }
+                .filter { it.contains(normalizedToken, ignoreCase = true) }
+                .take(50)
+                .toList()
+            tokenRange = range
+            adapter.clear()
+            adapter.addAll(suggestions)
+            adapter.notifyDataSetChanged()
+            if (suggestions.isNotEmpty() && inputView.hasFocus()) {
+                inputView.showDropDown()
+            } else {
+                inputView.dismissDropDown()
+            }
         }
-        searchView.setOnQueryTextListener(object : SearchView.OnQueryTextListener {
-            override fun onQueryTextSubmit(query: String): Boolean {
-                historyViewModel.setQueryFilter(query)
-                return true
-            }
-
-            override fun onQueryTextChange(newText: String): Boolean {
-                historyViewModel.setQueryFilter(newText)
-                return true
+        inputView.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: android.text.Editable?) {
+                updateSuggestions()
             }
         })
+        inputView.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) updateSuggestions() else inputView.dismissDropDown()
+        }
+        inputView.setOnClickListener {
+            updateSuggestions()
+        }
+        inputView.setOnItemClickListener { _, _, position, _ ->
+            val selected = adapter.getItem(position).orEmpty()
+            if (selected.isBlank()) return@setOnItemClickListener
+            val current = inputView.text?.toString().orEmpty()
+            val range = tokenRange ?: return@setOnItemClickListener
+            val start = range.first.coerceIn(0, current.length)
+            val end = range.second.coerceIn(start, current.length)
+            val prefix = if (start < current.length && current[start] == '-') "-" else ""
+            val replacement = "$prefix$selected"
+            val updated = buildString {
+                append(current.substring(0, start))
+                append(replacement)
+                append(current.substring(end))
+            }
+            inputView.setText(updated)
+            inputView.setSelection((start + replacement.length).coerceAtMost(updated.length))
+        }
+    }
+
+    private fun extractSearchTokenBounds(input: String, cursor: Int): Pair<Int, Int>? {
+        if (input.isBlank()) return null
+        val safeCursor = cursor.coerceIn(0, input.length)
+        var start = safeCursor
+        while (start > 0 && !isSearchDelimiter(input[start - 1])) {
+            start--
+        }
+        var end = safeCursor
+        while (end < input.length && !isSearchDelimiter(input[end])) {
+            end++
+        }
+        if (start >= end) return null
+        return Pair(start, end)
+    }
+
+    private fun isSearchDelimiter(ch: Char): Boolean {
+        return ch.isWhitespace() || ch == ','
+    }
+
+    private fun initMenu() {
         topAppBar.setOnClickListener { scrollToTop() }
         val showingDownloadQueue = NavbarUtil.getNavBarItems(requireContext()).any { n -> n.itemId == R.id.downloadQueueMainFragment && n.isVisible }
         topAppBar.menu.findItem(R.id.download_queue).isVisible = !showingDownloadQueue
         topAppBar.setOnMenuItemClickListener { m: MenuItem ->
             when (m.itemId) {
+                R.id.search_history -> showSearchDialog()
                 R.id.add_local_video -> {
                     val options = arrayOf(
                         getString(R.string.add_local_video),
@@ -2113,13 +2290,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        if (renamed || metadataUpdated) {
-            Log.d(
-                "LocalVideoUpdate",
-                "updated uri=$originalUri -> $updatedUri renamed=$renamed metadata=$metadataUpdated name=$targetName"
-            )
-        }
-
         return LocalFileUpdateResult(
             uri = updatedUri,
             displayName = if (targetName.isNotBlank()) targetName else currentName,
@@ -2295,6 +2465,54 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         return result.distinctBy { entry ->
             localEntryIdentity(entry)
         }
+    }
+
+    private fun showSearchDialog() {
+        val searchSheet = BottomSheetDialog(requireContext())
+        searchSheet.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        searchSheet.setContentView(R.layout.history_search_sheet)
+
+        val titleQueryInput = searchSheet.findViewById<AutoCompleteTextView>(R.id.titleQueryInput)
+        val keywordQueryInput = searchSheet.findViewById<AutoCompleteTextView>(R.id.keywordQueryInput)
+        val creatorQueryInput = searchSheet.findViewById<AutoCompleteTextView>(R.id.creatorQueryInput)
+
+        titleQueryInput?.setText(historyViewModel.titleQueryFilterFlow.value)
+        keywordQueryInput?.setText(historyViewModel.keywordQueryFilterFlow.value)
+        creatorQueryInput?.setText(historyViewModel.creatorQueryFilterFlow.value)
+
+        titleQueryInput?.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: android.text.Editable?) {
+                historyViewModel.setTitleQueryFilter(s?.toString().orEmpty())
+            }
+        })
+        keywordQueryInput?.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: android.text.Editable?) {
+                historyViewModel.setKeywordQueryFilter(s?.toString().orEmpty())
+            }
+        })
+        creatorQueryInput?.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: android.text.Editable?) {
+                historyViewModel.setCreatorQueryFilter(s?.toString().orEmpty())
+            }
+        })
+
+        keywordQueryInput?.let { input ->
+            configureTokenAutocomplete(input) { keywordList }
+        }
+        creatorQueryInput?.let { input ->
+            configureTokenAutocomplete(input) { authorList }
+        }
+
+        val displayMetrics = DisplayMetrics()
+        requireActivity().windowManager.defaultDisplay.getMetrics(displayMetrics)
+        searchSheet.behavior.peekHeight = displayMetrics.heightPixels
+        searchSheet.show()
     }
 
     private fun localEntryIdentity(entry: LocalUriEntry): String {
@@ -3258,31 +3476,71 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         lifecycleScope.launch(Dispatchers.IO) {
             val db = DBManager.getInstance(requireContext())
             val groups = db.youtuberGroupDao.getGroups()
+            val relations = db.youtuberGroupDao.getAllRelations()
+            val currentParentGroupId =
+                if (historyViewModel.isYoutuberSelectionMode.value && historyViewModel.youtuberGroupFilter.value >= 0L) {
+                    historyViewModel.youtuberGroupFilter.value
+                } else {
+                    null
+                }
             withContext(Dispatchers.Main) {
                 if (groups.isEmpty()) {
-                    showCreateYoutuberGroupDialog { groupId ->
-                        addAuthorsToGroup(groupId, authors)
-                    }
+                    showCreateYoutuberGroupDialog(
+                        onCreated = { groupId -> addAuthorsToGroup(groupId, authors) },
+                        parentGroupId = currentParentGroupId
+                    )
                     return@withContext
                 }
+                val groupRows = buildYoutuberGroupRows(groups, relations)
                 val names = ArrayList<String>()
                 names.add(getString(R.string.new_group))
-                names.addAll(groups.map { it.name })
+                names.addAll(groupRows.map { it.second })
                 MaterialAlertDialogBuilder(requireContext())
                     .setTitle(getString(R.string.add_to_group))
                     .setItems(names.toTypedArray()) { _, which ->
                         if (which == 0) {
-                            showCreateYoutuberGroupDialog { groupId ->
-                                addAuthorsToGroup(groupId, authors)
-                            }
+                            showCreateYoutuberGroupDialog(
+                                onCreated = { groupId -> addAuthorsToGroup(groupId, authors) },
+                                parentGroupId = currentParentGroupId
+                            )
                         } else {
-                            val group = groups[which - 1]
+                            val group = groupRows[which - 1].first
                             addAuthorsToGroup(group.id, authors)
                         }
                     }
                     .show()
             }
         }
+    }
+
+    private fun buildYoutuberGroupRows(
+        groups: List<com.ireum.ytdl.database.models.YoutuberGroup>,
+        relations: List<com.ireum.ytdl.database.models.YoutuberGroupRelation>
+    ): List<Pair<com.ireum.ytdl.database.models.YoutuberGroup, String>> {
+        if (groups.isEmpty()) return emptyList()
+        val groupById = groups.associateBy { it.id }
+        val childrenByParent = relations.groupBy { it.parentGroupId }
+            .mapValues { entry -> entry.value.map { it.childGroupId }.distinct() }
+        val childIds = relations.map { it.childGroupId }.toSet()
+        val roots = groups.filter { !childIds.contains(it.id) }.sortedBy { it.name.lowercase(Locale.getDefault()) }
+        val out = mutableListOf<Pair<com.ireum.ytdl.database.models.YoutuberGroup, String>>()
+        val visited = linkedSetOf<Long>()
+
+        fun appendNode(groupId: Long, depth: Int) {
+            val group = groupById[groupId] ?: return
+            if (!visited.add(group.id)) return
+            val label = if (depth > 0) "${"ㄴ".repeat(depth)} ${group.name}" else group.name
+            out.add(group to label)
+            childrenByParent[group.id].orEmpty()
+                .sortedBy { id -> groupById[id]?.name?.lowercase(Locale.getDefault()).orEmpty() }
+                .forEach { childId -> appendNode(childId, depth + 1) }
+        }
+
+        roots.forEach { appendNode(it.id, 0) }
+        groups.filter { !visited.contains(it.id) }
+            .sortedBy { it.name.lowercase(Locale.getDefault()) }
+            .forEach { appendNode(it.id, 0) }
+        return out
     }
 
     private fun removeAuthorsFromCurrentYoutuberGroup(groupId: Long, authors: List<String>) {
@@ -3488,15 +3746,18 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
     private fun showAddKeywordsDialog(selectedIds: List<Long>) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val keywordCandidates = historyViewModel.getAll()
-                .flatMap { splitKeywordsLocal(it.keywords) }
-                .distinctBy { it.lowercase(Locale.getDefault()) }
-                .sortedBy { it.lowercase(Locale.getDefault()) }
+            val db = DBManager.getInstance(requireContext())
+            val repository = HistoryRepository(db.historyDao, db.playlistDao)
+            val allItems = historyViewModel.getAll()
+            val keywordInfos = repository.getKeywordsWithInfoForHistoryIds(allItems.map { it.id })
+            val keywordRows = buildKeywordRows(keywordInfos)
+            val keywordCandidates = keywordRows.map { it.first }
             withContext(Dispatchers.Main) {
-                val input = MultiAutoCompleteTextView(requireContext()).apply {
+                val context = requireContext()
+                val input = MultiAutoCompleteTextView(context).apply {
                     setAdapter(
                         ArrayAdapter(
-                            requireContext(),
+                            context,
                             android.R.layout.simple_dropdown_item_1line,
                             keywordCandidates
                         )
@@ -3504,14 +3765,49 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     setTokenizer(DelimiterTokenizer())
                     hint = getString(R.string.add_keywords)
                 }
-                val container = TextInputLayout(requireContext()).apply {
+                val inputLayout = TextInputLayout(context).apply {
                     addView(input)
+                }
+                val labels = keywordRows.map { it.second }
+                val checked = BooleanArray(labels.size)
+                val listView = ListView(context).apply {
+                    choiceMode = ListView.CHOICE_MODE_MULTIPLE
+                    dividerHeight = 0
+                    adapter = ArrayAdapter(
+                        context,
+                        android.R.layout.simple_list_item_multiple_choice,
+                        labels
+                    )
+                    for (index in checked.indices) {
+                        setItemChecked(index, checked[index])
+                    }
+                }
+                val container = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    val spacing = (resources.displayMetrics.density * 8).toInt()
+                    setPadding(spacing, spacing, spacing, spacing)
+                    addView(inputLayout)
+                    addView(
+                        listView,
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            (resources.displayMetrics.heightPixels * 0.45f).toInt()
+                        )
+                    )
                 }
                 MaterialAlertDialogBuilder(requireContext())
                     .setTitle(getString(R.string.add_keywords))
                     .setView(container)
                     .setPositiveButton(getString(R.string.ok)) { _, _ ->
-                        val newKeywords = splitKeywordsLocal(input.text?.toString().orEmpty())
+                        val selectedFromList = checked.indices
+                            .filter { listView.isItemChecked(it) }
+                            .map { keywordRows[it].first }
+                        val typedKeywords = splitKeywordsLocal(input.text?.toString().orEmpty())
+                        val newKeywords = (selectedFromList + typedKeywords)
+                            .fold(mutableListOf<String>()) { acc, keyword ->
+                                if (acc.none { it.equals(keyword, ignoreCase = true) }) acc.add(keyword)
+                                acc
+                            }
                         if (newKeywords.isEmpty()) {
                             Toast.makeText(requireContext(), R.string.video_info_required, Toast.LENGTH_SHORT).show()
                             return@setPositiveButton
@@ -3550,6 +3846,40 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     .show()
             }
         }
+    }
+
+    private fun buildKeywordRows(
+        infos: List<com.ireum.ytdl.database.models.KeywordInfo>
+    ): List<Pair<String, String>> {
+        if (infos.isEmpty()) return emptyList()
+        val byKeyword = infos.associateBy { it.keyword }
+        val childrenByParent = infos
+            .flatMap { info -> info.parentKeywords.map { parent -> parent to info.keyword } }
+            .groupBy({ it.first }, { it.second })
+            .mapValues { entry ->
+                entry.value.distinct().sortedBy { it.lowercase(Locale.getDefault()) }
+            }
+        val childSet = childrenByParent.values.flatten().toSet()
+        val roots = infos
+            .map { it.keyword }
+            .filter { !childSet.contains(it) }
+            .sortedBy { it.lowercase(Locale.getDefault()) }
+
+        val out = mutableListOf<Pair<String, String>>()
+        val visited = linkedSetOf<String>()
+        fun appendKeyword(keyword: String, depth: Int) {
+            if (!visited.add(keyword)) return
+            if (byKeyword[keyword] == null) return
+            val label = if (depth > 0) "${"ㄴ".repeat(depth)} $keyword" else keyword
+            out.add(keyword to label)
+            childrenByParent[keyword].orEmpty().forEach { child -> appendKeyword(child, depth + 1) }
+        }
+        roots.forEach { appendKeyword(it, 0) }
+        infos.map { it.keyword }
+            .filter { !visited.contains(it) }
+            .sortedBy { it.lowercase(Locale.getDefault()) }
+            .forEach { appendKeyword(it, 0) }
+        return out
     }
 
     private fun splitAuthorsLocal(raw: String): List<String> {
@@ -3873,7 +4203,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
     }
 
-    private fun showCreateYoutuberGroupDialog(onCreated: (Long) -> Unit) {
+    private fun showCreateYoutuberGroupDialog(onCreated: (Long) -> Unit, parentGroupId: Long? = null) {
         val input = EditText(requireContext()).apply {
             hint = getString(R.string.group_name)
         }
@@ -3889,6 +4219,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     val groupId = existing?.id ?: db.youtuberGroupDao.insertGroup(
                         com.ireum.ytdl.database.models.YoutuberGroup(name = name)
                     )
+                    if (groupId > 0L && parentGroupId != null && parentGroupId > 0L && parentGroupId != groupId) {
+                        db.youtuberGroupDao.insertRelations(
+                            listOf(
+                                com.ireum.ytdl.database.models.YoutuberGroupRelation(
+                                    parentGroupId = parentGroupId,
+                                    childGroupId = groupId
+                                )
+                            )
+                        )
+                    }
                     withContext(Dispatchers.Main) {
                         if (groupId > 0) {
                             onCreated(groupId)
@@ -4239,6 +4579,32 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
     private enum class MatchDecision { Use, Edit, Skip }
 
+    private fun loadHiddenStateFromPrefs() {
+        hiddenYoutubers = sharedPreferences.getStringSet(prefHiddenYoutubersKey, emptySet())
+            ?.toMutableSet()
+            ?: linkedSetOf()
+        hiddenYoutuberGroups = sharedPreferences.getStringSet(prefHiddenYoutuberGroupsKey, emptySet())
+            ?.mapNotNull { it.toLongOrNull() }
+            ?.toMutableSet()
+            ?: linkedSetOf()
+        visibleChildYoutuberGroups = sharedPreferences.getStringSet(prefVisibleChildYoutuberGroupsKey, emptySet())
+            ?.mapNotNull { it.toLongOrNull() }
+            ?.toMutableSet()
+            ?: linkedSetOf()
+        visibleChildKeywords = sharedPreferences.getStringSet(prefVisibleChildKeywordsKey, emptySet())
+            ?.toMutableSet()
+            ?: linkedSetOf()
+    }
+
+    private fun persistHiddenStateToPrefs() {
+        sharedPreferences.edit()
+            .putStringSet(prefHiddenYoutubersKey, hiddenYoutubers.toSet())
+            .putStringSet(prefHiddenYoutuberGroupsKey, hiddenYoutuberGroups.map { it.toString() }.toSet())
+            .putStringSet(prefVisibleChildYoutuberGroupsKey, visibleChildYoutuberGroups.map { it.toString() }.toSet())
+            .putStringSet(prefVisibleChildKeywordsKey, visibleChildKeywords.toSet())
+            .apply()
+    }
+
     private fun showFiltersDialog() {
         val filterSheet = BottomSheetDialog(requireContext())
         filterSheet.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -4271,25 +4637,42 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, newStatus)
         }
 
-        val searchTargetGroup = filterSheet.findViewById<ChipGroup>(R.id.searchTargetsChipGroup)
-        searchTargetGroup?.removeAllViews()
-        val selectedSearchFields = historyViewModel.searchFieldsFilter.value.toMutableSet()
-        val targetOptions = listOf(
-            HistoryRepository.SearchField.TITLE to getString(R.string.search_target_title),
-            HistoryRepository.SearchField.KEYWORDS to getString(R.string.search_target_keywords),
-            HistoryRepository.SearchField.CREATOR to getString(R.string.search_target_creator)
-        )
-        targetOptions.forEach { (field, label) ->
-            val chip = layoutinflater.inflate(R.layout.filter_chip, searchTargetGroup, false) as Chip
-            chip.text = label
-            chip.isChecked = selectedSearchFields.contains(field)
-            chip.setOnCheckedChangeListener { _, isChecked ->
-                if (isChecked) selectedSearchFields.add(field) else selectedSearchFields.remove(field)
-                historyViewModel.setSearchFieldsFilter(selectedSearchFields.toSet())
+        val includeChildCategoryVideosCheck = filterSheet.findViewById<com.google.android.material.checkbox.MaterialCheckBox>(R.id.includeChildCategoryVideosCheck)
+        val showHiddenOnlyCheck = filterSheet.findViewById<com.google.android.material.checkbox.MaterialCheckBox>(R.id.showHiddenOnlyCheck)
+        includeChildCategoryVideosCheck?.isChecked = historyViewModel.includeChildCategoryVideosFilter.value
+        includeChildCategoryVideosCheck?.setOnCheckedChangeListener { _, isChecked ->
+            historyViewModel.setIncludeChildCategoryVideosFilter(isChecked)
+            lifecycleScope.launch(Dispatchers.IO) {
+                val newExcluded = if (isChecked) {
+                    emptySet()
+                } else {
+                    val selectedKeyword = historyViewModel.keywordFilter.value
+                    val selectedAuthor = historyViewModel.authorFilter.value
+                    when {
+                        selectedKeyword.isNotBlank() -> {
+                            historyViewModel.getKeywordInfoByNameForCurrentFilters(selectedKeyword)
+                                ?.childKeywords
+                                ?.toSet()
+                                ?: emptySet()
+                        }
+                        selectedAuthor.isNotBlank() -> {
+                            historyViewModel.getRootKeywordInfosByAuthorForCurrentFilters(selectedAuthor)
+                                .map { it.keyword }
+                                .toSet()
+                        }
+                        else -> emptySet()
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    historyViewModel.setExcludedChildKeywordsFilter(newExcluded)
+                }
             }
-            searchTargetGroup?.addView(chip)
         }
-
+        showHiddenOnlyCheck?.isChecked = historyViewModel.showHiddenOnlyFilter.value
+        showHiddenOnlyCheck?.setOnCheckedChangeListener { _, isChecked ->
+            historyViewModel.setShowHiddenOnlyFilter(isChecked)
+            sharedPreferences.edit().putBoolean(prefShowHiddenOnlyKey, isChecked).apply()
+        }
         if (websiteList.size < 2) {
             filterSheet.findViewById<View>(R.id.websiteFilters)?.isVisible = false
         } else {
@@ -4420,6 +4803,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         sortChip.setOnClickListener { showSortDialog() }
 
         youtuberChip.setOnClickListener {
+            lastYoutuberOriginGroupFilter = null
             clearNavigationBackStack()
             pendingScrollToTop = true
             historyViewModel.setRecentMode(false)
@@ -4519,9 +4903,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
 
         keywordChip.setOnClickListener {
+            lastKeywordOriginGroupFilter = null
             clearNavigationBackStack()
             pendingScrollToTop = true
             historyViewModel.setRecentMode(false)
+            historyViewModel.setExcludedChildKeywordsFilter(emptySet())
             if (historyViewModel.keywordFilter.value.isNotEmpty()) {
                 historyViewModel.setKeywordFilter("")
                 historyViewModel.setKeywordGroupFilter(-1L)
@@ -4646,12 +5032,20 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 intent.putExtra("context_sort_type", historyViewModel.sortType.value.name)
                 intent.putExtra("context_sort_order", historyViewModel.sortOrder.value.name)
                 intent.putExtra("context_query", historyViewModel.queryFilterFlow.value)
+                intent.putExtra("context_title_query", historyViewModel.titleQueryFilterFlow.value)
+                intent.putExtra("context_keyword_query", historyViewModel.keywordQueryFilterFlow.value)
+                intent.putExtra("context_creator_query", historyViewModel.creatorQueryFilterFlow.value)
                 intent.putExtra(
                     "context_search_fields",
                     historyViewModel.searchFieldsFilter.value.map { it.name }.sorted().joinToString(",")
                 )
                 intent.putExtra("context_type", historyViewModel.typeFilterFlow.value)
                 intent.putExtra("context_website", historyViewModel.websiteFilter.value)
+                intent.putExtra("context_include_child_category_videos", historyViewModel.includeChildCategoryVideosFilter.value)
+                intent.putExtra(
+                    "context_excluded_child_keywords",
+                    historyViewModel.excludedChildKeywordsFilter.value.joinToString(",")
+                )
                 val authorFilter = historyViewModel.authorFilter.value
                 if (authorFilter.isNotEmpty()) {
                     intent.putExtra("context_author", authorFilter)
@@ -4912,17 +5306,28 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
         override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean {
             val count = historyAdapter.getSelectedYoutubers().size
+            val mixedSelection = historyAdapter.getSelectedYoutuberGroups().isNotEmpty()
             menu?.findItem(R.id.edit_youtuber_info)?.isVisible = count == 1
             menu?.findItem(R.id.remove_from_current_youtuber_group)?.isVisible =
                 historyViewModel.youtuberGroupFilter.value >= 0L && count > 0
+            if (mixedSelection) {
+                menu?.findItem(R.id.edit_youtuber_info)?.isVisible = false
+            }
+            val selected = historyAdapter.getSelectedYoutubers()
+            val allHidden = selected.isNotEmpty() && selected.all { hiddenYoutubers.contains(it) }
+            menu?.findItem(R.id.hide_youtubers)?.isVisible = !allHidden
+            menu?.findItem(R.id.unhide_youtubers)?.isVisible = allHidden
             return true
         }
 
         override fun onActionItemClicked(mode: ActionMode?, item: MenuItem?): Boolean {
             return when (item?.itemId) {
                 R.id.add_to_youtuber_group -> {
-                    val selected = historyAdapter.getSelectedYoutubers()
-                    showAddToYoutuberGroupDialog(selected)
+                    collectSelectedAuthorsIncludingGroups { merged ->
+                        if (merged.isNotEmpty()) {
+                            showAddToYoutuberGroupDialog(merged)
+                        }
+                    }
                     true
                 }
                 R.id.edit_youtuber_info -> {
@@ -4935,11 +5340,34 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     true
                 }
                 R.id.remove_from_current_youtuber_group -> {
-                    val selected = historyAdapter.getSelectedYoutubers()
                     val groupId = historyViewModel.youtuberGroupFilter.value
-                    if (groupId >= 0L && selected.isNotEmpty()) {
-                        removeAuthorsFromCurrentYoutuberGroup(groupId, selected)
+                    if (groupId >= 0L) {
+                        collectSelectedAuthorsIncludingGroups { merged ->
+                            if (merged.isNotEmpty()) {
+                                removeAuthorsFromCurrentYoutuberGroup(groupId, merged)
+                            }
+                        }
                     }
+                    true
+                }
+                R.id.hide_youtubers -> {
+                    val selected = historyAdapter.getSelectedYoutubers()
+                    if (selected.isNotEmpty()) {
+                        hiddenYoutubers.addAll(selected)
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setHiddenYoutubersFilter(hiddenYoutubers)
+                    }
+                    youtuberActionMode?.finish()
+                    true
+                }
+                R.id.unhide_youtubers -> {
+                    val selected = historyAdapter.getSelectedYoutubers()
+                    if (selected.isNotEmpty()) {
+                        hiddenYoutubers.removeAll(selected.toSet())
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setHiddenYoutubersFilter(hiddenYoutubers)
+                    }
+                    youtuberActionMode?.finish()
                     true
                 }
                 else -> false
@@ -4949,6 +5377,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         override fun onDestroyActionMode(mode: ActionMode?) {
             youtuberActionMode = null
             historyAdapter.clearYoutuberSelection()
+            historyAdapter.clearYoutuberGroupSelection()
+            youtuberGroupActionMode = null
             (activity as MainActivity).enableBottomNavigation()
             topAppBar.menu.forEach { it.isEnabled = true }
         }
@@ -4966,6 +5396,14 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean {
             val count = historyAdapter.getSelectedYoutuberGroups().size
             menu?.findItem(R.id.rename_youtuber_group)?.isVisible = count == 1
+            menu?.findItem(R.id.edit_parent_youtuber_group)?.isVisible = count == 1
+            val selected = historyAdapter.getSelectedYoutuberGroups()
+            val allShownOnFirstList = selected.isNotEmpty() && selected.all { visibleChildYoutuberGroups.contains(it) }
+            menu?.findItem(R.id.show_youtuber_groups_on_first_list)?.isVisible = selected.isNotEmpty() && !allShownOnFirstList
+            menu?.findItem(R.id.hide_youtuber_groups_from_first_list)?.isVisible = allShownOnFirstList
+            val allHidden = selected.isNotEmpty() && selected.all { hiddenYoutuberGroups.contains(it) }
+            menu?.findItem(R.id.hide_youtuber_groups)?.isVisible = !allHidden
+            menu?.findItem(R.id.unhide_youtuber_groups)?.isVisible = allHidden
             return true
         }
 
@@ -4987,13 +5425,71 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     }
                     true
                 }
+                R.id.add_youtuber_groups_to_group -> {
+                    val selected = historyAdapter.getSelectedYoutuberGroups()
+                    if (selected.isNotEmpty()) {
+                        showAddYoutuberGroupsToParentDialog(selected)
+                    }
+                    true
+                }
+                R.id.edit_parent_youtuber_group -> {
+                    val selected = historyAdapter.getSelectedYoutuberGroups()
+                    if (selected.size == 1) {
+                        showEditParentYoutuberGroupsDialog(selected.first())
+                    } else {
+                        Toast.makeText(requireContext(), getString(R.string.select_single_item), Toast.LENGTH_SHORT).show()
+                    }
+                    true
+                }
+                R.id.show_youtuber_groups_on_first_list -> {
+                    val selected = historyAdapter.getSelectedYoutuberGroups()
+                    if (selected.isNotEmpty()) {
+                        visibleChildYoutuberGroups.addAll(selected)
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setVisibleChildYoutuberGroupsFilter(visibleChildYoutuberGroups.toSet())
+                    }
+                    youtuberGroupActionMode?.finish()
+                    true
+                }
+                R.id.hide_youtuber_groups_from_first_list -> {
+                    val selected = historyAdapter.getSelectedYoutuberGroups()
+                    if (selected.isNotEmpty()) {
+                        visibleChildYoutuberGroups.removeAll(selected.toSet())
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setVisibleChildYoutuberGroupsFilter(visibleChildYoutuberGroups.toSet())
+                    }
+                    youtuberGroupActionMode?.finish()
+                    true
+                }
+                R.id.hide_youtuber_groups -> {
+                    val selected = historyAdapter.getSelectedYoutuberGroups()
+                    if (selected.isNotEmpty()) {
+                        hiddenYoutuberGroups.addAll(selected)
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setHiddenYoutuberGroupsFilter(hiddenYoutuberGroups)
+                    }
+                    youtuberGroupActionMode?.finish()
+                    true
+                }
+                R.id.unhide_youtuber_groups -> {
+                    val selected = historyAdapter.getSelectedYoutuberGroups()
+                    if (selected.isNotEmpty()) {
+                        hiddenYoutuberGroups.removeAll(selected.toSet())
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setHiddenYoutuberGroupsFilter(hiddenYoutuberGroups)
+                    }
+                    youtuberGroupActionMode?.finish()
+                    true
+                }
                 else -> false
             }
         }
 
         override fun onDestroyActionMode(mode: ActionMode?) {
             youtuberGroupActionMode = null
+            historyAdapter.clearYoutuberSelection()
             historyAdapter.clearYoutuberGroupSelection()
+            youtuberActionMode = null
             (activity as MainActivity).enableBottomNavigation()
             topAppBar.menu.forEach { it.isEnabled = true }
         }
@@ -5207,8 +5703,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
 
     override fun onYoutuberSelected(youtuber: String) {
+        lastYoutuberOriginGroupFilter = historyViewModel.youtuberGroupFilter.value
         pushCurrentStateToNavigationStack()
         historyViewModel.setAuthorFilter(youtuber)
+        historyViewModel.setExcludedChildKeywordsFilter(emptySet())
         historyViewModel.setYoutuberGroupFilter(-1L)
         historyViewModel.toggleYoutuberSelectionMode()
         if (historyViewModel.playlistFilter.value != -1L) {
@@ -5223,18 +5721,27 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         requestScrollToTop()
     }
 
+    override fun onYoutuberLongClick(youtuberInfo: com.ireum.ytdl.database.models.YoutuberInfo) {
+        showYoutuberChildKeywordSelectionDialog(youtuberInfo.author)
+    }
+
     override fun onYoutuberSelectionChanged(selectedCount: Int) {
-        if (selectedCount > 0 && youtuberActionMode == null) {
-            youtuberActionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(youtuberActionBar)
-        }
-        youtuberActionMode?.title = "$selectedCount ${getString(R.string.selected)}"
-        youtuberActionMode?.invalidate()
-        if (selectedCount == 0) {
+        val totalSelected = totalYoutuberSelectionCount()
+        if (totalSelected > 0) {
+            if (youtuberActionMode == null && youtuberGroupActionMode == null) {
+                youtuberActionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(youtuberActionBar)
+            }
+            val activeMode = youtuberActionMode ?: youtuberGroupActionMode
+            activeMode?.title = "$totalSelected ${getString(R.string.selected)}"
+            activeMode?.invalidate()
+        } else {
             youtuberActionMode?.finish()
+            youtuberGroupActionMode?.finish()
         }
     }
 
     override fun onYoutuberGroupSelected(groupId: Long) {
+        lastYoutuberOriginGroupFilter = null
         pushCurrentStateToNavigationStack()
         historyViewModel.setYoutuberGroupFilter(groupId)
         if (!historyViewModel.isYoutuberSelectionMode.value) {
@@ -5256,12 +5763,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     }
 
     override fun onYoutuberGroupSelectionChanged(selectedCount: Int) {
-        if (selectedCount > 0 && youtuberGroupActionMode == null) {
-            youtuberGroupActionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(youtuberGroupActionBar)
-        }
-        youtuberGroupActionMode?.title = "$selectedCount ${getString(R.string.selected)}"
-        youtuberGroupActionMode?.invalidate()
-        if (selectedCount == 0) {
+        val totalSelected = totalYoutuberSelectionCount()
+        if (totalSelected > 0) {
+            if (youtuberActionMode == null && youtuberGroupActionMode == null) {
+                youtuberGroupActionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(youtuberGroupActionBar)
+            }
+            val activeMode = youtuberGroupActionMode ?: youtuberActionMode
+            activeMode?.title = "$totalSelected ${getString(R.string.selected)}"
+            activeMode?.invalidate()
+        } else {
+            youtuberActionMode?.finish()
             youtuberGroupActionMode?.finish()
         }
     }
@@ -5359,6 +5870,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
         override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean {
             val count = historyAdapter.getSelectedKeywords().size
+            val selected = historyAdapter.getSelectedKeywords()
+            val allShownOnFirstList = selected.isNotEmpty() && selected.all { visibleChildKeywords.contains(it) }
+            menu?.findItem(R.id.show_keywords_on_first_list)?.isVisible = selected.isNotEmpty() && !allShownOnFirstList
+            menu?.findItem(R.id.hide_keywords_from_first_list)?.isVisible = allShownOnFirstList
             menu?.findItem(R.id.remove_from_current_keyword_group)?.isVisible =
                 historyViewModel.keywordGroupFilter.value >= 0L && count > 0
             return true
@@ -5367,18 +5882,42 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         override fun onActionItemClicked(mode: ActionMode?, item: MenuItem?): Boolean {
             return when (item?.itemId) {
                 R.id.add_to_keyword_group -> {
-                    val selected = historyAdapter.getSelectedKeywords()
-                    if (selected.isNotEmpty()) {
-                        showAddToKeywordGroupDialog(selected)
+                    collectSelectedKeywordsIncludingGroups { merged ->
+                        if (merged.isNotEmpty()) {
+                            showAddToKeywordGroupDialog(merged)
+                        }
                     }
                     true
                 }
                 R.id.remove_from_current_keyword_group -> {
-                    val selected = historyAdapter.getSelectedKeywords()
                     val groupId = historyViewModel.keywordGroupFilter.value
-                    if (groupId >= 0L && selected.isNotEmpty()) {
-                        removeKeywordsFromCurrentKeywordGroup(groupId, selected)
+                    if (groupId >= 0L) {
+                        collectSelectedKeywordsIncludingGroups { merged ->
+                            if (merged.isNotEmpty()) {
+                                removeKeywordsFromCurrentKeywordGroup(groupId, merged)
+                            }
+                        }
                     }
+                    true
+                }
+                R.id.show_keywords_on_first_list -> {
+                    val selected = historyAdapter.getSelectedKeywords()
+                    if (selected.isNotEmpty()) {
+                        visibleChildKeywords.addAll(selected)
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setVisibleChildKeywordsFilter(visibleChildKeywords.toSet())
+                    }
+                    keywordActionMode?.finish()
+                    true
+                }
+                R.id.hide_keywords_from_first_list -> {
+                    val selected = historyAdapter.getSelectedKeywords()
+                    if (selected.isNotEmpty()) {
+                        visibleChildKeywords.removeAll(selected.toSet())
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setVisibleChildKeywordsFilter(visibleChildKeywords.toSet())
+                    }
+                    keywordActionMode?.finish()
                     true
                 }
                 R.id.delete_keywords -> {
@@ -5395,6 +5934,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         override fun onDestroyActionMode(mode: ActionMode?) {
             keywordActionMode = null
             historyAdapter.clearKeywordSelection()
+            historyAdapter.clearKeywordGroupSelection()
+            keywordGroupActionMode = null
             (activity as MainActivity).enableBottomNavigation()
             topAppBar.menu.forEach { it.isEnabled = true }
         }
@@ -5439,15 +5980,19 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
         override fun onDestroyActionMode(mode: ActionMode?) {
             keywordGroupActionMode = null
+            historyAdapter.clearKeywordSelection()
             historyAdapter.clearKeywordGroupSelection()
+            keywordActionMode = null
             (activity as MainActivity).enableBottomNavigation()
             topAppBar.menu.forEach { it.isEnabled = true }
         }
     }
 
     override fun onKeywordSelected(keyword: String) {
+        lastKeywordOriginGroupFilter = historyViewModel.keywordGroupFilter.value
         pushCurrentStateToNavigationStack()
         historyViewModel.setKeywordFilter(keyword)
+        historyViewModel.setExcludedChildKeywordsFilter(emptySet())
         historyViewModel.setKeywordGroupFilter(-1L)
         if (historyViewModel.isKeywordSelectionMode.value) {
             historyViewModel.toggleKeywordSelectionMode()
@@ -5473,20 +6018,165 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         requestScrollToTop()
     }
 
-    override fun onKeywordSelectionChanged(selectedCount: Int) {
-        if (selectedCount > 0 && keywordActionMode == null) {
-            keywordActionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(keywordActionBar)
+    override fun onKeywordLongClick(keywordInfo: com.ireum.ytdl.database.models.KeywordInfo) {
+        showKeywordChildSelectionDialog(keywordInfo)
+    }
+
+    private fun showKeywordChildSelectionDialog(keywordInfo: com.ireum.ytdl.database.models.KeywordInfo) {
+        val children = keywordInfo.childKeywords.distinct()
+        if (children.isEmpty()) {
+            Toast.makeText(requireContext(), getString(R.string.no_results), Toast.LENGTH_SHORT).show()
+            return
         }
-        keywordActionMode?.title = "$selectedCount ${getString(R.string.selected)}"
-        keywordActionMode?.invalidate()
-        if (selectedCount == 0) {
+        val excluded = historyViewModel.excludedChildKeywordsFilter.value
+        val includeChildByDefault = historyViewModel.includeChildCategoryVideosFilter.value
+        val checked = BooleanArray(children.size) { index ->
+            if (!includeChildByDefault && excluded.isEmpty()) {
+                false
+            } else {
+                !excluded.contains(children[index])
+            }
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(keywordInfo.keyword)
+            .setMultiChoiceItems(children.toTypedArray(), checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                val newExcluded = children
+                    .filterIndexed { index, _ -> !checked[index] }
+                    .toSet()
+                historyViewModel.setExcludedChildKeywordsFilter(newExcluded)
+            }
+            .setNeutralButton("목록에 표시") { _, _ ->
+                showKeywordChildVisibilityDialog(keywordInfo.keyword, children)
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .show()
+    }
+
+    private fun showKeywordChildVisibilityDialog(title: String, children: List<String>) {
+        if (children.isEmpty()) return
+        val checked = BooleanArray(children.size) { index ->
+            visibleChildKeywords.contains(children[index])
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("$title - 목록 표시")
+            .setMultiChoiceItems(children.toTypedArray(), checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                val selected = children
+                    .filterIndexed { index, _ -> checked[index] }
+                    .toSet()
+                visibleChildKeywords.removeAll(children.toSet())
+                visibleChildKeywords.addAll(selected)
+                persistHiddenStateToPrefs()
+                historyViewModel.setVisibleChildKeywordsFilter(visibleChildKeywords.toSet())
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .show()
+    }
+
+    private fun showYoutuberChildKeywordSelectionDialog(author: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val roots = historyViewModel.getRootKeywordInfosByAuthorForCurrentFilters(author)
+            val rootKeywords = roots.map { it.keyword }.distinct()
+            withContext(Dispatchers.Main) {
+                if (rootKeywords.isEmpty()) {
+                    Toast.makeText(requireContext(), getString(R.string.no_results), Toast.LENGTH_SHORT).show()
+                    return@withContext
+                }
+                val excluded = historyViewModel.excludedChildKeywordsFilter.value
+                val includeChildByDefault = historyViewModel.includeChildCategoryVideosFilter.value
+                val checked = BooleanArray(rootKeywords.size) { index ->
+                    if (!includeChildByDefault && excluded.isEmpty()) {
+                        false
+                    } else {
+                        !excluded.contains(rootKeywords[index])
+                    }
+                }
+                MaterialAlertDialogBuilder(requireContext())
+                    .setTitle(author)
+                    .setMultiChoiceItems(rootKeywords.toTypedArray(), checked) { _, which, isChecked ->
+                        checked[which] = isChecked
+                    }
+                    .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                        val newExcluded = rootKeywords
+                            .filterIndexed { index, _ -> !checked[index] }
+                            .toSet()
+                        historyViewModel.setExcludedChildKeywordsFilter(newExcluded)
+                    }
+                    .setNegativeButton(getString(R.string.cancel), null)
+                    .show()
+            }
+        }
+    }
+
+    private fun showYoutuberChildGroupVisibilityDialog(groupId: Long) {
+        val groupName = youtuberGroupsCache.firstOrNull { it.id == groupId }?.name ?: groupId.toString()
+        val childrenByParent = youtuberGroupRelationsCache
+            .groupBy { it.parentGroupId }
+            .mapValues { entry -> entry.value.map { it.childGroupId } }
+        val descendants = mutableListOf<Pair<Long, Int>>()
+        val queue = ArrayDeque<Pair<Long, Int>>()
+        childrenByParent[groupId].orEmpty().forEach { childId -> queue.addLast(childId to 1) }
+        val visited = linkedSetOf<Long>()
+        while (queue.isNotEmpty()) {
+            val (current, depth) = queue.removeFirst()
+            if (!visited.add(current)) continue
+            descendants.add(current to depth)
+            childrenByParent[current].orEmpty().forEach { child -> queue.addLast(child to (depth + 1)) }
+        }
+        if (descendants.isEmpty()) {
+            Toast.makeText(requireContext(), getString(R.string.no_results), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val labels = descendants.map { (id, depth) ->
+            val name = youtuberGroupsCache.firstOrNull { it.id == id }?.name ?: id.toString()
+            "${"ㄴ".repeat(depth)} $name"
+        }
+        val checked = BooleanArray(descendants.size) { index ->
+            visibleChildYoutuberGroups.contains(descendants[index].first)
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("$groupName - 목록 표시")
+            .setMultiChoiceItems(labels.toTypedArray(), checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                val descendantIds = descendants.map { it.first }.toSet()
+                visibleChildYoutuberGroups.removeAll(descendantIds)
+                descendants.forEachIndexed { index, pair ->
+                    if (checked[index]) visibleChildYoutuberGroups.add(pair.first)
+                }
+                persistHiddenStateToPrefs()
+                historyViewModel.setVisibleChildYoutuberGroupsFilter(visibleChildYoutuberGroups.toSet())
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .show()
+    }
+
+    override fun onKeywordSelectionChanged(selectedCount: Int) {
+        val totalSelected = totalKeywordSelectionCount()
+        if (totalSelected > 0) {
+            if (keywordActionMode == null && keywordGroupActionMode == null) {
+                keywordActionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(keywordActionBar)
+            }
+            val activeMode = keywordActionMode ?: keywordGroupActionMode
+            activeMode?.title = "$totalSelected ${getString(R.string.selected)}"
+            activeMode?.invalidate()
+        } else {
             keywordActionMode?.finish()
+            keywordGroupActionMode?.finish()
         }
     }
 
     override fun onKeywordGroupSelected(groupId: Long) {
+        lastKeywordOriginGroupFilter = null
         pushCurrentStateToNavigationStack()
         historyViewModel.setKeywordGroupFilter(groupId)
+        historyViewModel.setExcludedChildKeywordsFilter(emptySet())
         if (!historyViewModel.isKeywordSelectionMode.value) {
             historyViewModel.toggleKeywordSelectionMode()
         }
@@ -5515,12 +6205,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     }
 
     override fun onKeywordGroupSelectionChanged(selectedCount: Int) {
-        if (selectedCount > 0 && keywordGroupActionMode == null) {
-            keywordGroupActionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(keywordGroupActionBar)
-        }
-        keywordGroupActionMode?.title = "$selectedCount ${getString(R.string.selected)}"
-        keywordGroupActionMode?.invalidate()
-        if (selectedCount == 0) {
+        val totalSelected = totalKeywordSelectionCount()
+        if (totalSelected > 0) {
+            if (keywordActionMode == null && keywordGroupActionMode == null) {
+                keywordGroupActionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(keywordGroupActionBar)
+            }
+            val activeMode = keywordGroupActionMode ?: keywordActionMode
+            activeMode?.title = "$totalSelected ${getString(R.string.selected)}"
+            activeMode?.invalidate()
+        } else {
+            keywordActionMode?.finish()
             keywordGroupActionMode?.finish()
         }
     }
@@ -5702,6 +6396,142 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             .show()
     }
 
+    private fun showEditParentYoutuberGroupsDialog(groupId: Long) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val db = DBManager.getInstance(requireContext())
+            val relations = db.youtuberGroupDao.getAllRelations()
+            val childrenByParent = relations.groupBy { it.parentGroupId }.mapValues { entry ->
+                entry.value.map { it.childGroupId }
+            }
+            val descendants = linkedSetOf<Long>()
+            val stack = ArrayDeque<Long>()
+            stack.add(groupId)
+            while (stack.isNotEmpty()) {
+                val current = stack.removeFirst()
+                childrenByParent[current].orEmpty().forEach { childId ->
+                    if (descendants.add(childId)) {
+                        stack.addLast(childId)
+                    }
+                }
+            }
+            val groups = db.youtuberGroupDao.getGroups().filter { it.id != groupId && !descendants.contains(it.id) }
+            if (groups.isEmpty()) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(requireContext(), getString(R.string.no_groups), Toast.LENGTH_SHORT).show()
+                }
+                return@launch
+            }
+            val parentIds = db.youtuberGroupDao.getParentIdsForChild(groupId).toSet()
+            withContext(Dispatchers.Main) {
+                val checked = BooleanArray(groups.size) { index -> parentIds.contains(groups[index].id) }
+                MaterialAlertDialogBuilder(requireContext())
+                    .setTitle(getString(R.string.edit_parent_groups))
+                    .setMultiChoiceItems(groups.map { it.name }.toTypedArray(), checked) { _, which, isChecked ->
+                        checked[which] = isChecked
+                    }
+                    .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                        val selectedParentIds = groups.filterIndexed { index, _ -> checked[index] }.map { it.id }
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            if (selectedParentIds.isEmpty()) {
+                                db.youtuberGroupDao.deleteRelationsForChild(groupId)
+                            } else {
+                                db.youtuberGroupDao.deleteRelationsForChildNotIn(groupId, selectedParentIds)
+                                db.youtuberGroupDao.insertRelations(
+                                    selectedParentIds.map { parentId ->
+                                        com.ireum.ytdl.database.models.YoutuberGroupRelation(
+                                            parentGroupId = parentId,
+                                            childGroupId = groupId
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    .setNegativeButton(getString(R.string.cancel), null)
+                    .show()
+            }
+        }
+    }
+
+    private fun showAddYoutuberGroupsToParentDialog(childGroupIds: List<Long>) {
+        val targetChildren = childGroupIds.toSet()
+        lifecycleScope.launch(Dispatchers.IO) {
+            val db = DBManager.getInstance(requireContext())
+            val relations = db.youtuberGroupDao.getAllRelations()
+            val childrenByParent = relations.groupBy { it.parentGroupId }.mapValues { entry ->
+                entry.value.map { it.childGroupId }
+            }
+            fun descendants(start: Long): Set<Long> {
+                val out = linkedSetOf<Long>()
+                val stack = ArrayDeque<Long>()
+                stack.add(start)
+                while (stack.isNotEmpty()) {
+                    val current = stack.removeFirst()
+                    childrenByParent[current].orEmpty().forEach { child ->
+                        if (out.add(child)) stack.addLast(child)
+                    }
+                }
+                return out
+            }
+            val groups = db.youtuberGroupDao.getGroups().filter { candidate ->
+                !targetChildren.contains(candidate.id) &&
+                    targetChildren.none { childId -> descendants(childId).contains(candidate.id) }
+            }
+            withContext(Dispatchers.Main) {
+                if (groups.isEmpty()) {
+                    Toast.makeText(requireContext(), getString(R.string.no_groups), Toast.LENGTH_SHORT).show()
+                    return@withContext
+                }
+                val names = ArrayList<String>()
+                names.add(getString(R.string.new_group))
+                val groupRows = buildYoutuberGroupRows(groups, relations)
+                names.addAll(groupRows.map { it.second })
+                MaterialAlertDialogBuilder(requireContext())
+                    .setTitle(getString(R.string.add_to_group))
+                    .setItems(names.toTypedArray()) { _, which ->
+                        if (which == 0) {
+                            showCreateYoutuberGroupDialog(
+                                onCreated = { parentId ->
+                                    lifecycleScope.launch(Dispatchers.IO) {
+                                        val rels = targetChildren
+                                            .filter { it != parentId }
+                                            .map {
+                                                com.ireum.ytdl.database.models.YoutuberGroupRelation(
+                                                    parentGroupId = parentId,
+                                                    childGroupId = it
+                                                )
+                                            }
+                                        if (rels.isNotEmpty()) db.youtuberGroupDao.insertRelations(rels)
+                                        withContext(Dispatchers.Main) {
+                                            youtuberGroupActionMode?.finish()
+                                        }
+                                    }
+                                },
+                                parentGroupId = null
+                            )
+                        } else {
+                            val parentId = groupRows[which - 1].first.id
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                val rels = targetChildren
+                                    .filter { it != parentId }
+                                    .map {
+                                        com.ireum.ytdl.database.models.YoutuberGroupRelation(
+                                            parentGroupId = parentId,
+                                            childGroupId = it
+                                        )
+                                    }
+                                if (rels.isNotEmpty()) db.youtuberGroupDao.insertRelations(rels)
+                                withContext(Dispatchers.Main) {
+                                    youtuberGroupActionMode?.finish()
+                                }
+                            }
+                        }
+                    }
+                    .show()
+            }
+        }
+    }
+
     private fun showAddToKeywordGroupDialog(keywords: List<String>) {
         if (keywords.isEmpty()) return
         lifecycleScope.launch(Dispatchers.IO) {
@@ -5838,6 +6668,9 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 if (keywords.any { it.equals(historyViewModel.keywordFilter.value, ignoreCase = true) }) {
                     historyViewModel.setKeywordFilter("")
                 }
+                visibleChildKeywords.removeAll(keywords.toSet())
+                persistHiddenStateToPrefs()
+                historyViewModel.setVisibleChildKeywordsFilter(visibleChildKeywords.toSet())
                 keywordActionMode?.finish()
             }
             .setNegativeButton(getString(R.string.cancel), null)
@@ -5877,12 +6710,18 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     val db = DBManager.getInstance(requireContext())
                     groupIds.forEach { id ->
                         db.youtuberGroupDao.deleteMembersByGroup(id)
+                        db.youtuberGroupDao.deleteRelationsByGroup(id)
                         db.youtuberGroupDao.deleteGroup(id)
                     }
                 }
                 if (groupIds.contains(historyViewModel.youtuberGroupFilter.value)) {
                     historyViewModel.setYoutuberGroupFilter(-1L)
                 }
+                hiddenYoutuberGroups.removeAll(groupIds.toSet())
+                visibleChildYoutuberGroups.removeAll(groupIds.toSet())
+                persistHiddenStateToPrefs()
+                historyViewModel.setHiddenYoutuberGroupsFilter(hiddenYoutuberGroups)
+                historyViewModel.setVisibleChildYoutuberGroupsFilter(visibleChildYoutuberGroups.toSet())
                 youtuberGroupActionMode?.finish()
             }
             .setNegativeButton(getString(R.string.cancel), null)
@@ -5927,14 +6766,18 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             suppressAutoScrollForNextScreenChange = true
             pendingScrollToTop = false
             pendingRestoreEntry = entry
-            Log.d("HistoryNavScroll", "pop stackSize=${navigationBackStack.size} targetPos=${entry.scroll.position} top=${entry.scroll.offset} yMode=${entry.state.isYoutuberMode} yGroup=${entry.state.youtuberGroup} author='${entry.state.author}'")
             applyNavigationState(entry.state)
             schedulePendingRestoreRetry()
             return true
         }
 
         if (historyViewModel.authorFilter.value.isNotBlank()) {
+            val originGroup = lastYoutuberOriginGroupFilter
             historyViewModel.setAuthorFilter("")
+            if (originGroup != null) {
+                historyViewModel.setYoutuberGroupFilter(originGroup)
+                lastYoutuberOriginGroupFilter = null
+            }
             if (!historyViewModel.isYoutuberSelectionMode.value) {
                 historyViewModel.toggleYoutuberSelectionMode()
             }
@@ -5976,7 +6819,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             return true
         }
         if (historyViewModel.keywordFilter.value.isNotBlank()) {
+            val originGroup = lastKeywordOriginGroupFilter
             historyViewModel.setKeywordFilter("")
+            if (originGroup != null) {
+                historyViewModel.setKeywordGroupFilter(originGroup)
+                lastKeywordOriginGroupFilter = null
+            }
             if (!historyViewModel.isKeywordSelectionMode.value) {
                 historyViewModel.toggleKeywordSelectionMode()
             }

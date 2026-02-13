@@ -32,6 +32,7 @@ import com.ireum.ytdl.util.BackupSettingsUtil
 import com.ireum.ytdl.util.FileUtil
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
+import com.google.gson.JsonParser
 import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -41,6 +42,9 @@ import java.util.concurrent.TimeUnit
 
 
 class SettingsViewModel(private val application: Application) : AndroidViewModel(application) {
+    private val prefVisibleChildYoutuberGroupsKey = "history_visible_child_youtuber_groups"
+    private val prefVisibleChildKeywordsKey = "history_visible_child_keywords"
+
     private val workManager : WorkManager = WorkManager.getInstance(application)
     private val preferences : SharedPreferences = PreferenceManager.getDefaultSharedPreferences(application)
 
@@ -75,6 +79,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
         val json = JsonObject()
         json.addProperty("app", "YTDLnisX_backup")
+        json.addProperty("backup_format_version", 2)
         list.forEach {
             runCatching {
                 when(it){
@@ -83,10 +88,17 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     "keywordData" -> {
                         json.add("keyword_groups", BackupSettingsUtil.backupKeywordGroups(keywordGroupDao))
                         json.add("keyword_group_members", BackupSettingsUtil.backupKeywordGroupMembers(keywordGroupDao))
+                        val visibleChildKeywords = preferences.getStringSet(prefVisibleChildKeywordsKey, emptySet()).orEmpty()
+                        json.add("history_visible_child_keywords", Gson().toJsonTree(visibleChildKeywords).asJsonArray)
                     }
                     "youtuberData" -> {
                         json.add("youtuber_groups", BackupSettingsUtil.backupYoutuberGroups(youtuberGroupDao))
                         json.add("youtuber_group_members", BackupSettingsUtil.backupYoutuberGroupMembers(youtuberGroupDao))
+                        json.add("youtuber_group_relations", BackupSettingsUtil.backupYoutuberGroupRelations(youtuberGroupDao))
+                        val visibleChildYoutuberGroups = preferences
+                            .getStringSet(prefVisibleChildYoutuberGroupsKey, emptySet())
+                            .orEmpty()
+                        json.add("history_visible_child_youtuber_groups", Gson().toJsonTree(visibleChildYoutuberGroups).asJsonArray)
                         json.add("youtuber_meta", BackupSettingsUtil.backupYoutuberMeta(youtuberMetaDao))
                     }
                     "queued" -> json.add("queued", BackupSettingsUtil.backupQueuedDownloads(downloadRepository))
@@ -140,22 +152,37 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             data.settings?.apply {
                 val prefs = this
                 PreferenceManager.getDefaultSharedPreferences(context).edit(commit = true){
-                    clear()
+                    if (resetData) clear()
                     prefs.forEach {
                         val key = it.key
+                        val prefValue = it.value
                         when(it.type){
                             "String" -> {
-                                putString(key, it.value)
+                                putString(key, prefValue)
                             }
                             "Boolean" -> {
-                                putBoolean(key, it.value.toBoolean())
+                                putBoolean(key, prefValue.toBoolean())
                             }
                             "Int" -> {
-                                putInt(key, it.value.toInt())
+                                putInt(key, prefValue.toInt())
                             }
-                            "HashSet" -> {
-                                val value = it.value.replace("(\")|(\\[)|(])|([ \\t])".toRegex(), "").split(",")
-                                putStringSet(key, value.toHashSet())
+                            else -> {
+                                if (it.type?.contains("Set", ignoreCase = true) != true) return@forEach
+                                val parsedSet = runCatching {
+                                    JsonParser.parseString(prefValue)
+                                        .asJsonArray
+                                        .mapNotNull { entry ->
+                                            runCatching { entry.asString }.getOrNull()
+                                        }
+                                        .toSet()
+                                }.getOrElse {
+                                    prefValue
+                                        .replace("(\")|(\\[)|(])|([ \\t])".toRegex(), "")
+                                        .split(",")
+                                        .filter { value -> value.isNotBlank() }
+                                        .toSet()
+                                }
+                                putStringSet(key, parsedSet)
                             }
                         }
                     }
@@ -216,11 +243,14 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             if (
                 data.youtuberGroups != null ||
                 data.youtuberGroupMembers != null ||
+                data.youtuberGroupRelations != null ||
+                data.historyVisibleChildYoutuberGroups != null ||
                 data.youtuberMeta != null
             ) {
                 withContext(Dispatchers.IO) {
                     if (resetData) {
                         youtuberGroupDao.clearMembers()
+                        youtuberGroupDao.clearRelations()
                         youtuberGroupDao.clearGroups()
                         youtuberMetaDao.clearAll()
                     }
@@ -248,8 +278,42 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         }
                     }
 
+                    data.youtuberGroupRelations?.mapNotNull { relation ->
+                        val mappedParentId = youtuberGroupIdMap[relation.parentGroupId] ?: relation.parentGroupId
+                        val mappedChildId = youtuberGroupIdMap[relation.childGroupId] ?: relation.childGroupId
+                        if (mappedParentId <= 0L || mappedChildId <= 0L || mappedParentId == mappedChildId) {
+                            null
+                        } else {
+                            com.ireum.ytdl.database.models.YoutuberGroupRelation(
+                                parentGroupId = mappedParentId,
+                                childGroupId = mappedChildId
+                            )
+                        }
+                    }?.also { mappedRelations ->
+                        if (mappedRelations.isNotEmpty()) {
+                            youtuberGroupDao.insertRelations(mappedRelations)
+                        }
+                    }
+
                     data.youtuberMeta?.forEach { meta ->
                         youtuberMetaDao.upsert(meta)
+                    }
+
+                    data.historyVisibleChildYoutuberGroups?.let { visible ->
+                        preferences.edit(commit = true) {
+                            putStringSet(
+                                prefVisibleChildYoutuberGroupsKey,
+                                visible.map { it.toString() }.toSet()
+                            )
+                        }
+                    }
+                }
+            }
+
+            data.historyVisibleChildKeywords?.let { visible ->
+                withContext(Dispatchers.IO) {
+                    preferences.edit(commit = true) {
+                        putStringSet(prefVisibleChildKeywordsKey, visible.toSet())
                     }
                 }
             }
@@ -261,6 +325,16 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         downloadRepository.insert(it)
                     }
                     downloadRepository.startDownloadWorker(listOf(), application)
+                }
+            }
+
+            data.scheduled?.apply {
+                withContext(Dispatchers.IO) {
+                    if (resetData) downloadRepository.deleteScheduled()
+                    data.scheduled!!.forEach {
+                        downloadRepository.insert(it)
+                    }
+                    downloadRepository.startDownloadWorker(data.scheduled!!, application)
                 }
             }
 

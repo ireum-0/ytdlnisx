@@ -39,6 +39,7 @@ import com.ireum.ytdl.database.models.TemplateShortcut
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.database.models.YoutuberGroup
 import com.ireum.ytdl.database.models.YoutuberGroupMember
+import com.ireum.ytdl.database.models.YoutuberGroupRelation
 import com.ireum.ytdl.database.models.YoutuberMeta
 
 @TypeConverters(Converters::class)
@@ -62,9 +63,10 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         KeywordGroupMember::class,
         YoutuberGroup::class,
         YoutuberGroupMember::class,
+        YoutuberGroupRelation::class,
         YoutuberMeta::class
     ],
-    version = 40,
+    version = 41,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),

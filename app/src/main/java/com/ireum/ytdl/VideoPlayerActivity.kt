@@ -156,6 +156,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var queueHeader: android.view.View? = null
     private val playbackPositionsById: MutableMap<Long, Long> = mutableMapOf()
     private var isBackgroundPlayback: Boolean = false
+    private var pendingAutoPipOnLeave: Boolean = false
     private var wasInPip: Boolean = false
     private var controlsLocked: Boolean = false
     private var subtitleStyle: CaptionStyleCompat = CaptionStyleCompat.DEFAULT
@@ -214,8 +215,6 @@ class VideoPlayerActivity : AppCompatActivity() {
             Log.w("VideoPlayerActivity", "videoPath is null or blank")
             return
         }
-
-        Log.d("VideoPlayerActivity", "videoPath=$videoPath")
 
         speedLabel = playerView.findViewById(R.id.btn_speed)
         chaptersLabel = playerView.findViewById(R.id.btn_chapters)
@@ -528,6 +527,8 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        pendingAutoPipOnLeave = false
+        refreshPipParams("onResume")
         if (!isInPictureInPictureMode) {
             isBackgroundPlayback = false
             setMediaNotificationEnabled(false)
@@ -544,12 +545,36 @@ class VideoPlayerActivity : AppCompatActivity() {
         savePlaybackPositionForCurrentItem()
         commitRecentWatchIfEligible()
         super.onPause()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            pendingAutoPipOnLeave &&
+            !isInPictureInPictureMode &&
+            !isFinishing &&
+            !isDestroyed
+        ) {
+            val entered = enterPipIfSupported()
+            if (!entered) {
+                window?.decorView?.post {
+                    if (pendingAutoPipOnLeave &&
+                        !isInPictureInPictureMode &&
+                        !isFinishing &&
+                        !isDestroyed
+                    ) {
+                        enterPipIfSupported()
+                    }
+                }
+            }
+        }
     }
 
     override fun onStop() {
         super.onStop()
         savePlaybackPositionForCurrentItem()
         commitRecentWatchIfEligible()
+        if (pendingAutoPipOnLeave && !isInPictureInPictureMode && player?.isPlaying == true) {
+            isBackgroundPlayback = true
+            setMediaNotificationEnabled(true)
+            setPlaybackForegroundMode(true)
+        }
         if ((isBackgroundPlayback || isInPictureInPictureMode) && player?.isPlaying == true) {
             setPlaybackForegroundMode(true)
             PlaybackKeepAliveService.start(
@@ -585,11 +610,20 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            pendingAutoPipOnLeave = true
+            isBackgroundPlayback = true
+            setMediaNotificationEnabled(true)
+            setPlaybackForegroundMode(true)
+        }
         enterPipIfSupported()
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode)
+        if (isInPictureInPictureMode) {
+            pendingAutoPipOnLeave = false
+        }
         if (isInPictureInPictureMode) {
             wasInPip = true
         }
@@ -1078,20 +1112,39 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun enterPipIfSupported() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    private fun enterPipIfSupported(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Toast.makeText(this, "PiP not supported", Toast.LENGTH_SHORT).show()
+            return false
+        }
+        if (isFinishing || isDestroyed || isInPictureInPictureMode) {
+            return false
+        }
+        return try {
             playerView?.controllerAutoShow = false
             playerView?.hideController()
             val params = buildPipParams()
-            enterPictureInPictureMode(params)
-        } else {
-            Toast.makeText(this, "PiP not supported", Toast.LENGTH_SHORT).show()
+            val entered = enterPictureInPictureMode(params)
+            if (!entered) {
+                Log.w("VideoPip", "enterPipIfSupported primary params rejected, retrying with minimal params")
+                val fallbackParams = PictureInPictureParams.Builder().build()
+                enterPictureInPictureMode(fallbackParams)
+            } else {
+                true
+            }
+        } catch (_: IllegalStateException) {
+            Log.w("VideoPip", "enterPipIfSupported failed: IllegalStateException")
+            false
         }
     }
 
     private fun buildPipParams(): PictureInPictureParams {
         val builder = PictureInPictureParams.Builder()
             .setAspectRatio(Rational(16, 9))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(true)
+            builder.setSeamlessResizeEnabled(true)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder.setActions(buildPipActions())
         }
@@ -1167,7 +1220,9 @@ class VideoPlayerActivity : AppCompatActivity() {
                 queueItems.firstOrNull { it.downloadPath.any { p -> p == uri || uri.endsWith(p) } }
             }
         }
-        return currentItem?.author.orEmpty()
+        val queueAuthor = currentItem?.author.orEmpty()
+        if (queueAuthor.isNotBlank()) return queueAuthor
+        return authorView?.text?.toString()?.trim().orEmpty()
     }
 
     private fun currentThumbUrl(): String? {
@@ -1826,6 +1881,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (enabled) {
             setupMediaNotification()
             playerNotificationManager?.setPlayer(player)
+            updateMediaSessionMetadata()
             playerNotificationManager?.invalidate()
             if (isBackgroundPlayback || isInPictureInPictureMode) {
                 setPlaybackForegroundMode(true)
@@ -1879,7 +1935,16 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun updatePipActions() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        setPictureInPictureParams(buildPipParams())
+        refreshPipParams("updatePipActions")
+    }
+
+    private fun refreshPipParams(source: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        runCatching {
+            setPictureInPictureParams(buildPipParams())
+        }.onFailure { err ->
+            Log.w("VideoPip", "refreshPipParams[$source] failed: ${err.javaClass.simpleName}")
+        }
     }
 
     private fun handlePipAction(action: String?) {
@@ -2270,6 +2335,8 @@ class VideoPlayerActivity : AppCompatActivity() {
             authorView?.text = ""
             authorView?.visibility = android.view.View.GONE
         }
+        updateMediaSessionMetadata()
+        playerNotificationManager?.invalidate()
     }
 
     private fun loadQueueForContext(videoPath: String) {
@@ -2280,8 +2347,13 @@ class VideoPlayerActivity : AppCompatActivity() {
         val playlistName = intent.getStringExtra("context_playlist_name").orEmpty()
         val keywordFilter = intent.getStringExtra("context_keyword").orEmpty()
         val queryFilter = intent.getStringExtra("context_query").orEmpty()
+        val titleQueryFilter = intent.getStringExtra("context_title_query").orEmpty()
+        val keywordQueryFilter = intent.getStringExtra("context_keyword_query").orEmpty()
+        val creatorQueryFilter = intent.getStringExtra("context_creator_query").orEmpty()
         val typeFilter = intent.getStringExtra("context_type").orEmpty()
         val websiteFilter = intent.getStringExtra("context_website").orEmpty()
+        val includeChildCategoryVideos = intent.getBooleanExtra("context_include_child_category_videos", false)
+        val excludedChildKeywords = parseCsvSet(intent.getStringExtra("context_excluded_child_keywords").orEmpty())
         val searchFields = parseSearchFields(intent.getStringExtra("context_search_fields").orEmpty())
         val sortType = runCatching {
             HistoryRepository.HistorySortType.valueOf(
@@ -2314,11 +2386,15 @@ class VideoPlayerActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val items = withContext(Dispatchers.IO) {
                 val historyRepo = HistoryRepository(db.historyDao, db.playlistDao)
+                val keywordForBaseQuery = if (includeChildCategoryVideos && keywordFilter.isNotBlank()) "" else keywordFilter
                 val ids = historyRepo.getFilteredIDs(
                     query = queryFilter,
                     type = typeFilter,
                     author = authorFilter,
-                    keyword = keywordFilter,
+                    keyword = keywordForBaseQuery,
+                    titleQuery = titleQueryFilter,
+                    keywordQuery = keywordQueryFilter,
+                    creatorQuery = creatorQueryFilter,
                     sortType = sortType,
                     order = sortOrder,
                     status = Unit,
@@ -2326,7 +2402,31 @@ class VideoPlayerActivity : AppCompatActivity() {
                     playlistId = playlistId,
                     searchFields = searchFields
                 )
-                historyRepo.getItemsFromIDs(ids).asSequence()
+                val relationIds = historyRepo.getFilteredIDs(
+                    query = queryFilter,
+                    type = typeFilter,
+                    author = "",
+                    keyword = "",
+                    titleQuery = titleQueryFilter,
+                    keywordQuery = keywordQueryFilter,
+                    creatorQuery = creatorQueryFilter,
+                    sortType = sortType,
+                    order = sortOrder,
+                    status = Unit,
+                    website = websiteFilter,
+                    playlistId = playlistId,
+                    searchFields = searchFields
+                )
+                val filteredIds = applyChildKeywordFiltersToIds(
+                    historyRepo = historyRepo,
+                    ids = ids,
+                    relationIds = relationIds,
+                    authorFilter = authorFilter,
+                    keywordFilter = keywordFilter,
+                    includeChildCategoryVideos = includeChildCategoryVideos,
+                    excludedChildKeywords = excludedChildKeywords
+                )
+                historyRepo.getItemsFromIDs(filteredIds).asSequence()
                     .filter { it.type == DownloadType.video }
                     .map { resolveLocalTreePath(db, it) }
                     .mapNotNull { item ->
@@ -2513,6 +2613,155 @@ class VideoPlayerActivity : AppCompatActivity() {
         } else {
             parsed
         }
+    }
+
+    private fun parseCsvSet(raw: String): Set<String> {
+        if (raw.isBlank()) return emptySet()
+        return raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+    private fun applyChildKeywordFiltersToIds(
+        historyRepo: HistoryRepository,
+        ids: List<Long>,
+        relationIds: List<Long>,
+        authorFilter: String,
+        keywordFilter: String,
+        includeChildCategoryVideos: Boolean,
+        excludedChildKeywords: Set<String>
+    ): List<Long> {
+        if (ids.isEmpty()) return ids
+        if (authorFilter.isBlank() && keywordFilter.isBlank()) return ids
+
+        val allKeywords = historyRepo.getKeywordsWithInfoForHistoryIds(relationIds)
+        if (allKeywords.isEmpty()) return ids
+
+        val selectedKeywordInfo = if (keywordFilter.isBlank()) {
+            null
+        } else {
+            allKeywords.firstOrNull { it.keyword.equals(keywordFilter.trim(), ignoreCase = true) }
+        }
+        val byName = allKeywords.associateBy { it.keyword }
+
+        val videoKeywordNamesLower: Set<String> = when {
+            selectedKeywordInfo != null && includeChildCategoryVideos -> {
+                val names = mutableSetOf(selectedKeywordInfo.keyword)
+                val stack = ArrayDeque<String>()
+                stack.addAll(selectedKeywordInfo.childKeywords)
+                while (stack.isNotEmpty()) {
+                    val current = stack.removeFirst()
+                    if (!names.add(current)) continue
+                    byName[current]?.childKeywords.orEmpty().forEach { child -> stack.addLast(child) }
+                }
+                names.map { it.lowercase(java.util.Locale.getDefault()) }.toSet()
+            }
+            selectedKeywordInfo != null -> setOf(selectedKeywordInfo.keyword.lowercase(java.util.Locale.getDefault()))
+            else -> emptySet()
+        }
+
+        val excludedLower: Set<String> = when {
+            authorFilter.isNotBlank() -> {
+                val normalizedAuthor = normalizeCreator(authorFilter)
+                val authorKeywords = allKeywords.filter {
+                    val creator = it.uniqueCreator ?: return@filter false
+                    normalizeCreator(creator) == normalizedAuthor
+                }
+                buildExcludedRecursiveForAuthor(authorKeywords, excludedChildKeywords, includeChildCategoryVideos)
+                    .map { it.lowercase(java.util.Locale.getDefault()) }
+                    .toSet()
+            }
+            selectedKeywordInfo != null -> {
+                buildExcludedRecursiveForKeyword(selectedKeywordInfo, byName, excludedChildKeywords, includeChildCategoryVideos)
+                    .map { it.lowercase(java.util.Locale.getDefault()) }
+                    .toSet()
+            }
+            else -> emptySet()
+        }
+
+        if (videoKeywordNamesLower.isEmpty() && excludedLower.isEmpty()) return ids
+        val itemsById = historyRepo.getItemsFromIDs(ids).associateBy { it.id }
+        return ids.filter { id ->
+            val item = itemsById[id] ?: return@filter false
+            val itemKeywordsLower = splitKeywordsForFilter(item.keywords)
+                .map { it.lowercase(java.util.Locale.getDefault()) }
+                .toSet()
+            val matchesKeyword = if (keywordFilter.isNotBlank() && videoKeywordNamesLower.isNotEmpty()) {
+                itemKeywordsLower.any { videoKeywordNamesLower.contains(it) }
+            } else {
+                true
+            }
+            if (!matchesKeyword) return@filter false
+            if (excludedLower.isNotEmpty() && itemKeywordsLower.any { excludedLower.contains(it) }) {
+                return@filter false
+            }
+            true
+        }
+    }
+
+    private fun normalizeCreator(value: String): String {
+        return value.trim().trim('"').lowercase(java.util.Locale.getDefault())
+    }
+
+    private fun splitKeywordsForFilter(raw: String): List<String> {
+        if (raw.isBlank()) return emptyList()
+        return raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+    }
+
+    private fun buildExcludedRecursiveForAuthor(
+        authorKeywords: List<com.ireum.ytdl.database.models.KeywordInfo>,
+        excludedChildKeywords: Set<String>,
+        includeChildCategoryVideos: Boolean
+    ): Set<String> {
+        if (authorKeywords.isEmpty()) return emptySet()
+        val byName = authorKeywords.associateBy { it.keyword }
+        val seeds = when {
+            excludedChildKeywords.isNotEmpty() -> {
+                authorKeywords.filter { excludedChildKeywords.contains(it.keyword) }.map { it.keyword }
+            }
+            !includeChildCategoryVideos -> {
+                authorKeywords
+                    .filter { info -> info.parentKeywords.none { byName.containsKey(it) } }
+                    .map { it.keyword }
+            }
+            else -> emptyList()
+        }
+        return collectRecursiveKeywords(seeds, byName)
+    }
+
+    private fun buildExcludedRecursiveForKeyword(
+        selectedKeywordInfo: com.ireum.ytdl.database.models.KeywordInfo,
+        byName: Map<String, com.ireum.ytdl.database.models.KeywordInfo>,
+        excludedChildKeywords: Set<String>,
+        includeChildCategoryVideos: Boolean
+    ): Set<String> {
+        val seeds = when {
+            excludedChildKeywords.isNotEmpty() -> {
+                selectedKeywordInfo.childKeywords.filter { excludedChildKeywords.contains(it) }
+            }
+            !includeChildCategoryVideos -> selectedKeywordInfo.childKeywords
+            else -> emptyList()
+        }
+        return collectRecursiveKeywords(seeds, byName)
+    }
+
+    private fun collectRecursiveKeywords(
+        seeds: List<String>,
+        byName: Map<String, com.ireum.ytdl.database.models.KeywordInfo>
+    ): Set<String> {
+        if (seeds.isEmpty()) return emptySet()
+        val out = linkedSetOf<String>()
+        val stack = ArrayDeque<String>()
+        seeds.forEach { stack.addLast(it) }
+        while (stack.isNotEmpty()) {
+            val keyword = stack.removeFirst()
+            if (!out.add(keyword)) continue
+            byName[keyword]?.childKeywords.orEmpty().forEach { child -> stack.addLast(child) }
+        }
+        return out
     }
 
     private fun playSinglePath(path: String) {

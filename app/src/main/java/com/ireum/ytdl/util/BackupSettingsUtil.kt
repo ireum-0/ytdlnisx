@@ -26,7 +26,10 @@ object BackupSettingsUtil {
 
             val res = prefs.map { BackupSettingsItem(
                 key = it.key,
-                value = it.value.toString(),
+                value = when (val value = it.value) {
+                    is Set<*> -> Gson().toJson(value.filterIsInstance<String>())
+                    else -> value.toString()
+                },
                 type = it.value!!::class.simpleName
             ) }
 
@@ -240,6 +243,20 @@ object BackupSettingsUtil {
         runCatching {
             val items = withContext(Dispatchers.IO) {
                 youtuberGroupDao.getAllMembers()
+            }
+            val arr = JsonArray()
+            items.forEach {
+                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
+            }
+            return arr
+        }
+        return JsonArray()
+    }
+
+    suspend fun backupYoutuberGroupRelations(youtuberGroupDao: YoutuberGroupDao): JsonArray {
+        runCatching {
+            val items = withContext(Dispatchers.IO) {
+                youtuberGroupDao.getAllRelations()
             }
             val arr = JsonArray()
             items.forEach {

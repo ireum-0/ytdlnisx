@@ -18,4 +18,14 @@
         android:title="@string/edit_youtuber_info"
         app:showAsAction="never" />
 
+    <item
+        android:id="@+id/hide_youtubers"
+        android:title="@string/hide_selected"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/unhide_youtubers"
+        android:title="@string/unhide_selected"
+        app:showAsAction="never" />
+
 </menu>

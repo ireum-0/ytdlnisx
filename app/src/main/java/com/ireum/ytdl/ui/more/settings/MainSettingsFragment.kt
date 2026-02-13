@@ -45,6 +45,7 @@ import com.ireum.ytdl.database.models.SearchHistoryItem
 import com.ireum.ytdl.database.models.TemplateShortcut
 import com.ireum.ytdl.database.models.YoutuberGroup
 import com.ireum.ytdl.database.models.YoutuberGroupMember
+import com.ireum.ytdl.database.models.YoutuberGroupRelation
 import com.ireum.ytdl.database.models.YoutuberMeta
 import com.ireum.ytdl.database.viewmodel.CommandTemplateViewModel
 import com.ireum.ytdl.database.viewmodel.CookieViewModel
@@ -295,20 +296,25 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     }
 
                     //PARSE RESTORE JSON
-                    val json = Gson().fromJson(total.toString(), JsonObject::class.java)
+                    val gson = Gson()
+                    val json = gson.fromJson(total.toString(), JsonObject::class.java)
                     val restoreData = RestoreAppDataItem()
                     val parsedDataMessage = StringBuilder()
+                    val backupFormatVersion = runCatching {
+                        if (json.has("backup_format_version")) json.get("backup_format_version").asInt else 1
+                    }.getOrDefault(1)
+                    parsedDataMessage.appendLine("Backup format version: $backupFormatVersion")
 
                     if (json.has("settings")) {
                         restoreData.settings = json.getAsJsonArray("settings").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), BackupSettingsItem::class.java)
+                            gson.fromJson(it, BackupSettingsItem::class.java)
                         }
                         parsedDataMessage.appendLine("${getString(R.string.settings)}: ${restoreData.settings!!.size}")
                     }
 
                     if (json.has("downloads")) {
                         restoreData.downloads = json.getAsJsonArray("downloads").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), HistoryItem::class.java)
+                            gson.fromJson(it, HistoryItem::class.java)
                         }
                         parsedDataMessage.appendLine("${getString(R.string.downloads)}: ${restoreData.downloads!!.size}")
 
@@ -316,42 +322,69 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
                     if (json.has("custom_thumbnails")) {
                         restoreData.customThumbnails = json.getAsJsonArray("custom_thumbnails").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), BackupCustomThumbItem::class.java)
+                            gson.fromJson(it, BackupCustomThumbItem::class.java)
                         }
                         parsedDataMessage.appendLine("Custom thumbnails: ${restoreData.customThumbnails!!.size}")
                     }
 
                     if (json.has("keyword_groups")) {
                         restoreData.keywordGroups = json.getAsJsonArray("keyword_groups").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), KeywordGroup::class.java)
+                            gson.fromJson(it, KeywordGroup::class.java)
                         }
                         parsedDataMessage.appendLine("${getString(R.string.keywords)} Groups: ${restoreData.keywordGroups!!.size}")
                     }
 
                     if (json.has("keyword_group_members")) {
                         restoreData.keywordGroupMembers = json.getAsJsonArray("keyword_group_members").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), KeywordGroupMember::class.java)
+                            gson.fromJson(it, KeywordGroupMember::class.java)
                         }
                         parsedDataMessage.appendLine("${getString(R.string.keywords)} Group Members: ${restoreData.keywordGroupMembers!!.size}")
                     }
 
+                    if (json.has("history_visible_child_keywords")) {
+                        restoreData.historyVisibleChildKeywords =
+                            json.getAsJsonArray("history_visible_child_keywords")
+                                .mapNotNull {
+                                    runCatching { it.asString }.getOrNull()
+                                }
+                                .toSet()
+                        parsedDataMessage.appendLine("Visible child keywords: ${restoreData.historyVisibleChildKeywords!!.size}")
+                    }
+
                     if (json.has("youtuber_groups")) {
                         restoreData.youtuberGroups = json.getAsJsonArray("youtuber_groups").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), YoutuberGroup::class.java)
+                            gson.fromJson(it, YoutuberGroup::class.java)
                         }
                         parsedDataMessage.appendLine("Youtuber Groups: ${restoreData.youtuberGroups!!.size}")
                     }
 
                     if (json.has("youtuber_group_members")) {
                         restoreData.youtuberGroupMembers = json.getAsJsonArray("youtuber_group_members").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), YoutuberGroupMember::class.java)
+                            gson.fromJson(it, YoutuberGroupMember::class.java)
                         }
                         parsedDataMessage.appendLine("Youtuber Group Members: ${restoreData.youtuberGroupMembers!!.size}")
                     }
 
+                    if (json.has("youtuber_group_relations")) {
+                        restoreData.youtuberGroupRelations = json.getAsJsonArray("youtuber_group_relations").map {
+                            gson.fromJson(it, YoutuberGroupRelation::class.java)
+                        }
+                        parsedDataMessage.appendLine("Youtuber Group Relations: ${restoreData.youtuberGroupRelations!!.size}")
+                    }
+
+                    if (json.has("history_visible_child_youtuber_groups")) {
+                        restoreData.historyVisibleChildYoutuberGroups =
+                            json.getAsJsonArray("history_visible_child_youtuber_groups")
+                                .mapNotNull {
+                                    runCatching { it.asString.toLong() }.getOrNull()
+                                }
+                                .toSet()
+                        parsedDataMessage.appendLine("Visible child youtuber groups: ${restoreData.historyVisibleChildYoutuberGroups!!.size}")
+                    }
+
                     if (json.has("youtuber_meta")) {
                         restoreData.youtuberMeta = json.getAsJsonArray("youtuber_meta").map {
-                            Gson().fromJson(it.toString().replace("^\"|\"$", ""), YoutuberMeta::class.java)
+                            gson.fromJson(it, YoutuberMeta::class.java)
                         }
                         parsedDataMessage.appendLine("Youtuber Metadata: ${restoreData.youtuberMeta!!.size}")
                     }
@@ -359,7 +392,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     if (json.has("queued")) {
                         restoreData.queued = json.getAsJsonArray("queued").map {
                             val item =
-                                Gson().fromJson(it.toString().replace("^\"|\"$", ""), DownloadItem::class.java)
+                                gson.fromJson(it, DownloadItem::class.java)
                             item.id = 0L
                             item
                         }
@@ -369,7 +402,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     if (json.has("scheduled")) {
                         restoreData.scheduled = json.getAsJsonArray("scheduled").map {
                             val item =
-                                Gson().fromJson(it.toString().replace("^\"|\"$", ""), DownloadItem::class.java)
+                                gson.fromJson(it, DownloadItem::class.java)
                             item.id = 0L
                             item
                         }
@@ -379,7 +412,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     if (json.has("cancelled")) {
                         restoreData.cancelled = json.getAsJsonArray("cancelled").map {
                             val item =
-                                Gson().fromJson(it.toString().replace("^\"|\"$", ""), DownloadItem::class.java)
+                                gson.fromJson(it, DownloadItem::class.java)
                             item.id = 0L
                             item
                         }
@@ -389,7 +422,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     if (json.has("errored")) {
                         restoreData.errored = json.getAsJsonArray("errored").map {
                             val item =
-                                Gson().fromJson(it.toString().replace("^\"|\"$", ""), DownloadItem::class.java)
+                                gson.fromJson(it, DownloadItem::class.java)
                             item.id = 0L
                             item
                         }
@@ -399,7 +432,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     if (json.has("saved")) {
                         restoreData.saved = json.getAsJsonArray("saved").map {
                             val item =
-                                Gson().fromJson(it.toString().replace("^\"|\"$", ""), DownloadItem::class.java)
+                                gson.fromJson(it, DownloadItem::class.java)
                             item.id = 0L
                             item
                         }
@@ -409,7 +442,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     if (json.has("cookies")) {
                         restoreData.cookies = json.getAsJsonArray("cookies").map {
                             val item =
-                                Gson().fromJson(it.toString().replace("^\"|\"$", ""), CookieItem::class.java)
+                                gson.fromJson(it, CookieItem::class.java)
                             item.id = 0L
                             item
                         }
@@ -418,8 +451,8 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
                     if (json.has("templates")) {
                         restoreData.templates = json.getAsJsonArray("templates").map {
-                            val item = Gson().fromJson(
-                                it.toString().replace("^\"|\"$", ""),
+                            val item = gson.fromJson(
+                                it,
                                 CommandTemplate::class.java
                             )
                             item.id = 0L
@@ -430,8 +463,8 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
                     if (json.has("shortcuts")) {
                         restoreData.shortcuts = json.getAsJsonArray("shortcuts").map {
-                            val item = Gson().fromJson(
-                                it.toString().replace("^\"|\"$", ""),
+                            val item = gson.fromJson(
+                                it,
                                 TemplateShortcut::class.java
                             )
                             item.id = 0L
@@ -444,8 +477,8 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
                     if (json.has("search_history")) {
                         restoreData.searchHistory = json.getAsJsonArray("search_history").map {
-                            val item = Gson().fromJson(
-                                it.toString().replace("^\"|\"$", ""),
+                            val item = gson.fromJson(
+                                it,
                                 SearchHistoryItem::class.java
                             )
                             item.id = 0L
@@ -457,8 +490,8 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
                     if (json.has("observe_sources")) {
                         restoreData.observeSources = json.getAsJsonArray("observe_sources").map {
-                            val item = Gson().fromJson(
-                                it.toString().replace("^\"|\"$", ""),
+                            val item = gson.fromJson(
+                                it,
                                 ObserveSourcesItem::class.java
                             )
                             item.id = 0L
@@ -557,3 +590,5 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         dialog.show()
     }
 }
+
+

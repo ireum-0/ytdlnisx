@@ -465,6 +465,12 @@
     <string name="search_target_title">Title</string>
     <string name="search_target_keywords">Keywords</string>
     <string name="search_target_creator">Youtuber/Artist</string>
+    <string name="include_child_category_videos">Include videos in child categories</string>
+    <string name="show_hidden_only">Show hidden items only</string>
+    <string name="display">Display</string>
+    <string name="hide_selected">Hide selected</string>
+    <string name="unhide_selected">Unhide selected</string>
+    <string name="edit_parent_groups">Edit parent groups</string>
     <string name="websites">Websites</string>
     <string name="other_youtube_extractor_args">Other YouTube extractor arguments</string>
     <string name="items">item(s)</string>
@@ -572,6 +578,8 @@
     <string name="local_video_adding_progress">Adding videos\u2026 (%1$d/%2$d)</string>
     <string name="remove_from_playlist">Remove from playlist</string>
     <string name="remove_from_current_group">Remove from current group</string>
+    <string name="show_on_first_list">Show on first list</string>
+    <string name="hide_from_first_list">Hide from first list</string>
     <string name="delete_keywords">Delete keywords</string>
     <string name="confirm_delete_keywords_desc">Delete %1$d keyword(s) from all videos?</string>
     <string name="removed_from_playlist">Removed from playlist</string>

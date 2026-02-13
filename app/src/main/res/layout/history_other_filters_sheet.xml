@@ -83,9 +83,8 @@
 
     </LinearLayout>
 
-
     <LinearLayout
-        android:id="@+id/searchTargetFilters"
+        android:id="@+id/displayFilters"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical">
@@ -95,21 +94,25 @@
             android:layout_height="wrap_content"
             android:layout_marginHorizontal="20dp"
             android:layout_marginBottom="10dp"
-            android:text="@string/search_targets"
+            android:text="@string/display"
             android:textSize="14sp"
             android:textStyle="bold" />
 
-        <com.google.android.material.chip.ChipGroup
-            android:id="@+id/searchTargetsChipGroup"
-            android:layout_width="wrap_content"
+        <com.google.android.material.checkbox.MaterialCheckBox
+            android:id="@+id/includeChildCategoryVideosCheck"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="20dp"
+            android:layout_marginBottom="8dp"
+            android:text="@string/include_child_category_videos" />
+
+        <com.google.android.material.checkbox.MaterialCheckBox
+            android:id="@+id/showHiddenOnlyCheck"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginHorizontal="20dp"
             android:layout_marginBottom="20dp"
-            app:chipSpacing="0dp"
-            app:chipSpacingVertical="-10dp"
-            app:singleLine="false"
-            app:singleSelection="false" />
-
+            android:text="@string/show_hidden_only" />
     </LinearLayout>
 
 
