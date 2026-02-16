@@ -42,6 +42,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.greenrobot.eventbus.EventBus
@@ -703,7 +704,12 @@ class DownloadWorker(
                             add("description")
                             add("txt")
                         }
-                        finalPaths = finalPaths.filter { path -> !nonMediaExtensions.any { path.endsWith(it) } }.toMutableList()
+                        finalPaths = finalPaths.filter { path ->
+                            val file = File(path)
+                            file.exists() &&
+                                file.isFile &&
+                                !nonMediaExtensions.any { path.endsWith(it) }
+                        }.toMutableList()
                         finalPaths = prioritizePrimaryMediaPath(finalPaths, downloadItem.type)
                         if (finalPaths.isNotEmpty()) {
                             val summary = finalPaths.joinToString(limit = 5) { path ->
@@ -953,6 +959,7 @@ class DownloadWorker(
                 Log.w(TAG, "HardSub media fallback from subtitle siblings used recovered=${mediaFiles.size}")
             }
         }
+        mediaFiles = mergeSeparatedVideoAudioIfNeeded(mediaFiles, ffmpegRuntime)
 
         Log.i(
             TAG,
@@ -1184,6 +1191,158 @@ class DownloadWorker(
         )
         // ffmpeg -i returns non-zero without output target, so parse stream info from output.
         return Regex("""(?m)^\s*Stream #\d+:\d+.*:\s*Video:\s*""").containsMatchIn(probe.output)
+    }
+
+    private fun mergeSeparatedVideoAudioIfNeeded(mediaFiles: List<File>, ffmpegRuntime: FfmpegRuntime): List<File> {
+        if (mediaFiles.size < 2) return mediaFiles
+
+        val videoCandidates = mediaFiles.filter { fileHasVideoTrack(it) }
+        if (videoCandidates.isEmpty()) return mediaFiles
+        val audioOnlyCandidates = mediaFiles.filter { !fileHasVideoTrack(it) && fileHasAudioTrack(it) }
+        if (audioOnlyCandidates.isEmpty()) return mediaFiles
+
+        val primaryVideo = videoCandidates.maxByOrNull { it.length() } ?: return mediaFiles
+        if (fileHasAudioTrack(primaryVideo)) return mediaFiles
+
+        val normalizedVideoStem = normalizeMuxStem(primaryVideo.nameWithoutExtension)
+        val primaryAudio = audioOnlyCandidates
+            .filter { normalizeMuxStem(it.nameWithoutExtension) == normalizedVideoStem }
+            .maxByOrNull { it.length() }
+            ?: audioOnlyCandidates.maxByOrNull { it.length() }
+            ?: return mediaFiles
+
+        val mergedVideo = if (canCreateSiblingOutput(primaryVideo.parentFile ?: return mediaFiles)) {
+            mergeVideoAudioPairInDirectory(primaryVideo, primaryAudio, ffmpegRuntime)
+        } else {
+            Log.w(
+                TAG,
+                "HardSub AV merge staging fallback video=${primaryVideo.name} audio=${primaryAudio.name} dir=${primaryVideo.parentFile?.absolutePath ?: "unknown"}"
+            )
+            mergeVideoAudioPairViaWritableStage(primaryVideo, primaryAudio, ffmpegRuntime)
+        } ?: return mediaFiles
+
+        val removed = setOf(primaryVideo.absolutePath, primaryAudio.absolutePath)
+        return mediaFiles
+            .asSequence()
+            .filter { it.absolutePath !in removed }
+            .filter { it.exists() && it.isFile }
+            .plus(sequenceOf(mergedVideo))
+            .distinctBy { it.absolutePath }
+            .toList()
+    }
+
+    private fun mergeVideoAudioPairInDirectory(primaryVideo: File, primaryAudio: File, ffmpegRuntime: FfmpegRuntime): File? {
+        val parent = primaryVideo.parentFile ?: return null
+        val mergedTemp = File(parent, "${primaryVideo.nameWithoutExtension}.muxed.${primaryVideo.extension}")
+        val mergeResult = executeFfmpegWithAutoPatch(
+            ffmpegRuntime,
+            listOf(
+                "-y",
+                "-i", primaryVideo.absolutePath,
+                "-i", primaryAudio.absolutePath,
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-c", "copy",
+                mergedTemp.absolutePath
+            )
+        )
+        if (mergeResult.exitCode != 0 || !mergedTemp.exists() || mergedTemp.length() == 0L) {
+            if (mergedTemp.exists()) mergedTemp.delete()
+            Log.w(
+                TAG,
+                "HardSub AV merge skipped video=${primaryVideo.name} audio=${primaryAudio.name} code=${mergeResult.exitCode} dir=${parent.absolutePath}"
+            )
+            return null
+        }
+
+        val replaceOk = runCatching {
+            if (primaryVideo.exists() && !primaryVideo.delete()) return@runCatching false
+            if (!mergedTemp.renameTo(primaryVideo)) return@runCatching false
+            primaryAudio.delete()
+            true
+        }.getOrDefault(false)
+        if (!replaceOk) {
+            if (mergedTemp.exists()) mergedTemp.delete()
+            Log.w(TAG, "HardSub AV merge replace failed video=${primaryVideo.name} audio=${primaryAudio.name}")
+            return null
+        }
+
+        Log.i(
+            TAG,
+            "HardSub AV merged video=${primaryVideo.name} audio=${primaryAudio.name} size=${primaryVideo.length()}"
+        )
+        return primaryVideo
+    }
+
+    private fun mergeVideoAudioPairViaWritableStage(primaryVideo: File, primaryAudio: File, ffmpegRuntime: FfmpegRuntime): File? {
+        val sourceParent = primaryVideo.parentFile ?: return null
+        val stageRoot = File(
+            FileUtil.getCachePath(context),
+            "hardsub_mux_stage/${System.currentTimeMillis()}_${primaryVideo.nameWithoutExtension.hashCode().toString().replace('-', 'n')}"
+        )
+        if (!stageRoot.exists() && !stageRoot.mkdirs()) {
+            Log.w(TAG, "HardSub AV merge staging create failed dir=${stageRoot.absolutePath}")
+            return null
+        }
+        return try {
+            val stagedVideo = File(stageRoot, primaryVideo.name)
+            val stagedAudio = File(stageRoot, primaryAudio.name)
+            runCatching { primaryVideo.copyTo(stagedVideo, overwrite = true) }.getOrElse { error ->
+                Log.w(TAG, "HardSub AV merge staging copy failed file=${primaryVideo.name} reason=${error.message}")
+                return null
+            }
+            runCatching { primaryAudio.copyTo(stagedAudio, overwrite = true) }.getOrElse { error ->
+                Log.w(TAG, "HardSub AV merge staging copy failed file=${primaryAudio.name} reason=${error.message}")
+                return null
+            }
+
+            val mergedInStage = mergeVideoAudioPairInDirectory(stagedVideo, stagedAudio, ffmpegRuntime) ?: return null
+            val publishDir = File(stageRoot, "publish")
+            if (!publishDir.exists() && !publishDir.mkdirs()) {
+                Log.w(TAG, "HardSub AV merge staging publish dir create failed dir=${publishDir.absolutePath}")
+                return null
+            }
+            val stagedPublish = File(publishDir, primaryVideo.name)
+            mergedInStage.copyTo(stagedPublish, overwrite = true)
+
+            val movedBack = runBlocking {
+                runCatching {
+                    FileUtil.moveFile(
+                        publishDir,
+                        context,
+                        sourceParent.absolutePath,
+                        keepCache = false
+                    ) { _ -> }
+                }.getOrElse { error ->
+                    Log.w(TAG, "HardSub AV merge staging move-back failed dir=${sourceParent.absolutePath} reason=${error.message}")
+                    emptyList()
+                }
+            }
+            val movedPath = movedBack
+                .firstOrNull { File(it).name == primaryVideo.name }
+                ?: movedBack.firstOrNull { moved ->
+                    val movedFile = File(moved)
+                    movedFile.extension.equals(primaryVideo.extension, ignoreCase = true) &&
+                        movedFile.nameWithoutExtension.startsWith(primaryVideo.nameWithoutExtension)
+                }
+                ?: return null
+
+            runCatching { primaryAudio.delete() }
+            runCatching { primaryVideo.delete() }
+            val mergedFile = File(movedPath)
+            if (!mergedFile.exists() || !mergedFile.isFile) return null
+            Log.i(
+                TAG,
+                "HardSub AV merged via staging video=${primaryVideo.name} audio=${primaryAudio.name} output=${mergedFile.absolutePath}"
+            )
+            mergedFile
+        } finally {
+            runCatching { stageRoot.deleteRecursively() }
+        }
+    }
+
+    private fun normalizeMuxStem(name: String): String {
+        return name.replace(Regex("""\.f\d+$"""), "")
     }
 
     private fun prepareSubtitleForBurnIn(
@@ -2082,6 +2241,18 @@ class DownloadWorker(
             val width = retriever?.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
             val height = retriever?.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
             width > 0 && height > 0
+        }.getOrDefault(false).also {
+            runCatching { retriever?.release() }
+        }
+    }
+
+    private fun fileHasAudioTrack(file: File): Boolean {
+        var retriever: MediaMetadataRetriever? = null
+        return runCatching {
+            retriever = MediaMetadataRetriever().apply { setDataSource(file.absolutePath) }
+            retriever?.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
+                ?.lowercase(Locale.US)
+                ?.let { it == "yes" || it == "1" || it == "true" } ?: false
         }.getOrDefault(false).also {
             runCatching { retriever?.release() }
         }
