@@ -43,6 +43,7 @@ import java.util.concurrent.TimeUnit
 
 class SettingsViewModel(private val application: Application) : AndroidViewModel(application) {
     private val prefVisibleChildYoutuberGroupsKey = "history_visible_child_youtuber_groups"
+    private val prefVisibleChildYoutubersKey = "history_visible_child_youtubers"
     private val prefVisibleChildKeywordsKey = "history_visible_child_keywords"
 
     private val workManager : WorkManager = WorkManager.getInstance(application)
@@ -99,6 +100,10 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                             .getStringSet(prefVisibleChildYoutuberGroupsKey, emptySet())
                             .orEmpty()
                         json.add("history_visible_child_youtuber_groups", Gson().toJsonTree(visibleChildYoutuberGroups).asJsonArray)
+                        val visibleChildYoutubers = preferences
+                            .getStringSet(prefVisibleChildYoutubersKey, emptySet())
+                            .orEmpty()
+                        json.add("history_visible_child_youtubers", Gson().toJsonTree(visibleChildYoutubers).asJsonArray)
                         json.add("youtuber_meta", BackupSettingsUtil.backupYoutuberMeta(youtuberMetaDao))
                     }
                     "queued" -> json.add("queued", BackupSettingsUtil.backupQueuedDownloads(downloadRepository))
@@ -245,6 +250,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 data.youtuberGroupMembers != null ||
                 data.youtuberGroupRelations != null ||
                 data.historyVisibleChildYoutuberGroups != null ||
+                data.historyVisibleChildYoutubers != null ||
                 data.youtuberMeta != null
             ) {
                 withContext(Dispatchers.IO) {
@@ -305,6 +311,12 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                                 prefVisibleChildYoutuberGroupsKey,
                                 visible.map { it.toString() }.toSet()
                             )
+                        }
+                    }
+
+                    data.historyVisibleChildYoutubers?.let { visible ->
+                        preferences.edit(commit = true) {
+                            putStringSet(prefVisibleChildYoutubersKey, visible.toSet())
                         }
                     }
                 }

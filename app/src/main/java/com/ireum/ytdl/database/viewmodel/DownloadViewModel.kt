@@ -7,6 +7,7 @@ import android.content.res.Resources
 import android.os.Build
 import android.os.Parcelable
 import android.util.DisplayMetrics
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MediatorLiveData
@@ -38,11 +39,14 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.ui.downloadcard.MultipleItemFormatTuple
+import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
+import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.Extensions.needsDataUpdating
 import com.ireum.ytdl.util.Extensions.toListString
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.FormatUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.UpdateMultipleDownloadsDataWorker
@@ -65,6 +69,11 @@ import java.util.Locale
 
 
 class DownloadViewModel(private val application: Application) : AndroidViewModel(application) {
+    private companion object {
+        const val DUP_LOG_TAG = "DuplicateCheck"
+        const val HISTORY_REDOWNLOAD_MARKER = "history-redownload:"
+    }
+
     private val dbManager: DBManager
     val repository : DownloadRepository
     private val sharedPreferences: SharedPreferences
@@ -443,16 +452,36 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         return list
     }
 
-    fun createDownloadItemFromHistory(historyItem: HistoryItem) : DownloadItem {
-        val embedSubs = sharedPreferences.getBoolean("embed_subtitles", false)
-        val saveSubs = sharedPreferences.getBoolean("write_subtitles", false)
-        val saveAutoSubs = sharedPreferences.getBoolean("write_auto_subtitles", false)
+    suspend fun createDownloadItemFromHistory(historyItem: HistoryItem) : DownloadItem {
+        var embedSubs = sharedPreferences.getBoolean("embed_subtitles", false)
+        var saveSubs = sharedPreferences.getBoolean("write_subtitles", false)
+        var saveAutoSubs = sharedPreferences.getBoolean("write_auto_subtitles", false)
         val recodeVideo = sharedPreferences.getBoolean("recode_video", false)
         val addChapters = sharedPreferences.getBoolean("add_chapters", false)
         val saveThumb = sharedPreferences.getBoolean("write_thumbnail", false)
         val embedThumb = sharedPreferences.getBoolean("embed_thumbnail", false)
         val cropThumb = sharedPreferences.getBoolean("crop_thumbnail", false)
         val subsLanguages = sharedPreferences.getString("subs_lang", "en.*,.*-orig")!!
+        var availableSubtitles: List<String> = listOf()
+
+        if (historyItem.type == DownloadType.video) {
+            val manualSubs = runCatching {
+                resultRepository
+                    .getResultsFromSource(historyItem.url, resetResults = false, addToResults = false, singleItem = true)
+                    .firstOrNull()
+                    ?.availableSubtitles
+                    .orEmpty()
+            }.getOrDefault(listOf())
+
+            availableSubtitles = manualSubs
+            if (SubtitleLanguageMatcher.hasRequestedSubtitle(manualSubs, subsLanguages)) {
+                // For history re-download: force burn-in when requested subtitle language exists,
+                // even if this item was previously marked hardSubDone.
+                embedSubs = true
+                saveSubs = true
+                saveAutoSubs = false
+            }
+        }
 
         val customFileNameTemplate = when(historyItem.type) {
             DownloadType.audio -> sharedPreferences.getString("file_name_template_audio", "%(uploader).30B - %(title).170B")
@@ -521,7 +550,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             DownloadRepository.Status.Queued.toString(),
             0,
             null,
-            incognito = sharedPreferences.getBoolean("incognito", false)
+            playlistURL = "$HISTORY_REDOWNLOAD_MARKER${historyItem.id}",
+            incognito = sharedPreferences.getBoolean("incognito", false),
+            availableSubtitles = availableSubtitles
         )
 
     }
@@ -833,7 +864,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     suspend fun putAtTopOfQueue(ids: List<Long>) = CoroutineScope(Dispatchers.IO).launch{
         val downloads = dao.getQueuedDownloadsListIDs()
         val lastID = ids.maxOf { it }
-        ids.forEach { dao.updateDownloadID(it, -it) }
+        val tempIds = ids.associateWith { dao.moveToTemporaryId(it) }
         val newIDs = downloads.take(ids.size)
 
         //other ids that need to move around
@@ -847,14 +878,14 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             }
         }
         ids.forEachIndexed { idx, it ->
-            dao.updateDownloadID(-it, newIDs[idx])
+            dao.updateDownloadID(tempIds[it] ?: it, newIDs[idx])
         }
     }
 
 
     suspend fun putAtBottomOfQueue(ids: List<Long>) = CoroutineScope(Dispatchers.IO).launch{
         val downloads = dao.getQueuedDownloadsListIDs()
-        ids.forEach { dao.updateDownloadID(it, -it)}
+        val tempIds = ids.associateWith { dao.moveToTemporaryId(it) }
         val newIDs = downloads.takeLast(ids.size)
 
         //other ids that need to move around
@@ -868,7 +899,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         ids.toMutableList().apply {
             this.reverse()
             this.forEachIndexed { idx, it ->
-                dao.updateDownloadID(-it, newIDs[idx])
+                dao.updateDownloadID(tempIds[it] ?: it, newIDs[idx])
             }
         }
     }
@@ -876,7 +907,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     fun putAtPosition(current: Long, id: Long) = CoroutineScope(Dispatchers.IO).launch {
         val downloads = dao.getQueuedDownloadsListIDs()
-        dao.updateDownloadID(current, -current)
+        val tempCurrent = dao.moveToTemporaryId(current)
 
         if (current > id){
             downloads.filter { it in id until current }.toMutableList().apply {
@@ -892,7 +923,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 dao.updateDownloadID(dID, downloads[index - 1])
             }
         }
-        dao.updateDownloadID(-current, id)
+        dao.updateDownloadID(tempCurrent, id)
     }
 
     fun reQueueDownloadItems(items: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
@@ -932,6 +963,12 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
 
         items.forEachIndexed { idx, it ->
+            val canonicalUrl = canonicalDuplicateUrl(it.url)
+            val equivalentUrls = equivalentDuplicateUrls(it.url)
+            Log.d(
+                DUP_LOG_TAG,
+                "queueDownloads start idx=$idx id=${it.id} type=${it.type} mode=$checkDuplicate ignore=$ignoreDuplicates url=${it.url} canonical=$canonicalUrl equivalents=$equivalentUrls"
+            )
             if (it.downloadStartTime > 0) {
                 it.status = DownloadRepository.Status.Scheduled.toString()
             }else {
@@ -958,8 +995,14 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                         }
                     }
                     "url_type" -> {
-                        val existingDownload = activeAndQueuedDownloads.firstOrNull { a -> a.type == it.type && a.url == it.url  }
+                        val existingDownload = activeAndQueuedDownloads.firstOrNull { a ->
+                            a.type == it.type && areSameDuplicateUrl(a.url, it.url)
+                        }
                         if (existingDownload != null){
+                            Log.d(
+                                DUP_LOG_TAG,
+                                "duplicate(url_type) activeQueuedMatch id=${it.id} existingId=${existingDownload.id} type=${it.type} requestUrl=${it.url} existingUrl=${existingDownload.url}"
+                            )
                             isDuplicate = true
                             if (it.id == 0L){
                                 val id = repository.insert(it)
@@ -970,15 +1013,22 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                             existingItemIDs.add(AlreadyExistsIDs(it.id,null))
                         }else{
                             //check if downloaded and file exists
-                            val history = withContext(Dispatchers.IO){
-                                historyRepository.getItemsByUrl(it.url).filter { item -> item.downloadPath.any { path -> FileUtil.exists(path) } }
-                            }
+                            val history = getHistoryByEquivalentUrl(it.url)
+                                .filter { item -> item.downloadPath.any { path -> FileUtil.exists(path) } }
+                            Log.d(
+                                DUP_LOG_TAG,
+                                "url_type history lookup id=${it.id} type=${it.type} exactCount=${history.size} canonicalCount=${history.size} requestUrl=${it.url} canonical=$canonicalUrl equivalents=$equivalentUrls"
+                            )
 
                             val existingHistoryItem = history.firstOrNull {
                                     h -> h.type == it.type
                             }
 
                             if (existingHistoryItem != null){
+                                Log.d(
+                                    DUP_LOG_TAG,
+                                    "duplicate(url_type) historyMatch id=${it.id} historyId=${existingHistoryItem.id} type=${it.type} requestUrl=${it.url} historyUrl=${existingHistoryItem.url}"
+                                )
                                 isDuplicate = true
                                 if (it.id == 0L){
                                     val id = repository.insert(it)
@@ -1004,6 +1054,10 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                         }
 
                         if (existingDownload != null){
+                            Log.d(
+                                DUP_LOG_TAG,
+                                "duplicate(config) activeQueuedMatch id=${it.id} existingId=${existingDownload.id} url=${it.url}"
+                            )
                             isDuplicate = true
                             if (it.id == 0L){
                                 val id = repository.insert(it)
@@ -1017,12 +1071,25 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                             val history = withContext(Dispatchers.IO){
                                 historyRepository.getItemsByUrl(it.url).filter { item -> item.downloadPath.any { path -> FileUtil.exists(path) } }
                             }
+                            val canonicalHistory = withContext(Dispatchers.IO) {
+                                equivalentUrls.flatMap { historyRepository.getItemsByUrl(it) }
+                                    .distinctBy { item -> item.id }
+                                    .filter { item -> item.downloadPath.any { path -> FileUtil.exists(path) } }
+                            }
+                            Log.d(
+                                DUP_LOG_TAG,
+                                "config history lookup id=${it.id} exactCount=${history.size} canonicalCount=${canonicalHistory.size} requestUrl=${it.url} canonical=$canonicalUrl equivalents=$equivalentUrls"
+                            )
 
                             val existingHistoryItem = history.firstOrNull {
                                     h -> h.command.replace("(-P \"(.*?)\")|(--trim-filenames \"(.*?)\")".toRegex(), "") == parsedCurrentCommand.replace("(-P \"(.*?)\")|(--trim-filenames \"(.*?)\")".toRegex(), "")
                             }
 
                             if (existingHistoryItem != null){
+                                Log.d(
+                                    DUP_LOG_TAG,
+                                    "duplicate(config) historyCommandMatch id=${it.id} historyId=${existingHistoryItem.id} requestUrl=${it.url} historyUrl=${existingHistoryItem.url}"
+                                )
                                 isDuplicate = true
                                 if (it.id == 0L){
                                     val id = repository.insert(it)
@@ -1035,6 +1102,13 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                         }
                     }
                 }
+            }
+
+            if (!isDuplicate) {
+                Log.d(
+                    DUP_LOG_TAG,
+                    "not-duplicate id=${it.id} type=${it.type} mode=$checkDuplicate url=${it.url} canonical=$canonicalUrl"
+                )
             }
 
             if (!isDuplicate){
@@ -1088,6 +1162,38 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
 
         return result
+    }
+
+    private fun canonicalDuplicateUrl(url: String): String {
+        val trimmed = url.trim()
+        if (!trimmed.isYoutubeURL()) return trimmed
+        val id = trimmed.getIDFromYoutubeURL() ?: return trimmed
+        return "https://youtu.be/$id"
+    }
+
+    private fun equivalentDuplicateUrls(url: String): List<String> {
+        val canonical = canonicalDuplicateUrl(url)
+        if (!canonical.startsWith("https://youtu.be/")) return listOf(url)
+        val id = canonical.removePrefix("https://youtu.be/")
+        return listOf(
+            canonical,
+            "https://www.youtube.com/watch?v=$id",
+            "https://youtube.com/watch?v=$id",
+            "https://m.youtube.com/watch?v=$id",
+            "https://music.youtube.com/watch?v=$id"
+        ).distinct()
+    }
+
+    private fun areSameDuplicateUrl(a: String, b: String): Boolean {
+        return canonicalDuplicateUrl(a) == canonicalDuplicateUrl(b)
+    }
+
+    private suspend fun getHistoryByEquivalentUrl(url: String): List<HistoryItem> {
+        return withContext(Dispatchers.IO) {
+            equivalentDuplicateUrls(url)
+                .flatMap { historyRepository.getItemsByUrl(it) }
+                .distinctBy { it.id }
+        }
     }
 
     fun getQueuedCollectedFileSize() : Long {

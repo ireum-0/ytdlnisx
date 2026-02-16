@@ -13,6 +13,7 @@ data class RestoreAppDataItem(
     var youtuberGroupMembers: List<YoutuberGroupMember>? = null,
     var youtuberGroupRelations: List<YoutuberGroupRelation>? = null,
     var historyVisibleChildYoutuberGroups: Set<Long>? = null,
+    var historyVisibleChildYoutubers: Set<String>? = null,
     var historyVisibleChildKeywords: Set<String>? = null,
     var youtuberMeta: List<YoutuberMeta>? = null,
     var queued: List<DownloadItem>? = null,

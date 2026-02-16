@@ -17,22 +17,6 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent">
 
-            <com.google.android.material.progressindicator.LinearProgressIndicator
-                android:id="@+id/downloads_progress"
-                android:layout_width="match_parent"
-                android:layout_height="3dp"
-                android:layout_gravity="bottom"
-                android:layout_marginBottom="8dp"
-                android:layout_marginStart="10dp"
-                android:layout_marginEnd="10dp"
-                android:visibility="gone"
-                app:indicatorColor="@color/white"
-                app:trackColor="#66000000"
-                app:trackThickness="3dp"
-                app:layout_constraintBottom_toBottomOf="parent"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintEnd_toEndOf="parent" />
-
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/downloads_card_view2"
                 android:layout_width="match_parent"
@@ -74,6 +58,22 @@
                 <androidx.constraintlayout.widget.ConstraintLayout
                     android:layout_width="match_parent"
                     android:layout_height="match_parent">
+
+                    <com.google.android.material.progressindicator.LinearProgressIndicator
+                        android:id="@+id/downloads_progress"
+                        android:layout_width="match_parent"
+                        android:layout_height="3dp"
+                        android:layout_gravity="bottom"
+                        android:layout_marginStart="10dp"
+                        android:layout_marginEnd="10dp"
+                        android:layout_marginBottom="8dp"
+                        android:visibility="gone"
+                        app:indicatorColor="@color/white"
+                        app:layout_constraintBottom_toBottomOf="parent"
+                        app:layout_constraintEnd_toEndOf="parent"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:trackColor="#66000000"
+                        app:trackThickness="3dp" />
 
                     <LinearLayout
                         android:layout_width="0dp"

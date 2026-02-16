@@ -559,6 +559,42 @@
                     android:layout_height="wrap_content">
 
                     <TextView
+                        android:id="@+id/textViewExcludeShortsTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:text="@string/exclude_shorts"
+                        android:textStyle="bold"
+                        app:layout_constraintEnd_toStartOf="@+id/exclude_shorts"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toTopOf="parent" />
+
+                    <TextView
+                        android:id="@+id/textViewExcludeShortsDesc"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:text="@string/exclude_shorts_desc"
+                        app:layout_constraintBottom_toBottomOf="parent"
+                        app:layout_constraintEnd_toStartOf="@+id/exclude_shorts"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@id/textViewExcludeShortsTitle" />
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/exclude_shorts"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:checked="false"
+                        app:layout_constraintBottom_toBottomOf="parent"
+                        app:layout_constraintEnd_toEndOf="parent"
+                        app:layout_constraintTop_toTopOf="parent" />
+
+                </androidx.constraintlayout.widget.ConstraintLayout>
+
+                <androidx.constraintlayout.widget.ConstraintLayout
+                    android:layout_width="match_parent"
+                    android:layout_marginTop="10dp"
+                    android:layout_height="wrap_content">
+
+                    <TextView
                         android:id="@+id/textView12"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"

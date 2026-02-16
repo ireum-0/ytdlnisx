@@ -442,11 +442,7 @@ class HistoryPaginatedAdapter(
                 }
             }
             itemView.setOnLongClickListener {
-                if (selectedKeywords.isNotEmpty()) {
-                    toggleKeywordSelection(keywordInfo.keyword, card)
-                } else {
-                    onItemClickListener.onKeywordLongClick(keywordInfo)
-                }
+                toggleKeywordSelection(keywordInfo.keyword, card)
                 true
             }
         }

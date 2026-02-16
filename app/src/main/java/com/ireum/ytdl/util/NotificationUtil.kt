@@ -183,6 +183,55 @@ class NotificationUtil(var context: Context) {
             .build()
     }
 
+    fun createHardSubWorkerNotification(statusText: String) : Notification {
+        val notificationBuilder = getBuilder(DOWNLOAD_WORKER_CHANNEL_ID)
+
+        return notificationBuilder
+            .setContentTitle(resources.getString(R.string.downloading))
+            .setContentText(statusText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(statusText))
+            .setOngoing(true)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setLargeIcon(
+                BitmapFactory.decodeResource(
+                    resources,
+                    android.R.drawable.stat_sys_download
+                )
+            )
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setGroup(DOWNLOAD_RUNNING_NOTIFICATION_ID.toString())
+            .setGroupSummary(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .clearActions()
+            .build()
+    }
+
+    fun createHardSubScanWorkerNotification(titleText: String, statusText: String) : Notification {
+        val notificationBuilder = getBuilder(DOWNLOAD_WORKER_CHANNEL_ID)
+
+        return notificationBuilder
+            .setContentTitle(titleText)
+            .setContentText(statusText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(statusText))
+            .setOngoing(true)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setLargeIcon(
+                BitmapFactory.decodeResource(
+                    resources,
+                    android.R.drawable.stat_sys_download
+                )
+            )
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setGroup(DOWNLOAD_RUNNING_NOTIFICATION_ID.toString())
+            .setGroupSummary(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setOnlyAlertOnce(true)
+            .clearActions()
+            .build()
+    }
+
     fun createLocalAddPendingNotification(
         count: Int,
         pendingIntent: PendingIntent?
@@ -236,12 +285,18 @@ class NotificationUtil(var context: Context) {
             .build()
     }
 
-    fun createObserveSourcesNotification(title: String) : Notification {
+    fun createObserveSourcesNotification(title: String, status: String = "") : Notification {
         val notificationBuilder = getBuilder(DOWNLOAD_WORKER_CHANNEL_ID)
 
         return notificationBuilder
             .setContentTitle(resources.getString(R.string.observe_sources))
-            .setContentText(title)
+            .setContentText(if (status.isBlank()) title else status)
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    if (status.isBlank()) title else "$title\n$status"
+                )
+            )
+            .setSubText(title)
             .setOngoing(true)
             .setSmallIcon(R.drawable.ic_launcher_foreground_large)
             .setLargeIcon(
@@ -546,12 +601,16 @@ class NotificationUtil(var context: Context) {
         progress: Int,
         queue: Int,
         title: String?,
-        channel : String
+        channel : String,
+        hardSubStatus: String? = null
     ) {
 
         val notificationBuilder = getBuilder(channel)
         var contentText = ""
         if (queue > 1) contentText += """${queue - 1} ${resources.getString(R.string.items_left)}""" + "\n"
+        if (!hardSubStatus.isNullOrBlank()) {
+            contentText += "$hardSubStatus\n"
+        }
         contentText += desc.replace("\\[.*?\\] ".toRegex(), "")
 
         val pauseIntent = Intent(context, PauseDownloadNotificationReceiver::class.java)

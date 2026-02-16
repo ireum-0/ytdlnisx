@@ -66,6 +66,9 @@ interface HistoryDao {
     @Query("SELECT * FROM history WHERE type = 'video' ORDER BY time DESC")
     fun getAllVideos(): List<HistoryItem>
 
+    @Query("SELECT * FROM history WHERE type = 'video' AND hardSubScanRemoved = 0 AND hardSubDone = 0 ORDER BY time DESC")
+    fun getHardSubScanCandidates(): List<HistoryItem>
+
     @Query(
         "SELECT * FROM history WHERE type = 'video' AND (" +
             "author = :author OR " +
@@ -90,6 +93,12 @@ interface HistoryDao {
 
     @Query("UPDATE history SET lastWatched = :time WHERE id = :id")
     fun updateLastWatched(id: Long, time: Long)
+
+    @Query("UPDATE history SET hardSubScanRemoved = :removed, hardSubDone = :done WHERE id = :id")
+    fun updateHardSubScanState(id: Long, removed: Boolean, done: Boolean)
+
+    @Query("UPDATE history SET hardSubScanRemoved = 0, hardSubDone = 0 WHERE type = 'video' AND hardSubDone = 1")
+    fun resetHardSubDoneForRescan()
 
     @Delete
     fun delete(item: HistoryItem)

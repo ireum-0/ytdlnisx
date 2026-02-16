@@ -12,7 +12,7 @@ def properties = new Properties()
 def versionMajor = 1
 def versionMinor = 8
 def versionPatch = 8
-def versionBuild = 0 // bump for dogfood builds, public betas, etc.
+def versionBuild = 1 // bump for dogfood builds, public betas, etc.
 def isBeta = false
 
 def versionExt = ""
@@ -155,7 +155,9 @@ dependencies {
     implementation "io.github.junkfood02.youtubedl-android:aria2c:0.18.1"
 
 //    implementation "io.github.junkfood02.youtubedl-android:library:0.17.4"
-    implementation "io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1"
+    // Hard-sub uses bundled/runtime executable path, not youtubedl-android FFmpeg wrapper.
+    // Keep wrapper removed to avoid libffmpeg.so linker crashes on startup/runtime.
+    // implementation "io.github.junkfood02.youtubedl-android:ffmpeg:0.17.2"
 //    implementation "io.github.junkfood02.youtubedl-android:aria2c:0.17.2"
 
     implementation "androidx.appcompat:appcompat:1.7.1"

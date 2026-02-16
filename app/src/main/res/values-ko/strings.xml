@@ -29,6 +29,7 @@
     <string name="cancel">취소</string>
     <string name="confirm_delete_history_desc">전체 기록을 완전히 삭제</string>
     <string name="confirm_delete_history">확인</string>
+    <string name="delete_action">삭제</string>
     <string name="search_history_hint">기록에서 검색</string>
     <string name="search_command_hint">명령어로 검색</string>
     <string name="no_results">결과 없음</string>
@@ -63,6 +64,9 @@
     <string name="command_download_notification_channel_name">명령 다운로드</string>
     <string name="command_download_notification_channel_description">yt-dlp 명령을 사용한 다운로드 진행률을 보여주는 알림</string>
     <string name="items_left">남은 항목</string>
+    <string name="hard_sub_progress">하드서브 진행: %1$d/%2$d</string>
+    <string name="hard_sub_scan_title">하드서브 자동 점검</string>
+    <string name="hard_sub_scan_progress">영상 점검 중: %1$d/%2$d</string>
     <string name="history_is_empty">기록이 비어 있습니다</string>
     <string name="you_are_going_to_delete">삭제</string>
     <string name="url">URL</string>
@@ -338,7 +342,7 @@
     <string name="multiple_download_card">다중 다운로드 설정창</string>
     <string name="format_filter">형식 필터</string>
     <string name="format_smallest">가장 작은 형식 (해상도 단위)</string>
-    <string name="observe_sources">소스 보기</string>
+    <string name="observe_sources">자동 다운로드</string>
     <string name="new_source">새 소스</string>
     <string name="delete_all_sources">모든 소스 삭제</string>
     <string name="confirm_delete_sources_desc">모든 소스 영구적으로 지우기</string>
@@ -389,6 +393,20 @@
     <string name="show_download_count">다운로드 대기열 화면에 개수 표시</string>
     <string name="thumbnail_format">썸네일 형식</string>
     <string name="get_new_uploads">새 업로드만 가져오기 (기존 항목 무시)</string>
+    <string name="exclude_shorts">쇼츠 제외하기</string>
+    <string name="exclude_shorts_desc">이 소스를 확인할 때 쇼츠는 건너뜁니다</string>
+    <string name="view_history">히스토리 보기</string>
+    <string name="no_history_yet">기록이 없습니다</string>
+    <string name="observe_history_title">실행 히스토리</string>
+    <string name="observe_history_detail_title">실행 상세</string>
+    <string name="observe_log_no_downloadable_videos">다운로드할 영상이 없음</string>
+    <string name="observe_log_all_already_downloaded">모든 영상이 다운로드 되어있음</string>
+    <string name="observe_log_downloaded_single">다운로드함: %1$s</string>
+    <string name="observe_log_downloaded_multiple">다운로드함: %1$s 외 %2$d개</string>
+    <string name="observe_status_fetching">소스 항목 확인 중…</string>
+    <string name="observe_status_filtering">다운로드 대상 분류 중…</string>
+    <string name="observe_status_queueing">%1$d개 다운로드 대기열 등록 중…</string>
+    <string name="observe_status_finished">완료</string>
     <string name="also_download_audio">오디오로도 다운로드하기</string>
     <string name="wrap_text">글자 줄바꿈</string>
     <string name="scroll_down">맨 아래로 스크롤</string>
@@ -455,6 +473,7 @@
     <string name="deleted">삭제됨</string>
     <string name="missing_thumbnail">썸네일 없음</string>
     <string name="custom_thumbnail_only">커스텀 썸네일만</string>
+    <string name="hardsub_done_only">하드 서브 완료만</string>
     <string name="search_targets">검색 대상</string>
     <string name="search_target_title">제목</string>
     <string name="search_target_keywords">키워드</string>

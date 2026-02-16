@@ -39,6 +39,14 @@ data class ObserveSourcesItem(
     var ignoredLinks: MutableList<String>,
     var alreadyProcessedLinks : MutableList<String>,
     @ColumnInfo(defaultValue = "0")
-    var syncWithSource: Boolean
+    var syncWithSource: Boolean,
+    @ColumnInfo(defaultValue = "0")
+    var excludeShorts: Boolean = false,
+    @ColumnInfo(defaultValue = "[]")
+    var runHistory: MutableList<String> = mutableListOf(),
+    @ColumnInfo(defaultValue = "0")
+    var runInProgress: Boolean = false,
+    @ColumnInfo(defaultValue = "")
+    var currentRunStatus: String = ""
 ) : Parcelable
 

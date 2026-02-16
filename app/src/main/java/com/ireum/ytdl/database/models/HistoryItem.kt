@@ -52,5 +52,9 @@ data class HistoryItem(
     @ColumnInfo(defaultValue = "")
     val keywords: String = "",
     @ColumnInfo(defaultValue = "")
-    val customThumb: String = ""
+    val customThumb: String = "",
+    @ColumnInfo(defaultValue = "0")
+    val hardSubScanRemoved: Boolean = false,
+    @ColumnInfo(defaultValue = "0")
+    val hardSubDone: Boolean = false
 )

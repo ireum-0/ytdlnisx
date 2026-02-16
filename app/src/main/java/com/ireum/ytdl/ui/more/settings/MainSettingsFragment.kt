@@ -382,6 +382,16 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                         parsedDataMessage.appendLine("Visible child youtuber groups: ${restoreData.historyVisibleChildYoutuberGroups!!.size}")
                     }
 
+                    if (json.has("history_visible_child_youtubers")) {
+                        restoreData.historyVisibleChildYoutubers =
+                            json.getAsJsonArray("history_visible_child_youtubers")
+                                .mapNotNull {
+                                    runCatching { it.asString }.getOrNull()
+                                }
+                                .toSet()
+                        parsedDataMessage.appendLine("Visible child youtubers: ${restoreData.historyVisibleChildYoutubers!!.size}")
+                    }
+
                     if (json.has("youtuber_meta")) {
                         restoreData.youtuberMeta = json.getAsJsonArray("youtuber_meta").map {
                             gson.fromJson(it, YoutuberMeta::class.java)

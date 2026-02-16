@@ -168,6 +168,26 @@ object Migrations {
         Migration(40, 41) { database ->
             database.execSQL("CREATE TABLE IF NOT EXISTS `youtuber_group_relations` (`parentGroupId` INTEGER NOT NULL, `childGroupId` INTEGER NOT NULL, PRIMARY KEY(`parentGroupId`, `childGroupId`))")
             database.execSQL("CREATE INDEX IF NOT EXISTS `index_youtuber_group_relations_childGroupId` ON `youtuber_group_relations` (`childGroupId`)")
+        },
+        Migration(41, 42) { database ->
+            database.execSQL("ALTER TABLE sources ADD COLUMN excludeShorts INTEGER NOT NULL DEFAULT 0")
+        },
+        Migration(42, 43) { database ->
+            database.execSQL("ALTER TABLE sources ADD COLUMN runHistory TEXT NOT NULL DEFAULT '[]'")
+        },
+        Migration(43, 44) { database ->
+            database.execSQL("ALTER TABLE sources ADD COLUMN runInProgress INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE sources ADD COLUMN currentRunStatus TEXT NOT NULL DEFAULT ''")
+        },
+        Migration(44, 45) { database ->
+            database.execSQL("ALTER TABLE history ADD COLUMN hardSubScanRemoved INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE history ADD COLUMN hardSubDone INTEGER NOT NULL DEFAULT 0")
+        },
+        Migration(45, 46) { _ ->
+            // Reserved schema version step to preserve upgrade/downgrade compatibility.
+        },
+        Migration(46, 47) { _ ->
+            // Reserved schema version step to preserve upgrade/downgrade compatibility.
         }
     )
 

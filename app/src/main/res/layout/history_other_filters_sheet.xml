@@ -81,6 +81,20 @@
             android:text="@string/custom_thumbnail_only"
             app:drawableStartCompat="@drawable/empty" />
 
+        <TextView
+            android:id="@+id/hardsub_done_only"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackground"
+            android:paddingVertical="10dp"
+            android:paddingHorizontal="20dp"
+            android:drawablePadding="30dp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="15sp"
+            android:text="@string/hardsub_done_only"
+            app:drawableStartCompat="@drawable/empty" />
+
     </LinearLayout>
 
     <LinearLayout

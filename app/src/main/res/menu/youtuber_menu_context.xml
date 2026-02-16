@@ -4,6 +4,16 @@
     tools:context=".MainActivity" >
 
     <item
+        android:id="@+id/show_youtubers_on_first_list"
+        android:title="@string/show_on_first_list"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/hide_youtubers_from_first_list"
+        android:title="@string/hide_from_first_list"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/add_to_youtuber_group"
         android:title="@string/add_to_group"
         app:showAsAction="never" />

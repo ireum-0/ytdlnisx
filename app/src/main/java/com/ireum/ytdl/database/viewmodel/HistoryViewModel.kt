@@ -75,6 +75,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     val showHiddenOnlyFilter = MutableStateFlow(false)
     val excludedChildKeywordsFilter = MutableStateFlow(setOf<String>())
     val visibleChildYoutuberGroupsFilter = MutableStateFlow(setOf<Long>())
+    val visibleChildYoutubersFilter = MutableStateFlow(setOf<String>())
     val visibleChildKeywordsFilter = MutableStateFlow(setOf<String>())
     private val refreshTrigger = MutableStateFlow(0L)
     private val typeFilter = MutableStateFlow("")
@@ -92,7 +93,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     private var lastQuotaExceededAt = 0L
 
     enum class HistoryStatus {
-        UNSET, DELETED, NOT_DELETED, MISSING_THUMBNAIL, CUSTOM_THUMBNAIL, ALL
+        UNSET, DELETED, NOT_DELETED, MISSING_THUMBNAIL, CUSTOM_THUMBNAIL, HARDSUB_DONE, ALL
     }
 
     var paginatedItems: Flow<PagingData<UiModel>>
@@ -186,6 +187,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         val showHiddenOnly: Boolean,
         val excludedChildKeywords: Set<String>,
         val visibleChildYoutuberGroups: Set<Long>,
+        val visibleChildYoutubers: Set<String>,
         val visibleChildKeywords: Set<String>,
         val refreshToken: Long
     )
@@ -285,11 +287,11 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 ) { hiddenY, hiddenGroups, showHiddenOnly, excludedChildren ->
                     Quadruple(hiddenY, hiddenGroups, showHiddenOnly, excludedChildren)
                 },
-                combine(visibleChildYoutuberGroupsFilter, visibleChildKeywordsFilter) { visibleYoutuberGroups, visibleKeywords ->
-                    Pair(visibleYoutuberGroups, visibleKeywords)
+                combine(visibleChildYoutuberGroupsFilter, visibleChildYoutubersFilter, visibleChildKeywordsFilter) { visibleYoutuberGroups, visibleYoutubers, visibleKeywords ->
+                    Triple(visibleYoutuberGroups, visibleYoutubers, visibleKeywords)
                 }
             ) { hidden, visible ->
-                Sextuple(hidden.first, hidden.second, hidden.third, hidden.fourth, visible.first, visible.second)
+                Septuple(hidden.first, hidden.second, hidden.third, hidden.fourth, visible.first, visible.second, visible.third)
             },
             refreshTrigger
         ) { base, youtuberGroup, keywordGroup, extra, refreshToken ->
@@ -305,7 +307,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 showHiddenOnly = extra.third,
                 excludedChildKeywords = extra.fourth,
                 visibleChildYoutuberGroups = extra.fifth,
-                visibleChildKeywords = extra.sixth,
+                visibleChildYoutubers = extra.sixth,
+                visibleChildKeywords = extra.seventh,
                 refreshToken = refreshToken
             )
         }
@@ -322,6 +325,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             val showHiddenOnly = mode.showHiddenOnly
             val excludedChildKeywords = mode.excludedChildKeywords
             val visibleChildYoutuberGroups = mode.visibleChildYoutuberGroups
+            val visibleChildYoutubers = mode.visibleChildYoutubers
             val visibleChildKeywords = mode.visibleChildKeywords
             Log.d(
                 "HistoryPagingVM",
@@ -477,6 +481,76 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                     return if (showHiddenOnly) hidden else !hidden
                 }
                 if (youtuberGroup >= 0L) {
+                    if (filters.includeChildCategoryVideos) {
+                        combine(youtuberGroupMembers, youtuberGroupRelations) { members, relations ->
+                            val childrenByParent = relations.groupBy { it.parentGroupId }.mapValues { entry ->
+                                entry.value.map { it.childGroupId }
+                            }
+                            fun descendantGroups(startGroupId: Long): Set<Long> {
+                                val visited = linkedSetOf<Long>()
+                                val stack = ArrayDeque<Long>()
+                                stack.add(startGroupId)
+                                while (stack.isNotEmpty()) {
+                                    val id = stack.removeFirst()
+                                    if (!visited.add(id)) continue
+                                    childrenByParent[id].orEmpty().forEach { stack.addLast(it) }
+                                }
+                                return visited
+                            }
+
+                            val targetGroupIds = descendantGroups(youtuberGroup)
+                            val memberAuthors = members
+                                .asSequence()
+                                .filter { targetGroupIds.contains(it.groupId) }
+                                .map { it.author }
+                                .filter { isYoutuberVisible(it) }
+                                .toSet()
+
+                            if (memberAuthors.isEmpty()) {
+                                return@combine PagingData.from(emptyList<UiModel>())
+                            }
+
+                            val allowedAuthorsLower = memberAuthors
+                                .map { normalizeCreator(it) }
+                                .toSet()
+
+                            val ids = withContext(Dispatchers.IO) {
+                                repository.getFilteredIDs(
+                                    filters.query,
+                                    filters.type,
+                                    "",
+                                    filters.keyword,
+                                    filters.titleQuery,
+                                    filters.keywordQuery,
+                                    filters.creatorQuery,
+                                    filters.sortType,
+                                    filters.sortOrder,
+                                    filters.status,
+                                    filters.website,
+                                    filters.playlistId,
+                                    filters.searchFields
+                                )
+                            }
+                            if (ids.isEmpty()) {
+                                return@combine PagingData.from(emptyList<UiModel>())
+                            }
+
+                            val items = withContext(Dispatchers.IO) {
+                                repository.getItemsFromIDs(ids)
+                            }
+                            val itemsById = items.associateBy { it.id }
+                            val ordered = ids.mapNotNull { id ->
+                                val item = itemsById[id] ?: return@mapNotNull null
+                                if (!passesStatusFilter(item, filters.status)) return@mapNotNull null
+                                val hasAllowedAuthor = extractItemCreators(item).any {
+                                    allowedAuthorsLower.contains(normalizeCreator(it))
+                                }
+                                if (!hasAllowedAuthor) return@mapNotNull null
+                                UiModel.HistoryItemModel(resolveLocalTreePath(item)) as UiModel
+                            }
+                            PagingData.from(ordered)
+                        }
+                    } else {
                     combine(
                         combine(filteredYoutubersFlow, youtuberGroupMembers, youtuberMetaFlow) { youtubers, members, metas ->
                             Triple(youtubers, members, metas)
@@ -546,6 +620,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                         list.addAll(sorted.map { UiModel.YoutuberInfoModel(it) })
                         PagingData.from(list)
                     }
+                    }
                 } else {
                     combine(filteredYoutubersFlow, youtuberGroups, youtuberGroupMembers, youtuberMetaFlow, youtuberGroupRelations) { youtubers, groups, members, metas, relations ->
                         val metaMap = metas.associateBy { it.author }
@@ -554,7 +629,10 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                             if (iconUrl.isNotBlank()) info.copy(thumbnail = iconUrl) else info
                         }
                         val groupedAuthors = members.map { it.author }.toSet()
-                        val ungrouped = enriched.filter { !groupedAuthors.contains(it.author) && isYoutuberVisible(it.author) }
+                        val ungrouped = enriched.filter {
+                            (!groupedAuthors.contains(it.author) || visibleChildYoutubers.contains(it.author)) &&
+                                isYoutuberVisible(it.author)
+                        }
                         val sortedUngrouped = when (filters.sortType) {
                             HistorySortType.DATE -> {
                                 if (filters.sortOrder == SORTING.DESC) {
@@ -687,6 +765,11 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     fun setVisibleChildYoutuberGroupsFilter(visible: Set<Long>) {
         if (visibleChildYoutuberGroupsFilter.value == visible) return
         visibleChildYoutuberGroupsFilter.value = visible
+    }
+
+    fun setVisibleChildYoutubersFilter(visible: Set<String>) {
+        if (visibleChildYoutubersFilter.value == visible) return
+        visibleChildYoutubersFilter.value = visible
     }
 
     fun setVisibleChildKeywordsFilter(visible: Set<String>) {
@@ -874,6 +957,11 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                         item.customThumb.isNotBlank() && FileUtil.exists(item.customThumb)
                     }
                 }
+                HistoryStatus.HARDSUB_DONE -> {
+                    pagingData.filter { item: HistoryItem ->
+                        item.hardSubDone
+                    }
+                }
                 else -> pagingData
             }
 
@@ -997,6 +1085,36 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 }
             withHeaders
         }
+    }
+
+    private fun passesStatusFilter(item: HistoryItem, status: HistoryStatus): Boolean {
+        return when (status) {
+            HistoryStatus.DELETED -> item.downloadPath.any { path -> !FileUtil.exists(path) }
+            HistoryStatus.NOT_DELETED -> item.downloadPath.any { path -> FileUtil.exists(path) }
+            HistoryStatus.MISSING_THUMBNAIL -> {
+                val hasCustomThumb = item.customThumb.isNotBlank() && FileUtil.exists(item.customThumb)
+                val hasThumb = item.thumb.isNotBlank()
+                !hasCustomThumb && !hasThumb
+            }
+            HistoryStatus.CUSTOM_THUMBNAIL -> item.customThumb.isNotBlank() && FileUtil.exists(item.customThumb)
+            HistoryStatus.HARDSUB_DONE -> item.hardSubDone
+            else -> true
+        }
+    }
+
+    private fun extractItemCreators(item: HistoryItem): Set<String> {
+        val creators = linkedSetOf<String>()
+        creators.addAll(splitCreators(item.author))
+        creators.addAll(splitCreators(item.artist))
+        return creators
+    }
+
+    private fun splitCreators(raw: String): List<String> {
+        if (raw.isBlank()) return emptyList()
+        return raw.split(',')
+            .map { it.trim().trim('"') }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase(Locale.getDefault()) }
     }
 
     private fun normalizeCreator(value: String): String {

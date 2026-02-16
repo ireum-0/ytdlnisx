@@ -785,12 +785,20 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     }
 
     private fun YoutubeDLRequest.addConfig(commandString: String) {
+        val normalizedCommandString = normalizeLegacyShellCommand(commandString)
         this.addOption(
             "--config-locations",
             File(context.cacheDir.absolutePath + "/${System.currentTimeMillis()}${java.util.UUID.randomUUID()}.txt").apply {
-                writeText(commandString)
+                writeText(normalizedCommandString)
             }.absolutePath
         )
+    }
+
+    private fun normalizeLegacyShellCommand(commandString: String): String {
+        val shellPath = "/system/bin/sh"
+        return commandString
+            .replace("([A-Za-z_][A-Za-z0-9_]*):sh(\\s+-c\\b)".toRegex(), "$1:$shellPath$2")
+            .replace("(^|\\s)sh(\\s+-c\\b)".toRegex(), "$1$shellPath$2")
     }
 
     private fun StringJoiner.addOption(vararg elements: Any) {
@@ -1432,9 +1440,18 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     request.addOption("-S", formatSorting.joinToString(","))
                 }
 
-                request.addOption("-f", f.toString().replace("/$".toRegex(), ""))
+                var formatExpr = f.toString().replace("/$".toRegex(), "")
+                if (downloadItem.videoPreferences.embedSubs) {
+                    // Hard-sub runtime ffmpeg on Android may not include AV1 decoders.
+                    // Prefer non-AV1 video streams to keep burn-in path reliable.
+                    formatExpr = enforceHardSubNoAv1Format(formatExpr)
+                }
+                request.addOption("-f", formatExpr)
 
-                if (downloadItem.videoPreferences.writeSubs){
+                val shouldWriteSubs = downloadItem.videoPreferences.writeSubs ||
+                    (downloadItem.videoPreferences.embedSubs && !downloadItem.videoPreferences.writeAutoSubs)
+
+                if (shouldWriteSubs){
                     request.addOption("--write-subs")
                 }
 
@@ -1442,21 +1459,21 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     request.addOption("--write-auto-subs")
                 }
 
-                if (downloadItem.videoPreferences.embedSubs) {
-                    if (sharedPreferences.getBoolean("no_keep_subs", false) && (downloadItem.videoPreferences.writeSubs || downloadItem.videoPreferences.writeAutoSubs)) {
-                        request.addOption("--compat-options", "no-keep-subs")
-                    }
-
-                    request.addOption("--embed-subs")
-                }
-
                 if (downloadItem.videoPreferences.embedSubs || downloadItem.videoPreferences.writeSubs || downloadItem.videoPreferences.writeAutoSubs){
-                    val subFormat = sharedPreferences.getString("sub_format", "")
-                    if(subFormat!!.isNotBlank()){
+                    val subFormat = sharedPreferences.getString("sub_format", "") ?: ""
+                    if (downloadItem.videoPreferences.embedSubs) {
+                        // Hard-sub flow converts at burn-in stage in DownloadWorker.
+                        // Avoid yt-dlp subtitle conversion here to prevent preprocessing failures.
+                        request.addOption("--sub-format", "ass/vtt/srt/srv3/best")
+                    } else if(subFormat.isNotBlank()){
                         request.addOption("--sub-format", "${subFormat}/best")
                         request.addOption("--convert-subtitles", subFormat)
                     }
                     request.addOption("--sub-langs", downloadItem.videoPreferences.subsLanguages.ifEmpty { "en.*,.*-orig" })
+                }
+
+                if (downloadItem.videoPreferences.embedSubs) {
+                    // Burn-in is executed in DownloadWorker after files are downloaded/moved.
                 }
 
                 if (downloadItem.videoPreferences.removeAudio && outputContainer != "gif") {
@@ -1491,7 +1508,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     request.addOption("-P", downDir.absolutePath)
                 }
 
-                request.addOption(downloadItem.format.format_note)
+                request.addOption(normalizeLegacyShellCommand(downloadItem.format.format_note))
             }
 
             else -> {}
@@ -1500,7 +1517,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         request.merge(metadataCommands)
 
         if (downloadItem.extraCommands.isNotBlank() && downloadItem.type != DownloadType.command){
-            request.addOption(downloadItem.extraCommands)
+            request.addOption(normalizeLegacyShellCommand(downloadItem.extraCommands))
         }
 
         if (request.toString().contains("sponsorblock")) {
@@ -1520,5 +1537,19 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         ytDlRequest.addOption("--cache-dir", cache.absolutePath)
         return ytDlRequest
     }
+}
+
+private fun enforceHardSubNoAv1Format(formatExpr: String): String {
+    return formatExpr
+        .split("/")
+        .map { token ->
+            val t = token.trim()
+            if (t.isBlank()) return@map t
+            if (t.contains("vcodec!*=av01")) return@map t
+            if (t == "b") return@map "b*[vcodec!*=av01]"
+            if (!t.contains("bv")) return@map t
+            t.replace("bv", "bv*[vcodec!*=av01]")
+        }
+        .joinToString("/")
 }
 

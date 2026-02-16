@@ -1,10 +1,12 @@
 ﻿package com.ireum.ytdl.ui.more.settings
 
 import android.app.Activity
+import android.widget.Toast
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import androidx.lifecycle.lifecycleScope
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.navigation.fragment.findNavController
 import androidx.preference.EditTextPreference

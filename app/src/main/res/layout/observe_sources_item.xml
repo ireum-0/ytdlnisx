@@ -75,10 +75,26 @@
                     android:textSize="12sp"
                     android:textStyle="bold"
                     app:layout_constraintVertical_bias="0.0"
-                    app:layout_constraintBottom_toTopOf="@+id/buttons"
+                    app:layout_constraintBottom_toTopOf="@+id/progress_status"
                     app:layout_constraintEnd_toStartOf="@+id/check_missing"
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toBottomOf="@+id/title" />
+
+                <TextView
+                    android:id="@+id/progress_status"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:textSize="11sp"
+                    android:visibility="gone"
+                    app:layout_constraintBottom_toTopOf="@+id/buttons"
+                    app:layout_constraintEnd_toStartOf="@+id/check_missing"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintTop_toBottomOf="@+id/url" />
 
 
                 <Button
@@ -104,6 +120,7 @@
                     android:layout_marginHorizontal="10dp"
                     android:layout_marginVertical="8dp"
                     android:outlineProvider="none"
+                    android:textSize="11sp"
                     app:chipIcon="@drawable/baseline_loop_24"
                     app:chipIconVisible="true"
                     app:chipMinTouchTargetSize="0dp"
@@ -118,9 +135,22 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_margin="10dp"
+                    android:gravity="end"
                     android:orientation="horizontal"
                     app:layout_constraintBottom_toBottomOf="parent"
                     app:layout_constraintEnd_toEndOf="parent">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/history"
+                        style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:elevation="0dp"
+                        android:contentDescription="@string/view_history"
+                        app:borderWidth="0dp"
+                        app:cornerRadius="10dp"
+                        app:elevation="0dp"
+                        app:icon="@drawable/ic_history" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/pause_resume"

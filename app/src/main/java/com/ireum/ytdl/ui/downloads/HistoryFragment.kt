@@ -159,11 +159,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private var hiddenYoutubers: MutableSet<String> = linkedSetOf()
     private var hiddenYoutuberGroups: MutableSet<Long> = linkedSetOf()
     private var visibleChildYoutuberGroups: MutableSet<Long> = linkedSetOf()
+    private var visibleChildYoutubers: MutableSet<String> = linkedSetOf()
     private var visibleChildKeywords: MutableSet<String> = linkedSetOf()
     private val prefHiddenYoutubersKey = "history_hidden_youtubers"
     private val prefHiddenYoutuberGroupsKey = "history_hidden_youtuber_groups"
     private val prefShowHiddenOnlyKey = "history_show_hidden_only"
     private val prefVisibleChildYoutuberGroupsKey = "history_visible_child_youtuber_groups"
+    private val prefVisibleChildYoutubersKey = "history_visible_child_youtubers"
     private val prefVisibleChildKeywordsKey = "history_visible_child_keywords"
     private var totalCount = 0
     private var actionMode: ActionMode? = null
@@ -453,6 +455,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         historyViewModel.setHiddenYoutubersFilter(hiddenYoutubers)
         historyViewModel.setHiddenYoutuberGroupsFilter(hiddenYoutuberGroups)
         historyViewModel.setVisibleChildYoutuberGroupsFilter(visibleChildYoutuberGroups)
+        historyViewModel.setVisibleChildYoutubersFilter(visibleChildYoutubers)
         historyViewModel.setVisibleChildKeywordsFilter(visibleChildKeywords)
         historyViewModel.setShowHiddenOnlyFilter(sharedPreferences.getBoolean(prefShowHiddenOnlyKey, false))
         playlistChip.visibility = View.GONE
@@ -651,6 +654,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     selectedYoutuberText.text = filter
                     selectedYoutuberText.visibility = View.VISIBLE
                 }
+                updateYoutuberChipCheckedState()
             }
         }
 
@@ -665,6 +669,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     selectedYoutuberText.text = getString(R.string.group_prefix, groupName)
                     selectedYoutuberText.visibility = View.VISIBLE
                 }
+                updateYoutuberChipCheckedState()
             }
         }
 
@@ -754,7 +759,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
         lifecycleScope.launch {
             historyViewModel.isYoutuberSelectionMode.collectLatest { isSelectionMode ->
-                youtuberChip.isChecked = isSelectionMode || historyViewModel.authorFilter.value.isNotEmpty()
+                updateYoutuberChipCheckedState()
                 if (isSelectionMode && shouldAutoScrollToTop()) {
                     forceTopOnNextPagesUpdate = true
                     pendingScrollToTop = true
@@ -4591,6 +4596,9 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             ?.mapNotNull { it.toLongOrNull() }
             ?.toMutableSet()
             ?: linkedSetOf()
+        visibleChildYoutubers = sharedPreferences.getStringSet(prefVisibleChildYoutubersKey, emptySet())
+            ?.toMutableSet()
+            ?: linkedSetOf()
         visibleChildKeywords = sharedPreferences.getStringSet(prefVisibleChildKeywordsKey, emptySet())
             ?.toMutableSet()
             ?: linkedSetOf()
@@ -4601,6 +4609,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             .putStringSet(prefHiddenYoutubersKey, hiddenYoutubers.toSet())
             .putStringSet(prefHiddenYoutuberGroupsKey, hiddenYoutuberGroups.map { it.toString() }.toSet())
             .putStringSet(prefVisibleChildYoutuberGroupsKey, visibleChildYoutuberGroups.map { it.toString() }.toSet())
+            .putStringSet(prefVisibleChildYoutubersKey, visibleChildYoutubers.toSet())
             .putStringSet(prefVisibleChildKeywordsKey, visibleChildKeywords.toSet())
             .apply()
     }
@@ -4614,27 +4623,33 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val deleted = filterSheet.findViewById<TextView>(R.id.deleted)!!
         val missingThumbnail = filterSheet.findViewById<TextView>(R.id.missing_thumbnail)!!
         val customThumbnailOnly = filterSheet.findViewById<TextView>(R.id.custom_thumbnail_only)!!
-        updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, historyViewModel.statusFilter.value)
+        val hardSubDoneOnly = filterSheet.findViewById<TextView>(R.id.hardsub_done_only)!!
+        updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, historyViewModel.statusFilter.value)
 
         notDeleted.setOnClickListener {
             val newStatus = cycleStatusOnNotDeleted(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
         }
         deleted.setOnClickListener {
             val newStatus = cycleStatusOnDeleted(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
         }
         missingThumbnail.setOnClickListener {
             val newStatus = cycleStatusOnMissingThumbnail(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
         }
         customThumbnailOnly.setOnClickListener {
             val newStatus = cycleStatusOnCustomThumbnail(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
+        }
+        hardSubDoneOnly.setOnClickListener {
+            val newStatus = cycleStatusOnHardSubDone(historyViewModel.statusFilter.value)
+            historyViewModel.setStatusFilter(newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
         }
 
         val includeChildCategoryVideosCheck = filterSheet.findViewById<com.google.android.material.checkbox.MaterialCheckBox>(R.id.includeChildCategoryVideosCheck)
@@ -4702,6 +4717,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         deleted: TextView,
         missingThumbnail: TextView,
         customThumbnailOnly: TextView,
+        hardSubDoneOnly: TextView,
         status: HistoryViewModel.HistoryStatus
     ) {
         val checkIcon = R.drawable.ic_check
@@ -4712,30 +4728,42 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.DELETED -> {
                 notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.NOT_DELETED -> {
                 notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
                 deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.MISSING_THUMBNAIL -> {
                 notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.CUSTOM_THUMBNAIL -> {
                 notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
+                hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+            }
+            HistoryViewModel.HistoryStatus.HARDSUB_DONE -> {
+                notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
             }
             else -> {}
         }
@@ -4775,6 +4803,14 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
     }
 
+    private fun cycleStatusOnHardSubDone(status: HistoryViewModel.HistoryStatus): HistoryViewModel.HistoryStatus {
+        return if (status == HistoryViewModel.HistoryStatus.HARDSUB_DONE) {
+            HistoryViewModel.HistoryStatus.ALL
+        } else {
+            HistoryViewModel.HistoryStatus.HARDSUB_DONE
+        }
+    }
+
     private fun changeSortIcon(item: TextView, order: SORTING) {
         when (order) {
             SORTING.DESC -> item.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_up, 0, 0, 0)
@@ -4797,6 +4833,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val playlistName = playlistsCache.firstOrNull { it.id == playlistId }?.name ?: playlistId.toString()
         selectedPlaylistText.text = playlistName
         selectedPlaylistText.visibility = View.VISIBLE
+    }
+
+    private fun updateYoutuberChipCheckedState() {
+        youtuberChip.isChecked = historyViewModel.isYoutuberSelectionMode.value ||
+            historyViewModel.authorFilter.value.isNotEmpty() ||
+            historyViewModel.youtuberGroupFilter.value >= 0L
     }
 
     private fun initChips() {
@@ -5062,15 +5104,18 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                         intent.putExtra("context_playlist_name", playlistName)
                     }
                 }
+                val youtuberGroupId = historyViewModel.youtuberGroupFilter.value
+                if (youtuberGroupId >= 0L) {
+                    intent.putExtra("context_youtuber_group_id", youtuberGroupId)
+                }
                 startActivity(intent)
             } else {
                 UiUtil.showHistoryItemDetailsCard(item, requireActivity(), filePresent, sharedPreferences,
                     removeItem = { it, deleteFile -> historyViewModel.delete(it, deleteFile) },
                     redownloadItem = {
-                        val downloadItem = downloadViewModel.createDownloadItemFromHistory(it)
                         lifecycleScope.launch {
-                            if (!filePresent) historyViewModel.delete(it, false)
-                            downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = true)
+                            val downloadItem = downloadViewModel.createDownloadItemFromHistory(it)
+                            downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = false)
                         }
                     },
                     redownloadShowDownloadCard = {
@@ -5078,7 +5123,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             R.id.downloadBottomSheetDialog, bundleOf(
                                 Pair("result", downloadViewModel.createResultItemFromHistory(it)),
                                 Pair("type", it.type),
-                                Pair("ignore_duplicates", true)
+                                Pair("source_history_id", it.id),
+                                Pair("ignore_duplicates", false)
                             )
                         )
                     }
@@ -5207,7 +5253,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 R.id.downloadBottomSheetDialog, bundleOf(
                                     Pair("result", downloadViewModel.createResultItemFromHistory(tmp)),
                                     Pair("type", tmp.type),
-                                    Pair("ignore_duplicates", true)
+                                    Pair("source_history_id", tmp.id),
+                                    Pair("ignore_duplicates", false)
                                 )
                             )
                         } else {
@@ -5217,7 +5264,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             if (showDownloadCard) {
                                 val bundle = Bundle()
                                 bundle.putLongArray("currentHistoryIDs", selectedObjects.toLongArray())
-                                bundle.putBoolean("ignore_duplicates", true)
+                                bundle.putBoolean("ignore_duplicates", false)
                                 findNavController().navigate(R.id.downloadMultipleBottomSheetDialog2, bundle)
                             }
                         }
@@ -5307,13 +5354,18 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean {
             val count = historyAdapter.getSelectedYoutubers().size
             val mixedSelection = historyAdapter.getSelectedYoutuberGroups().isNotEmpty()
+            val selected = historyAdapter.getSelectedYoutubers()
             menu?.findItem(R.id.edit_youtuber_info)?.isVisible = count == 1
             menu?.findItem(R.id.remove_from_current_youtuber_group)?.isVisible =
                 historyViewModel.youtuberGroupFilter.value >= 0L && count > 0
+            val allShownOnFirstList = selected.isNotEmpty() && selected.all { visibleChildYoutubers.contains(it) }
+            menu?.findItem(R.id.show_youtubers_on_first_list)?.isVisible = selected.isNotEmpty() && !allShownOnFirstList
+            menu?.findItem(R.id.hide_youtubers_from_first_list)?.isVisible = allShownOnFirstList
             if (mixedSelection) {
                 menu?.findItem(R.id.edit_youtuber_info)?.isVisible = false
+                menu?.findItem(R.id.show_youtubers_on_first_list)?.isVisible = false
+                menu?.findItem(R.id.hide_youtubers_from_first_list)?.isVisible = false
             }
-            val selected = historyAdapter.getSelectedYoutubers()
             val allHidden = selected.isNotEmpty() && selected.all { hiddenYoutubers.contains(it) }
             menu?.findItem(R.id.hide_youtubers)?.isVisible = !allHidden
             menu?.findItem(R.id.unhide_youtubers)?.isVisible = allHidden
@@ -5348,6 +5400,26 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             }
                         }
                     }
+                    true
+                }
+                R.id.show_youtubers_on_first_list -> {
+                    val selected = historyAdapter.getSelectedYoutubers()
+                    if (selected.isNotEmpty()) {
+                        visibleChildYoutubers.addAll(selected)
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setVisibleChildYoutubersFilter(visibleChildYoutubers.toSet())
+                    }
+                    youtuberActionMode?.finish()
+                    true
+                }
+                R.id.hide_youtubers_from_first_list -> {
+                    val selected = historyAdapter.getSelectedYoutubers()
+                    if (selected.isNotEmpty()) {
+                        visibleChildYoutubers.removeAll(selected.toSet())
+                        persistHiddenStateToPrefs()
+                        historyViewModel.setVisibleChildYoutubersFilter(visibleChildYoutubers.toSet())
+                    }
+                    youtuberActionMode?.finish()
                     true
                 }
                 R.id.hide_youtubers -> {
@@ -5682,7 +5754,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 R.id.downloadBottomSheetDialog, bundleOf(
                                     Pair("result", downloadViewModel.createResultItemFromHistory(item)),
                                     Pair("type", item.type),
-                                    Pair("ignore_duplicates", true)
+                                    Pair("source_history_id", item.id),
+                                    Pair("ignore_duplicates", false)
                                 )
                             )
                         }

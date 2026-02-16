@@ -102,6 +102,9 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE status in('Active','Queued', 'Scheduled')")
     fun getActiveAndQueuedDownloadsList() : List<DownloadItem>
 
+    @Query("SELECT COUNT(*) FROM downloads WHERE playlistURL = :marker AND status IN ('Processing','Queued','Active','Paused','Scheduled','Saved')")
+    fun countPendingByPlaylistMarker(marker: String): Int
+
     @Query("UPDATE downloads SET status='Queued', downloadStartTime = -1 where status in ('Paused')")
     suspend fun resetPausedToQueued()
 
@@ -324,7 +327,7 @@ interface DownloadDao {
         val newIDs = downloads.sortedBy { it }.take(existingIDs.size)
 
         resetScheduleTimeForItems(existingIDs)
-        existingIDs.forEach { updateDownloadID(it, -it) }
+        val tempIds = existingIDs.associateWith { moveToTemporaryId(it) }
         downloads.filter { !existingIDs.contains(it) }.toMutableList().apply {
             this.reverse()
             this.forEach {
@@ -333,7 +336,7 @@ interface DownloadDao {
         }
 
         existingIDs.forEachIndexed { idx, it ->
-            updateDownloadID(-it, newIDs[idx])
+            updateDownloadID(tempIds[it] ?: it, newIDs[idx])
         }
     }
 
@@ -343,7 +346,7 @@ interface DownloadDao {
         val newIDs = downloads.sortedByDescending { it }.take(existingIDs.size)
 
         resetScheduleTimeForItems(existingIDs)
-        existingIDs.forEach { updateDownloadID(it, -it) }
+        val tempIds = existingIDs.associateWith { moveToTemporaryId(it) }
         downloads.filter { !existingIDs.contains(it) }.toMutableList().apply {
             this.reverse()
             this.forEach {
@@ -352,7 +355,7 @@ interface DownloadDao {
         }
 
         existingIDs.forEachIndexed { idx, it ->
-            updateDownloadID(-it, newIDs[idx])
+            updateDownloadID(tempIds[it] ?: it, newIDs[idx])
         }
     }
 
@@ -360,16 +363,29 @@ interface DownloadDao {
     suspend fun reverseProcessingDownloads() {
         val items = getProcessingDownloadsList()
         val newIDs = items.reversed().map { it.id }
-        items.forEach { updateDownloadID(it.id, -(it.id)) }
+        val tempIds = items.associate { it.id to moveToTemporaryId(it.id) }
 
         items.forEachIndexed { idx, it ->
-            updateDownloadID(-(it.id), newIDs[idx])
+            updateDownloadID(tempIds[it.id] ?: it.id, newIDs[idx])
             updateDownloadRowNumber(newIDs[idx], items.size - idx)
         }
     }
 
     @Query("Update downloads set id=:newId where id=:id")
     suspend fun updateDownloadID(id: Long, newId: Long)
+
+    @Query("SELECT COUNT(*) FROM downloads WHERE id=:id")
+    suspend fun countById(id: Long): Int
+
+    @Transaction
+    suspend fun moveToTemporaryId(id: Long): Long {
+        var candidate = id xor Long.MIN_VALUE
+        while (countById(candidate) > 0) {
+            candidate += 1
+        }
+        updateDownloadID(id, candidate)
+        return candidate
+    }
 
     @Query("Update downloads set rowNumber=:newNr where id=:id")
     suspend fun updateDownloadRowNumber(id: Long, newNr: Int)

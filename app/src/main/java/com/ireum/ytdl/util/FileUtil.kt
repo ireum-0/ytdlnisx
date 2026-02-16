@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.internal.closeQuietly
 import java.io.File
+import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -133,8 +134,15 @@ object FileUtil {
      suspend fun moveFile(originDir: File, context: Context, destDir: String, keepCache: Boolean, progress: (p: Int) -> Unit) : List<String> {
         return withContext(Dispatchers.Main){
             val fileList = mutableListOf<String>()
-            val dir = File(formatPath(destDir))
-            if (!dir.exists()) dir.mkdirs()
+            val moveErrors = mutableListOf<String>()
+            var hasMoveFailure = false
+            val normalizedDestDir = formatPath(destDir)
+            val directFileWrite = !destDir.startsWith("content://") && File(normalizedDestDir).canWrite()
+            val dir = File(normalizedDestDir)
+            if (directFileWrite && !dir.exists()) dir.mkdirs()
+            val safDestinationDir = if (!directFileWrite) {
+                resolveDestinationDocumentDir(context, destDir, normalizedDestDir)
+            } else null
             originDir.walk().forEach {
                 if (it.isDirectory && it.absolutePath == originDir.absolutePath) return@forEach
                 var destFile: DocumentFile
@@ -147,7 +155,7 @@ object FileUtil {
                     }
 
                     runCatching {
-                        if (File(formatPath(destDir)).canWrite()){
+                        if (directFileWrite){
                             val files = it.listFiles()?.filter { fil -> !fil.isDirectory }?.toTypedArray() ?: arrayOf(it)
                             for (ff in files){
                                 val newFile =  File(dir.absolutePath + "/${ff.absolutePath.removePrefix(originDir.absolutePath)}")
@@ -189,7 +197,8 @@ object FileUtil {
                     }
 
                     val curr = DocumentFile.fromFile(it)
-                    val dst =  DocumentFile.fromTreeUri(context, destDir.toUri())
+                    val dst = safDestinationDir
+                        ?: throw IOException("Invalid URI: $destDir (no writable SAF tree permission)")
 
                     if (it.isDirectory){
                         withContext(Dispatchers.IO){
@@ -217,14 +226,21 @@ object FileUtil {
 
                                 override fun onFailed(errorCode: ErrorCode) {
                                     //if its usb?
-                                    runCatching {
+                                    val recovered = runCatching {
+                                        var copiedAny = false
                                         it.walkTopDown().forEach { f ->
                                             if (f.isDirectory) return@forEach
-                                            val destUri = moveFileInputStream(it, context, dst) ?: return@forEach
+                                            val destUri = moveFileInputStream(f, context, dst) ?: return@forEach
                                             fileList.add(DocumentFile.fromSingleUri(context, destUri)!!.getAbsolutePath(context))
+                                            copiedAny = true
                                         }
 
                                         it.deleteRecursively()
+                                        copiedAny
+                                    }.getOrDefault(false)
+                                    if (!recovered) {
+                                        hasMoveFailure = true
+                                        moveErrors.add("copyFolderTo failed for ${it.absolutePath} with $errorCode")
                                     }
                                     super.onFailed(errorCode)
                                 }
@@ -236,10 +252,15 @@ object FileUtil {
                             curr.moveFileTo(context, dst!!, callback = object : FileCallback() {
                                 override fun onFailed(errorCode: ErrorCode) {
                                     //if its usb?
-                                    runCatching {
+                                    val recovered = runCatching {
                                         val destUri = moveFileInputStream(it, context, dst) ?: return
                                         fileList.add(DocumentFile.fromSingleUri(context, destUri)!!.getAbsolutePath(context))
                                         it.delete()
+                                        true
+                                    }.getOrDefault(false)
+                                    if (!recovered) {
+                                        hasMoveFailure = true
+                                        moveErrors.add("moveFileTo failed for ${it.absolutePath} with $errorCode")
                                     }
                                     super.onFailed(errorCode)
                                 }
@@ -269,15 +290,85 @@ object FileUtil {
                         }
                     }
                 }catch (e: Exception) {
+                    hasMoveFailure = true
+                    moveErrors.add("${it.absolutePath}: ${e.message}")
                     Log.e("error", e.message.toString())
                 }
 
             }
-            if (!keepCache){
+            if (!keepCache && !hasMoveFailure){
                 originDir.deleteRecursively()
+            } else if (hasMoveFailure) {
+                Log.w("FileUtil", "moveFile encountered failures; preserving originDir=${originDir.absolutePath}")
             }
-            return@withContext scanMedia(fileList, context)
+            val normalized = fileList
+                .asSequence()
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+                .toList()
+            if (normalized.isEmpty()) {
+                val detail = moveErrors.joinToString(limit = 3, separator = " | ")
+                throw IOException("moveFile produced no outputs${if (detail.isNotBlank()) ": $detail" else ""}")
+            }
+            val scanned = scanMedia(normalized, context)
+            if (scanned.isNotEmpty()) {
+                return@withContext scanned
+            }
+            // Media scan can fail on some storage providers even after successful move.
+            // In that case, return the moved paths directly so downstream hard-sub logic can continue.
+            return@withContext normalized
         }
+    }
+
+    private fun resolveDestinationDocumentDir(context: Context, rawDestDir: String, normalizedDestDir: String): DocumentFile? {
+        if (rawDestDir.startsWith("content://")) {
+            val asTree = runCatching { DocumentFile.fromTreeUri(context, Uri.parse(rawDestDir)) }.getOrNull()
+            if (asTree?.exists() == true) return asTree
+            val asDoc = runCatching { DocumentFile.fromSingleUri(context, Uri.parse(rawDestDir)) }.getOrNull()
+            if (asDoc?.exists() == true) return asDoc
+            return null
+        }
+
+        if (!normalizedDestDir.startsWith("/storage/")) return null
+        val relative = normalizedDestDir.removePrefix("/storage/").trim('/').replace('\\', '/')
+        val splitIndex = relative.indexOf('/')
+        if (splitIndex <= 0) return null
+        val volumeId = relative.substring(0, splitIndex)
+        val relPath = relative.substring(splitIndex + 1)
+
+        val permissions = context.contentResolver.persistedUriPermissions
+        for (perm in permissions) {
+            if (!perm.isWritePermission) continue
+            val treeUri = perm.uri ?: continue
+            if (!DocumentsContract.isTreeUri(treeUri)) continue
+            val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: continue
+            if (!treeDocId.startsWith("$volumeId:")) continue
+
+            val root = DocumentFile.fromTreeUri(context, treeUri) ?: continue
+            val treePath = treeDocId.substringAfter(':')
+            val relFromTree = when {
+                treePath.isBlank() -> relPath
+                relPath == treePath -> ""
+                relPath.startsWith("$treePath/") -> relPath.removePrefix("$treePath/")
+                else -> continue
+            }
+
+            var current = root
+            var failed = false
+            relFromTree.split('/').filter { it.isNotBlank() }.forEach { segment ->
+                val next = current.findFile(segment) ?: current.createDirectory(segment)
+                if (next == null) {
+                    failed = true
+                    return@forEach
+                }
+                current = next
+            }
+            if (!failed && current.exists()) {
+                return current
+            }
+        }
+        return null
     }
 
     private fun moveFileInputStream(it: File, context: Context, dst: DocumentFile) : Uri? {

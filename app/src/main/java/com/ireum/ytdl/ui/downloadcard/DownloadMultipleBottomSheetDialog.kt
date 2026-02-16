@@ -255,7 +255,6 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                 lifecycleScope.launch {
                     withContext(Dispatchers.IO){
                         downloadViewModel.deleteAllWithID(currentDownloadIDs)
-                        historyViewModel.deleteAllWithIDsCheckFiles(currentHistoryIDs)
                         val result = downloadViewModel.updateProcessingDownloadTimeAndQueueScheduled(cal.timeInMillis, ignoreDuplicates)
                         if (result.message.isNotBlank()){
                             lifecycleScope.launch {
@@ -279,7 +278,6 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
             lifecycleScope.launch {
                 withContext(Dispatchers.IO){
                     downloadViewModel.deleteAllWithID(currentDownloadIDs)
-                    historyViewModel.deleteAllWithIDsCheckFiles(currentHistoryIDs)
                     val result = downloadViewModel.queueProcessingDownloads(ignoreDuplicates)
                     if (result.message.isNotBlank()){
                         lifecycleScope.launch {
@@ -306,7 +304,6 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                     withContext(Dispatchers.IO){
                         downloadViewModel.moveProcessingToSavedCategory()
                         downloadViewModel.deleteAllWithID(currentDownloadIDs)
-                        historyViewModel.deleteAllWithIDsCheckFiles(currentHistoryIDs)
                     }
 
                     downloadViewModel.processingItemsJob?.cancel(CancellationException())

@@ -29,6 +29,7 @@
     <string name="cancel">Cancel</string>
     <string name="confirm_delete_history_desc">Delete the entire history, permanently</string>
     <string name="confirm_delete_history">Confirm</string>
+    <string name="delete_action">Delete</string>
     <string name="search_history_hint">Search from history</string>
     <string name="search_command_hint">Search from commands</string>
     <string name="no_results">No results</string>
@@ -63,6 +64,9 @@
     <string name="command_download_notification_channel_name">Command downloads</string>
     <string name="command_download_notification_channel_description">Notification showing the progress of downloading using a yt-dlp command</string>
     <string name="items_left">item(s) left</string>
+    <string name="hard_sub_progress">Hard-sub progress: %1$d/%2$d</string>
+    <string name="hard_sub_scan_title">Auto hard-sub scan</string>
+    <string name="hard_sub_scan_progress">Scanning videos: %1$d/%2$d</string>
     <string name="history_is_empty">History is empty</string>
     <string name="you_are_going_to_delete">Deleting</string>
     <string name="url">URL</string>
@@ -366,7 +370,7 @@
     <string name="multiple_download_card">Multiple download card</string>
     <string name="format_filter">Format filter</string>
     <string name="format_smallest">Smallest format (per resolution)</string>
-    <string name="observe_sources">Observe sources</string>
+    <string name="observe_sources">Auto download</string>
     <string name="new_source">New source</string>
     <string name="delete_all_sources">Delete all sources</string>
     <string name="confirm_delete_sources_desc">Delete all the sources, permanently</string>
@@ -395,6 +399,20 @@
     <string name="show_download_count">Show counts in the download queue screen</string>
     <string name="thumbnail_format">Thumbnail format</string>
     <string name="get_new_uploads">Get future uploads only (ignore existing items)</string>
+    <string name="exclude_shorts">Exclude Shorts</string>
+    <string name="exclude_shorts_desc">Skip Shorts when checking this source</string>
+    <string name="view_history">View history</string>
+    <string name="no_history_yet">No history yet</string>
+    <string name="observe_history_title">Run history</string>
+    <string name="observe_history_detail_title">Run details</string>
+    <string name="observe_log_no_downloadable_videos">No videos available to download</string>
+    <string name="observe_log_all_already_downloaded">All videos are already downloaded</string>
+    <string name="observe_log_downloaded_single">Downloaded: %1$s</string>
+    <string name="observe_log_downloaded_multiple">Downloaded: %1$s and %2$d more</string>
+    <string name="observe_status_fetching">Checking source items…</string>
+    <string name="observe_status_filtering">Filtering downloadable items…</string>
+    <string name="observe_status_queueing">Queueing %1$d download(s)…</string>
+    <string name="observe_status_finished">Completed</string>
     <string name="also_download_audio">Also download as audio</string>
     <string name="wrap_text">Wrap text</string>
     <string name="scroll_down">Scroll to the bottom</string>
@@ -461,6 +479,7 @@
     <string name="deleted">Deleted</string>
     <string name="missing_thumbnail">Missing thumbnail</string>
     <string name="custom_thumbnail_only">Custom thumbnail only</string>
+    <string name="hardsub_done_only">HardSub completed only</string>
     <string name="search_targets">Search targets</string>
     <string name="search_target_title">Title</string>
     <string name="search_target_keywords">Keywords</string>
