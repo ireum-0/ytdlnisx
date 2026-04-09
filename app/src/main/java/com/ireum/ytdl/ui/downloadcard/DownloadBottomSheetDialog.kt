@@ -88,6 +88,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
     private var disableUpdateData : Boolean = false
     private var currentDownloadItem: DownloadItem? = null
     private var incognito: Boolean = false
+    private var sourceHistoryId: Long = -1L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,6 +110,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
         type = arguments?.getSerializable("type") as DownloadType
         disableUpdateData = arguments?.getBoolean("disableUpdateData") == true
         ignoreDuplicates = arguments?.getBoolean("ignore_duplicates") == true
+        sourceHistoryId = arguments?.getLong("source_history_id", -1L) ?: -1L
 
         if (res == null){
             dismiss()
@@ -682,7 +684,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
     }
 
     private fun getDownloadItem(selectedTabPosition: Int = tabLayout.selectedTabPosition) : DownloadItem {
-        return fragmentAdapter.getDownloadItem(selectedTabPosition)
+        return applyHistoryRedownloadMarker(fragmentAdapter.getDownloadItem(selectedTabPosition))
     }
 
     private fun getAlsoAudioDownloadItem(finished: (it: DownloadItem) -> Unit) {
@@ -693,7 +695,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
                     ff.updateSelectedAudioFormat(this.first())
                 }
             }
-            finished(ff.downloadItem)
+            finished(applyHistoryRedownloadMarker(ff.downloadItem))
         }catch (e: Exception){
             val fragmentLifecycleCallback = object:
                 FragmentManager.FragmentLifecycleCallbacks() {
@@ -703,7 +705,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
                     val ff = (f as DownloadAudioFragment)
                     ff.requireView().post {
                         ff.updateSelectedAudioFormat(getDownloadItem(1).videoPreferences.audioFormatIDs.first())
-                        finished(ff.downloadItem)
+                        finished(applyHistoryRedownloadMarker(ff.downloadItem))
                     }
                     super.onFragmentStarted(fm, f)
                 }
@@ -714,6 +716,12 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
             fragmentManager?.registerFragmentLifecycleCallbacks(fragmentLifecycleCallback, true)
             viewPager2.setCurrentItem(0, true)
         }
+    }
+
+    private fun applyHistoryRedownloadMarker(item: DownloadItem): DownloadItem {
+        if (sourceHistoryId <= 0L) return item
+        item.playlistURL = "$HISTORY_REDOWNLOAD_MARKER$sourceHistoryId"
+        return item
     }
 
     private fun initUpdateData() {
@@ -753,6 +761,10 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
         }else{
             dismiss()
         }
+    }
+
+    companion object {
+        private const val HISTORY_REDOWNLOAD_MARKER = "history-redownload:"
     }
 }
 

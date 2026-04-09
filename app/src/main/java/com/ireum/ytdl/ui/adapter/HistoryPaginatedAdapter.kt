@@ -261,7 +261,14 @@ class HistoryPaginatedAdapter(
     }
 
     fun getHistoryItemIdAt(position: Int): Long? {
-        return when (val item = peek(position)) {
+        val item = runCatching {
+            if (position !in 0 until itemCount) return null
+            peek(position)
+        }.getOrElse { error ->
+            Log.w(logTag, "getHistoryItemIdAt failed position=$position itemCount=$itemCount reason=${error.javaClass.simpleName}:${error.message}")
+            null
+        }
+        return when (item) {
             is UiModel.HistoryItemModel -> item.historyItem.id
             else -> null
         }
@@ -644,9 +651,15 @@ class HistoryPaginatedAdapter(
             return
         }
         if (item.thumb.isNotBlank()) {
+            val resolved = when {
+                item.thumb.startsWith("content://") || item.thumb.startsWith("file://") -> item.thumb
+                item.thumb.startsWith("http://") || item.thumb.startsWith("https://") -> item.thumb
+                FileUtil.exists(item.thumb) -> File(item.thumb).toURI().toString()
+                else -> item.thumb
+            }
             mainHandler.post {
                 if (thumbnail.getTag(R.id.downloads_image_view) == requestKey) {
-                    thumbnail.loadThumbnail(false, item.thumb)
+                    thumbnail.loadThumbnail(false, resolved)
                 }
             }
             return

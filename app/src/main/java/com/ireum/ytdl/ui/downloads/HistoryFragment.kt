@@ -10,15 +10,18 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Rect
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.text.TextWatcher
 import android.util.DisplayMetrics
+import android.util.Log
 import android.util.Patterns
 import android.util.TypedValue
 import android.graphics.Typeface
@@ -87,6 +90,7 @@ import com.ireum.ytdl.util.Extensions.loadThumbnail
 import com.ireum.ytdl.util.Extensions.enableFastScroll
 import com.ireum.ytdl.util.NavbarUtil
 import com.ireum.ytdl.util.UiUtil
+import com.ireum.ytdl.util.Extensions.updateMenuItemBadge
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
 import com.ireum.ytdl.util.LocalAddCandidateDto
 import com.ireum.ytdl.util.LocalAddMatchDto
@@ -132,6 +136,84 @@ import java.io.OutputStream
 import kotlin.coroutines.resume
 
 class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener {
+    companion object {
+        private const val ENABLE_HISTORY_RETURN_LOGS = false
+        private const val HISTORY_RETURN_TAG = "HistoryReturn"
+        const val EXTRA_RESTORE_SCROLL_POSITION = "history_restore_scroll_position"
+        const val EXTRA_RESTORE_SCROLL_OFFSET = "history_restore_scroll_offset"
+        const val EXTRA_RESTORE_SCROLL_ITEM_ID = "history_restore_scroll_item_id"
+        const val EXTRA_RESTORE_SCROLL_ITEM_TOP = "history_restore_scroll_item_top"
+        private const val PREF_PENDING_RESTORE_SCROLL_POSITION = "history_pending_restore_scroll_position"
+        private const val PREF_PENDING_RESTORE_SCROLL_OFFSET = "history_pending_restore_scroll_offset"
+        private const val PREF_PENDING_RESTORE_SCROLL_ITEM_ID = "history_pending_restore_scroll_item_id"
+        private const val PREF_PENDING_RESTORE_SCROLL_ITEM_TOP = "history_pending_restore_scroll_item_top"
+
+        fun savePendingScrollRestore(
+            context: Context,
+            position: Int,
+            offset: Int,
+            itemId: Long? = null,
+            itemTop: Int? = null
+        ) {
+            if (ENABLE_HISTORY_RETURN_LOGS) {
+                Log.d(
+                    HISTORY_RETURN_TAG,
+                    "event=savePendingScrollRestore position=$position offset=$offset itemId=$itemId itemTop=$itemTop"
+                )
+            }
+            PreferenceManager.getDefaultSharedPreferences(context).edit()
+                .putInt(PREF_PENDING_RESTORE_SCROLL_POSITION, position)
+                .putInt(PREF_PENDING_RESTORE_SCROLL_OFFSET, offset)
+                .apply {
+                    if (itemId != null && itemId > 0L) {
+                        putLong(PREF_PENDING_RESTORE_SCROLL_ITEM_ID, itemId)
+                    } else {
+                        remove(PREF_PENDING_RESTORE_SCROLL_ITEM_ID)
+                    }
+                    if (itemTop != null) {
+                        putInt(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP, itemTop)
+                    } else {
+                        remove(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP)
+                    }
+                }
+                .apply()
+        }
+
+        fun peekPendingScrollRestore(context: Context): DirectScrollRestore? {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            if (!prefs.contains(PREF_PENDING_RESTORE_SCROLL_POSITION)) return null
+            val position = prefs.getInt(PREF_PENDING_RESTORE_SCROLL_POSITION, RecyclerView.NO_POSITION)
+            val offset = prefs.getInt(PREF_PENDING_RESTORE_SCROLL_OFFSET, 0)
+            val itemId = prefs.getLong(PREF_PENDING_RESTORE_SCROLL_ITEM_ID, -1L).takeIf { it > 0L }
+            val itemTop = if (prefs.contains(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP)) {
+                prefs.getInt(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP, 0)
+            } else {
+                null
+            }
+            if (position == RecyclerView.NO_POSITION) return null
+            if (ENABLE_HISTORY_RETURN_LOGS) {
+                Log.d(
+                    HISTORY_RETURN_TAG,
+                    "event=peekPendingScrollRestore position=$position offset=$offset itemId=$itemId itemTop=$itemTop"
+                )
+            }
+            return DirectScrollRestore(position, offset, itemId, itemTop)
+        }
+
+        fun clearPendingScrollRestore(context: Context) {
+            PreferenceManager.getDefaultSharedPreferences(context).edit()
+                .remove(PREF_PENDING_RESTORE_SCROLL_POSITION)
+                .remove(PREF_PENDING_RESTORE_SCROLL_OFFSET)
+                .remove(PREF_PENDING_RESTORE_SCROLL_ITEM_ID)
+                .remove(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP)
+                .apply()
+            if (ENABLE_HISTORY_RETURN_LOGS) {
+                Log.d(HISTORY_RETURN_TAG, "event=clearPendingScrollRestore")
+            }
+        }
+
+    }
+
     private val playlistFilterUnassigned = -2L
     private lateinit var historyViewModel: HistoryViewModel
     private lateinit var downloadViewModel: DownloadViewModel
@@ -221,6 +303,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private var isRestoringFromNavigationBack: Boolean = false
     private var suppressAutoScrollForNextScreenChange: Boolean = false
     private var pendingRestoreEntry: NavigationEntry? = null
+    private var pendingDirectScrollRestore: DirectScrollRestore? = null
+    private var pendingDirectScrollRestoreRetries: Int = 0
+    private var pendingDirectScrollRestoreApplied: Boolean = false
+    private var hideRecyclerUntilDirectRestoreSettles: Boolean = false
+    private var pendingDirectRestoreClearToken: Long = 0L
+    private var suppressAutoTopScrollUntilMs: Long = 0L
+    private var restoreObservationToken: Long = 0L
+    private var detailedRestoreLogUntilMs: Long = 0L
+    private var lastRestoreRequestElapsedMs: Long = 0L
+    private var lastClickedHistoryItemIdForRestore: Long = -1L
     private val navigationBackStack = ArrayDeque<NavigationEntry>()
     private val savedScrollByState = mutableMapOf<NavigationState, ScrollSnapshot>()
     private var lastStableScrollSnapshot = ScrollSnapshot(0, 0)
@@ -276,6 +368,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private data class ScrollSnapshot(
         val position: Int,
         val offset: Int
+    )
+
+    data class DirectScrollRestore(
+        val position: Int,
+        val offset: Int,
+        val itemId: Long? = null,
+        val itemTop: Int? = null
     )
 
     private data class NavigationEntry(
@@ -440,6 +539,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
         historyAdapter = HistoryPaginatedAdapter(this, requireActivity())
         recyclerView = view.findViewById(R.id.recyclerviewhistorys)
+        applyPendingDirectRestoreVisibility()
 
         val preferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
         if (preferences.getStringSet("swipe_gesture", requireContext().resources.getStringArray(R.array.swipe_gestures_values).toSet())!!.toList().contains("history")) {
@@ -451,6 +551,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         noResults.isVisible = false
         historyViewModel = ViewModelProvider(this)[HistoryViewModel::class.java]
         playlistViewModel = ViewModelProvider(this)[PlaylistViewModel::class.java]
+        historyViewModel.backfillRemoteThumbnails()
         loadHiddenStateFromPrefs()
         historyViewModel.setHiddenYoutubersFilter(hiddenYoutubers)
         historyViewModel.setHiddenYoutuberGroupsFilter(hiddenYoutuberGroups)
@@ -467,18 +568,92 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             androidx.recyclerview.widget.RecyclerView.Adapter.StateRestorationPolicy.PREVENT
         recyclerView.adapter = historyAdapter
         recyclerView.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                if (!shouldLogDetailedRestoreEffects()) return
+                logDetailedRestoreEffect("recyclerScrollState state=$newState")
+            }
+
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                 captureCurrentVisibleScrollSnapshot()?.let { snapshot ->
                     lastStableScrollSnapshot = snapshot
                 }
+                if (!shouldLogDetailedRestoreEffects()) return
+                val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
+                val firstVisible = layoutManager?.findFirstVisibleItemPosition() ?: RecyclerView.NO_POSITION
+                val firstTop = layoutManager?.findViewByPosition(firstVisible)?.top
+                logDetailedRestoreEffect(
+                    "recyclerScrolled dx=$dx dy=$dy firstVisible=$firstVisible firstTop=$firstTop " +
+                        "canScrollUp=${recyclerView.canScrollVertically(-1)} " +
+                        "canScrollDown=${recyclerView.canScrollVertically(1)}"
+                )
             }
         })
+        historyAdapter.registerAdapterDataObserver(object : RecyclerView.AdapterDataObserver() {
+            override fun onChanged() {
+                if (!shouldLogDetailedRestoreEffects()) return
+                logDetailedRestoreEffect("adapterChanged itemCount=${historyAdapter.itemCount}")
+            }
+
+            override fun onItemRangeInserted(positionStart: Int, itemCount: Int) {
+                if (!shouldLogDetailedRestoreEffects()) return
+                logDetailedRestoreEffect(
+                    "adapterInserted positionStart=$positionStart itemCount=$itemCount total=${historyAdapter.itemCount}"
+                )
+            }
+
+            override fun onItemRangeRemoved(positionStart: Int, itemCount: Int) {
+                if (!shouldLogDetailedRestoreEffects()) return
+                logDetailedRestoreEffect(
+                    "adapterRemoved positionStart=$positionStart itemCount=$itemCount total=${historyAdapter.itemCount}"
+                )
+            }
+
+            override fun onItemRangeChanged(positionStart: Int, itemCount: Int) {
+                if (!shouldLogDetailedRestoreEffects()) return
+                logDetailedRestoreEffect(
+                    "adapterRangeChanged positionStart=$positionStart itemCount=$itemCount total=${historyAdapter.itemCount}"
+                )
+            }
+
+            override fun onItemRangeMoved(fromPosition: Int, toPosition: Int, itemCount: Int) {
+                if (!shouldLogDetailedRestoreEffects()) return
+                logDetailedRestoreEffect(
+                    "adapterMoved fromPosition=$fromPosition toPosition=$toPosition itemCount=$itemCount total=${historyAdapter.itemCount}"
+                )
+            }
+        })
+        recyclerView.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (!shouldLogDetailedRestoreEffects()) return@addOnLayoutChangeListener
+            logDetailedRestoreEffect(
+                "recyclerLayout left=$left top=$top right=$right bottom=$bottom " +
+                    "oldLeft=$oldLeft oldTop=$oldTop oldRight=$oldRight oldBottom=$oldBottom"
+            )
+        }
+        (topAppBar.parent as? AppBarLayout)?.addOnOffsetChangedListener(
+            AppBarLayout.OnOffsetChangedListener { appBarLayout, verticalOffset ->
+                if (!shouldLogDetailedRestoreEffects()) return@OnOffsetChangedListener
+                logDetailedRestoreEffect(
+                    "appBarOffset offset=$verticalOffset top=${appBarLayout.top} bottom=${appBarLayout.bottom} y=${appBarLayout.y}"
+                )
+            }
+        )
+        (view as? ViewGroup)?.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (!shouldLogDetailedRestoreEffects()) return@addOnLayoutChangeListener
+            logDetailedRestoreEffect(
+                "rootLayout left=$left top=$top right=$right bottom=$bottom " +
+                    "oldLeft=$oldLeft oldTop=$oldTop oldRight=$oldRight oldBottom=$oldBottom"
+            )
+        }
         historyAdapter.addLoadStateListener { loadStates ->
             if (loadStates.refresh is androidx.paging.LoadState.NotLoading && historyAdapter.itemCount > 0) {
+                if (tryApplyPendingDirectScrollRestore()) {
+                    return@addLoadStateListener
+                }
                 if (tryApplyPendingRestore()) {
                     return@addLoadStateListener
                 }
                 if (pendingScrollToTop && !isRestoringFromNavigationBack && pendingRestoreEntry == null) {
+                    logHistoryReturn("addLoadStateListener triggerTopScroll itemCount=${historyAdapter.itemCount}")
                     recyclerView.post {
                         requestScrollToTop()
                         recyclerView.post { forceScrollToTop() }
@@ -488,8 +663,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
         downloadViewModel = ViewModelProvider(this)[DownloadViewModel::class.java]
+        consumeIntentScrollRestore()
+        consumePendingStoredScrollRestore()
         historyAdapter.addOnPagesUpdatedListener {
             if (forceTopOnNextPagesUpdate) {
+                logHistoryReturn("addOnPagesUpdatedListener forceTopOnNextPagesUpdate=true")
                 forceTopOnNextPagesUpdate = false
                 recyclerView.post {
                     requestScrollToTop()
@@ -536,9 +714,17 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     type = historyViewModel.typeFilterFlow.value
                 )
                 val screenChanged = lastScreenKey != null && lastScreenKey != screenKey
+                if (screenChanged) {
+                    suppressAutoTopScrollUntilMs = 0L
+                }
                 pendingScrollToTop = screenChanged &&
                     !isRestoringFromNavigationBack &&
                     !suppressAutoScrollForNextScreenChange
+                logHistoryReturn(
+                    "submitData screenChanged=$screenChanged pendingScrollToTop=$pendingScrollToTop " +
+                        "isRestoringFromNavigationBack=$isRestoringFromNavigationBack " +
+                        "suppressAutoScrollForNextScreenChange=$suppressAutoScrollForNextScreenChange"
+                )
                 lastScreenKey = screenKey
                 lastPagingData = data
                 historyAdapter.submitData(viewLifecycleOwner.lifecycle, data)
@@ -549,6 +735,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     schedulePendingRestoreRetry()
                 }
                 if (!isRestoringFromNavigationBack && pendingScrollToTop) {
+                    logHistoryReturn("submitData postRequestScrollToTop pendingScrollToTop=true")
                     recyclerView.post { requestScrollToTop() }
                 }
             }
@@ -557,15 +744,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         lifecycleScope.launch {
             historyViewModel.authors.collectLatest {
                 authorList = it
-                if (it.isEmpty()) {
-                    noResults.isVisible = true
-                    selectionChips.isVisible = false
-                    topAppBar.menu.children.firstOrNull { m -> m.itemId == R.id.filters }?.isVisible = false
-                } else {
-                    noResults.isVisible = false
-                    selectionChips.isVisible = true
-                    topAppBar.menu.children.firstOrNull { m -> m.itemId == R.id.filters }?.isVisible = true
-                }
             }
         }
 
@@ -615,6 +793,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         lifecycleScope.launch {
             historyViewModel.totalCount.collectLatest {
                 totalCount = it
+                updateHistoryEmptyState()
+                updateFilterBadge()
             }
         }
 
@@ -623,6 +803,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 historyAdapter.setDisableGeneratedThumbnails(
                     status == HistoryViewModel.HistoryStatus.MISSING_THUMBNAIL
                 )
+                updateFilterBadge()
             }
         }
 
@@ -655,6 +836,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     selectedYoutuberText.visibility = View.VISIBLE
                 }
                 updateYoutuberChipCheckedState()
+                updateFilterBadge()
             }
         }
 
@@ -670,6 +852,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     selectedYoutuberText.visibility = View.VISIBLE
                 }
                 updateYoutuberChipCheckedState()
+                updateFilterBadge()
             }
         }
 
@@ -677,6 +860,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             historyViewModel.playlistFilter.collectLatest { playlistId ->
                 updatePlaylistLabel(playlistId)
                 playlistChip.isChecked = playlistId != -1L || historyViewModel.playlistGroupFilter.value >= 0L
+                updateFilterBadge()
             }
         }
 
@@ -690,6 +874,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     selectedKeywordText.text = keyword
                     selectedKeywordText.visibility = View.VISIBLE
                 }
+                updateFilterBadge()
             }
         }
 
@@ -704,6 +889,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     selectedPlaylistText.text = getString(R.string.group_prefix, groupName)
                     selectedPlaylistText.visibility = View.VISIBLE
                 }
+                updateFilterBadge()
             }
         }
 
@@ -718,6 +904,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     selectedKeywordText.text = getString(R.string.group_prefix, groupName)
                     selectedKeywordText.visibility = View.VISIBLE
                 }
+                updateFilterBadge()
             }
         }
 
@@ -810,6 +997,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     selectedKeywordText.visibility = View.GONE
                     fragmentView.findViewById<TextView>(R.id.selected_youtuber_text).visibility = View.GONE
                 }
+                updateFilterBadge()
             }
         }
 
@@ -829,6 +1017,40 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
         initMenu()
         initChips()
+        updateHistoryEmptyState()
+        updateFilterBadge()
+    }
+
+    private fun updateHistoryEmptyState() {
+        val isEmpty = totalCount == 0
+        noResults.isVisible = isEmpty
+        selectionChips.isVisible = !isEmpty
+        topAppBar.menu.children.firstOrNull { m -> m.itemId == R.id.filters }?.isVisible = !isEmpty
+    }
+
+    private fun computeActiveFilterCount(): Int {
+        var count = 0
+        if (historyViewModel.websiteFilter.value.isNotBlank()) count++
+        if (historyViewModel.statusFilter.value != HistoryViewModel.HistoryStatus.ALL) count++
+        if (historyViewModel.typeFilterFlow.value.isNotBlank()) count++
+        if (historyViewModel.authorFilter.value.isNotBlank()) count++
+        if (historyViewModel.youtuberGroupFilter.value >= 0L) count++
+        if (historyViewModel.keywordFilter.value.isNotBlank()) count++
+        if (historyViewModel.keywordGroupFilter.value >= 0L) count++
+        if (historyViewModel.playlistFilter.value != -1L) count++
+        if (historyViewModel.playlistGroupFilter.value >= 0L) count++
+        if (historyViewModel.queryFilterFlow.value.isNotBlank()) count++
+        if (historyViewModel.titleQueryFilterFlow.value.isNotBlank()) count++
+        if (historyViewModel.keywordQueryFilterFlow.value.isNotBlank()) count++
+        if (historyViewModel.creatorQueryFilterFlow.value.isNotBlank()) count++
+        if (historyViewModel.includeChildCategoryVideosFilter.value) count++
+        if (historyViewModel.isRecentMode.value) count++
+        return count
+    }
+
+    private fun updateFilterBadge() {
+        if (!::topAppBar.isInitialized) return
+        topAppBar.updateMenuItemBadge(R.id.filters, computeActiveFilterCount())
     }
 
     override fun onDestroyView() {
@@ -848,6 +1070,9 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
     override fun onResume() {
         super.onResume()
+        if (shouldLogDetailedRestoreEffects()) {
+            logDetailedRestoreEffect("fragmentOnResume")
+        }
         if (resetToAllOnResumeFromQueue) {
             resetToAllOnResumeFromQueue = false
             resetToAllVideosState()
@@ -857,6 +1082,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             showLocalAddSnackbar()
         }
         maybeOpenPendingLocalAdd()
+        consumePendingStoredScrollRestore()
+        applyPendingDirectRestoreVisibility()
+        if (pendingDirectScrollRestore != null) {
+            tryApplyPendingDirectScrollRestore()
+        }
         if (restoreScrollOnNextResume) {
             restoreScrollOnNextResume = false
             val state = captureNavigationState()
@@ -1304,6 +1534,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     }
 
     fun scrollToTop() {
+        logHistoryReturn("scrollToTop")
         recyclerView.scrollToPosition(0)
         Handler(Looper.getMainLooper()).post {
             (topAppBar.parent as AppBarLayout).setExpanded(true, true)
@@ -1312,6 +1543,17 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
     private fun requestScrollToTop() {
         if (!this::recyclerView.isInitialized) return
+        if (SystemClock.elapsedRealtime() < suppressAutoTopScrollUntilMs) {
+            logHistoryReturn(
+                "requestScrollToTop suppressed remainingMs=${suppressAutoTopScrollUntilMs - SystemClock.elapsedRealtime()}"
+            )
+            return
+        }
+        logHistoryReturn(
+            "requestScrollToTop pendingRestoreEntry=${pendingRestoreEntry != null} " +
+                "pendingDirectScrollRestore=${pendingDirectScrollRestore != null} " +
+                "isRestoringFromNavigationBack=$isRestoringFromNavigationBack"
+        )
         cancelPendingScrollRestore()
         lastStableScrollSnapshot = ScrollSnapshot(0, 0)
         (topAppBar.parent as? AppBarLayout)?.setExpanded(true, false)
@@ -1323,6 +1565,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     }
 
     private fun cancelPendingScrollRestore() {
+        logHistoryReturn(
+            "cancelPendingScrollRestore pendingRestoreEntry=${pendingRestoreEntry != null} " +
+                "pendingDirectScrollRestore=${pendingDirectScrollRestore != null}"
+        )
         pendingRestoreEntry = null
         isRestoringFromNavigationBack = false
         suppressAutoScrollForNextScreenChange = false
@@ -1423,11 +1669,14 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val firstChild = recyclerView.getChildAt(0) ?: return null
         val position = recyclerView.getChildAdapterPosition(firstChild)
         if (position == RecyclerView.NO_POSITION) return null
-        return ScrollSnapshot(position, firstChild.top)
+        return ScrollSnapshot(position = position, offset = firstChild.top)
     }
 
     private fun requestRestoreScroll(scroll: ScrollSnapshot) {
         if (!this::recyclerView.isInitialized) return
+        logHistoryReturn("requestRestoreScroll position=${scroll.position} offset=${scroll.offset}")
+        lastRestoreRequestElapsedMs = SystemClock.elapsedRealtime()
+        detailedRestoreLogUntilMs = SystemClock.elapsedRealtime() + 5_500L
         recyclerView.post {
             val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
             if (layoutManager != null) {
@@ -1438,9 +1687,63 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     layoutManager.scrollToPositionWithOffset(targetPosition, scroll.offset)
                 }
                 lastStableScrollSnapshot = ScrollSnapshot(targetPosition, scroll.offset)
+                observePostRestoreScroll(targetPosition)
             } else {
                 recyclerView.scrollToPosition(scroll.position)
+                observePostRestoreScroll(scroll.position)
             }
+        }
+    }
+
+    private fun observePostRestoreScroll(targetPosition: Int) {
+        restoreObservationToken += 1L
+        val token = restoreObservationToken
+        val checkpoints = listOf(0L, 250L, 700L, 1500L, 2500L, 3000L, 4000L, 5000L)
+        val mainHandler = Handler(Looper.getMainLooper())
+        checkpoints.forEach { delayMs ->
+            val scheduledAt = SystemClock.elapsedRealtime()
+            logHistoryReturn(
+                "observePostRestoreScroll scheduled delay=${delayMs}ms token=$token targetPosition=$targetPosition " +
+                    "actual=${scheduledAt - lastRestoreRequestElapsedMs}ms"
+            )
+            mainHandler.postDelayed({
+                val actualElapsed = SystemClock.elapsedRealtime() - lastRestoreRequestElapsedMs
+                if (token != restoreObservationToken) {
+                    logHistoryReturn(
+                        "observePostRestoreScroll skipped delay=${delayMs}ms actual=${actualElapsed}ms " +
+                            "token=$token activeToken=$restoreObservationToken"
+                    )
+                    return@postDelayed
+                }
+                if (!this::recyclerView.isInitialized) {
+                    logHistoryReturn(
+                        "observePostRestoreScroll missingRecyclerView delay=${delayMs}ms actual=${actualElapsed}ms token=$token"
+                    )
+                    return@postDelayed
+                }
+                val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
+                if (layoutManager == null) {
+                    logHistoryReturn(
+                        "observePostRestoreScroll missingLayoutManager delay=${delayMs}ms actual=${actualElapsed}ms token=$token"
+                    )
+                    return@postDelayed
+                }
+                val firstVisible = layoutManager.findFirstVisibleItemPosition()
+                val firstTop = layoutManager.findViewByPosition(firstVisible)?.top
+                val canScrollUp = recyclerView.canScrollVertically(-1)
+                val canScrollDown = recyclerView.canScrollVertically(1)
+                val firstItem = describeUiModelAt(firstVisible)
+                val targetItem = describeUiModelAt(targetPosition)
+                val trackedPosition = findHistoryItemPositionById(lastClickedHistoryItemIdForRestore)
+                val trackedTop = findItemTopByAdapterPosition(trackedPosition)
+                logHistoryReturn(
+                    "observePostRestoreScroll delay=${delayMs}ms firstVisible=$firstVisible " +
+                    "actual=${actualElapsed}ms firstTop=$firstTop targetPosition=$targetPosition firstItem=$firstItem " +
+                        "targetItem=$targetItem trackedItemId=$lastClickedHistoryItemIdForRestore " +
+                        "trackedPosition=$trackedPosition trackedTop=$trackedTop " +
+                        "canScrollUp=$canScrollUp canScrollDown=$canScrollDown"
+                )
+            }, delayMs)
         }
     }
 
@@ -1568,6 +1871,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     }
 
     private fun forceScrollToTop() {
+        if (SystemClock.elapsedRealtime() < suppressAutoTopScrollUntilMs) {
+            logHistoryReturn(
+                "forceScrollToTop suppressed remainingMs=${suppressAutoTopScrollUntilMs - SystemClock.elapsedRealtime()}"
+            )
+            return
+        }
+        logHistoryReturn("forceScrollToTop")
         val layoutManager = recyclerView.layoutManager
         if (layoutManager is GridLayoutManager) {
             layoutManager.scrollToPositionWithOffset(0, 0)
@@ -3754,9 +4064,22 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             val db = DBManager.getInstance(requireContext())
             val repository = HistoryRepository(db.historyDao, db.playlistDao)
             val allItems = historyViewModel.getAll()
+            val selectedItems = selectedIds.mapNotNull { id ->
+                runCatching { historyViewModel.getByID(id) }.getOrNull()
+            }
             val keywordInfos = repository.getKeywordsWithInfoForHistoryIds(allItems.map { it.id })
             val keywordRows = buildKeywordRows(keywordInfos)
             val keywordCandidates = keywordRows.map { it.first }
+            val selectedCount = selectedItems.size
+            val keywordPresenceCountLower = mutableMapOf<String, Int>()
+            selectedItems.forEach { item ->
+                splitKeywordsLocal(item.keywords)
+                    .map { it.lowercase(Locale.getDefault()) }
+                    .toSet()
+                    .forEach { keyword ->
+                        keywordPresenceCountLower[keyword] = (keywordPresenceCountLower[keyword] ?: 0) + 1
+                    }
+            }
             withContext(Dispatchers.Main) {
                 val context = requireContext()
                 val input = MultiAutoCompleteTextView(context).apply {
@@ -3773,8 +4096,20 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 val inputLayout = TextInputLayout(context).apply {
                     addView(input)
                 }
-                val labels = keywordRows.map { it.second }
-                val checked = BooleanArray(labels.size)
+                val labels = keywordRows.map { row ->
+                    val count = keywordPresenceCountLower[row.first.lowercase(Locale.getDefault())] ?: 0
+                    if (selectedCount > 1 && count in 1 until selectedCount) {
+                        "◩ ${row.second}"
+                    } else {
+                        row.second
+                    }
+                }
+                val checked = BooleanArray(labels.size) { index ->
+                    val count = keywordPresenceCountLower[keywordRows[index].first.lowercase(Locale.getDefault())] ?: 0
+                    selectedCount > 0 && count == selectedCount
+                }
+                val initialChecked = checked.copyOf()
+                val touched = BooleanArray(labels.size)
                 val listView = ListView(context).apply {
                     choiceMode = ListView.CHOICE_MODE_MULTIPLE
                     dividerHeight = 0
@@ -3785,6 +4120,9 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     )
                     for (index in checked.indices) {
                         setItemChecked(index, checked[index])
+                    }
+                    setOnItemClickListener { _, _, position, _ ->
+                        touched[position] = true
                     }
                 }
                 val container = LinearLayout(context).apply {
@@ -3804,19 +4142,19 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     .setTitle(getString(R.string.add_keywords))
                     .setView(container)
                     .setPositiveButton(getString(R.string.ok)) { _, _ ->
-                        val selectedFromList = checked.indices
-                            .filter { listView.isItemChecked(it) }
-                            .map { keywordRows[it].first }
                         val typedKeywords = splitKeywordsLocal(input.text?.toString().orEmpty())
-                        val newKeywords = (selectedFromList + typedKeywords)
+                        val removedFromListLower = checked.indices
+                            .filter { touched[it] && !listView.isItemChecked(it) }
+                            .map { keywordRows[it].first.lowercase(Locale.getDefault()) }
+                            .toSet()
+                        val addedFromList = checked.indices
+                            .filter { touched[it] && listView.isItemChecked(it) && !initialChecked[it] }
+                            .map { keywordRows[it].first }
+                        val addedKeywords = (addedFromList + typedKeywords)
                             .fold(mutableListOf<String>()) { acc, keyword ->
                                 if (acc.none { it.equals(keyword, ignoreCase = true) }) acc.add(keyword)
                                 acc
                             }
-                        if (newKeywords.isEmpty()) {
-                            Toast.makeText(requireContext(), R.string.video_info_required, Toast.LENGTH_SHORT).show()
-                            return@setPositiveButton
-                        }
                         lifecycleScope.launch(Dispatchers.IO) {
                             val items = selectedIds.mapNotNull { id ->
                                 runCatching { historyViewModel.getByID(id) }.getOrNull()
@@ -3829,10 +4167,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             }
                             val updateJobs = mutableListOf<Job>()
                             items.forEach { item ->
-                                val existing = splitKeywordsLocal(item.keywords)
+                                val existing = splitKeywordsLocal(item.keywords).filterNot { keyword ->
+                                    removedFromListLower.contains(keyword.lowercase(Locale.getDefault()))
+                                }
                                 val seen = HashSet<String>()
                                 val merged = mutableListOf<String>()
-                                (existing + newKeywords).forEach { keyword ->
+                                (existing + addedKeywords).forEach { keyword ->
                                     val key = keyword.lowercase(Locale.getDefault())
                                     if (seen.add(key)) {
                                         merged.add(keyword)
@@ -4624,32 +4964,46 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val missingThumbnail = filterSheet.findViewById<TextView>(R.id.missing_thumbnail)!!
         val customThumbnailOnly = filterSheet.findViewById<TextView>(R.id.custom_thumbnail_only)!!
         val hardSubDoneOnly = filterSheet.findViewById<TextView>(R.id.hardsub_done_only)!!
-        updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, historyViewModel.statusFilter.value)
+        val hardSubScanTargetOnly = filterSheet.findViewById<TextView>(R.id.hardsub_scan_target_only)!!
+        updateStatusIcons(
+            notDeleted,
+            deleted,
+            missingThumbnail,
+            customThumbnailOnly,
+            hardSubDoneOnly,
+            hardSubScanTargetOnly,
+            historyViewModel.statusFilter.value
+        )
 
         notDeleted.setOnClickListener {
             val newStatus = cycleStatusOnNotDeleted(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
         deleted.setOnClickListener {
             val newStatus = cycleStatusOnDeleted(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
         missingThumbnail.setOnClickListener {
             val newStatus = cycleStatusOnMissingThumbnail(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
         customThumbnailOnly.setOnClickListener {
             val newStatus = cycleStatusOnCustomThumbnail(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
         hardSubDoneOnly.setOnClickListener {
             val newStatus = cycleStatusOnHardSubDone(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
+        }
+        hardSubScanTargetOnly.setOnClickListener {
+            val newStatus = cycleStatusOnHardSubScanTarget(historyViewModel.statusFilter.value)
+            historyViewModel.setStatusFilter(newStatus)
+            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
 
         val includeChildCategoryVideosCheck = filterSheet.findViewById<com.google.android.material.checkbox.MaterialCheckBox>(R.id.includeChildCategoryVideosCheck)
@@ -4718,6 +5072,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         missingThumbnail: TextView,
         customThumbnailOnly: TextView,
         hardSubDoneOnly: TextView,
+        hardSubScanTargetOnly: TextView,
         status: HistoryViewModel.HistoryStatus
     ) {
         val checkIcon = R.drawable.ic_check
@@ -4729,6 +5084,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.DELETED -> {
                 notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
@@ -4736,6 +5092,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.NOT_DELETED -> {
                 notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
@@ -4743,6 +5100,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.MISSING_THUMBNAIL -> {
                 notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
@@ -4750,6 +5108,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.CUSTOM_THUMBNAIL -> {
                 notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
@@ -4757,6 +5116,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.HARDSUB_DONE -> {
                 notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
@@ -4764,9 +5124,180 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
+                hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+            }
+            HistoryViewModel.HistoryStatus.HARDSUB_SCAN_TARGET -> {
+                notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
+                hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
             }
             else -> {}
         }
+    }
+
+    private fun consumeIntentScrollRestore() {
+        val args = arguments ?: return
+        if (!args.containsKey(EXTRA_RESTORE_SCROLL_POSITION)) return
+        val position = args.getInt(EXTRA_RESTORE_SCROLL_POSITION, RecyclerView.NO_POSITION)
+        if (position == RecyclerView.NO_POSITION) return
+        val offset = args.getInt(EXTRA_RESTORE_SCROLL_OFFSET, 0)
+        val itemId = args.getLong(EXTRA_RESTORE_SCROLL_ITEM_ID, -1L).takeIf { it > 0L }
+        val itemTop = if (args.containsKey(EXTRA_RESTORE_SCROLL_ITEM_TOP)) {
+            args.getInt(EXTRA_RESTORE_SCROLL_ITEM_TOP)
+        } else {
+            null
+        }
+        logHistoryReturn(
+            "consumeIntentScrollRestore position=$position offset=$offset itemId=$itemId itemTop=$itemTop"
+        )
+        pendingDirectScrollRestore = DirectScrollRestore(position, offset, itemId, itemTop)
+        pendingDirectScrollRestoreRetries = 8
+        pendingDirectScrollRestoreApplied = false
+        hideRecyclerUntilDirectRestoreSettles = true
+        if (itemId != null) {
+            lastClickedHistoryItemIdForRestore = itemId
+        }
+        args.remove(EXTRA_RESTORE_SCROLL_POSITION)
+        args.remove(EXTRA_RESTORE_SCROLL_OFFSET)
+        args.remove(EXTRA_RESTORE_SCROLL_ITEM_ID)
+        args.remove(EXTRA_RESTORE_SCROLL_ITEM_TOP)
+    }
+
+    private fun consumePendingStoredScrollRestore() {
+        val pending = peekPendingScrollRestore(requireContext()) ?: return
+        logHistoryReturn(
+            "consumePendingStoredScrollRestore position=${pending.position} offset=${pending.offset} " +
+                "itemId=${pending.itemId} itemTop=${pending.itemTop}"
+        )
+        pendingDirectScrollRestore = pending
+        pendingDirectScrollRestoreRetries = 8
+        pendingDirectScrollRestoreApplied = false
+        hideRecyclerUntilDirectRestoreSettles = true
+        if (pending.itemId != null) {
+            lastClickedHistoryItemIdForRestore = pending.itemId
+        }
+    }
+
+    private fun tryApplyPendingDirectScrollRestore(): Boolean {
+        val pending = pendingDirectScrollRestore ?: return false
+        if (!this::recyclerView.isInitialized || historyAdapter.itemCount <= 0) {
+            logHistoryReturn("tryApplyPendingDirectScrollRestore deferred itemCount=${if (this::historyAdapter.isInitialized) historyAdapter.itemCount else -1}")
+            return false
+        }
+        if (pendingDirectScrollRestoreApplied) {
+            return true
+        }
+        val targetScroll = resolvePreferredRestoreScroll(pending)
+        logHistoryReturn(
+            "tryApplyPendingDirectScrollRestore apply position=${targetScroll.position} offset=${targetScroll.offset} " +
+                "itemId=${pending.itemId} itemTop=${pending.itemTop}"
+        )
+        pendingScrollToTop = false
+        forceTopOnNextPagesUpdate = false
+        pendingDirectScrollRestoreApplied = true
+        requestRestoreScroll(targetScroll)
+        suppressAutoTopScrollUntilMs = SystemClock.elapsedRealtime() + 6_000L
+        schedulePendingDirectScrollRestoreVerification()
+        return true
+    }
+
+    private fun schedulePendingDirectScrollRestoreVerification() {
+        if (!this::recyclerView.isInitialized) return
+        val pending = pendingDirectScrollRestore ?: return
+        recyclerView.postDelayed({
+            val layoutManager = recyclerView.layoutManager as? LinearLayoutManager ?: return@postDelayed
+            val firstVisible = layoutManager.findFirstVisibleItemPosition()
+            val resolved = resolvePreferredRestoreScroll(pending)
+            val firstTop = layoutManager.findViewByPosition(firstVisible)?.top
+            val trackedPosition = pending.itemId?.let { findHistoryItemPositionById(it) } ?: RecyclerView.NO_POSITION
+            val trackedTop = findItemTopByAdapterPosition(trackedPosition)
+            val done = if (pending.itemId != null && pending.itemTop != null) {
+                trackedPosition != RecyclerView.NO_POSITION &&
+                    trackedTop != null &&
+                    kotlin.math.abs(trackedTop - pending.itemTop) <= 2
+            } else {
+                firstVisible == resolved.position &&
+                    firstTop != null &&
+                    kotlin.math.abs(firstTop - resolved.offset) <= 2
+            }
+            if (done || pendingDirectScrollRestoreRetries <= 0) {
+                logHistoryReturn(
+                    "verifyPendingDirectScrollRestore done firstVisible=$firstVisible " +
+                        "firstTop=$firstTop target=${resolved.position} targetTop=${resolved.offset} " +
+                        "trackedPosition=$trackedPosition trackedTop=$trackedTop " +
+                        "itemId=${pending.itemId} retries=$pendingDirectScrollRestoreRetries"
+                )
+                pendingDirectScrollRestore = null
+                pendingDirectScrollRestoreRetries = 0
+                pendingDirectScrollRestoreApplied = false
+                hideRecyclerUntilDirectRestoreSettles = false
+                applyPendingDirectRestoreVisibility()
+                schedulePendingStoredRestoreClear()
+                return@postDelayed
+            }
+            pendingDirectScrollRestoreRetries -= 1
+            pendingDirectScrollRestoreApplied = false
+            logHistoryReturn(
+                "verifyPendingDirectScrollRestore retry firstVisible=$firstVisible " +
+                    "firstTop=$firstTop target=${resolved.position} targetTop=${resolved.offset} " +
+                    "trackedPosition=$trackedPosition trackedTop=$trackedTop " +
+                    "itemId=${pending.itemId} retries=$pendingDirectScrollRestoreRetries"
+            )
+            requestRestoreScroll(resolved)
+            pendingDirectScrollRestoreApplied = true
+            schedulePendingDirectScrollRestoreVerification()
+        }, 90L)
+    }
+
+    private fun resolvePreferredRestoreScroll(pending: DirectScrollRestore): ScrollSnapshot {
+        if (restoreScrollOnNextResume) {
+            val state = captureNavigationState()
+            val saved = savedScrollByState[state]
+            if (saved != null) {
+                logHistoryReturn(
+                    "resolvePreferredRestoreScroll useSavedState position=${saved.position} offset=${saved.offset}"
+                )
+                restoreScrollOnNextResume = false
+                return saved
+            }
+        }
+        return resolveDirectScrollRestore(pending)
+    }
+
+    private fun applyPendingDirectRestoreVisibility() {
+        if (!this::recyclerView.isInitialized) return
+        val shouldHide = hideRecyclerUntilDirectRestoreSettles && pendingDirectScrollRestore != null
+        recyclerView.alpha = if (shouldHide) 0f else 1f
+    }
+
+    private fun schedulePendingStoredRestoreClear() {
+        pendingDirectRestoreClearToken += 1L
+        val token = pendingDirectRestoreClearToken
+        view?.postDelayed({
+            if (token != pendingDirectRestoreClearToken) return@postDelayed
+            if (!isAdded || !isResumed || view?.isShown != true) return@postDelayed
+            clearPendingScrollRestore(requireContext())
+        }, 1200L)
+    }
+
+    private fun resolveDirectScrollRestore(pending: DirectScrollRestore): ScrollSnapshot {
+        val itemId = pending.itemId
+        if (itemId != null && itemId > 0L) {
+            val trackedPosition = findHistoryItemPositionById(itemId)
+            if (trackedPosition != RecyclerView.NO_POSITION) {
+                return ScrollSnapshot(
+                    position = trackedPosition,
+                    offset = pending.itemTop ?: pending.offset
+                )
+            }
+        }
+        return ScrollSnapshot(
+            position = pending.position,
+            offset = pending.offset
+        )
     }
 
     private fun cycleStatusOnNotDeleted(status: HistoryViewModel.HistoryStatus): HistoryViewModel.HistoryStatus {
@@ -4808,6 +5339,14 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             HistoryViewModel.HistoryStatus.ALL
         } else {
             HistoryViewModel.HistoryStatus.HARDSUB_DONE
+        }
+    }
+
+    private fun cycleStatusOnHardSubScanTarget(status: HistoryViewModel.HistoryStatus): HistoryViewModel.HistoryStatus {
+        return if (status == HistoryViewModel.HistoryStatus.HARDSUB_SCAN_TARGET) {
+            HistoryViewModel.HistoryStatus.ALL
+        } else {
+            HistoryViewModel.HistoryStatus.HARDSUB_SCAN_TARGET
         }
     }
 
@@ -5065,14 +5604,30 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     ?: item.downloadPath.firstOrNull()
                 if (path.isNullOrBlank()) return@launch
                 val currentState = captureNavigationState()
-                savedScrollByState[currentState] = captureScrollSnapshot()
+                val currentScroll = captureScrollSnapshot()
+                val clickedPosition = findHistoryItemPositionById(itemID)
+                val clickedTop = findItemTopByAdapterPosition(clickedPosition)
+                logHistoryReturn(
+                    "onCardClick saveScroll position=${currentScroll.position} offset=${currentScroll.offset} " +
+                        "itemId=$itemID itemPosition=$clickedPosition itemTop=$clickedTop"
+                )
+                lastClickedHistoryItemIdForRestore = itemID
+                savedScrollByState[currentState] = currentScroll
                 restoreScrollOnNextResume = true
                 val intent = Intent(activity, VideoPlayerActivity::class.java)
                 intent.putExtra("video_path", path)
                 intent.putExtra("history_id", item.id)
                 intent.putExtra("playback_position_ms", item.playbackPositionMs)
+                intent.putExtra(VideoPlayerActivity.EXTRA_RETURN_DESTINATION, "Downloads")
+                intent.putExtra(EXTRA_RESTORE_SCROLL_POSITION, currentScroll.position)
+                intent.putExtra(EXTRA_RESTORE_SCROLL_OFFSET, currentScroll.offset)
+                intent.putExtra(EXTRA_RESTORE_SCROLL_ITEM_ID, itemID)
+                if (clickedTop != null) {
+                    intent.putExtra(EXTRA_RESTORE_SCROLL_ITEM_TOP, clickedTop)
+                }
                 intent.putExtra("context_sort_type", historyViewModel.sortType.value.name)
                 intent.putExtra("context_sort_order", historyViewModel.sortOrder.value.name)
+                intent.putExtra("context_status", historyViewModel.statusFilter.value.name)
                 intent.putExtra("context_query", historyViewModel.queryFilterFlow.value)
                 intent.putExtra("context_title_query", historyViewModel.titleQueryFilterFlow.value)
                 intent.putExtra("context_keyword_query", historyViewModel.keywordQueryFilterFlow.value)
@@ -5088,6 +5643,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     "context_excluded_child_keywords",
                     historyViewModel.excludedChildKeywordsFilter.value.joinToString(",")
                 )
+                val prefetchedHistoryIds = historyAdapter.snapshot().items.asSequence()
+                    .mapNotNull { model -> (model as? UiModel.HistoryItemModel)?.historyItem?.id }
+                    .toList()
+                if (prefetchedHistoryIds.isNotEmpty()) {
+                    intent.putExtra("context_prefetched_history_ids", prefetchedHistoryIds.toLongArray())
+                    intent.putExtra("context_prefetched_total_count", totalCount)
+                }
                 val authorFilter = historyViewModel.authorFilter.value
                 if (authorFilter.isNotEmpty()) {
                     intent.putExtra("context_author", authorFilter)
@@ -5131,6 +5693,101 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 )
             }
         }
+    }
+
+    private fun logHistoryReturn(event: String) {
+        if (!ENABLE_HISTORY_RETURN_LOGS) return
+        val fragmentId = Integer.toHexString(System.identityHashCode(this))
+        val viewId = view?.let { Integer.toHexString(System.identityHashCode(it)) } ?: "null"
+        val activityId = activity?.let { Integer.toHexString(System.identityHashCode(it)) } ?: "null"
+        Log.d(
+            HISTORY_RETURN_TAG,
+            "event=$event fragment=$fragmentId view=$viewId activity=$activityId " +
+                "added=$isAdded visible=$isVisible resumed=$isResumed viewShown=${view?.isShown}"
+        )
+    }
+
+    private fun shouldLogDetailedRestoreEffects(): Boolean {
+        return ENABLE_HISTORY_RETURN_LOGS && SystemClock.elapsedRealtime() <= detailedRestoreLogUntilMs
+    }
+
+    private fun logDetailedRestoreEffect(event: String) {
+        if (!this::recyclerView.isInitialized) {
+            logHistoryReturn("effect=$event recycler=uninitialized")
+            return
+        }
+        val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
+        val firstVisible = layoutManager?.findFirstVisibleItemPosition() ?: RecyclerView.NO_POSITION
+        val firstTop = layoutManager?.findViewByPosition(firstVisible)?.top
+        val appBarLayout = topAppBar.parent as? AppBarLayout
+        val firstVisibleItem = describeUiModelAt(firstVisible)
+        val trackedItemPosition = findHistoryItemPositionById(lastClickedHistoryItemIdForRestore)
+        val trackedItemTop = findItemTopByAdapterPosition(trackedItemPosition)
+        val recyclerRect = Rect()
+        val recyclerVisible = recyclerView.getGlobalVisibleRect(recyclerRect)
+        val trackedRect = Rect()
+        val trackedView = if (trackedItemPosition != RecyclerView.NO_POSITION) {
+            recyclerView.layoutManager?.findViewByPosition(trackedItemPosition)
+        } else {
+            null
+        }
+        val trackedVisible = trackedView?.getGlobalVisibleRect(trackedRect) == true
+        logHistoryReturn(
+            "effect=$event firstVisible=$firstVisible firstTop=$firstTop " +
+                "firstItem=$firstVisibleItem " +
+                "trackedItemId=$lastClickedHistoryItemIdForRestore trackedPosition=$trackedItemPosition " +
+                "trackedTop=$trackedItemTop " +
+                "rvTop=${recyclerView.top} rvY=${recyclerView.y} rvHeight=${recyclerView.height} " +
+                "rvAlpha=${recyclerView.alpha} rvShown=${recyclerView.isShown} rvVisible=$recyclerVisible rvRect=$recyclerRect " +
+                "trackedVisible=$trackedVisible trackedRect=$trackedRect " +
+                "canScrollUp=${recyclerView.canScrollVertically(-1)} canScrollDown=${recyclerView.canScrollVertically(1)} " +
+                "appBarTop=${appBarLayout?.top} appBarBottom=${appBarLayout?.bottom} appBarY=${appBarLayout?.y} " +
+                "toolbarTop=${topAppBar.top} toolbarBottom=${topAppBar.bottom} " +
+                "orientation=${resources.configuration.orientation}"
+        )
+    }
+
+    private fun describeUiModelAt(position: Int): String {
+        if (position == RecyclerView.NO_POSITION) return "none"
+        val itemCount = historyAdapter.itemCount
+        if (position !in 0 until itemCount) {
+            logHistoryReturn("describeUiModelAt outOfBounds position=$position itemCount=$itemCount")
+            return "out-of-bounds($position/$itemCount)"
+        }
+        return when (val item = peekHistoryAdapterItem(position)) {
+            is UiModel.HistoryItemModel -> "history:${item.historyItem.id}"
+            is UiModel.SeparatorModel -> "separator:${item.author}"
+            is UiModel.YoutuberInfoModel -> "youtuber:${item.youtuberInfo.author}"
+            is UiModel.YoutuberGroupModel -> "youtuberGroup:${item.groupInfo.id}"
+            is UiModel.KeywordInfoModel -> "keyword:${item.keywordInfo.keyword}"
+            is UiModel.KeywordGroupModel -> "keywordGroup:${item.groupInfo.id}"
+            null -> "null"
+        }
+    }
+
+    private fun findHistoryItemPositionById(historyId: Long): Int {
+        if (historyId <= 0L) return RecyclerView.NO_POSITION
+        for (index in 0 until historyAdapter.itemCount) {
+            val item = peekHistoryAdapterItem(index) as? UiModel.HistoryItemModel ?: continue
+            if (item.historyItem.id == historyId) return index
+        }
+        return RecyclerView.NO_POSITION
+    }
+
+    private fun peekHistoryAdapterItem(position: Int): UiModel? {
+        return runCatching {
+            historyAdapter.peek(position)
+        }.onFailure { error ->
+            logHistoryReturn(
+                "historyAdapter.peek failed position=$position itemCount=${historyAdapter.itemCount} reason=${error.javaClass.simpleName}:${error.message}"
+            )
+        }.getOrNull()
+    }
+
+    private fun findItemTopByAdapterPosition(position: Int): Int? {
+        if (position == RecyclerView.NO_POSITION) return null
+        val layoutManager = recyclerView.layoutManager ?: return null
+        return layoutManager.findViewByPosition(position)?.top
     }
 
     override fun onButtonClick(itemID: Long, filePresent: Boolean) {
@@ -5188,7 +5845,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
 
         override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean {
-            menu?.findItem(R.id.edit_item)?.isVisible = historyAdapter.getSelectedObjectsCount(totalCount) == 1
+            val selectedCount = historyAdapter.getSelectedObjectsCount(totalCount)
+            menu?.findItem(R.id.edit_item)?.isVisible = selectedCount == 1
+            menu?.findItem(R.id.exclude_from_hardsub_scan)?.isVisible =
+                selectedCount > 0 && historyViewModel.statusFilter.value == HistoryViewModel.HistoryStatus.HARDSUB_SCAN_TARGET
             return true
         }
 
@@ -5306,6 +5966,17 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                         if (selectedObjects.isEmpty()) return@launch
                         showAddKeywordsDialog(selectedObjects)
                         actionMode?.finish()
+                    }
+                    true
+                }
+                R.id.exclude_from_hardsub_scan -> {
+                    lifecycleScope.launch {
+                        val selectedObjects = getSelectedIDs()
+                        if (selectedObjects.isEmpty()) return@launch
+                        historyViewModel.setHardSubScanRemoved(selectedObjects, removed = true)
+                        historyAdapter.clearCheckedItems()
+                        actionMode?.finish()
+                        Toast.makeText(requireContext(), getString(R.string.excluded_from_hardsub_scan), Toast.LENGTH_SHORT).show()
                     }
                     true
                 }

@@ -50,6 +50,7 @@ import com.ireum.ytdl.database.repository.ObserveSourcesRepository.EveryCategory
 import com.google.android.material.badge.BadgeDrawable
 import com.google.android.material.badge.BadgeUtils
 import com.google.android.material.badge.ExperimentalBadgeUtils
+import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.chip.Chip
@@ -348,6 +349,23 @@ object Extensions {
         }
     }
 
+    @OptIn(ExperimentalBadgeUtils::class)
+    fun MaterialToolbar.updateMenuItemBadge(menuItemId: Int, nr: Int) {
+        val badge = BadgeDrawable.create(context).apply {
+            number = nr
+            backgroundColor = ContextCompat.getColor(context, R.color.white)
+            badgeTextColor = ContextCompat.getColor(context, R.color.black)
+            verticalOffset = dpToPx(resources, 4f)
+            horizontalOffset = dpToPx(resources, 4f)
+        }
+
+        if (nr > 0) {
+            BadgeUtils.attachBadgeDrawable(badge, this, menuItemId)
+        } else {
+            BadgeUtils.detachBadgeDrawable(badge, this, menuItemId)
+        }
+    }
+
     fun TabLayout.Tab.createBadge(nr: Int){
         removeBadge()
         if (nr > 0) {
@@ -397,8 +415,14 @@ object Extensions {
             Picasso.get().load(R.color.black).noFade().into(this)
             return
         }
+        val resolvedImageUrl = when {
+            imageURL.startsWith("content://") || imageURL.startsWith("file://") -> imageURL
+            imageURL.startsWith("http://") || imageURL.startsWith("https://") -> imageURL
+            FileUtil.exists(imageURL) -> File(imageURL).toURI().toString()
+            else -> imageURL
+        }
         val request = Picasso.get()
-            .load(imageURL)
+            .load(resolvedImageUrl)
             .placeholder(R.color.black)
             .noFade()
         if (reqHeight > 0) {
@@ -413,8 +437,14 @@ object Extensions {
         if(!hideThumb){
             Picasso.get().cancelRequest(this)
             if (imageURL.isNotEmpty()) {
+                val resolvedImageUrl = when {
+                    imageURL.startsWith("content://") || imageURL.startsWith("file://") -> imageURL
+                    imageURL.startsWith("http://") || imageURL.startsWith("https://") -> imageURL
+                    FileUtil.exists(imageURL) -> File(imageURL).toURI().toString()
+                    else -> imageURL
+                }
                 Picasso.get()
-                    .load(imageURL)
+                    .load(resolvedImageUrl)
                     .placeholder(R.color.black)
                     .resize(1280, 0)
                     .transform(BlurTransformation(context, 1, 1))
@@ -546,6 +576,7 @@ object Extensions {
         val now = System.currentTimeMillis()
         Calendar.getInstance().apply {
             timeInMillis = item.startsTime
+            val repeatEvery = item.everyNr.coerceAtLeast(1)
 
             if (item.everyCategory != EveryCategory.HOUR){
                 val hourMin = Calendar.getInstance()
@@ -558,34 +589,33 @@ object Extensions {
             while (timeInMillis < now){
                 when(item.everyCategory){
                     EveryCategory.HOUR -> {
-                        add(Calendar.HOUR, item.everyNr)
+                        add(Calendar.HOUR, repeatEvery)
                     }
                     EveryCategory.DAY -> {
-                        add(Calendar.DAY_OF_MONTH, item.everyNr)
+                        add(Calendar.DAY_OF_MONTH, repeatEvery)
                     }
                     EveryCategory.WEEK -> {
                         item.weeklyConfig?.apply {
                             if (this.weekDays.isEmpty()){
-                                add(Calendar.DAY_OF_MONTH, 7 * item.everyNr)
+                                add(Calendar.DAY_OF_MONTH, 7 * repeatEvery)
                             }else{
+                                val sortedWeekDays = this.weekDays.sorted()
                                 var weekDayNr = get(Calendar.DAY_OF_WEEK) - 1
                                 if (weekDayNr == 0) weekDayNr = 7
-                                val followingWeekDay = this.weekDays.firstOrNull { it > weekDayNr }
+                                val followingWeekDay = sortedWeekDays.firstOrNull { it > weekDayNr }
                                 if (followingWeekDay == null){
-                                    add(Calendar.DAY_OF_MONTH, this.weekDays.minBy { it } + (7 - weekDayNr))
-                                    item.everyNr--
+                                    add(Calendar.DAY_OF_MONTH, sortedWeekDays.first() + (7 - weekDayNr))
+                                    if (repeatEvery > 1) {
+                                        add(Calendar.DAY_OF_MONTH, 7 * (repeatEvery - 1))
+                                    }
                                 }else{
-                                    add(Calendar.DAY_OF_MONTH, followingWeekDay.toInt() - weekDayNr)
-                                }
-
-                                if (item.everyNr > 1){
-                                    add(Calendar.DAY_OF_MONTH, 7 * item.everyNr)
+                                    add(Calendar.DAY_OF_MONTH, followingWeekDay - weekDayNr)
                                 }
                             }
                         }
                     }
                     EveryCategory.MONTH -> {
-                        add(Calendar.MONTH, item.everyNr)
+                        add(Calendar.MONTH, repeatEvery)
                         item.monthlyConfig?.apply {
                             set(Calendar.DAY_OF_MONTH, this.everyMonthDay)
                         }

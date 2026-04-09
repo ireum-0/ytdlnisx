@@ -30,10 +30,10 @@ import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.database.viewmodel.ObserveSourcesViewModel
 import com.ireum.ytdl.ui.adapter.ObserveSourcesAdapter
 import com.ireum.ytdl.util.UiUtil
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.ireum.ytdl.work.ObserveSourceWorker
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.chip.Chip
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -133,6 +133,7 @@ class ObserveSourcesFragment : Fragment(), ObserveSourcesAdapter.OnItemClickList
             val workConstraints = Constraints.Builder()
             val workRequest = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
                 .addTag("observeSources")
+                .addTag("observation_${item.id}")
                 .addTag(item.id.toString())
                 .setConstraints(workConstraints.build())
                 .setInitialDelay(1000L, TimeUnit.MILLISECONDS)
@@ -146,6 +147,23 @@ class ObserveSourcesFragment : Fragment(), ObserveSourcesAdapter.OnItemClickList
         }.onFailure {
             Snackbar.make(requireView(), it.message.toString(), Snackbar.LENGTH_SHORT).show()
         }
+    }
+
+    override fun onItemHistory(item: ObserveSourcesItem) {
+        val entries = item.runHistory.asReversed()
+        val message = if (entries.isEmpty()) {
+            getString(R.string.no_results)
+        } else {
+            entries.joinToString("\n\n") { line ->
+                val split = line.split("|||", limit = 2)
+                if (split.size < 2 || split[1].isBlank()) split[0] else "${split[0]}\n${split[1]}"
+            }
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(item.name)
+            .setMessage(message)
+            .setPositiveButton(getString(R.string.ok), null)
+            .show()
     }
 
     override fun onItemStart(item: ObserveSourcesItem, position: Int) {

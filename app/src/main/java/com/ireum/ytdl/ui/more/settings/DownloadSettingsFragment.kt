@@ -16,7 +16,6 @@ import androidx.preference.PreferenceManager
 import androidx.preference.SwitchPreferenceCompat
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.R
@@ -78,8 +77,6 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
             if (nextTime == null) workManager.cancelAllWorkByTag("cleanup_leftover_downloads")
             else {
                 val workConstraints = Constraints.Builder()
-                val allowMeteredNetworks = preferences.getBoolean("metered_networks", true)
-                if (!allowMeteredNetworks) workConstraints.setRequiredNetworkType(NetworkType.UNMETERED)
 
                 val delay = nextTime.timeInMillis.minus(System.currentTimeMillis())
 

@@ -42,16 +42,85 @@ import kotlin.math.pow
 
 object FileUtil {
 
+    @Volatile
+    private var lastMoveFailureDetails: String? = null
+
+    private val zeroByteSiblingMediaExtensions = setOf(
+        "webm", "mkv", "mp4", "m4v", "mov", "avi", "ts", "m2ts", "mp3", "m4a", "aac", "opus", "ogg", "wav", "flac"
+    )
+
     fun deleteFile(path: String){
         runCatching {
-            if (!File(path).delete()){
-                DocumentFile.fromSingleUri(App.instance, Uri.parse(path))?.delete()
+            val normalizedPath = path.trim()
+            if (normalizedPath.isBlank()) return@runCatching
+
+            val deleted = when {
+                normalizedPath.startsWith("content://") -> {
+                    deleteDocumentUri(Uri.parse(normalizedPath))
+                }
+                normalizedPath.startsWith("file://") -> {
+                    val filePath = Uri.parse(normalizedPath).path.orEmpty()
+                    deleteRawFilePath(filePath)
+                }
+                else -> {
+                    deleteRawFilePath(normalizedPath)
+                }
             }
-            deleteFileFromMediaStore(path)
+
+            if (!deleted) {
+                Log.w("FileUtil", "deleteFile fallback failed path=$normalizedPath")
+            }
         }
     }
 
-    private fun deleteFileFromMediaStore(path: String) {
+    fun deleteFileWithZeroByteSiblings(path: String) {
+        deleteFile(path)
+        deleteZeroByteSiblingMedia(path)
+    }
+
+    fun deleteFilesWithZeroByteSiblings(paths: List<String>) {
+        paths.forEach { path ->
+            deleteFileWithZeroByteSiblings(path)
+        }
+    }
+
+    private fun deleteRawFilePath(path: String): Boolean {
+        if (path.isBlank()) return false
+        val file = File(path)
+        if (file.exists() && file.delete()) {
+            deleteFileFromMediaStore(path)
+            return true
+        }
+
+        val documentDeleted = buildDocumentUriForPath(path)?.let { deleteDocumentUri(it) } == true
+        if (documentDeleted) {
+            deleteFileFromMediaStore(path)
+            return true
+        }
+
+        val mediaStoreDeleted = deleteFileFromMediaStore(path)
+        if (mediaStoreDeleted) {
+            return true
+        }
+
+        return !file.exists()
+    }
+
+    private fun deleteDocumentUri(uri: Uri): Boolean {
+        val single = DocumentFile.fromSingleUri(App.instance, uri)
+        if (single?.exists() == true && single.delete()) {
+            return true
+        }
+        val tree = DocumentFile.fromTreeUri(App.instance, uri)
+        if (tree?.exists() == true && tree.delete()) {
+            return true
+        }
+        return runCatching {
+            App.instance.contentResolver.delete(uri, null, null) > 0
+        }.getOrDefault(false)
+    }
+
+    private fun deleteFileFromMediaStore(path: String): Boolean {
         val contentResolver = App.instance.contentResolver
         val file = File(path)
         val uri = MediaStore.Files.getContentUri("external")
@@ -79,7 +148,9 @@ object FileUtil {
             selection = MediaStore.MediaColumns.DATA + " =?"
             selectionArgs = arrayOf(file.absolutePath)
         }
-        contentResolver.delete(uri, selection, selectionArgs)
+        return runCatching {
+            contentResolver.delete(uri, selection, selectionArgs) > 0
+        }.getOrDefault(false)
     }
 
     fun exists(path: String) : Boolean {
@@ -93,6 +164,35 @@ object FileUtil {
         return File(path).exists()
     }
 
+    private fun deleteZeroByteSiblingMedia(path: String) {
+        val rawPath = when {
+            path.startsWith("content://") -> return
+            path.startsWith("file://") -> Uri.parse(path).path.orEmpty()
+            else -> path
+        }.trim()
+        if (rawPath.isBlank()) return
+
+        val target = File(rawPath)
+        val parent = target.parentFile ?: return
+        val stem = target.nameWithoutExtension
+        if (!parent.exists() || !parent.isDirectory || stem.isBlank()) return
+
+        runCatching {
+            parent.listFiles()
+                ?.asSequence()
+                ?.filter { candidate ->
+                    candidate.isFile &&
+                        candidate.length() == 0L &&
+                        candidate.nameWithoutExtension == stem &&
+                        candidate.extension.lowercase(Locale.US) in zeroByteSiblingMediaExtensions
+                }
+                ?.forEach { candidate ->
+                    if (candidate.absolutePath.equals(target.absolutePath, ignoreCase = true)) return@forEach
+                    deleteFile(candidate.absolutePath)
+                }
+        }
+    }
+
     fun resolveTreeDocumentUri(treeUriString: String, relativePath: String): Uri? {
         if (treeUriString.isBlank() || relativePath.isBlank()) return null
         val treeUri = runCatching { Uri.parse(treeUriString) }.getOrNull() ?: return null
@@ -100,6 +200,31 @@ object FileUtil {
         val rel = relativePath.trimStart('/')
         val docId = if (rel.isBlank()) treeId else "$treeId/$rel"
         return runCatching { DocumentsContract.buildDocumentUriUsingTree(treeUri, docId) }.getOrNull()
+    }
+
+    fun buildDocumentUriForPath(path: String): Uri? {
+        if (!path.startsWith("/storage/")) return null
+        val relative = path.removePrefix("/storage/")
+        val splitIndex = relative.indexOf('/')
+        if (splitIndex <= 0 || splitIndex >= relative.length - 1) return null
+        val volumeId = relative.substring(0, splitIndex)
+        val relPath = relative.substring(splitIndex + 1)
+        val docId = "$volumeId:$relPath"
+
+        val permissions = App.instance.contentResolver.persistedUriPermissions
+        for (perm in permissions) {
+            if (!perm.isReadPermission && !perm.isWritePermission) continue
+            val treeUri = perm.uri ?: continue
+            if (!DocumentsContract.isTreeUri(treeUri)) continue
+            val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: continue
+            if (!treeDocId.startsWith("$volumeId:")) continue
+            val treePath = treeDocId.substringAfter(':')
+            if (treePath.isNotEmpty() && !relPath.startsWith(treePath)) continue
+            return runCatching {
+                DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+            }.getOrNull()
+        }
+        return null
     }
 
     fun formatPath(path: String) : String {
@@ -130,9 +255,16 @@ object FileUtil {
     }
 
 
+    fun consumeLastMoveFailureDetails(): String? {
+        val details = lastMoveFailureDetails
+        lastMoveFailureDetails = null
+        return details
+    }
+
     @Throws(Exception::class)
      suspend fun moveFile(originDir: File, context: Context, destDir: String, keepCache: Boolean, progress: (p: Int) -> Unit) : List<String> {
         return withContext(Dispatchers.Main){
+            lastMoveFailureDetails = null
             val fileList = mutableListOf<String>()
             val moveErrors = mutableListOf<String>()
             var hasMoveFailure = false
@@ -143,6 +275,9 @@ object FileUtil {
             val safDestinationDir = if (!directFileWrite) {
                 resolveDestinationDocumentDir(context, destDir, normalizedDestDir)
             } else null
+            if (!directFileWrite && safDestinationDir == null) {
+                moveErrors.add("resolveDestinationDocumentDir failed raw=$destDir normalized=$normalizedDestDir perms=${describePersistedUriPermissions(context)}")
+            }
             originDir.walk().forEach {
                 if (it.isDirectory && it.absolutePath == originDir.absolutePath) return@forEach
                 var destFile: DocumentFile
@@ -299,7 +434,9 @@ object FileUtil {
             if (!keepCache && !hasMoveFailure){
                 originDir.deleteRecursively()
             } else if (hasMoveFailure) {
-                Log.w("FileUtil", "moveFile encountered failures; preserving originDir=${originDir.absolutePath}")
+                val detail = moveErrors.joinToString(limit = 8, separator = " | ")
+                lastMoveFailureDetails = detail
+                Log.w("FileUtil", "moveFile encountered failures; preserving originDir=${originDir.absolutePath} detail=$detail")
             }
             val normalized = fileList
                 .asSequence()
@@ -319,6 +456,15 @@ object FileUtil {
             // In that case, return the moved paths directly so downstream hard-sub logic can continue.
             return@withContext normalized
         }
+    }
+
+    private fun describePersistedUriPermissions(context: Context): String {
+        return context.contentResolver.persistedUriPermissions
+            .joinToString(separator = "; ") { perm ->
+                val docId = runCatching { DocumentsContract.getTreeDocumentId(perm.uri) }.getOrNull().orEmpty()
+                "uri=${perm.uri} read=${perm.isReadPermission} write=${perm.isWritePermission} treeId=$docId"
+            }
+            .ifBlank { "<none>" }
     }
 
     private fun resolveDestinationDocumentDir(context: Context, rawDestDir: String, normalizedDestDir: String): DocumentFile? {

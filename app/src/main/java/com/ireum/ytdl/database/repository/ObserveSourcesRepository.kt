@@ -71,47 +71,17 @@ class ObserveSourcesRepository(private val observeSourcesDao: ObserveSourcesDao,
     }
 
     fun cancelObservationTaskByID(id: Long){
+        workManager.cancelUniqueWork("OBSERVE$id")
         workManager.cancelAllWorkByTag("observation_$id")
+        workManager.cancelAllWorkByTag(id.toString())
     }
 
     fun observeTask(it: ObserveSourcesItem){
         cancelObservationTaskByID(it.id)
 
         Calendar.getInstance().apply {
-            timeInMillis = it.startsTime
-
-            if (it.everyCategory != EveryCategory.HOUR){
-                val hourMin = Calendar.getInstance()
-                hourMin.timeInMillis = it.everyTime
-                set(Calendar.HOUR_OF_DAY, hourMin.get(Calendar.HOUR_OF_DAY))
-                set(Calendar.MINUTE, hourMin.get(Calendar.MINUTE))
-            }
-
-            when(it.everyCategory){
-                EveryCategory.HOUR -> {}
-                EveryCategory.DAY -> {}
-                EveryCategory.WEEK -> {
-                    var weekDayNr = get(Calendar.DAY_OF_WEEK) - 1
-                    if (weekDayNr == 0) weekDayNr = 7
-                    val followingWeekDay = it.weeklyConfig?.weekDays?.firstOrNull { it >= weekDayNr }
-                    if (followingWeekDay == null){
-                        add(
-                            Calendar.DAY_OF_MONTH,
-                            it.weeklyConfig?.weekDays?.minBy { it }?.plus((7 - weekDayNr)) ?: 0)
-                    }else{
-                        add(Calendar.DAY_OF_MONTH, followingWeekDay - weekDayNr)
-                    }
-                }
-                EveryCategory.MONTH -> {
-                    val currentMonthIndex = get(Calendar.MONTH)
-                    if (it.monthlyConfig?.startsMonth != currentMonthIndex){
-                        set(Calendar.MONTH, it.monthlyConfig?.startsMonth ?: 0)
-                        if (timeInMillis < Calendar.getInstance().timeInMillis){
-                            add(Calendar.YEAR, 1)
-                        }
-                    }
-                }
-            }
+            val nextRunAt = it.calculateNextTimeForObserving()
+            val initialDelay = (nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
 
             //schedule for next time
             val allowMeteredNetworks = sharedPreferences.getBoolean("metered_networks", true)
@@ -124,9 +94,10 @@ class ObserveSourcesRepository(private val observeSourcesDao: ObserveSourcesDao,
 
             val workRequest = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
                 .addTag("observeSources")
+                .addTag(it.id.toString())
                 .addTag("observation_${it.id}")
                 .setConstraints(workConstraints.build())
-                .setInitialDelay(timeInMillis - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+                .setInitialDelay(initialDelay, TimeUnit.MILLISECONDS)
                 .setInputData(Data.Builder().putLong("id", it.id).build())
 
             workManager.enqueueUniqueWork(

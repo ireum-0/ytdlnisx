@@ -1,4 +1,68 @@
-﻿# YTDLnisX Changelog
+# YTDLnisX Changelog
+
+> # 1.8.8.2 (2026-04)
+
+### 주요 변경사항
+- ffmpeg 런타임 복구 및 단일화
+    - GitHub 최신 버전에서 깨져 있던 ffmpeg 실행 경로를 wrapper-native `libffmpeg.so` / `libffprobe.so` 기준으로 재구성
+    - yt-dlp 병합과 앱 내부 후처리가 같은 런타임 세트를 사용하도록 정리
+    - payload revision 관리와 필수 공유 라이브러리 보강으로 런타임 의존성 누락 문제 완화
+
+- 영상+오디오 병합 복구
+    - yt-dlp가 ffmpeg를 다시 인식하도록 `--ffmpeg-location` 연결 복구
+    - 분리 다운로드(`video + audio`) 후 내부 병합이 다시 정상 동작
+    - 병합 후 원본 조각 파일 정리 동작도 정상 복구
+
+- 하드섭 실행 경로 정리
+    - 하드섭 처리도 실제로 동작하는 `wrapper-native-libffmpeg` 경로를 사용하도록 통일
+    - 깨져 있던 legacy `libffmpeg_hardsub*.so` 경로 의존도를 낮추고 diagnostics를 단순화
+    - 실제 진행 로그(`frame=`, `fps=`, `speed=`) 기준으로 하드섭 실행 상태 확인 가능
+
+- 플레이어/재생 구조 개선
+    - `VideoPlayerActivity`, 재생 유지 서비스, 비디오 큐 기반으로 플레이어 구조 정비
+    - PiP, 백그라운드 재생, 재생 제어 UI, 현재 목록 컨텍스트 유지 개선
+    - 재생 관련 동기화와 알림 동작 안정성 보강
+
+- 히스토리/로컬 분류/설정 화면 확장
+    - 히스토리 검색/정렬/필터 시트와 로컬 분류 UI 전반 개선
+    - 키워드/유튜버/그룹/플레이리스트 기반 탐색 구조 및 액션 모드 정비
+    - 폴더/처리/observe source 설정과 저장 경로 처리, writable-stage fallback 보강
+
+### 참고
+- `v1.8.8` 이후 누적된 구조 변경 폭이 커 ffmpeg, 플레이어, 히스토리, 로컬 분류, 설정 화면 중심 점검을 권장합니다.
+
+
+> # 1.8.8.1 (2026-04)
+
+### 주요 변경사항
+- ffmpeg 런타임 복구 및 단일화
+    - GitHub 최신 버전에서 깨져 있던 ffmpeg 실행 경로를 wrapper-native `libffmpeg.so` / `libffprobe.so` 기준으로 재구성
+    - 앱 내부에 흩어져 있던 ffmpeg 경로를 정리하고, 실제로 동작하는 런타임 한 경로로 통일
+    - `ffmpeg_payload.zip` 설치 로직 보강 및 payload revision 관리 추가
+
+- 영상+오디오 병합 복구
+    - yt-dlp가 ffmpeg를 다시 인식하도록 `--ffmpeg-location` 연결 복구
+    - 분리 다운로드(`video + audio`) 후 내부 병합이 다시 정상 동작
+    - 병합 후 원본 조각 파일 정리 동작도 정상 복구
+
+- 하드섭(hard-sub) 경로 안정화
+    - 하드섭 처리도 동작 중인 `wrapper-native-libffmpeg` 경로를 사용하도록 정리
+    - 더 이상 실사용 경로가 아닌 legacy `libffmpeg_hardsub*.so` 의존도를 낮춤
+    - 실제 하드섭 진행 로그(`frame=`, `fps=`, `speed=`) 기준 실행 경로 확인 가능
+
+- ffmpeg payload/의존성 처리 개선
+    - payload 내부 공유 라이브러리 링크 placeholder를 실제 `.so` 내용으로 materialize 하도록 수정
+    - `libc++_shared.so`, `libexpat.so.1`, `libcrypto.so.3`, `libssl.so.3` 등 필수 의존성 자동/강제 복사 보강
+    - versioned `.so` 포함 wrapper 런타임 세트를 자산 기준으로 다시 정리
+
+- 진단 로그 개선
+    - ffmpeg payload revision, 핵심 `.so` 존재 여부, preflight 결과를 다운로드 로그에서 직접 확인 가능
+    - 현재 실사용 경로 기준으로 diagnostics를 단순화해 불필요한 legacy 경고를 줄임
+
+### 참고
+- 일반 영상 다운로드의 병합 경로는 정상 복구되었습니다.
+- 하드섭도 `wrapper-native-libffmpeg` 경로 기준으로 동작하도록 정리되었습니다.
+
 
 > # 1.8.8 (2026-02)
 
@@ -90,4 +154,3 @@
 ### 참고
 - 커스텀 썸네일 백업은 별도 체크 항목이 아니며 downloads 항목에 포함됩니다.
 - 이전 버전 백업 파일도 기존 방식으로 복원 가능합니다.
-

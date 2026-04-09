@@ -40,6 +40,10 @@
         android:id="@+id/add_keywords"
         android:title="@string/add_keywords"
         app:showAsAction="never" />
+    <item
+        android:id="@+id/exclude_from_hardsub_scan"
+        android:title="@string/exclude_from_hardsub_scan"
+        app:showAsAction="never" />
 
     <item
         android:id="@+id/select_all"

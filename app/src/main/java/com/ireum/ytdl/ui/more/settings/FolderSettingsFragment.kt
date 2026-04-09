@@ -1,15 +1,23 @@
 ﻿package com.ireum.ytdl.ui.more.settings
 
+import android.Manifest
 import android.app.Activity
+import android.annotation.SuppressLint
 import android.content.Context.MODE_PRIVATE
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build.VERSION
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.webkit.MimeTypeMap
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
@@ -24,14 +32,21 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.enums.DownloadType
+import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.work.MoveCacheFilesWorker
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.util.Locale
 import java.io.File
 
 
@@ -48,6 +63,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
     private var cacheDownloads : Preference? = null
     private var audioFilenameTemplate : Preference? = null
     private var videoFilenameTemplate : Preference? = null
+    private var migrateDefaultVideoFolder: Preference? = null
     private var clearCache: Preference? = null
     private var moveCache: Preference? = null
     private lateinit var preferences: SharedPreferences
@@ -73,6 +89,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
         cacheDownloads = findPreference("cache_downloads")
         videoFilenameTemplate = findPreference("file_name_template")
         audioFilenameTemplate = findPreference("file_name_template_audio")
+        migrateDefaultVideoFolder = findPreference("migrate_default_video_folder")
         clearCache = findPreference("clear_cache")
         moveCache = findPreference("move_cache")
 
@@ -187,6 +204,68 @@ class FolderSettingsFragment : BaseSettingsFragment() {
                 audioFilenameTemplate?.summary = it
             }
             false
+        }
+
+        migrateDefaultVideoFolder?.setOnPreferenceClickListener {
+            UiUtil.showGenericConfirmDialog(
+                requireContext(),
+                getString(R.string.migrate_default_video_folder),
+                getString(R.string.migrate_default_video_folder_confirm)
+            ) {
+                lifecycleScope.launch {
+                    val rootView = requireView()
+                    activeDownloadCount = withContext(Dispatchers.IO) {
+                        downloadViewModel.getActiveDownloadsCount()
+                    }
+                    if (activeDownloadCount > 0) {
+                        Snackbar.make(rootView, getString(R.string.downloads_running_try_later), Snackbar.LENGTH_SHORT).show()
+                        return@launch
+                    }
+                    val progressSnack = Snackbar.make(
+                        rootView,
+                        getString(R.string.migrate_default_video_folder_progress, 0, 0),
+                        Snackbar.LENGTH_INDEFINITE
+                    )
+                    progressSnack.show()
+                    val result = withContext(Dispatchers.IO) {
+                        migrateDefaultVideoFolderInternal { done, total ->
+                            withContext(Dispatchers.Main) {
+                                progressSnack.setText(
+                                    getString(R.string.migrate_default_video_folder_progress, done, total)
+                                )
+                                showVideoMigrationProgressNotification(done, total)
+                            }
+                        }
+                    }
+                    progressSnack.dismiss()
+                    result.also {
+                        if (result.movedFiles == 0 && result.updatedCards == 0 && result.failedFiles == 0) {
+                            cancelVideoMigrationNotification()
+                            Snackbar.make(rootView, getString(R.string.migrate_default_video_folder_nothing), Snackbar.LENGTH_LONG).show()
+                            return@also
+                        }
+                        val doneText = getString(
+                            R.string.migrate_default_video_folder_done,
+                            result.movedFiles,
+                            result.updatedCards
+                        )
+                        if (result.failedFiles > 0) {
+                            Snackbar.make(
+                                rootView,
+                                "$doneText, ${getString(R.string.migrate_default_video_folder_failed, result.failedFiles)}",
+                                Snackbar.LENGTH_LONG
+                            ).show()
+                            showVideoMigrationFinishedNotification(
+                                "$doneText, ${getString(R.string.migrate_default_video_folder_failed, result.failedFiles)}"
+                            )
+                        } else {
+                            Snackbar.make(rootView, doneText, Snackbar.LENGTH_LONG).show()
+                            showVideoMigrationFinishedNotification(doneText)
+                        }
+                    }
+                }
+            }
+            true
         }
 
         var cacheSize = File(FileUtil.getCachePath(requireContext())).walkBottomUp().fold(0L) { acc, file -> acc + file.length() }
@@ -356,10 +435,223 @@ class FolderSettingsFragment : BaseSettingsFragment() {
         editor.apply()
     }
 
+    private data class VideoFolderMigrationResult(
+        val movedFiles: Int,
+        val updatedCards: Int,
+        val failedFiles: Int
+    )
+
+    private suspend fun migrateDefaultVideoFolderInternal(
+        onProgress: suspend (done: Int, total: Int) -> Unit
+    ): VideoFolderMigrationResult = withContext(Dispatchers.IO) {
+        val db = DBManager.getInstance(requireContext())
+        val historyDao = db.historyDao
+        val sourceRoot = File(FileUtil.getDefaultVideoPath())
+        if (!sourceRoot.exists() || !sourceRoot.isDirectory) {
+            return@withContext VideoFolderMigrationResult(0, 0, 0)
+        }
+
+        val destinationRoot = preferences.getString("video_path", FileUtil.getDefaultVideoPath())
+            ?: FileUtil.getDefaultVideoPath()
+        val sourceNormalized = sourceRoot.absolutePath.replace('\\', '/')
+        val destinationNormalized = destinationRoot.replace('\\', '/')
+        if (destinationNormalized.equals(sourceNormalized, ignoreCase = true)) {
+            return@withContext VideoFolderMigrationResult(0, 0, 0)
+        }
+
+        val historyItems = historyDao.getAll().filter { it.type == DownloadType.video }
+        val candidates = historyItems
+            .flatMap { item -> item.downloadPath }
+            .filter { oldPath ->
+                if (oldPath.startsWith("content://")) return@filter false
+                val oldFile = File(oldPath)
+                if (!oldFile.exists()) return@filter false
+                val oldParent = oldFile.parentFile?.absolutePath?.replace('\\', '/') ?: return@filter false
+                oldParent.equals(sourceNormalized, ignoreCase = true)
+            }
+        val totalCandidates = candidates.size
+        onProgress(0, totalCandidates)
+
+        var movedFiles = 0
+        var updatedCards = 0
+        var failedFiles = 0
+        val movedPathMap = linkedMapOf<String, String>()
+        var processed = 0
+
+        historyItems.forEach { item ->
+            var changed = false
+            val updatedPaths = item.downloadPath.map { oldPath ->
+                movedPathMap[oldPath]?.let {
+                    changed = true
+                    processed += 1
+                    onProgress(processed, totalCandidates)
+                    return@map it
+                }
+                if (oldPath.startsWith("content://")) return@map oldPath
+                val oldFile = File(oldPath)
+                if (!oldFile.exists()) return@map oldPath
+                val oldParent = oldFile.parentFile?.absolutePath?.replace('\\', '/') ?: return@map oldPath
+                if (!oldParent.equals(sourceNormalized, ignoreCase = true)) return@map oldPath
+
+                val movedPath = moveFileToDestination(oldFile, destinationRoot)
+                if (movedPath != null) {
+                    movedPathMap[oldPath] = movedPath
+                    movedFiles += 1
+                    changed = true
+                    processed += 1
+                    onProgress(processed, totalCandidates)
+                    movedPath
+                } else {
+                    failedFiles += 1
+                    processed += 1
+                    onProgress(processed, totalCandidates)
+                    oldPath
+                }
+            }
+            if (changed && updatedPaths != item.downloadPath) {
+                historyDao.update(item.copy(downloadPath = updatedPaths))
+                updatedCards += 1
+            }
+        }
+
+        VideoFolderMigrationResult(movedFiles, updatedCards, failedFiles)
+    }
+
+    private fun moveFileToDestination(sourceFile: File, destinationRoot: String): String? {
+        return if (destinationRoot.startsWith("content://")) {
+            moveFileToContentTree(sourceFile, destinationRoot)
+        } else {
+            moveFileToFileDirectory(sourceFile, destinationRoot)
+        }
+    }
+
+    private fun moveFileToFileDirectory(sourceFile: File, destinationRoot: String): String? {
+        val destinationDir = File(destinationRoot)
+        if (!destinationDir.exists() && !destinationDir.mkdirs()) return null
+        val destinationFile = resolveUniqueFile(destinationDir, sourceFile.name)
+        if (sourceFile.absolutePath.equals(destinationFile.absolutePath, ignoreCase = true)) {
+            return sourceFile.absolutePath
+        }
+        val renamed = runCatching { sourceFile.renameTo(destinationFile) }.getOrDefault(false)
+        if (renamed) return destinationFile.absolutePath
+        return runCatching {
+            FileInputStream(sourceFile).use { input ->
+                FileOutputStream(destinationFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (!sourceFile.delete()) return null
+            destinationFile.absolutePath
+        }.getOrNull()
+    }
+
+    private fun moveFileToContentTree(sourceFile: File, destinationRoot: String): String? {
+        val tree = DocumentFile.fromTreeUri(requireContext(), Uri.parse(destinationRoot)) ?: return null
+        val destinationName = resolveUniqueNameForTree(tree, sourceFile.name)
+        val mimeType = mimeTypeForName(destinationName)
+        val created = tree.createFile(mimeType, destinationName) ?: return null
+        return runCatching {
+            requireContext().contentResolver.openOutputStream(created.uri)?.use { output ->
+                FileInputStream(sourceFile).use { input ->
+                    input.copyTo(output)
+                }
+            } ?: return null
+            if (!sourceFile.delete()) return null
+            created.uri.toString()
+        }.getOrNull()
+    }
+
+    private fun resolveUniqueFile(directory: File, filename: String): File {
+        val dot = filename.lastIndexOf('.')
+        val base = if (dot > 0) filename.substring(0, dot) else filename
+        val ext = if (dot > 0) filename.substring(dot) else ""
+        var candidate = File(directory, filename)
+        var index = 1
+        while (candidate.exists()) {
+            candidate = File(directory, "$base ($index)$ext")
+            index += 1
+        }
+        return candidate
+    }
+
+    private fun resolveUniqueNameForTree(tree: DocumentFile, filename: String): String {
+        val dot = filename.lastIndexOf('.')
+        val base = if (dot > 0) filename.substring(0, dot) else filename
+        val ext = if (dot > 0) filename.substring(dot) else ""
+        var candidate = filename
+        var index = 1
+        while (tree.findFile(candidate) != null) {
+            candidate = "$base ($index)$ext"
+            index += 1
+        }
+        return candidate
+    }
+
+    private fun mimeTypeForName(filename: String): String {
+        val ext = filename.substringAfterLast('.', "").lowercase(Locale.getDefault())
+        if (ext.isBlank()) return "application/octet-stream"
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+    }
+
+
+    private fun canPostNotification(): Boolean {
+        if (VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
+                requireContext(),
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return false
+        }
+        return NotificationManagerCompat.from(requireContext()).areNotificationsEnabled()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun showVideoMigrationProgressNotification(done: Int, total: Int) {
+        if (!canPostNotification()) return
+        val content = getString(R.string.migrate_default_video_folder_progress, done, total)
+        val notification = NotificationCompat.Builder(requireContext(), NotificationUtil.DOWNLOAD_MISC_CHANNEL_ID)
+            .setContentTitle(getString(R.string.migrate_default_video_folder))
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setProgress(if (total > 0) total else 1, done.coerceAtLeast(0), total <= 0)
+            .build()
+        NotificationManagerCompat.from(requireContext()).notify(VIDEO_MIGRATION_NOTIFICATION_ID, notification)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun showVideoMigrationFinishedNotification(content: String) {
+        if (!canPostNotification()) return
+        val notification = NotificationCompat.Builder(requireContext(), NotificationUtil.DOWNLOAD_MISC_CHANNEL_ID)
+            .setContentTitle(getString(R.string.migrate_default_video_folder))
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setSmallIcon(R.drawable.ic_launcher_foreground_large)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+            .setOngoing(false)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setProgress(0, 0, false)
+            .build()
+        NotificationManagerCompat.from(requireContext()).notify(VIDEO_MIGRATION_NOTIFICATION_ID, notification)
+    }
+
+    private fun cancelVideoMigrationNotification() {
+        if (!canPostNotification()) return
+        NotificationManagerCompat.from(requireContext()).cancel(VIDEO_MIGRATION_NOTIFICATION_ID)
+    }
+
     companion object {
         const val MUSIC_PATH_CODE = 33333
         const val VIDEO_PATH_CODE = 55555
         const val COMMAND_PATH_CODE = 77777
         const val CACHE_PATH_CODE = 99999
+        private const val VIDEO_MIGRATION_NOTIFICATION_ID = 81234
     }
 }
+
+

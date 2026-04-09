@@ -2,6 +2,7 @@
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Build
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
@@ -11,6 +12,7 @@ import android.widget.Toast
 import androidx.preference.PreferenceManager
 import com.afollestad.materialdialogs.utils.MDUtil.getStringArray
 import com.anggrayudi.storage.extension.count
+import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.dao.CommandTemplateDao
 import com.ireum.ytdl.database.enums.DownloadType
@@ -48,6 +50,7 @@ import java.util.Locale
 import java.util.StringJoiner
 import java.util.UUID
 import java.util.zip.CRC32
+import java.util.concurrent.TimeUnit
 
 class YTDLPUtil(private val context: Context, private val commandTemplateDao: CommandTemplateDao) {
     private var sharedPreferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
@@ -682,6 +685,44 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         return final
     }
 
+    fun buildRequestDiagnostics(downloadItem: DownloadItem, request: YoutubeDLRequest): String {
+        val normalizedDownloadPath = FileUtil.formatPath(downloadItem.downloadPath)
+        val canWriteDirectly = File(normalizedDownloadPath).canWrite()
+        val writtenPath = downloadItem.type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
+        val cacheDownloadsEnabled = sharedPreferences.getBoolean("cache_downloads", true)
+        val noCache = writtenPath || (!cacheDownloadsEnabled && canWriteDirectly)
+        val tempDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
+        val ffmpegPayload = App.instance.getFfmpegPayloadDiagnostics()
+        val ffmpegResolution = buildYtDlpFfmpegResolutionDiagnostics()
+        val ffmpegPreflight = buildYtDlpFfmpegPreflightDiagnostics()
+        val configuredFfmpegLocation = request.getArguments("--ffmpeg-location")
+            ?.firstOrNull()
+            ?.takeIf { !it.isNullOrBlank() }
+            ?: "<none>"
+        val hasLoadInfoJson = request.getArguments("--load-info-json")
+            ?.firstOrNull()
+            ?.takeIf { !it.isNullOrBlank() }
+            ?: "<none>"
+
+        return buildString {
+            appendLine("Debug:")
+            appendLine("downloadPathRaw: ${downloadItem.downloadPath}")
+            appendLine("downloadPathNormalized: $normalizedDownloadPath")
+            appendLine("downloadPathCanWrite: $canWriteDirectly")
+            appendLine("cacheDownloadsEnabled: $cacheDownloadsEnabled")
+            appendLine("writtenPathMode: $writtenPath")
+            appendLine("noCacheDirectWrite: $noCache")
+            appendLine("tempDownloadDir: ${tempDir.absolutePath}")
+            appendLine("diagnosticsVersion: ffmpeg-preflight-v25")
+            appendLine("requestLoadInfoJson: $hasLoadInfoJson")
+            appendLine("requestFfmpegLocation: $configuredFfmpegLocation")
+            append(ffmpegPayload)
+            append(ffmpegResolution)
+            appendLine()
+            append(ffmpegPreflight)
+        }
+    }
+
     private fun MutableList<String>.addOption(vararg options: String) {
         options.forEach {
             this.add(it)
@@ -850,6 +891,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         request.addOption("--newline")
 
         val metadataCommands = StringJoiner(" ")
+        val ffmpegLocation = resolveYtDlpFfmpegLocation()
+        if (!ffmpegLocation.isNullOrBlank()) {
+            request.addOption("--ffmpeg-location", ffmpegLocation)
+        }
 
         if (downloadItem.playlistIndex != null && useItemURL) {
             metadataCommands.addOption("--parse-metadata", " ${downloadItem.playlistIndex}: %(playlist_index)s")
@@ -857,7 +902,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
         downloadItem.rowNumber.apply {
             if (this > 0) {
-                request.addOption("--autonumber-start", this.toString())
+                metadataCommands.addOption("--parse-metadata", " ${downloadItem.rowNumber}: %(rownumber)s")
             }
         }
 
@@ -1164,6 +1209,14 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                         }
 
                         if (usePlaylistMetadata) {
+                            if (useItemURL && downloadItem.playlistTitle.isNotBlank()) {
+                                metadataCommands.addOption(
+                                    "--replace-in-metadata",
+                                    "playlist,playlist_title",
+                                    """^.*$""",
+                                    downloadItem.playlistTitle.replace("""\""", """\\""")
+                                )
+                            }
                             metadataCommands.addOption("--parse-metadata", "%(album,playlist_title,playlist|)s:%(meta_album)s")
                         }
 
@@ -1211,12 +1264,20 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             }
             DownloadType.video -> {
                 val supportedContainers = context.resources.getStringArray(R.array.video_containers)
+                val canRunVideoPostProcessing = ffmpegLocation != null
 
                 if (downloadItem.videoPreferences.addChapters) {
-                    if (sharedPreferences.getBoolean("use_sponsorblock", true)){
-                        request.addOption("--sponsorblock-mark", "all")
+                    if (!canRunVideoPostProcessing) {
+                        Log.w(
+                            "YTDLPUtil",
+                            "Skipping chapter/sponsorblock mark because ffmpeg is unavailable for url=${downloadItem.url}"
+                        )
+                    } else {
+                        if (sharedPreferences.getBoolean("use_sponsorblock", true)){
+                            request.addOption("--sponsorblock-mark", "all")
+                        }
+                        request.addOption("--embed-chapters")
                     }
-                    request.addOption("--embed-chapters")
                 }
 
 
@@ -1464,7 +1525,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     if (downloadItem.videoPreferences.embedSubs) {
                         // Hard-sub flow converts at burn-in stage in DownloadWorker.
                         // Avoid yt-dlp subtitle conversion here to prevent preprocessing failures.
-                        request.addOption("--sub-format", "ass/vtt/srt/srv3/best")
+                        request.addOption("--sub-format", "srv3/json3/ttml/ass/vtt/srt/best")
                     } else if(subFormat.isNotBlank()){
                         request.addOption("--sub-format", "${subFormat}/best")
                         request.addOption("--convert-subtitles", subFormat)
@@ -1537,6 +1598,90 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         ytDlRequest.addOption("--cache-dir", cache.absolutePath)
         return ytDlRequest
     }
+
+    private fun resolveYtDlpFfmpegLocation(): String? {
+        runCatching { App.instance.ensureRuntimeToolsInstalled() }
+            .onFailure { Log.w("YTDLPUtil", "Failed to ensure bundled runtime tools before ffmpeg resolution", it) }
+        val nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir)
+        val ffmpeg = File(nativeLibraryDir, "libffmpeg.so")
+        val ffprobe = File(nativeLibraryDir, "libffprobe.so")
+        val payloadLibDir = File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/lib")
+        if (
+            ffmpeg.exists() && ffmpeg.isFile && ffmpeg.canExecute() &&
+            ffprobe.exists() && ffprobe.isFile && ffprobe.canExecute() &&
+            payloadLibDir.exists() && payloadLibDir.isDirectory
+        ) {
+            return ffmpeg.absolutePath
+        }
+        return null
+    }
+
+
+    private fun buildYtDlpFfmpegResolutionDiagnostics(): String {
+        val candidateDirs = listOf(
+            File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/lib"),
+            File(context.applicationInfo.nativeLibraryDir)
+        )
+        val binaryCandidates = listOf(
+            File(context.applicationInfo.nativeLibraryDir, "libffmpeg.so"),
+            File(context.applicationInfo.nativeLibraryDir, "libffprobe.so")
+        )
+        return buildString {
+            appendLine("ffmpegResolution:")
+            candidateDirs.distinctBy { it.absolutePath }.forEach { dir ->
+                val ffmpeg = File(dir, "ffmpeg")
+                appendLine(
+                    " dir=${dir.absolutePath} exists=${dir.exists()} isDir=${dir.isDirectory} ffmpeg=${ffmpeg.exists()}/${ffmpeg.canExecute()}"
+                )
+            }
+            binaryCandidates.distinctBy { it.absolutePath }.forEach { file ->
+                appendLine(
+                    " file=${file.absolutePath} exists=${file.exists()} isFile=${file.isFile} canExecute=${file.canExecute()}"
+                )
+            }
+            append(" nativeLibraryDir=${context.applicationInfo.nativeLibraryDir}")
+        }
+    }
+    private fun buildYtDlpFfmpegPreflightDiagnostics(): String {
+        val ffmpegLibDir = File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/lib")
+        val probes = listOf(
+            File(context.applicationInfo.nativeLibraryDir, "libffmpeg.so") to "native-libffmpeg",
+            File(context.applicationInfo.nativeLibraryDir, "libffprobe.so") to "native-libffprobe"
+        )
+        return buildString {
+            appendLine("ffmpegPreflight:")
+            probes.forEach { (file, label) ->
+                appendLine(runYtDlpBinaryPreflight(file, label, ffmpegLibDir))
+            }
+        }
+    }
+
+    private fun runYtDlpBinaryPreflight(file: File, label: String, ffmpegLibDir: File): String {
+        if (!file.exists() || !file.isFile || !file.canExecute()) {
+            return " $label: unavailable exists=${file.exists()} isFile=${file.isFile} canExecute=${file.canExecute()}"
+        }
+        return runCatching {
+            val command = mutableListOf<String>()
+            command.add(file.absolutePath)
+            command.add("-version")
+            val builder = ProcessBuilder(command).redirectErrorStream(true)
+            val env = builder.environment()
+            val libs = ffmpegLibDir.takeIf { it.exists() && it.isDirectory }?.absolutePath.orEmpty()
+            val current = env["LD_LIBRARY_PATH"].orEmpty()
+            env["LD_LIBRARY_PATH"] = if (current.isBlank()) libs else "$libs:$current"
+            val process = builder.start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            val finished = process.waitFor(4, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                return@runCatching " $label: timeout"
+            }
+            val firstLine = output.lineSequence().firstOrNull().orEmpty().take(180)
+            " $label: exit=${process.exitValue()} line=${if (firstLine.isBlank()) "<empty>" else firstLine}"
+        }.getOrElse {
+            " $label: error=${it.javaClass.simpleName}:${it.message.orEmpty().take(160)}"
+        }
+    }
 }
 
 private fun enforceHardSubNoAv1Format(formatExpr: String): String {
@@ -1552,4 +1697,8 @@ private fun enforceHardSubNoAv1Format(formatExpr: String): String {
         }
         .joinToString("/")
 }
+
+
+
+
 

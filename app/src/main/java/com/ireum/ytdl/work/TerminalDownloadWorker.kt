@@ -23,6 +23,7 @@ import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.ui.more.terminal.TerminalActivity
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.CoroutineScope
@@ -118,7 +119,9 @@ class TerminalDownloadWorker(
                 logItem.id = logRepo.insert(logItem)
             }
 
-            val response = YoutubeDL.getInstance().execute(request, itemId.toString(), true){ progress, _, line ->
+            YoutubeDL.getInstance().destroyProcessById(itemId.toString())
+            YoutubeDLCompat.destroyProcessById(itemId.toString())
+            val response = YoutubeDLCompat.execute(applicationContext, request, itemId.toString(), true){ progress, _, line ->
                 eventBus.post(DownloadWorker.WorkerProgress(progress.toInt(), line, itemId.toLong(), logItem.id))
 
                 val title: String = command.take(65)

@@ -7,6 +7,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.yausername.youtubedl_android.YoutubeDL
 
 
@@ -24,6 +25,7 @@ class CancelScheduledDownloadWorker(
         WorkManager.getInstance(context).cancelAllWorkByTag("download")
         runningDownloads.forEach {
             YoutubeDL.getInstance().destroyProcessById(it.id.toString())
+            YoutubeDLCompat.destroyProcessById(it.id.toString())
             it.status = DownloadRepository.Status.Queued.toString()
             dao.update(it)
         }

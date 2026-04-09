@@ -40,6 +40,9 @@ interface HistoryDao {
     @Query("SELECT * FROM history WHERE url = :url")
     fun getItemsByUrl(url: String): List<HistoryItem>
 
+    @Query("SELECT * FROM history WHERE customThumb = '' AND (thumb LIKE 'http://%' OR thumb LIKE 'https://%') ORDER BY time DESC LIMIT :limit")
+    fun getItemsWithRemoteThumb(limit: Int): List<HistoryItem>
+
     @Query("SELECT thumb FROM history WHERE id = :id")
     fun getThumb(id: Long): String
 
@@ -96,6 +99,9 @@ interface HistoryDao {
 
     @Query("UPDATE history SET hardSubScanRemoved = :removed, hardSubDone = :done WHERE id = :id")
     fun updateHardSubScanState(id: Long, removed: Boolean, done: Boolean)
+
+    @Query("UPDATE history SET hardSubScanRemoved = :removed WHERE id IN (:ids) AND type = 'video' AND hardSubDone = 0")
+    fun updateHardSubScanRemovedForIds(ids: List<Long>, removed: Boolean)
 
     @Query("UPDATE history SET hardSubScanRemoved = 0, hardSubDone = 0 WHERE type = 'video' AND hardSubDone = 1")
     fun resetHardSubDoneForRescan()

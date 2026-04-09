@@ -97,6 +97,7 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
     private lateinit var getOnlyNewUploads: MaterialSwitch
     private lateinit var syncWithSource: MaterialSwitch
     private lateinit var resetProcessedLinks: MaterialSwitch
+    private lateinit var autoAddKeywordInput: TextInputLayout
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -261,6 +262,7 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
         getOnlyNewUploads = view.findViewById(R.id.get_new_uploads)
         syncWithSource = view.findViewById(R.id.sync_with_source)
         resetProcessedLinks = view.findViewById(R.id.reset_processed_links)
+        autoAddKeywordInput = view.findViewById(R.id.auto_add_keyword_input)
         okButton = view.findViewById(R.id.okButton)
 
 //        getOnlyNewUploads.text = TextWithSubtitle(getString(R.string.get_new_uploads), getString(R.string.get_new_uploads))
@@ -472,6 +474,7 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
         retryMissingDownloads.isChecked = currentItem?.retryMissingDownloads ?: false
         getOnlyNewUploads.isChecked = currentItem?.getOnlyNewUploads ?: false
         syncWithSource.isChecked = currentItem?.syncWithSource ?: false
+        autoAddKeywordInput.editText?.setText(currentItem?.autoAddKeyword.orEmpty())
 
         view.findViewById<ConstraintLayout>(R.id.resetProcessedLinksConstraint).isVisible = currentItem != null
 
@@ -509,9 +512,11 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
                         null
                     },
                     monthlyConfig = if (category == ObserveSourcesRepository.EveryCategory.MONTH){
+                        val selectedMonthIndex = months.indexOf(startMonthAutoCompleteTextView.text.toString())
+                            .takeIf { it >= 0 } ?: Calendar.getInstance().get(Calendar.MONTH)
                         ObserveSourcesMonthlyConfig(
                             everyMonthDay = everyMonthDay.editText!!.text.toString().toInt(),
-                            startsMonth = startMonthAutoCompleteTextView.selectionStart
+                            startsMonth = selectedMonthIndex
                         )
                     }else{
                         null
@@ -533,7 +538,8 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
                         mutableListOf()
                     }else{
                         currentItem?.ignoredLinks ?: mutableListOf()
-                    }
+                    },
+                    autoAddKeyword = autoAddKeywordInput.editText?.text?.toString()?.trim().orEmpty()
                 )
 
                 withContext(Dispatchers.IO){

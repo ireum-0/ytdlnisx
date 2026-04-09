@@ -85,6 +85,7 @@ class MainActivity : BaseActivity() {
     private var navigationBarView: NavigationBarView? = null
     private lateinit var navHostFragment : NavHostFragment
     private lateinit var navController : NavController
+    private var skipNavStateRestoreForLaunchIntent: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -112,6 +113,7 @@ class MainActivity : BaseActivity() {
 
         navHostFragment = supportFragmentManager.findFragmentById(R.id.frame_layout) as NavHostFragment
         navController = navHostFragment.findNavController()
+        skipNavStateRestoreForLaunchIntent = shouldSkipNavStateRestore(intent)
         kotlin.runCatching {
             navigationView = findViewById(R.id.navigationView)
         }
@@ -293,6 +295,9 @@ class MainActivity : BaseActivity() {
     }
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
         super.onRestoreInstanceState(savedInstanceState)
+        if (skipNavStateRestoreForLaunchIntent) {
+            return
+        }
         val state = savedInstanceState.getBundle("nav_state")
         if (state != null) {
             navController.restoreState(state)
@@ -388,10 +393,18 @@ class MainActivity : BaseActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        logHistoryReturn("onNewIntent intent=${describeIntent(intent)} taskId=$taskId isTaskRoot=$isTaskRoot")
         handleIntents(intent)
     }
 
+    private fun shouldSkipNavStateRestore(intent: Intent?): Boolean {
+        val safeIntent = intent ?: return false
+        if (safeIntent.action != Intent.ACTION_VIEW) return false
+        return !safeIntent.getStringExtra("destination").isNullOrBlank()
+    }
+
     private fun handleIntents(intent: Intent) {
+        logHistoryReturn("handleIntents intent=${describeIntent(intent)} taskId=$taskId isTaskRoot=$isTaskRoot")
         val action = intent.action
         val type = intent.type
         if (Intent.ACTION_SEND == action && type != null) {
@@ -458,7 +471,43 @@ class MainActivity : BaseActivity() {
                     if (!localSessionId.isNullOrBlank()) {
                         com.ireum.ytdl.util.LocalAddStorage.setOpenSession(this, localSessionId)
                     }
-                    navController.navigate(R.id.historyFragment)
+                    val bundle = Bundle()
+                    if (intent.hasExtra(com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)) {
+                        bundle.putInt(
+                            com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION,
+                            intent.getIntExtra(
+                                com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION,
+                                -1
+                            )
+                        )
+                        bundle.putInt(
+                            com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET,
+                            intent.getIntExtra(
+                                com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET,
+                                0
+                            )
+                        )
+                        val restoreItemId = intent.getLongExtra(
+                            com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_ID,
+                            -1L
+                        )
+                        if (restoreItemId > 0L) {
+                            bundle.putLong(
+                                com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_ID,
+                                restoreItemId
+                            )
+                        }
+                        if (intent.hasExtra(com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP)) {
+                            bundle.putInt(
+                                com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP,
+                                intent.getIntExtra(
+                                    com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP,
+                                    0
+                                )
+                            )
+                        }
+                    }
+                    navController.navigate(R.id.historyFragment, bundle)
                 }
                 "Queue" -> {
                     if (navbarItems.any { n -> n.itemId == R.id.downloadQueueMainFragment && n.isVisible }) {
@@ -511,6 +560,28 @@ class MainActivity : BaseActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+    }
+
+    private fun logHistoryReturn(event: String) {
+        return
+    }
+
+    private fun describeIntent(intent: Intent?): String {
+        val safeIntent = intent ?: return "null"
+        val extras = buildList {
+            if (safeIntent.hasExtra("destination")) {
+                add("destination=${safeIntent.getStringExtra("destination")}")
+            }
+            if (safeIntent.hasExtra(com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)) {
+                add(
+                    "restore=" +
+                        safeIntent.getIntExtra(com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION, -1) +
+                        "/" +
+                        safeIntent.getIntExtra(com.ireum.ytdl.ui.downloads.HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET, 0)
+                )
+            }
+        }.joinToString(",")
+        return "action=${safeIntent.action} flags=0x${safeIntent.flags.toString(16)} extras=[$extras]"
     }
 }
 

@@ -91,7 +91,11 @@ class VideoQueueAdapter(
                 preview.isNotBlank() -> java.io.File(preview).toURI().toString()
                 else -> preview
             }
-            thumb.loadThumbnail(hideThumb, resolved, reqWidth = 240, reqHeight = 136)
+            val thumbKey = "$hideThumb|$resolved"
+            if (thumb.tag != thumbKey) {
+                thumb.tag = thumbKey
+                thumb.loadThumbnail(hideThumb, resolved, reqWidth = 240, reqHeight = 136)
+            }
             updateSelection(isCurrent)
             itemView.setOnClickListener { onItemClick(item) }
         }
@@ -122,7 +126,12 @@ class VideoQueueAdapter(
             }
 
             override fun areContentsTheSame(oldItem: HistoryItem, newItem: HistoryItem): Boolean {
-                return oldItem == newItem
+                return oldItem.title == newItem.title &&
+                    oldItem.url == newItem.url &&
+                    oldItem.author == newItem.author &&
+                    oldItem.duration == newItem.duration &&
+                    oldItem.thumb == newItem.thumb &&
+                    oldItem.customThumb == newItem.customThumb
             }
         }
     }

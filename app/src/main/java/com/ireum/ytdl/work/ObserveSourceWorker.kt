@@ -289,6 +289,7 @@ class ObserveSourceWorker(
             downloadItem.playlistTitle = it.playlistTitle
             downloadItem.playlistURL = it.playlistURL
             downloadItem.playlistIndex = it.playlistIndex
+            downloadItem.observeSourceId = item.id
             downloadItem.id = 0L
             downloadItems.add(downloadItem)
         }
@@ -474,6 +475,7 @@ class ObserveSourceWorker(
 
         val workRequest = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
             .addTag("observeSources")
+            .addTag("observation_$sourceID")
             .addTag(sourceID.toString())
             .setConstraints(workConstraints.build())
             .setInitialDelay(item.calculateNextTimeForObserving() - System.currentTimeMillis(), TimeUnit.MILLISECONDS)

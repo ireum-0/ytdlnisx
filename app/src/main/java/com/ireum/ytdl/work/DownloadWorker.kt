@@ -36,6 +36,7 @@ import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.Extensions.toDurationSeconds
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CoroutineScope
@@ -87,6 +88,7 @@ class DownloadWorker(
         val dbManager = DBManager.getInstance(context)
         val dao = dbManager.downloadDao
         val historyDao = dbManager.historyDao
+        val observeSourcesDao = dbManager.observeSourcesDao
         val commandTemplateDao = dbManager.commandTemplateDao
         val logRepo = LogRepository(dbManager.logDao)
         val resultRepo = ResultRepository(dbManager.resultDao, commandTemplateDao, context)
@@ -190,7 +192,7 @@ class DownloadWorker(
 
                 CoroutineScope(Dispatchers.IO).launch {
                     val writtenPath = downloadItem.format.format_note.contains("-P ")
-                    val shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
+                    var shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
                     val noCache = writtenPath || (!sharedPreferences.getBoolean("cache_downloads", true) && File(FileUtil.formatPath(downloadItem.downloadPath)).canWrite())
 
                     val request = ytdlpUtil.buildYoutubeDLRequest(downloadItem)
@@ -225,11 +227,13 @@ class DownloadWorker(
 
 
                     val commandString = ytdlpUtil.parseYTDLRequestString(request)
+                    val requestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request)
                     val initialLogDetails = "Downloading:\n" +
                             "Title: ${downloadItem.title}\n" +
                             "URL: ${downloadItem.url}\n" +
                             "Type: ${downloadItem.type}\n" +
-                            "Command:\n$commandString \n\n"
+                            "Command:\n$commandString \n" +
+                            "$requestDiagnostics\n"
                     val logString = StringBuilder(initialLogDetails)
                     val logItem = LogItem(
                         0,
@@ -252,7 +256,8 @@ class DownloadWorker(
 
                     try {
                         YoutubeDL.getInstance().destroyProcessById(downloadItem.id.toString())
-                        val response = YoutubeDL.getInstance().execute(request, downloadItem.id.toString(), true){ progress, _, line ->
+                        YoutubeDLCompat.destroyProcessById(downloadItem.id.toString())
+                        val response = YoutubeDLCompat.execute(applicationContext, request, downloadItem.id.toString(), true){ progress, _, line ->
                             if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
                                 val lowerLine = line.lowercase(Locale.US)
                                 if (
@@ -294,9 +299,25 @@ class DownloadWorker(
                         var finalPaths = mutableListOf<String>()
                         var hardSubBurned = false
 
+                        val hardSubSkipReason = if (shouldBurnHardSub) resolveHardSubSkipReason(response.out) else null
+                        if (hardSubSkipReason != null) {
+                            shouldBurnHardSub = false
+                            Log.w(TAG, "HardSub skipped id=${downloadItem.id} reason=$hardSubSkipReason")
+                            eventBus.post(WorkerProgress(100, hardSubSkipReason, downloadItem.id, downloadItem.logID))
+                        }
+
                         var deferBurnUntilPostMove = false
+                        val forceDeferBurn = shouldBurnHardSub && shouldForceHardSubFailpoint("force_hardsub_defer")
+                        val forceMoveUnresolved = shouldBurnHardSub && shouldForceHardSubFailpoint("force_hardsub_move_unresolved")
+                        if (shouldBurnHardSub) {
+                            Log.i(
+                                TAG,
+                                "HardSub session id=${downloadItem.id} noCache=$noCache keepCache=$keepCache downloadLocation=${FileUtil.formatPath(downloadLocation)} tempDir=${tempFileDir.absolutePath} forceDeferBurn=$forceDeferBurn forceMoveUnresolved=$forceMoveUnresolved"
+                            )
+                        }
                         if (!noCache && shouldBurnHardSub) {
                             var preMoveBurnPaths = extractPathsFromYtdlpOutput(response.out).toMutableList()
+                            logPathCandidates("HardSub pre-move parsed", downloadItem.id, preMoveBurnPaths)
                             if (preMoveBurnPaths.isEmpty()) {
                                 preMoveBurnPaths = recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt).toMutableList()
                                 Log.w(
@@ -387,19 +408,27 @@ class DownloadWorker(
                                 }
                             }
                             if (hasMediaForPreMove) {
-                                Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${preMoveBurnPaths.size} mode=pre-move")
-                                eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
-                                val burned = burnSubtitlesInPlace(preMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID)
-                                hardSubBurned = hardSubBurned || burned
-                                if (burned) {
-                                    eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
-                                    Log.i(TAG, "HardSub completed id=${downloadItem.id} mode=pre-move")
+                                if (forceDeferBurn) {
+                                    deferBurnUntilPostMove = true
+                                    Log.w(TAG, "HardSub pre-move forced defer id=${downloadItem.id} marker=force_hardsub_defer")
                                 } else {
-                                    Log.w(TAG, "HardSub pre-move produced no burned media id=${downloadItem.id}")
+                                    Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${preMoveBurnPaths.size} mode=pre-move")
+                                    eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                    val burned = burnSubtitlesInPlace(preMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID)
+                                    hardSubBurned = hardSubBurned || burned
+                                    if (burned) {
+                                        eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
+                                        Log.i(TAG, "HardSub completed id=${downloadItem.id} mode=pre-move")
+                                    } else {
+                                        Log.w(TAG, "HardSub pre-move produced no burned media id=${downloadItem.id}")
+                                    }
                                 }
                             } else {
                                 deferBurnUntilPostMove = true
-                                Log.w(TAG, "HardSub pre-move deferred id=${downloadItem.id} reason=no-media-in-temp")
+                                Log.w(
+                                    TAG,
+                                    "HardSub pre-move deferred id=${downloadItem.id} reason=no-media-in-temp tempSnapshot=${describeDirectorySnapshot(tempFileDir)}"
+                                )
                             }
                         }
 
@@ -435,9 +464,10 @@ class DownloadWorker(
                             }
                         }
 
-                        if (noCache){
+                            if (noCache){
                             eventBus.post(WorkerProgress(100, "Scanning Files", downloadItem.id, downloadItem.logID))
                             finalPaths = extractPathsFromYtdlpOutput(response.out).toMutableList()
+                            logPathCandidates("HardSub no-cache parsed", downloadItem.id, finalPaths)
 
                             if (finalPaths.isEmpty()) {
                                 finalPaths = recoverPathsFromDirectory(downloadLocation, downloadStartedAt).toMutableList()
@@ -461,7 +491,7 @@ class DownloadWorker(
                             eventBus.post(WorkerProgress(100, "Moving file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
                             Log.i(
                                 TAG,
-                                "HardSub move start id=${downloadItem.id} from=${tempFileDir.absolutePath} to=${FileUtil.formatPath(downloadLocation)}"
+                                "HardSub move start id=${downloadItem.id} from=${tempFileDir.absolutePath} to=${FileUtil.formatPath(downloadLocation)} tempSnapshot=${describeDirectorySnapshot(tempFileDir)}"
                             )
                             val expectedMovedNames = runCatching {
                                 tempFileDir.walkTopDown()
@@ -469,12 +499,23 @@ class DownloadWorker(
                                     .map { it.name }
                                     .toSet()
                             }.getOrDefault(emptySet())
+                            if (expectedMovedNames.isNotEmpty()) {
+                                Log.i(
+                                    TAG,
+                                    "HardSub move expected names id=${downloadItem.id} count=${expectedMovedNames.size} sample=${expectedMovedNames.joinToString(limit = 5)}"
+                                )
+                            }
                             try {
                                 finalPaths = withContext(Dispatchers.IO){
                                     FileUtil.moveFile(tempFileDir.absoluteFile,context, downloadLocation, keepCache){ p ->
                                         eventBus.post(WorkerProgress(p, "Moving file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
                                     }
                                 }.filter { !it.matches("\\.(description)|(txt)\$".toRegex()) }.toMutableList()
+                                if (forceMoveUnresolved) {
+                                    Log.w(TAG, "HardSub move forcing unresolved outputs id=${downloadItem.id} marker=force_hardsub_move_unresolved")
+                                    finalPaths.clear()
+                                }
+                                logPathCandidates("HardSub move returned", downloadItem.id, finalPaths)
 
                                 if (finalPaths.isNotEmpty()){
                                     eventBus.post(WorkerProgress(100, "Moved file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
@@ -482,7 +523,7 @@ class DownloadWorker(
                                         TAG,
                                         "HardSub move done id=${downloadItem.id} count=${finalPaths.size} sample=${
                                             finalPaths.joinToString(limit = 3)
-                                        }"
+                                        } destSnapshot=${describeDirectorySnapshot(File(downloadLocation))}"
                                     )
                                 } else {
                                     if (expectedMovedNames.isNotEmpty()) {
@@ -509,7 +550,7 @@ class DownloadWorker(
                                     }
                                     Log.w(
                                         TAG,
-                                        "HardSub move done id=${downloadItem.id} but no output paths detected"
+                                        "HardSub move done id=${downloadItem.id} but no output paths detected destSnapshot=${describeDirectorySnapshot(File(downloadLocation))} tempSnapshot=${describeDirectorySnapshot(tempFileDir)}"
                                     )
                                     if (shouldBurnHardSub && !noCache && finalPaths.isEmpty()) {
                                         throw IOException("HardSub move completed but output paths are unresolved after burn-in")
@@ -523,7 +564,6 @@ class DownloadWorker(
                                         addAll(recoverPathsByFileNames(downloadLocation, expectedMovedNames.toList()))
                                     }
                                     addAll(recoverPathsFromDirectory(downloadLocation, downloadStartedAt))
-                                    addAll(recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt))
                                 }
                                     .distinct()
                                     .filter { File(it).exists() && File(it).isFile }
@@ -535,6 +575,23 @@ class DownloadWorker(
                                         TAG,
                                         "HardSub move failure recovery used id=${downloadItem.id} recovered=${finalPaths.size}"
                                     )
+                                } else {
+                                    val recoveredTempPaths = recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt)
+                                        .filter { File(it).exists() && File(it).isFile }
+                                    if (recoveredTempPaths.isNotEmpty()) {
+                                        Log.w(
+                                            TAG,
+                                            "HardSub move failure left temp outputs id=${downloadItem.id} recovered=${recoveredTempPaths.size}; retrying move"
+                                        )
+                                        finalPaths = retryMoveFromTempDirectory(
+                                            tempFileDir = tempFileDir,
+                                            downloadLocation = downloadLocation,
+                                            keepCache = keepCache,
+                                            downloadItemId = downloadItem.id,
+                                            downloadLogId = downloadItem.logID,
+                                            eventBus = eventBus
+                                        ).toMutableList()
+                                    }
                                 }
 
                                 if (shouldBurnHardSub && finalPaths.isEmpty()) {
@@ -543,6 +600,10 @@ class DownloadWorker(
                                         e
                                     )
                                 }
+                                Log.w(
+                                    TAG,
+                                    "HardSub move failure state id=${downloadItem.id} destSnapshot=${describeDirectorySnapshot(File(downloadLocation))} tempSnapshot=${describeDirectorySnapshot(tempFileDir)}"
+                                )
                                 if (e.message?.isNotBlank() == true) {
                                     handler.postDelayed({
                                         Toast.makeText(context, e.message, Toast.LENGTH_SHORT).show()
@@ -627,7 +688,10 @@ class DownloadWorker(
                                 if (isHardSubRedownload(downloadItem)) {
                                     throw IOException("HardSub aborted: no files found after move for deferred burn-in")
                                 }
-                                Log.w(TAG, "HardSub post-move skipped id=${downloadItem.id} reason=no-files-found-after-move")
+                                Log.w(
+                                    TAG,
+                                    "HardSub post-move skipped id=${downloadItem.id} reason=no-files-found-after-move destSnapshot=${describeDirectorySnapshot(File(downloadLocation))}"
+                                )
                             } else {
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${postMoveBurnPaths.size} mode=post-move")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
@@ -698,9 +762,11 @@ class DownloadWorker(
                             }
                         }
 
-                        val nonMediaExtensions = mutableListOf<String>().apply {
-                            addAll(context.getStringArray(R.array.thumbnail_containers_values))
-                            addAll(context.getStringArray(R.array.sub_formats_values).filter { it.isNotBlank() })
+                        val nonMediaExtensions = mutableSetOf<String>().apply {
+                            addAll(context.getStringArray(R.array.thumbnail_containers_values).map { it.lowercase(Locale.US) })
+                            addAll(context.getStringArray(R.array.sub_formats_values).filter { it.isNotBlank() }.map { it.lowercase(Locale.US) })
+                            // Hard-sub flow can download rich subtitle sidecars not present in sub_formats_values.
+                            addAll(listOf("srv3", "json3", "ttml"))
                             add("description")
                             add("txt")
                         }
@@ -708,8 +774,36 @@ class DownloadWorker(
                             val file = File(path)
                             file.exists() &&
                                 file.isFile &&
-                                !nonMediaExtensions.any { path.endsWith(it) }
+                                file.extension.lowercase(Locale.US) !in nonMediaExtensions
                         }.toMutableList()
+                        if (!noCache) {
+                            val beforeTempFilter = finalPaths.size
+                            finalPaths = finalPaths.filterNot { path ->
+                                isPathInsideDirectory(path, tempFileDir)
+                            }.toMutableList()
+                            if (beforeTempFilter != finalPaths.size) {
+                                Log.w(
+                                    TAG,
+                                    "HardSub filtered temp output paths id=${downloadItem.id} removed=${beforeTempFilter - finalPaths.size}"
+                                )
+                            }
+                            if (finalPaths.isEmpty()) {
+                                val strandedTempMedia = recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt)
+                                    .filter { candidate ->
+                                        val file = File(candidate)
+                                        file.exists() &&
+                                            file.isFile &&
+                                            file.extension.lowercase(Locale.US) !in nonMediaExtensions
+                                    }
+                                if (strandedTempMedia.isNotEmpty()) {
+                                    val moveFailureDetails = FileUtil.consumeLastMoveFailureDetails()
+                                    throw IOException(
+                                        "Downloaded files remain in temporary storage after move failure" +
+                                            (moveFailureDetails?.let { ": $it" } ?: "")
+                                    )
+                                }
+                            }
+                        }
                         finalPaths = prioritizePrimaryMediaPath(finalPaths, downloadItem.type)
                         if (finalPaths.isNotEmpty()) {
                             val summary = finalPaths.joinToString(limit = 5) { path ->
@@ -748,9 +842,16 @@ class DownloadWorker(
                                     val previousHistoryItem = if (replacedHistoryId > 0L) {
                                         runCatching { historyDao.getItem(replacedHistoryId) }.getOrNull()
                                     } else null
-                                    val completedHardSub = isHardSubRedownload(downloadItem) && hardSubBurned
+                                    val completedHardSub = hardSubBurned
                                     val restoredPlaybackPositionMs = if (completedHardSub) 0 else (previousHistoryItem?.playbackPositionMs ?: 0)
+                                    val isHistoryRedownload = replacedHistoryId > 0L
+                                    val observeKeyword = if (downloadItem.observeSourceId > 0L) {
+                                        runCatching { observeSourcesDao.getByID(downloadItem.observeSourceId).autoAddKeyword.trim() }.getOrDefault("")
+                                    } else {
+                                        ""
+                                    }
 
+                                    val preferredThumbPath = pickLocalThumbnailPath(finalPaths) ?: downloadItem.thumb
                                     val historyItem = HistoryItem(
                                         id = replacedHistoryId,
                                         url = downloadItem.url,
@@ -759,7 +860,7 @@ class DownloadWorker(
                                         artist = previousHistoryItem?.artist ?: "",
                                         duration = downloadItem.duration,
                                         durationSeconds = downloadItem.duration.toDurationSeconds(),
-                                        thumb = downloadItem.thumb,
+                                        thumb = preferredThumbPath,
                                         type = downloadItem.type,
                                         time = unixTime,
                                         lastWatched = previousHistoryItem?.lastWatched ?: 0,
@@ -770,14 +871,17 @@ class DownloadWorker(
                                         downloadId = downloadItem.id,
                                         command = commandString,
                                         playbackPositionMs = restoredPlaybackPositionMs,
-                                        localTreeUri = previousHistoryItem?.localTreeUri ?: "",
-                                        localTreePath = previousHistoryItem?.localTreePath ?: "",
-                                        keywords = previousHistoryItem?.keywords ?: "",
+                                        localTreeUri = if (isHistoryRedownload) "" else (previousHistoryItem?.localTreeUri ?: ""),
+                                        localTreePath = if (isHistoryRedownload) "" else (previousHistoryItem?.localTreePath ?: ""),
+                                        keywords = mergeKeywords(previousHistoryItem?.keywords.orEmpty(), observeKeyword),
                                         customThumb = previousHistoryItem?.customThumb ?: "",
                                         hardSubScanRemoved = if (completedHardSub) true else previousHistoryItem?.hardSubScanRemoved ?: false,
                                         hardSubDone = if (completedHardSub) true else previousHistoryItem?.hardSubDone ?: false
                                     )
                                     historyDao.insert(historyItem)
+                                    if (replacedHistoryId > 0L) {
+                                        deleteReplacedHistoryMedia(previousHistoryItem, finalPaths)
+                                    }
                                 }
                             }
                         }
@@ -895,6 +999,24 @@ class DownloadWorker(
             item.playlistURL?.startsWith(HISTORY_REDOWNLOAD_MARKER) == true
     }
 
+    private fun resolveHardSubSkipReason(output: String): String? {
+        val normalized = output.lowercase(Locale.US)
+        return when {
+            normalized.contains("there are no subtitles for the requested languages") -> "Subtitle burn-in skipped: requested subtitles are unavailable"
+            normalized.contains("no subtitles for the requested languages") -> "Subtitle burn-in skipped: requested subtitles are unavailable"
+            else -> null
+        }
+    }
+
+    private fun pickLocalThumbnailPath(paths: List<String>): String? {
+        if (paths.isEmpty()) return null
+        val thumbExts = setOf("jpg", "jpeg", "png", "webp", "avif")
+        return paths.firstOrNull { path ->
+            val file = File(path)
+            file.exists() && thumbExts.contains(file.extension.lowercase(Locale.US))
+        }
+    }
+
     private fun resetHardSubProgress() {
         hardSubTargetIds.clear()
         hardSubProcessedIds.clear()
@@ -937,17 +1059,15 @@ class DownloadWorker(
         val ffmpegRuntime = resolveFfmpegRuntime()
         val supportedFilters = probeSubtitleFilters(ffmpegRuntime)
         val dedicatedSrv3ConverterPath = resolveSrv3ConverterPath()
-        val subtitleExts = if (dedicatedSrv3ConverterPath != null) {
-            listOf("ass", "srv3", "json3", "ttml", "vtt", "srt")
-        } else {
-            // Without a dedicated converter, prefer directly burnable formats first.
-            listOf("ass", "vtt", "srt", "srv3", "json3", "ttml")
-        }
+        val subtitleExts = listOf("srv3", "json3", "ttml", "ass", "vtt", "srt")
         val existingFiles = paths
             .map { File(it) }
             .filter { it.exists() && it.isFile }
         val subtitleFiles = existingFiles.filter { file ->
             subtitleExts.any { ext -> file.extension.equals(ext, ignoreCase = true) }
+        }
+        if (!removeSubsAfterBurnIn) {
+            convertSubtitleFilesToSrt(subtitleFiles, ffmpegRuntime, dedicatedSrv3ConverterPath)
         }
         val canonicalSubtitle = createCanonicalHardSubSubtitle(subtitleFiles, subtitleExts)
         val subtitleCandidates = canonicalSubtitle?.let { listOf(it.file) } ?: subtitleFiles
@@ -967,7 +1087,7 @@ class DownloadWorker(
         )
         Log.i(
             TAG,
-            "HardSub ffmpeg runtime exec=${ffmpegRuntime.executablePath} source=${ffmpegRuntime.source} libs=${ffmpegRuntime.libraryPath ?: "<default>"}"
+            "HardSub ffmpeg runtime exec=${ffmpegRuntime.executablePath} linker=${ffmpegRuntime.linkerPath ?: "<direct>"} source=${ffmpegRuntime.source} libs=${ffmpegRuntime.libraryPath ?: "<default>"}"
         )
         if (supportedFilters.isNotEmpty()) {
             Log.i(TAG, "HardSub ffmpeg subtitle filters=${supportedFilters.joinToString(",")}")
@@ -980,12 +1100,14 @@ class DownloadWorker(
             throw IOException("HardSub aborted: no media files found for burn-in")
         }
         var burnedMediaCount = 0
+        val consumedSubtitles = linkedSetOf<String>()
         var unwritableOutputDir: String? = null
         mediaFiles.forEach { media ->
             if (!hasVideoStream(media, ffmpegRuntime)) {
                 Log.w(TAG, "HardSub skip media=${media.name} reason=no-video-stream")
                 return@forEach
             }
+            val mediaHadAudioBeforeBurn = hasAudioStream(media, ffmpegRuntime)
             val mediaParent = media.parentFile
             if (mediaParent == null || !canCreateSiblingOutput(mediaParent)) {
                 if (unwritableOutputDir == null) {
@@ -1002,6 +1124,7 @@ class DownloadWorker(
                 Log.w(TAG, "HardSub skip media=${media.name} reason=no-matching-subtitle")
                 return@forEach
             }
+            consumedSubtitles.add(subtitle.file.absolutePath)
             val progressTarget = if (downloadItemId != null) {
                 FfmpegProgressTarget(downloadItemId, downloadLogId, media.name)
             } else {
@@ -1139,6 +1262,11 @@ class DownloadWorker(
                 Log.e(TAG, "HardSub ffmpeg output missing media=${media.name}")
                 throw IOException("ffmpeg burn-in failed: output was not created")
             }
+            if (mediaHadAudioBeforeBurn && !hasAudioStream(output, ffmpegRuntime)) {
+                Log.e(TAG, "HardSub ffmpeg output missing-audio media=${media.name}")
+                if (output.exists()) output.delete()
+                throw IOException("ffmpeg burn-in failed: output lost audio stream")
+            }
 
             Log.i(
                 TAG,
@@ -1180,6 +1308,21 @@ class DownloadWorker(
             Log.w(TAG, "HardSub skipped: no media was burned")
             return false
         }
+        if (removeSubsAfterBurnIn) {
+            // Remove downloaded subtitle sidecars that participated in this burn-in run.
+            val removableSubtitlePaths = linkedSetOf<String>().apply {
+                addAll(subtitleFiles.map { it.absolutePath })
+                addAll(consumedSubtitles)
+            }
+            removableSubtitlePaths.forEach { subtitlePath ->
+                runCatching {
+                    val subtitleFile = File(subtitlePath)
+                    if (subtitleFile.exists() && subtitleFile.isFile) {
+                        subtitleFile.delete()
+                    }
+                }
+            }
+        }
         if (canonicalSubtitle?.isTemporary == true) canonicalSubtitle.file.delete()
         return true
     }
@@ -1193,23 +1336,47 @@ class DownloadWorker(
         return Regex("""(?m)^\s*Stream #\d+:\d+.*:\s*Video:\s*""").containsMatchIn(probe.output)
     }
 
-    private fun mergeSeparatedVideoAudioIfNeeded(mediaFiles: List<File>, ffmpegRuntime: FfmpegRuntime): List<File> {
-        if (mediaFiles.size < 2) return mediaFiles
+    private fun hasAudioStream(media: File, ffmpegRuntime: FfmpegRuntime): Boolean {
+        val probe = executeFfmpegWithAutoPatch(
+            ffmpegRuntime,
+            listOf("-hide_banner", "-i", media.absolutePath)
+        )
+        // ffmpeg -i returns non-zero without output target, so parse stream info from output.
+        return Regex("""(?m)^\s*Stream #\d+:\d+.*:\s*Audio:\s*""").containsMatchIn(probe.output)
+    }
 
-        val videoCandidates = mediaFiles.filter { fileHasVideoTrack(it) }
+    private fun mergeSeparatedVideoAudioIfNeeded(mediaFiles: List<File>, ffmpegRuntime: FfmpegRuntime): List<File> {
+        if (mediaFiles.size < 2) {
+            val single = mediaFiles.firstOrNull() ?: return mediaFiles
+            val likelySplitVideo = normalizeMuxStem(single.nameWithoutExtension) != single.nameWithoutExtension
+            if (likelySplitVideo && hasVideoStream(single, ffmpegRuntime) && !hasAudioStream(single, ffmpegRuntime)) {
+                throw IOException("HardSub AV merge required but companion audio file is missing for video=${single.name}")
+            }
+            return mediaFiles
+        }
+
+        val videoCandidates = mediaFiles.filter { hasVideoStream(it, ffmpegRuntime) }
         if (videoCandidates.isEmpty()) return mediaFiles
-        val audioOnlyCandidates = mediaFiles.filter { !fileHasVideoTrack(it) && fileHasAudioTrack(it) }
-        if (audioOnlyCandidates.isEmpty()) return mediaFiles
+        val audioOnlyCandidates = mediaFiles.filter { !hasVideoStream(it, ffmpegRuntime) && hasAudioStream(it, ffmpegRuntime) }
 
         val primaryVideo = videoCandidates.maxByOrNull { it.length() } ?: return mediaFiles
-        if (fileHasAudioTrack(primaryVideo)) return mediaFiles
+        if (hasAudioStream(primaryVideo, ffmpegRuntime)) return mediaFiles
+        if (audioOnlyCandidates.isEmpty()) {
+            throw IOException(
+                "HardSub AV merge required but no audio-only file found for video=${primaryVideo.name}"
+            )
+        }
 
         val normalizedVideoStem = normalizeMuxStem(primaryVideo.nameWithoutExtension)
-        val primaryAudio = audioOnlyCandidates
+        val matchedAudioCandidates = audioOnlyCandidates
             .filter { normalizeMuxStem(it.nameWithoutExtension) == normalizedVideoStem }
-            .maxByOrNull { it.length() }
-            ?: audioOnlyCandidates.maxByOrNull { it.length() }
-            ?: return mediaFiles
+        if (matchedAudioCandidates.isEmpty()) {
+            throw IOException(
+                "HardSub AV merge required but matching audio file not found for video=${primaryVideo.name}"
+            )
+        }
+        val primaryAudio = matchedAudioCandidates.maxByOrNull { it.length() }
+            ?: throw IOException("HardSub AV merge failed selecting audio candidate for video=${primaryVideo.name}")
 
         val mergedVideo = if (canCreateSiblingOutput(primaryVideo.parentFile ?: return mediaFiles)) {
             mergeVideoAudioPairInDirectory(primaryVideo, primaryAudio, ffmpegRuntime)
@@ -1219,7 +1386,9 @@ class DownloadWorker(
                 "HardSub AV merge staging fallback video=${primaryVideo.name} audio=${primaryAudio.name} dir=${primaryVideo.parentFile?.absolutePath ?: "unknown"}"
             )
             mergeVideoAudioPairViaWritableStage(primaryVideo, primaryAudio, ffmpegRuntime)
-        } ?: return mediaFiles
+        } ?: throw IOException(
+            "HardSub AV merge failed video=${primaryVideo.name} audio=${primaryAudio.name}"
+        )
 
         val removed = setOf(primaryVideo.absolutePath, primaryAudio.absolutePath)
         return mediaFiles
@@ -1342,7 +1511,8 @@ class DownloadWorker(
     }
 
     private fun normalizeMuxStem(name: String): String {
-        return name.replace(Regex("""\.f\d+$"""), "")
+        // Match yt-dlp split stream suffixes like ".f248", ".f248-sr", ".f140-drc", etc.
+        return name.replace(Regex("""\.f\d+(?:-[A-Za-z0-9_]+)*$""", RegexOption.IGNORE_CASE), "")
     }
 
     private fun prepareSubtitleForBurnIn(
@@ -1352,33 +1522,54 @@ class DownloadWorker(
         ffmpegRuntime: FfmpegRuntime,
         dedicatedSrv3ConverterPath: String?
     ): BurnInSubtitle? {
-        val selectedSubtitle = findSubtitleForMedia(media, subtitleExts, providedSubtitles) ?: return null
-        if (selectedSubtitle.extension.equals("ass", ignoreCase = true)) {
-            return BurnInSubtitle(selectedSubtitle, isAss = true, isTemporary = false)
+        val candidates = findSubtitleCandidatesForMedia(media, subtitleExts, providedSubtitles)
+        if (candidates.isEmpty()) return null
+
+        candidates.forEach { selectedSubtitle ->
+            if (selectedSubtitle.extension.equals("ass", ignoreCase = true)) {
+                return BurnInSubtitle(selectedSubtitle, isAss = true, isTemporary = false)
+            }
+
+            val convertedAss = convertSubtitleToAss(selectedSubtitle, ffmpegRuntime, dedicatedSrv3ConverterPath)
+            if (convertedAss != null) {
+                return BurnInSubtitle(convertedAss, isAss = true, isTemporary = true)
+            }
+
+            if (setOf("srv3", "json3", "ttml").contains(selectedSubtitle.extension.lowercase(Locale.US))) {
+                Log.w(
+                    TAG,
+                    "HardSub rich subtitle convert failed source=${selectedSubtitle.name} trying-next-candidate"
+                )
+                return@forEach
+            }
+
+            return BurnInSubtitle(selectedSubtitle, isAss = false, isTemporary = false)
         }
 
-        val convertedAss = convertSubtitleToAss(selectedSubtitle, ffmpegRuntime, dedicatedSrv3ConverterPath)
-        if (convertedAss != null) {
-            return BurnInSubtitle(convertedAss, isAss = true, isTemporary = true)
-        }
-
-        if (setOf("srv3", "json3", "ttml").contains(selectedSubtitle.extension.lowercase(Locale.US))) {
-            Log.w(
-                TAG,
-                "HardSub skip subtitle source=${selectedSubtitle.name} reason=rich-subtitle-convert-failed"
-            )
-            return null
-        }
-
-        return BurnInSubtitle(selectedSubtitle, isAss = false, isTemporary = false)
+        return null
     }
 
     private fun convertSubtitleToAss(subtitle: File, ffmpegRuntime: FfmpegRuntime, dedicatedSrv3ConverterPath: String?): File? {
+        val richSubtitleExts = setOf("srv3", "json3", "ttml")
+        val ext = subtitle.extension.lowercase(Locale.US)
         if (
             dedicatedSrv3ConverterPath != null &&
-            setOf("srv3", "json3", "ttml").contains(subtitle.extension.lowercase(Locale.US))
+            richSubtitleExts.contains(ext)
         ) {
             convertSrv3ToAssWithDedicatedConverter(subtitle, dedicatedSrv3ConverterPath)?.let { return it }
+            createNormalizedRichSubtitleForConverter(subtitle)?.let { normalized ->
+                try {
+                    convertSrv3ToAssWithDedicatedConverter(normalized, dedicatedSrv3ConverterPath)?.let { converted ->
+                        Log.i(
+                            TAG,
+                            "HardSub dedicated rich subtitle conversion succeeded after normalization source=${subtitle.name}"
+                        )
+                        return converted
+                    }
+                } finally {
+                    runCatching { normalized.delete() }
+                }
+            }
         }
 
         val parent = subtitle.parentFile ?: return null
@@ -1402,6 +1593,7 @@ class DownloadWorker(
 
     private data class FfmpegRuntime(
         val executablePath: String,
+        val linkerPath: String?,
         val libraryPath: String?,
         val preloadLibraryPath: String?,
         val source: String
@@ -1419,53 +1611,44 @@ class DownloadWorker(
     )
 
     private fun resolveFfmpegRuntime(excludedSources: Set<String> = emptySet()): FfmpegRuntime {
+        runCatching { App.instance.ensureRuntimeToolsInstalled() }
+            .onFailure { Log.w(TAG, "Failed to ensure bundled runtime tools before ffmpeg runtime resolution", it) }
         val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
-        val executableCandidates = mutableListOf<Pair<File, String>>()
-        // Native hard-sub runtime only (bundled/package/termux paths removed).
-        executableCandidates.add(File(nativeLibDir, "libffmpeg_hardsub_exec.so") to "native-lib-hardsub-exec")
-        executableCandidates.add(File(nativeLibDir, "libffmpeg_hardsub.so") to "native-lib-hardsub")
+        val extractedLibDir = File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/lib")
+        val executableCandidates = listOf(
+            File(nativeLibDir, "libffmpeg.so") to "wrapper-native-libffmpeg"
+        )
 
         val selected = executableCandidates.firstOrNull { (file, source) ->
             if (source in excludedSources || source in hardSubDisabledFfmpegSources) return@firstOrNull false
             isUsableFfmpegExecutable(file)
-        } ?: (File(nativeLibDir, "libffmpeg_hardsub.so") to "native-lib-hardsub-fallback")
+        } ?: executableCandidates.first()
         val executable = selected.first
         val source = selected.second
 
-        val extractedLibDir = File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/lib")
         val libraryDirs = mutableListOf<String>()
-        executable.parentFile?.let { parent ->
-            if (parent.exists() && parent.isDirectory) {
-                libraryDirs.add(parent.absolutePath)
-            }
-            val siblingUsrLib = File(parent, "../lib").normalize()
-            if (siblingUsrLib.exists() && siblingUsrLib.isDirectory) {
-                libraryDirs.add(siblingUsrLib.absolutePath)
-            }
-        }
-        if (nativeLibDir.exists() && nativeLibDir.isDirectory) {
-            libraryDirs.add(nativeLibDir.absolutePath)
-        }
-        libraryDirs.addAll(systemLibrarySearchDirs())
-        // For the exec-wrapper runtime, extracted ffmpeg libs are required.
-        // For other native-lib paths, avoid mixing to reduce namespace collisions.
-        val needsExtractedLibs = source == "native-lib-hardsub-exec" || source == "native-lib-hardsub-exec-fallback"
-        if ((needsExtractedLibs || !source.startsWith("native-lib")) &&
-            extractedLibDir.exists() &&
-            extractedLibDir.isDirectory
-        ) {
+        if (extractedLibDir.exists() && extractedLibDir.isDirectory) {
             libraryDirs.add(extractedLibDir.absolutePath)
         }
-        val preloadLibraryPath = sequenceOf(
-            File(extractedLibDir, "libc++_shared.so"),
-            File(nativeLibDir, "libc++_shared.so")
-        ).firstOrNull { it.exists() && it.isFile }?.absolutePath
+        val preloadLibraryPath: String? = null
+        val linkerPath: String? = null
         return FfmpegRuntime(
             executablePath = executable.absolutePath,
+            linkerPath = linkerPath,
             libraryPath = libraryDirs.distinct().joinToString(":").ifBlank { null },
             preloadLibraryPath = preloadLibraryPath,
             source = source
         )
+    }
+
+    private fun resolveSystemLinkerPath(): String? {
+        val preferred = if (Build.SUPPORTED_64_BIT_ABIS.isNotEmpty()) "/system/bin/linker64" else "/system/bin/linker"
+        val preferredFile = File(preferred)
+        if (preferredFile.exists() && preferredFile.isFile) return preferredFile.absolutePath
+        return listOf("/system/bin/linker64", "/system/bin/linker")
+            .map(::File)
+            .firstOrNull { it.exists() && it.isFile }
+            ?.absolutePath
     }
 
     private fun systemLibrarySearchDirs(): List<String> {
@@ -1498,7 +1681,10 @@ class DownloadWorker(
     }
 
     private fun buildFfmpegProcess(runtime: FfmpegRuntime, args: List<String>): ProcessBuilder {
-        val command = mutableListOf(runtime.executablePath).apply { addAll(args) }
+        val command = mutableListOf<String>()
+        runtime.linkerPath?.let { command.add(it) }
+        command.add(runtime.executablePath)
+        command.addAll(args)
         val builder = ProcessBuilder(command).redirectErrorStream(true)
         runtime.libraryPath?.let { libs ->
             val env = builder.environment()
@@ -1905,13 +2091,70 @@ class DownloadWorker(
     private fun convertSrv3ToAssWithDedicatedConverter(subtitle: File, converterPath: String): File? {
         val parent = subtitle.parentFile ?: return null
         val output = File(parent, "${subtitle.nameWithoutExtension}.burnin_tmp.ass")
+        return runDedicatedSubtitleConverter(
+            input = subtitle,
+            output = output,
+            converterPath = converterPath,
+            format = "ass",
+            startFailLogPrefix = "Dedicated srv3->ass converter start failed",
+            failLogPrefix = "Dedicated srv3->ass converter failed"
+        )
+    }
+
+    private fun convertSubtitleToSrtWithDedicatedConverter(subtitle: File, converterPath: String): File? {
+        val parent = subtitle.parentFile ?: return null
+        val output = File(parent, "${subtitle.nameWithoutExtension}.srt")
+        if (output.exists() && output.length() > 0L) return output
+        runDedicatedSubtitleConverter(
+            input = subtitle,
+            output = output,
+            converterPath = converterPath,
+            format = "srt",
+            startFailLogPrefix = "Dedicated subtitle->srt converter start failed",
+            failLogPrefix = "Dedicated subtitle->srt converter failed"
+        )?.let { return it }
+
+        val ext = subtitle.extension.lowercase(Locale.US)
+        if (ext !in setOf("srv3", "json3", "ttml")) return null
+
+        createNormalizedRichSubtitleForConverter(subtitle)?.let { normalized ->
+            try {
+                runDedicatedSubtitleConverter(
+                    input = normalized,
+                    output = output,
+                    converterPath = converterPath,
+                    format = "srt",
+                    startFailLogPrefix = "Dedicated subtitle->srt converter (normalized) start failed",
+                    failLogPrefix = "Dedicated subtitle->srt converter (normalized) failed"
+                )?.let {
+                    Log.i(
+                        TAG,
+                        "HardSub dedicated subtitle->srt conversion succeeded after normalization source=${subtitle.name}"
+                    )
+                    return it
+                }
+            } finally {
+                runCatching { normalized.delete() }
+            }
+        }
+        return null
+    }
+
+    private fun runDedicatedSubtitleConverter(
+        input: File,
+        output: File,
+        converterPath: String,
+        format: String,
+        startFailLogPrefix: String,
+        failLogPrefix: String
+    ): File? {
         val process = runCatching {
             ProcessBuilder(
                 converterPath,
                 "parse",
-                subtitle.absolutePath,
+                input.absolutePath,
                 "--format",
-                "ass",
+                format,
                 "--save",
                 "file",
                 "--output",
@@ -1920,7 +2163,7 @@ class DownloadWorker(
         }.getOrElse { error ->
             Log.w(
                 TAG,
-                "Dedicated srv3->ass converter start failed path=$converterPath source=${subtitle.name} reason=${error.message}"
+                "$startFailLogPrefix path=$converterPath source=${input.name} reason=${error.message}"
             )
             return null
         }
@@ -1929,10 +2172,71 @@ class DownloadWorker(
         val exitCode = process.waitFor()
         if (exitCode != 0 || !output.exists() || output.length() == 0L) {
             if (output.exists()) output.delete()
-            Log.w(TAG, "Dedicated srv3->ass converter failed (code=$exitCode): ${converterOutput.takeLast(800)}")
+            Log.w(TAG, "$failLogPrefix (code=$exitCode): ${converterOutput.takeLast(800)}")
             return null
         }
         return output
+    }
+
+    private fun createNormalizedRichSubtitleForConverter(subtitle: File): File? {
+        val ext = subtitle.extension.lowercase(Locale.US)
+        if (ext !in setOf("srv3", "json3", "ttml")) return null
+        val parent = subtitle.parentFile ?: return null
+        val raw = runCatching { subtitle.readText(Charsets.UTF_8) }.getOrNull() ?: return null
+        if (raw.isBlank()) return null
+
+        var normalized = raw
+        // Remove empty rich-sub nodes that can cause strict parsers to fail on missing value fields.
+        normalized = normalized.replace(Regex("""<s(\s+[^>]*)?/\s*>"""), "")
+        normalized = normalized.replace(Regex("""<s(\s+[^>]*)?>\s*</s>"""), "")
+        normalized = normalized.replace(Regex("""<p(\s+[^>]*)?>\s*</p>"""), "")
+
+        if (normalized == raw) return null
+        val normalizedFile = File(parent, "__hardsub_normalized.$ext")
+        return runCatching {
+            normalizedFile.writeText(normalized, Charsets.UTF_8)
+            Log.i(TAG, "HardSub rich subtitle normalized source=${subtitle.name} output=${normalizedFile.name}")
+            normalizedFile
+        }.getOrNull()
+    }
+
+    private fun convertSubtitleFilesToSrt(
+        subtitleFiles: List<File>,
+        ffmpegRuntime: FfmpegRuntime,
+        dedicatedSrv3ConverterPath: String?
+    ) {
+        subtitleFiles.forEach { subtitle ->
+            val ext = subtitle.extension.lowercase(Locale.US)
+            if (ext == "srt") return@forEach
+            val target = File(subtitle.parentFile ?: return@forEach, "${subtitle.nameWithoutExtension}.srt")
+            if (target.exists() && target.length() > 0L) return@forEach
+
+            val converted = if (dedicatedSrv3ConverterPath != null && ext in setOf("srv3", "json3", "ttml")) {
+                convertSubtitleToSrtWithDedicatedConverter(subtitle, dedicatedSrv3ConverterPath)
+            } else {
+                val result = executeFfmpegWithAutoPatch(
+                    ffmpegRuntime,
+                    listOf(
+                        "-y",
+                        "-i",
+                        subtitle.absolutePath,
+                        target.absolutePath
+                    )
+                )
+                if (result.exitCode != 0 || !target.exists() || target.length() == 0L) {
+                    if (target.exists()) target.delete()
+                    null
+                } else {
+                    target
+                }
+            }
+
+            if (converted != null) {
+                Log.i(TAG, "HardSub subtitle sidecar converted to srt source=${subtitle.name} output=${converted.name}")
+            } else {
+                Log.w(TAG, "HardSub subtitle sidecar srt conversion failed source=${subtitle.name}")
+            }
+        }
     }
 
     private fun resolveSrv3ConverterPath(): String? {
@@ -1967,8 +2271,8 @@ class DownloadWorker(
         return null
     }
 
-    private fun findSubtitleForMedia(media: File, subtitleExts: List<String>, providedSubtitles: List<File>): File? {
-        val parent = media.parentFile ?: return null
+    private fun findSubtitleCandidatesForMedia(media: File, subtitleExts: List<String>, providedSubtitles: List<File>): List<File> {
+        val parent = media.parentFile ?: return emptyList()
         val prefix = "${media.nameWithoutExtension}."
         val files = parent.listFiles().orEmpty()
         val allCandidates = (files.asList() + providedSubtitles)
@@ -1977,27 +2281,37 @@ class DownloadWorker(
             .distinctBy { it.absolutePath }
             .toList()
 
+        val orderedByExt = mutableListOf<File>()
         subtitleExts.forEach { ext ->
-            allCandidates.firstOrNull { candidate ->
-                candidate.isFile &&
-                candidate.name.startsWith(prefix) &&
-                    candidate.extension.equals(ext, ignoreCase = true)
-            }?.let { return it }
+            allCandidates
+                .asSequence()
+                .filter { candidate ->
+                    candidate.name.startsWith(prefix) &&
+                        candidate.extension.equals(ext, ignoreCase = true)
+                }
+                .sortedByDescending { candidate -> candidate.lastModified() }
+                .forEach { candidate ->
+                    if (orderedByExt.none { it.absolutePath == candidate.absolutePath }) {
+                        orderedByExt.add(candidate)
+                    }
+                }
         }
+        if (orderedByExt.isNotEmpty()) return orderedByExt
+
         val sameDirSubtitles = allCandidates.filter { candidate ->
             candidate.parentFile?.absolutePath == parent.absolutePath &&
                 subtitleExts.any { ext -> candidate.extension.equals(ext, ignoreCase = true) }
         }
         if (sameDirSubtitles.size == 1) {
             Log.w(TAG, "HardSub subtitle fallback media=${media.name} matched=${sameDirSubtitles.first().name} reason=single-subtitle-in-dir")
-            return sameDirSubtitles.first()
+            return listOf(sameDirSubtitles.first())
         }
         if (providedSubtitles.size == 1) {
             val only = providedSubtitles.first()
             Log.w(TAG, "HardSub subtitle fallback media=${media.name} matched=${only.name} reason=single-provided-subtitle")
-            return only
+            return listOf(only)
         }
-        return null
+        return emptyList()
     }
 
     private fun findSiblingMediaForSubtitles(subtitleFiles: List<File>, subtitleExts: List<String>): List<File> {
@@ -2038,6 +2352,69 @@ class DownloadWorker(
                 file.exists() && file.isFile
             }
             .toList()
+    }
+
+    private fun deleteReplacedHistoryMedia(previousHistoryItem: HistoryItem?, finalPaths: List<String>) {
+        if (previousHistoryItem == null) return
+
+        val retainedPaths = finalPaths
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+        if (retainedPaths.isEmpty()) return
+
+        val stalePaths = previousHistoryItem.downloadPath
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .filter { oldPath -> oldPath !in retainedPaths }
+            .toList()
+        if (stalePaths.isEmpty()) return
+
+        stalePaths.forEach { oldPath ->
+            runCatching { FileUtil.deleteFile(oldPath) }
+                .onSuccess {
+                    Log.i(TAG, "HardSub redownload cleanup deleted old media path=$oldPath")
+                }
+                .onFailure { error ->
+                    Log.w(TAG, "HardSub redownload cleanup failed path=$oldPath reason=${error.message}")
+                }
+        }
+    }
+
+    private suspend fun retryMoveFromTempDirectory(
+        tempFileDir: File,
+        downloadLocation: String,
+        keepCache: Boolean,
+        downloadItemId: Long,
+        downloadLogId: Long?,
+        eventBus: EventBus
+    ): List<String> {
+        return runCatching {
+            withContext(Dispatchers.IO) {
+                FileUtil.moveFile(tempFileDir, context, downloadLocation, keepCache) { progress ->
+                    eventBus.post(
+                        WorkerProgress(
+                            progress,
+                            "Retrying move to ${FileUtil.formatPath(downloadLocation)}",
+                            downloadItemId,
+                            downloadLogId
+                        )
+                    )
+                }
+            }.filter { !it.matches("\\.(description)|(txt)\$".toRegex()) }
+        }.onSuccess { recovered ->
+            if (recovered.isNotEmpty()) {
+                Log.w(
+                    TAG,
+                    "HardSub temp move retry succeeded id=$downloadItemId recovered=${recovered.size}"
+                )
+            }
+        }.onFailure { error ->
+            Log.e(TAG, "HardSub temp move retry failed id=$downloadItemId", error)
+        }.getOrDefault(emptyList())
     }
 
     private data class BurnInSubtitle(
@@ -2164,6 +2541,52 @@ class DownloadWorker(
             .map { it.absolutePath }
             .distinct()
             .toList()
+    }
+
+    private fun logPathCandidates(label: String, downloadId: Long, paths: List<String>) {
+        if (paths.isEmpty()) {
+            Log.i(TAG, "$label id=$downloadId count=0")
+            return
+        }
+        val sample = paths.joinToString(limit = 5) { candidate ->
+            val file = File(candidate)
+            val exists = file.exists()
+            val size = if (exists && file.isFile) file.length() else -1L
+            "${file.name}[exists=$exists,size=$size]"
+        }
+        Log.i(TAG, "$label id=$downloadId count=${paths.size} sample=$sample")
+    }
+
+    private fun describeDirectorySnapshot(directory: File?): String {
+        if (directory == null) return "<null>"
+        if (!directory.exists()) return "${directory.absolutePath}[missing]"
+        if (!directory.isDirectory) return "${directory.absolutePath}[not-directory]"
+
+        val entries = runCatching {
+            directory.walkTopDown()
+                .maxDepth(2)
+                .filter { it.isFile }
+                .sortedByDescending { it.lastModified() }
+                .take(8)
+                .map { file ->
+                    val relative = runCatching {
+                        file.absolutePath.removePrefix(directory.absolutePath).trimStart(File.separatorChar)
+                    }.getOrDefault(file.name)
+                    "$relative(size=${file.length()},mtime=${file.lastModified()})"
+                }
+                .toList()
+        }.getOrDefault(emptyList())
+
+        return "${directory.absolutePath}[files=${entries.size}${if (entries.isNotEmpty()) ",sample=${entries.joinToString()}" else ""}]"
+    }
+
+    private fun shouldForceHardSubFailpoint(markerName: String): Boolean {
+        val marker = File(FileUtil.getCachePath(context), "debug/$markerName")
+        val enabled = marker.exists()
+        if (enabled) {
+            Log.w(TAG, "HardSub failpoint enabled marker=${marker.absolutePath}")
+        }
+        return enabled
     }
 
     private fun remapPathsForBurnIn(paths: List<String>, downloadLocation: String, tempLocation: String): List<String> {
@@ -2293,6 +2716,25 @@ class DownloadWorker(
                 "$filterName='$escaped'"
             )
         }
+    }
+
+    private fun mergeKeywords(existing: String, appended: String): String {
+        if (appended.isBlank()) return existing.trim()
+
+        val merged = linkedSetOf<String>()
+        val seen = hashSetOf<String>()
+
+        fun addRaw(raw: String) {
+            val token = raw.trim()
+            if (token.isBlank()) return
+            val key = token.lowercase(Locale.getDefault())
+            if (seen.add(key)) merged.add(token)
+        }
+
+        existing.split(',').forEach { addRaw(it) }
+        appended.split(',').forEach { addRaw(it) }
+
+        return merged.joinToString(", ")
     }
 
     class WorkerProgress(

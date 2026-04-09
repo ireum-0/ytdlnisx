@@ -15,6 +15,12 @@
         app:title="@string/video_directory" />
 
     <Preference
+        app:icon="@drawable/baseline_drive_file_move_24"
+        app:key="migrate_default_video_folder"
+        android:summary="@string/migrate_default_video_folder_summary"
+        app:title="@string/migrate_default_video_folder" />
+
+    <Preference
         android:defaultValue=""
         app:icon="@drawable/ic_terminal"
         app:key="command_path"

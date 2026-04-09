@@ -79,6 +79,9 @@ class WebViewActivity : BaseActivity() {
 
             toolbar.setOnMenuItemClickListener { m : MenuItem ->
                 when(m.itemId) {
+                    R.id.back -> {
+                        navigateBackInWebViewOrFinish()
+                    }
                     R.id.incognito -> {
                         intent.putExtra("incognito", !incognito)
                         recreate()
@@ -114,7 +117,7 @@ class WebViewActivity : BaseActivity() {
             }
 
             toolbar.setNavigationOnClickListener {
-                onBackPressedDispatcher.onBackPressed()
+                navigateBackInWebViewOrFinish()
             }
 
             generateBtn.setOnClickListener {
@@ -177,6 +180,15 @@ class WebViewActivity : BaseActivity() {
                 loadWithOverviewMode = false
             }
         }
+    }
+
+    private fun navigateBackInWebViewOrFinish() {
+        val currentWebView = webView
+        if (currentWebView != null && currentWebView.canGoBack()) {
+            currentWebView.goBack()
+            return
+        }
+        onBackPressedDispatcher.onBackPressed()
     }
 
     @SuppressLint("SetJavaScriptEnabled")

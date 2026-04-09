@@ -2,6 +2,7 @@
 
 import android.annotation.SuppressLint
 import android.os.Bundle
+import android.widget.Toast
 import androidx.navigation.fragment.findNavController
 import androidx.preference.EditTextPreference
 import androidx.preference.Preference
@@ -9,6 +10,7 @@ import androidx.preference.PreferenceManager
 import androidx.preference.SwitchPreferenceCompat
 import com.ireum.ytdl.R
 import com.ireum.ytdl.util.UiUtil
+import com.ireum.ytdl.work.HardSubScanWorker
 
 
 class ProcessingSettingsFragment : BaseSettingsFragment() {
@@ -37,6 +39,12 @@ class ProcessingSettingsFragment : BaseSettingsFragment() {
                 editor.apply()
                 subtitleLanguages.summary = it
             }
+            true
+        }
+
+        findPreference<Preference>("hard_sub_scan_now")?.setOnPreferenceClickListener {
+            HardSubScanWorker.enqueue(requireContext())
+            Toast.makeText(requireContext(), getString(R.string.hard_sub_scan_started), Toast.LENGTH_SHORT).show()
             true
         }
 

@@ -65,8 +65,11 @@
     <string name="command_download_notification_channel_description">Notification showing the progress of downloading using a yt-dlp command</string>
     <string name="items_left">item(s) left</string>
     <string name="hard_sub_progress">Hard-sub progress: %1$d/%2$d</string>
-    <string name="hard_sub_scan_title">Auto hard-sub scan</string>
+    <string name="hard_sub_scan_title">Hard-sub scan</string>
     <string name="hard_sub_scan_progress">Scanning videos: %1$d/%2$d</string>
+    <string name="hard_sub_scan_now">Run hard-sub scan</string>
+    <string name="hard_sub_scan_now_summary">Scan history videos and queue hard-sub redownloads when needed</string>
+    <string name="hard_sub_scan_started">Hard-sub scan started</string>
     <string name="history_is_empty">History is empty</string>
     <string name="you_are_going_to_delete">Deleting</string>
     <string name="url">URL</string>
@@ -454,6 +457,7 @@
     <string name="always">Always</string>
     <string name="sync_with_source">Sync with source</string>
     <string name="sync_with_source_desc">Delete downloaded items if they are missing in the source</string>
+    <string name="observe_auto_add_keyword">Auto-add keyword to history</string>
     <string name="queue">Queue</string>
     <string name="reset">Reset</string>
     <string name="restore_info">Press \'Restore\' to merge the saved data with your current data.\nPress \'Reset\' to erase and only use the saved data in the file.</string>
@@ -467,6 +471,13 @@
     <string name="weekly">Weekly</string>
     <string name="monthly">Monthly</string>
     <string name="cleanup_leftover_downloads">Clean-up leftover downloads (cancelled, errored)</string>
+    <string name="migrate_default_video_folder">Move videos from default folder to current video folder</string>
+    <string name="migrate_default_video_folder_summary">Moves files from Download/YTDLnisx/Video and keeps history cards linked</string>
+    <string name="migrate_default_video_folder_confirm">Move all videos from default folder and update history paths?</string>
+    <string name="migrate_default_video_folder_done">Moved %1$d files, updated %2$d cards</string>
+    <string name="migrate_default_video_folder_nothing">No files to move from default folder</string>
+    <string name="migrate_default_video_folder_failed">Move failed for %1$d files</string>
+    <string name="migrate_default_video_folder_progress">Moving videos... (%1$d/%2$d)</string>
     <string name="continue_anyway">Continue anyway</string>
     <string name="playlist_as_album">Use playlist name as album metadata</string>
     <string name="playlist_as_album_summary">If album metadata is not present, use playlist name instead</string>
@@ -480,6 +491,9 @@
     <string name="missing_thumbnail">Missing thumbnail</string>
     <string name="custom_thumbnail_only">Custom thumbnail only</string>
     <string name="hardsub_done_only">HardSub completed only</string>
+    <string name="hardsub_scan_target_only">HardSub scan target only</string>
+    <string name="exclude_from_hardsub_scan">Exclude from HardSub scan</string>
+    <string name="excluded_from_hardsub_scan">Excluded from HardSub scan</string>
     <string name="search_targets">Search targets</string>
     <string name="search_target_title">Title</string>
     <string name="search_target_keywords">Keywords</string>

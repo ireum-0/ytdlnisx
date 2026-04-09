@@ -8,6 +8,11 @@
         android:title="@string/get_data_sync_id" />
 
     <item
+        android:id="@+id/back"
+        android:title="@string/back"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/incognito"
         android:title="@string/incognito"
         android:checkable="true"

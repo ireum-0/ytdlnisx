@@ -275,9 +275,20 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
 
         downloadBtn.setOnClickListener {
             toggleLoading(true)
+            val progressSnack = Snackbar.make(view, getString(R.string.downloading), Snackbar.LENGTH_INDEFINITE)
+            progressSnack.show()
             lifecycleScope.launch {
                 withContext(Dispatchers.IO){
                     downloadViewModel.deleteAllWithID(currentDownloadIDs)
+                    val duplicates = downloadViewModel.checkProcessingDuplicates(ignoreDuplicates)
+                    if (duplicates.isNotEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            progressSnack.dismiss()
+                            handleDuplicatesAndDismiss(duplicates)
+                            dismiss()
+                        }
+                        return@withContext
+                    }
                     val result = downloadViewModel.queueProcessingDownloads(ignoreDuplicates)
                     if (result.message.isNotBlank()){
                         lifecycleScope.launch {
@@ -288,6 +299,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                     }
 
                     withContext(Dispatchers.Main){
+                        progressSnack.dismiss()
                         handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
                         dismiss()
                     }

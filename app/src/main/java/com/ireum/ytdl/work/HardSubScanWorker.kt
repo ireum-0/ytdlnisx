@@ -5,7 +5,12 @@ import android.os.Build
 import android.content.Context
 import androidx.work.ForegroundInfo
 import androidx.preference.PreferenceManager
+import androidx.work.Constraints
 import androidx.work.CoroutineWorker
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
@@ -20,6 +25,7 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import java.io.File
+import java.util.Locale
 
 class HardSubScanWorker(
     private val context: Context,
@@ -110,6 +116,23 @@ class HardSubScanWorker(
         private const val HISTORY_REDOWNLOAD_MARKER = "history-redownload:"
         private const val SCAN_NOTIFICATION_ID = 1000000002
         private const val PREF_HARD_SUB_RESCAN_DONE_ONCE = "hard_sub_rescan_done_once_v2"
+
+        fun enqueue(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+            val request = OneTimeWorkRequestBuilder<HardSubScanWorker>()
+                .setConstraints(constraints)
+                .addTag(TAG)
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                UNIQUE_WORK_NAME,
+                ExistingWorkPolicy.REPLACE,
+                request
+            )
+        }
     }
 
     private fun createHardSubDownloadItem(
@@ -132,11 +155,27 @@ class HardSubScanWorker(
             .getString("file_name_template", "%(uploader).30B - %(title).170B")
             .orEmpty()
 
-        val defaultPath = FileUtil.getDefaultVideoPath()
-        val bestPath = historyItem.downloadPath.firstOrNull { FileUtil.exists(it) } ?: historyItem.downloadPath.firstOrNull()
-        val path = bestPath?.let { pathCandidate ->
-            File(pathCandidate).parent?.takeIf { File(it).exists() }
-        } ?: defaultPath
+        val defaultPath = sharedPreferences.getString("video_path", FileUtil.getDefaultVideoPath())
+            ?: FileUtil.getDefaultVideoPath()
+        val isLocalFormatLike = historyItem.format.format_id.isLocalFormatLike()
+        val isLocalHistorySource =
+            historyItem.localTreeUri.isNotBlank() ||
+                historyItem.localTreePath.isNotBlank() ||
+                historyItem.downloadPath.any { it.startsWith("content://") } ||
+                isLocalFormatLike
+        val path = if (isLocalHistorySource) {
+            defaultPath
+        } else {
+            val bestPath = historyItem.downloadPath.firstOrNull { FileUtil.exists(it) } ?: historyItem.downloadPath.firstOrNull()
+            bestPath?.let { pathCandidate ->
+                File(pathCandidate).parent?.takeIf { File(it).exists() }
+            } ?: defaultPath
+        }
+        val normalizedFormat = historyItem.format.copy().apply {
+            if (isLocalHistorySource || format_id.isLocalFormatLike()) {
+                format_id = "best"
+            }
+        }
 
         val audioPreferences = AudioPreferences(
             embedThumb = embedThumb,
@@ -164,7 +203,7 @@ class HardSubScanWorker(
             thumb = historyItem.thumb,
             duration = historyItem.duration,
             type = DownloadType.video,
-            format = historyItem.format,
+            format = normalizedFormat,
             container = container,
             downloadSections = "",
             allFormats = arrayListOf(),
@@ -185,6 +224,11 @@ class HardSubScanWorker(
             incognito = sharedPreferences.getBoolean("incognito", false),
             availableSubtitles = availableSubtitles
         )
+    }
+
+    private fun String.isLocalFormatLike(): Boolean {
+        val normalized = trim().lowercase(Locale.getDefault())
+        return normalized == "local" || normalized.startsWith("local+")
     }
 
     private suspend fun updateScanNotification(notificationUtil: NotificationUtil, done: Int, total: Int) {

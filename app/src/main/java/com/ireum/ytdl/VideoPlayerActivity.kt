@@ -14,6 +14,7 @@ import android.content.pm.ActivityInfo
 import android.content.Intent
 import android.graphics.drawable.Icon
 import android.graphics.Color
+import android.graphics.Rect
 import android.widget.ImageButton
 import android.widget.Toast
 import android.media.AudioManager
@@ -47,7 +48,12 @@ import androidx.media3.ui.DefaultTimeBar
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.TimeBar
 import androidx.core.app.NotificationCompat
+import androidx.core.app.TaskStackBuilder
+import androidx.core.view.ViewCompat
 import androidx.core.view.isVisible
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
 import android.view.GestureDetector
@@ -62,7 +68,9 @@ import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.repository.HistoryRepository
+import com.ireum.ytdl.database.viewmodel.HistoryViewModel
 import com.ireum.ytdl.ui.adapter.VideoQueueAdapter
+import com.ireum.ytdl.ui.downloads.HistoryFragment
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.squareup.picasso.Picasso
@@ -85,6 +93,7 @@ import com.google.android.material.textfield.TextInputEditText
 import android.widget.ArrayAdapter
 import android.widget.ImageView
 import android.widget.ListView
+import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import java.io.FileOutputStream
 import java.io.OutputStream
@@ -119,9 +128,12 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var rightBarFill: android.view.View? = null
     private var rightBarContainer: android.view.View? = null
     private var timeBar: androidx.media3.ui.PlayerControlView? = null
+    private var progressBar: DefaultTimeBar? = null
     private var repeatButton: ImageButton? = null
     private var shuffleButton: ImageButton? = null
     private var playerContainer: android.view.View? = null
+    private var playerTopBar: View? = null
+    private var playerBottomArea: View? = null
     private var lastControllerVisibility: Int = android.view.View.VISIBLE
     private val overlayHandler = Handler(Looper.getMainLooper())
     private var overlayHideRunnable: Runnable? = null
@@ -138,6 +150,9 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var adjusting: Boolean = false
     private var gestureDetector: GestureDetector? = null
     private var seeking: Boolean = false
+    private var activeSwipeGesture: SwipeGestureType = SwipeGestureType.NONE
+    private var triggeredCentralSwipeAction: Boolean = false
+    private var consumedGestureInteraction: Boolean = false
     private var initialSeekPosition: Long = 0L
     private var holdSpeedRunnable: Runnable? = null
     private var holdSpeedActive: Boolean = false
@@ -180,7 +195,13 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var isEditVideoInfoDialogVisible: Boolean = false
     private var launchHistoryId: Long? = null
     private var launchPlaybackPositionMs: Long? = null
+    private var skipNextPlaybackRestoreHistoryId: Long? = null
+    private var pendingQueueUiItems: List<HistoryItem>? = null
+    private var pendingQueueUiCurrentId: Long? = null
+    private var pendingQueueUiForceScrollToTop: Boolean = false
+    private var playbackStartedAtMs: Long = 0L
     private var currentChapters: List<VideoChapter> = emptyList()
+    private var suppressAutoPipForBackNavigation: Boolean = false
 
     private val pickCustomThumbLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent()
@@ -204,14 +225,19 @@ class VideoPlayerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_video_player)
+        configurePlaybackWindow()
+        onBackPressedDispatcher.addCallback(this) {
+            if (handleBackToHistoryIfNeeded()) {
+                return@addCallback
+            }
+            isEnabled = false
+            onBackPressedDispatcher.onBackPressed()
+            isEnabled = true
+        }
 
         val playerView = findViewById<PlayerView>(R.id.player_view)
         this.playerView = playerView
-        val videoPath = intent.getStringExtra("video_path")
-        launchHistoryId = intent.getLongExtra("history_id", -1L).takeIf { it > 0L }
-        launchPlaybackPositionMs = intent.getLongExtra("playback_position_ms", 0L).takeIf { it >= 5_000L }
-
-        if (videoPath.isNullOrBlank()) {
+        if (!intent.hasExtra("video_path")) {
             Log.w("VideoPlayerActivity", "videoPath is null or blank")
             return
         }
@@ -232,6 +258,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         playerContainer = findViewById(R.id.player_container)
         repeatButton = findViewById(R.id.btn_repeat_mode)
         shuffleButton = findViewById(R.id.btn_shuffle_queue)
+        playerTopBar = playerView.findViewById(R.id.player_top_bar)
+        playerBottomArea = playerView.findViewById(R.id.player_bottom_area)
         if (queueList != null) {
             queueAdapter = VideoQueueAdapter(this) { item ->
                 val path = queuePlayablePathById[item.id]
@@ -240,11 +268,16 @@ class VideoPlayerActivity : AppCompatActivity() {
                 if (path != null) {
                     val index = queueIndexById[item.id] ?: queueItems.indexOfFirst { it.id == item.id }
                     if (index >= 0) {
-                        autoScrollQueueToCurrent = true
-                        queueAdapter?.setCurrentItemId(item.id)
-                        player?.seekTo(index, 0L)
-                        player?.playWhenReady = true
-                        scrollCurrentToTopIfAllowed(item.id)
+                        val timelineCount = player?.mediaItemCount ?: 0
+                        if (index < timelineCount) {
+                            autoScrollQueueToCurrent = true
+                            queueAdapter?.setCurrentItemId(item.id)
+                            player?.seekTo(index, 0L)
+                            player?.playWhenReady = true
+                            scrollCurrentToTopIfAllowed(item.id)
+                        } else {
+                            playSinglePath(path)
+                        }
                     } else {
                         playSinglePath(path)
                     }
@@ -276,19 +309,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         rightBarFill = findViewById(R.id.right_bar_fill)
         rightBarContainer = findViewById(R.id.right_bar_container)
         timeBar = findViewById(R.id.player_time_bar)
-
-        val uri = when {
-            videoPath.startsWith("content://") -> Uri.parse(videoPath)
-            videoPath.startsWith("file://") -> Uri.parse(videoPath)
-            else -> {
-                val file = File(videoPath)
-                if (!file.exists() || !file.isFile) {
-                    Toast.makeText(this, "Invalid video path: $videoPath", Toast.LENGTH_SHORT).show()
-                    return
-                }
-                Uri.fromFile(file)
-            }
-        }
+        progressBar = timeBar?.findViewById(R.id.exo_progress)
 
         player = ExoPlayer.Builder(this).build().also { exoPlayer ->
             playerView.player = exoPlayer
@@ -301,8 +322,9 @@ class VideoPlayerActivity : AppCompatActivity() {
             runCatching { exoPlayer.setWakeMode(C.WAKE_MODE_NETWORK) }
         }
         setupMediaNotification()
-        volumeNormalizationEnabled = PreferenceManager.getDefaultSharedPreferences(this)
-            .getBoolean(PREF_VOLUME_NORMALIZATION, false)
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        volumeNormalizationEnabled = prefs.getBoolean(PREF_VOLUME_NORMALIZATION, false)
+        player?.repeatMode = prefs.getInt(PREF_REPEAT_MODE, Player.REPEAT_MODE_OFF)
         ensureVolumeNormalization()
 
         timeBar?.player = player
@@ -325,8 +347,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
         updateRepeatButton()
         updateShuffleButton()
-
-        updateTitleFromPath(videoPath, preferredHistoryId = launchHistoryId)
         initChaptersControl()
         initSpeedControl()
         initMoreMenu()
@@ -338,14 +358,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         loadSubtitlePreferences()
         applySubtitleStyle()
         initPipControl()
-
-        val playlistPaths = intent.getStringArrayListExtra("video_paths")
-
-        if (!playlistPaths.isNullOrEmpty()) {
-            loadQueueFromPaths(playlistPaths, videoPath)
-        } else {
-            loadQueueForContext(videoPath)
-        }
+        handlePlaybackIntent(intent, replaceCurrent = true)
 
         applyOrientationUi()
         playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
@@ -399,6 +412,8 @@ class VideoPlayerActivity : AppCompatActivity() {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 updateMediaSessionPlaybackState()
+                updatePlaybackUiProgress()
+                logPlaybackTiming("onPlaybackStateChanged state=$playbackState current=${player?.currentMediaItemIndex ?: -1}")
                 if (playbackState == Player.STATE_READY) {
                     updateMediaSessionMetadata()
                     ensureVolumeNormalization()
@@ -412,10 +427,18 @@ class VideoPlayerActivity : AppCompatActivity() {
                 if (isInPictureInPictureMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     updatePipActions()
                 }
+                playerNotificationManager?.invalidate()
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 updateMediaSessionPlaybackState()
+                if (isPlaying && playbackStartedAtMs == 0L) {
+                    playbackStartedAtMs = SystemClock.elapsedRealtime()
+                }
+                if (!isPlaying) {
+                    playbackStartedAtMs = 0L
+                }
+                logPlaybackTiming("onIsPlayingChanged isPlaying=$isPlaying current=${player?.currentMediaItemIndex ?: -1}")
                 if (isPlaying) {
                     startPlaybackStateUpdates()
                     updateCurrentQueueSelection(scrollToCurrent = false, resetRecentWatchTimer = false)
@@ -424,22 +447,146 @@ class VideoPlayerActivity : AppCompatActivity() {
                 } else {
                     stopPlaybackStateUpdates()
                     stopRecentWatchTimer()
+                    flushPendingQueueUiRefresh()
                 }
                 if (isInPictureInPictureMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     updatePipActions()
                 }
+                playerNotificationManager?.invalidate()
             }
 
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                logPlaybackTiming("onTimelineChanged reason=$reason windows=${timeline.windowCount}")
                 updateMediaSessionMetadata()
+                playerNotificationManager?.invalidate()
             }
 
             override fun onTracksChanged(tracks: Tracks) {
+                logPlaybackTiming("onTracksChanged groups=${tracks.groups.size}")
                 updateSubtitlesButtonState()
                 refreshChaptersForCurrentItem()
             }
+
+            override fun onRenderedFirstFrame() {
+                logPlaybackTiming("onRenderedFirstFrame current=${player?.currentMediaItemIndex ?: -1}")
+            }
         })
         updateSubtitlesButtonState()
+    }
+
+    private fun configurePlaybackWindow() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.video_player_root)) { _, insets ->
+            applyWindowInsets()
+            insets
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+    }
+
+    private fun handlePlaybackIntent(playbackIntent: Intent, replaceCurrent: Boolean) {
+        val videoPath = playbackIntent.getStringExtra("video_path")
+        if (videoPath.isNullOrBlank()) return
+        val isResumePlaybackUiIntent = playbackIntent.action == ACTION_RESUME_PLAYBACK_UI
+
+        launchHistoryId = playbackIntent.getLongExtra("history_id", -1L).takeIf { it > 0L }
+        val requestedPlaybackPositionMs =
+            playbackIntent.getLongExtra("playback_position_ms", 0L).takeIf { it >= 5_000L }
+
+        val uri = when {
+            videoPath.startsWith("content://") -> Uri.parse(videoPath)
+            videoPath.startsWith("file://") -> Uri.parse(videoPath)
+            else -> {
+                val file = File(videoPath)
+                if (!file.exists() || !file.isFile) {
+                    Toast.makeText(this, "Invalid video path: $videoPath", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                Uri.fromFile(file)
+            }
+        }
+
+        val playlistPaths = playbackIntent.getStringArrayListExtra("video_paths")
+        val shouldBuildQueue = shouldBuildQueue(playbackIntent, playlistPaths)
+        val requestedUriString = uri.toString()
+        val currentUriString = player?.currentMediaItem?.localConfiguration?.uri?.toString()
+        val currentHistoryId = resolveHistoryIdForMediaItem(player?.currentMediaItem)
+        val isSameAsCurrentPlayback =
+            (player?.mediaItemCount ?: 0) > 0 && (
+                (launchHistoryId != null && currentHistoryId != null && launchHistoryId == currentHistoryId) ||
+                    (currentUriString != null && currentUriString == requestedUriString)
+            )
+        launchPlaybackPositionMs = if (isSameAsCurrentPlayback) {
+            player?.currentPosition?.takeIf { it >= 5_000L }
+        } else {
+            requestedPlaybackPositionMs
+        }
+        logPlaybackPosition(
+            "handlePlaybackIntent replaceCurrent=$replaceCurrent same=$isSameAsCurrentPlayback " +
+                "requested=$requestedPlaybackPositionMs launch=$launchPlaybackPositionMs " +
+                "current=${player?.currentPosition ?: -1L} historyId=$launchHistoryId uri=$requestedUriString"
+        )
+
+        if (replaceCurrent && isResumePlaybackUiIntent && (player?.mediaItemCount ?: 0) > 0) {
+            updateTitleFromPath(currentUriString ?: requestedUriString, preferredHistoryId = currentHistoryId ?: launchHistoryId)
+            updateCurrentQueueSelection(
+                scrollToCurrent = true,
+                resetRecentWatchTimer = false,
+                forceScrollToCurrentTop = true
+            )
+            updatePlaybackUiProgress()
+            refreshPipParams("handlePlaybackIntent_resumeUi")
+            return
+        }
+
+        if (replaceCurrent) {
+            savePlaybackPositionForCurrentItem()
+            commitRecentWatchIfEligible()
+            stopRecentWatchTimer()
+            autoScrollQueueToCurrent = true
+            isShuffled = false
+            updateShuffleButton()
+            queueAdapter?.setCurrentItemId(null)
+            if (isSameAsCurrentPlayback) {
+                updateTitleFromPath(requestedUriString, preferredHistoryId = launchHistoryId)
+                updateCurrentQueueSelection(
+                    scrollToCurrent = true,
+                    resetRecentWatchTimer = false,
+                    forceScrollToCurrentTop = true
+                )
+                updatePlaybackUiProgress()
+                refreshPipParams("handlePlaybackIntent_samePlayback")
+                return
+            }
+            if (!shouldBuildQueue) {
+                playSinglePath(videoPath, launchHistoryId, launchPlaybackPositionMs ?: 0L)
+            }
+        }
+
+        updateTitleFromPath(uri.toString(), preferredHistoryId = launchHistoryId)
+        if (!playlistPaths.isNullOrEmpty()) {
+            loadQueueFromPaths(playlistPaths, videoPath)
+        } else if (shouldBuildQueue) {
+            loadQueueForContext(videoPath)
+        }
+        refreshPipParams("handlePlaybackIntent")
+    }
+
+    private fun shouldBuildQueue(playbackIntent: Intent, playlistPaths: ArrayList<String>?): Boolean {
+        if (!playlistPaths.isNullOrEmpty()) return true
+        return playbackIntent.hasExtra("context_prefetched_history_ids") ||
+            playbackIntent.hasExtra("context_author") ||
+            playbackIntent.hasExtra("context_playlist_id") ||
+            playbackIntent.hasExtra("context_keyword") ||
+            playbackIntent.hasExtra("context_query") ||
+            playbackIntent.hasExtra("context_status") ||
+            playbackIntent.hasExtra("context_sort_type")
     }
 
     private fun loadQueueFromPaths(paths: List<String>, startPath: String) {
@@ -462,34 +609,19 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
 
             baseQueueItems = items
-            queueItems = items
-            rebuildQueueLookups(items)
-            rebuildQueueIndexes(items)
             isShuffled = false
             updateShuffleButton()
-            player?.shuffleModeEnabled = false
-
-            playbackPositionsById.clear()
-            playbackPositionsById.putAll(items.associate { it.id to it.playbackPositionMs })
-
-            // 2) 큐(RecyclerView) 표시
             val startUri = uriFromPath(startPath).toString()
-            val startId = queueIdByUri[startUri] ?: items.firstOrNull()?.id
-            val startIndex = if (startId != null) items.indexOfFirst { it.id == startId }.let { if (it >= 0) it else 0 } else 0
-            seekToSavedPlaybackPosition(startId)
-
-            queueAdapter?.submitList(items) {
-                val currentId = items.getOrNull(startIndex)?.id
-                queueAdapter?.setCurrentItemId(currentId)
-                scrollCurrentToTopIfAllowed(currentId)
-            }
-
-            // 3) 플레이어에는 "이미 위에서 setMediaItems 해놨으면" 다시 setMediaItems하지 않는 게 가장 깔끔
-            //    그런데 지금은 onCreate에서 이미 exoPlayer.setMediaItems(mediaItems) 해버리니까,
-            //    여기서는 player 세팅을 건드리지 않는 편이 "로딩 두 번"을 확실히 막음.
-
-            // ✅ 즉: 여기서 player?.setMediaItems(...) / prepare()를 하지 말 것
-            //    큐 표시만 담당하게 두면 중복 로딩이 사라짐
+            val startId = items.firstOrNull { item ->
+                item.downloadPath.any { path -> uriFromPath(path).toString() == startUri }
+            }?.id ?: items.firstOrNull()?.id
+            applyQueueOrder(
+                items = items,
+                currentItemId = startId,
+                currentPos = resolveQueueStartPositionFromItems(items, startId, launchPlaybackPositionMs),
+                playWhenReady = true,
+                forceScrollCurrentToTop = true
+            )
         }
     }
 
@@ -527,6 +659,8 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        suppressAutoPipForBackNavigation = false
+        logHistoryReturn("onResume")
         pendingAutoPipOnLeave = false
         refreshPipParams("onResume")
         if (!isInPictureInPictureMode) {
@@ -538,7 +672,20 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        mediaSession?.let { MediaButtonReceiver.handleIntent(it, intent) }
+        logHistoryReturn("onNewIntent raw=${describeIntent(intent)}")
+        val mergedIntent = Intent(intent)
+        mergeNavigationContextIntoIntent(mergedIntent, this.intent)
+        setIntent(mergedIntent)
+        logHistoryReturn("onNewIntent merged=${describeIntent(mergedIntent)}")
+        mediaSession?.let { MediaButtonReceiver.handleIntent(it, mergedIntent) }
+        handlePlaybackIntent(mergedIntent, replaceCurrent = true)
+    }
+
+    override fun onBackPressed() {
+        if (handleBackToHistoryIfNeeded()) {
+            return
+        }
+        super.onBackPressed()
     }
 
     override fun onPause() {
@@ -547,6 +694,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         super.onPause()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             pendingAutoPipOnLeave &&
+            !suppressAutoPipForBackNavigation &&
             !isInPictureInPictureMode &&
             !isFinishing &&
             !isDestroyed
@@ -555,6 +703,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             if (!entered) {
                 window?.decorView?.post {
                     if (pendingAutoPipOnLeave &&
+                        !suppressAutoPipForBackNavigation &&
                         !isInPictureInPictureMode &&
                         !isFinishing &&
                         !isDestroyed
@@ -568,19 +717,40 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        logHistoryReturn("onStop background=$isBackgroundPlayback pip=$isInPictureInPictureMode")
         savePlaybackPositionForCurrentItem()
         commitRecentWatchIfEligible()
-        if (pendingAutoPipOnLeave && !isInPictureInPictureMode && player?.isPlaying == true) {
+        if (!suppressAutoPipForBackNavigation &&
+            pendingAutoPipOnLeave &&
+            !isInPictureInPictureMode &&
+            player?.isPlaying == true
+        ) {
             isBackgroundPlayback = true
             setMediaNotificationEnabled(true)
             setPlaybackForegroundMode(true)
         }
-        if ((isBackgroundPlayback || isInPictureInPictureMode) && player?.isPlaying == true) {
+        // onUserLeaveHint can be skipped on some launchers/gestures; keep background playback state in sync.
+        if (!suppressAutoPipForBackNavigation &&
+            !isInPictureInPictureMode &&
+            !isFinishing &&
+            !isDestroyed &&
+            !isChangingConfigurations &&
+            player?.isPlaying == true
+        ) {
+            isBackgroundPlayback = true
+            setMediaNotificationEnabled(true)
+            setPlaybackForegroundMode(true)
+        }
+        if (!suppressAutoPipForBackNavigation &&
+            (isBackgroundPlayback || isInPictureInPictureMode) &&
+            player?.isPlaying == true
+        ) {
             setPlaybackForegroundMode(true)
             PlaybackKeepAliveService.start(
                 context = this,
                 title = currentPlaybackTitle(),
-                content = currentPlaybackAuthor().ifBlank { currentPlaybackReason() }
+                content = currentPlaybackAuthor().ifBlank { currentPlaybackReason() },
+                openIntent = currentPlaybackResumeIntent()
             )
         }
         if (isFinishing) {
@@ -602,6 +772,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         playerNotificationManager = null
         loudnessEnhancer?.release()
         loudnessEnhancer = null
+        playerView?.player = null
         player?.release()
         player = null
         activeInstance = null
@@ -610,6 +781,10 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        if (suppressAutoPipForBackNavigation) {
+            logHistoryReturn("onUserLeaveHint suppressedForBackNavigation")
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             pendingAutoPipOnLeave = true
             isBackgroundPlayback = true
@@ -662,7 +837,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         val root = findViewById<ConstraintLayout>(R.id.video_player_root)
         val container = playerContainer ?: return
         val bar = timeBar ?: return
-        val bottomControls = playerView?.findViewById<android.view.View>(R.id.player_bottom_area)
+        val bottomControls = playerBottomArea
         val set = ConstraintSet()
         set.clone(root)
         if (isLandscape) {
@@ -716,6 +891,9 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
         }
         container.layoutParams = containerParams
+        applyWindowInsets()
+        updatePlaybackUiProgress()
+        updateSystemBarsForOrientation()
     }
 
     private fun isLandscapeMode(): Boolean {
@@ -1123,7 +1301,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         return try {
             playerView?.controllerAutoShow = false
             playerView?.hideController()
-            val params = buildPipParams()
+            val params = buildPipParams(includeActions = false)
             val entered = enterPictureInPictureMode(params)
             if (!entered) {
                 Log.w("VideoPip", "enterPipIfSupported primary params rejected, retrying with minimal params")
@@ -1138,17 +1316,26 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildPipParams(): PictureInPictureParams {
+    private fun buildPipParams(includeActions: Boolean = true): PictureInPictureParams {
         val builder = PictureInPictureParams.Builder()
             .setAspectRatio(Rational(16, 9))
+        resolvePipSourceRect()?.let { rect ->
+            builder.setSourceRectHint(rect)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setAutoEnterEnabled(true)
             builder.setSeamlessResizeEnabled(true)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (includeActions && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder.setActions(buildPipActions())
         }
         return builder.build()
+    }
+
+    private fun resolvePipSourceRect(): Rect? {
+        val rect = Rect()
+        val sourceView = playerContainer ?: playerView
+        return if (sourceView?.getGlobalVisibleRect(rect) == true && !rect.isEmpty) rect else null
     }
 
     private fun buildPipActions(): List<RemoteAction> {
@@ -1237,7 +1424,51 @@ class VideoPlayerActivity : AppCompatActivity() {
                 queueItems.firstOrNull { it.downloadPath.any { p -> p == uri || uri.endsWith(p) } }
             }
         }
-        return currentItem?.thumb
+        return currentItem?.let { resolvePreferredThumbSource(it) }
+    }
+
+    private fun resolvePreferredThumbSource(item: HistoryItem): String? {
+        val preferred = if (item.customThumb.isNotBlank() && FileUtil.exists(item.customThumb)) {
+            item.customThumb
+        } else {
+            item.thumb
+        }
+        if (preferred.isBlank()) return null
+        return when {
+            preferred.startsWith("content://") || preferred.startsWith("file://") -> preferred
+            preferred.startsWith("http://") || preferred.startsWith("https://") -> preferred
+            FileUtil.exists(preferred) -> File(preferred).toURI().toString()
+            else -> preferred
+        }
+    }
+
+    private fun isRemoteThumbSource(source: String): Boolean {
+        return source.startsWith("http://") || source.startsWith("https://")
+    }
+
+    private suspend fun ensureLocalThumbForPlayback(item: HistoryItem, source: String): String {
+        if (!isRemoteThumbSource(source) || item.id <= 0L) return source
+        val bitmap = runCatching {
+            Picasso.get().load(source).resize(512, 0).onlyScaleDown().get()
+        }.getOrNull() ?: return source
+
+        val outDir = File(filesDir, "thumb_cache")
+        if (!outDir.exists()) outDir.mkdirs()
+        val outFile = File(outDir, "history_${item.id}_thumb.jpg")
+        val wrote = runCatching {
+            outFile.outputStream().use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+            }
+            true
+        }.getOrDefault(false)
+        if (!wrote) return source
+
+        val updated = item.copy(thumb = outFile.absolutePath)
+        runCatching {
+            DBManager.getInstance(this@VideoPlayerActivity).historyDao.update(updated)
+            queueItems = queueItems.map { if (it.id == updated.id) updated else it }
+        }
+        return outFile.toURI().toString()
     }
 
     private fun currentHistoryItem(): HistoryItem? {
@@ -1302,6 +1533,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                 return
             }
             val resolved = if (preview.startsWith("content://") || preview.startsWith("file://")) {
+                preview
+            } else if (preview.startsWith("http://") || preview.startsWith("https://")) {
                 preview
             } else {
                 File(preview).toURI().toString()
@@ -1656,18 +1889,262 @@ class VideoPlayerActivity : AppCompatActivity() {
         runCatching { FileUtil.deleteFile(path) }
     }
 
-    private fun currentPlaybackPendingIntent(): PendingIntent? {
+    private fun currentPlaybackResumeIntent(): Intent? {
         val uri = player?.currentMediaItem?.localConfiguration?.uri?.toString() ?: return null
-        val intent = Intent(this, VideoPlayerActivity::class.java).apply {
+        return Intent(this, VideoPlayerActivity::class.java).apply {
+            action = ACTION_RESUME_PLAYBACK_UI
             putExtra("video_path", uri)
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            addFlags(
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            )
+            resolveHistoryIdForMediaItem(player?.currentMediaItem)?.let { historyId ->
+                putExtra("history_id", historyId)
+            }
+            putExtra("playback_position_ms", player?.currentPosition ?: 0L)
+            intent.getStringArrayListExtra("video_paths")?.let { putStringArrayListExtra("video_paths", it) }
+            listOf(
+                "context_sort_type",
+                "context_sort_order",
+                "context_status",
+                "context_query",
+                "context_title_query",
+                "context_keyword_query",
+                "context_creator_query",
+                "context_search_fields",
+                "context_type",
+                "context_website",
+                "context_author",
+                "context_keyword",
+                "context_playlist_name",
+                "context_excluded_child_keywords"
+            ).forEach { key ->
+                this@VideoPlayerActivity.intent.getStringExtra(key)?.let { value ->
+                    putExtra(key, value)
+                }
+            }
+            listOf(
+                "context_include_child_category_videos"
+            ).forEach { key ->
+                if (this@VideoPlayerActivity.intent.hasExtra(key)) {
+                    putExtra(key, this@VideoPlayerActivity.intent.getBooleanExtra(key, false))
+                }
+            }
+            this@VideoPlayerActivity.intent.getStringExtra(EXTRA_RETURN_DESTINATION)?.let { destination ->
+                putExtra(EXTRA_RETURN_DESTINATION, destination)
+            }
+            copyHistoryReturnExtrasTo(this)
+            listOf(
+                "context_playlist_id",
+                "context_youtuber_group_id"
+            ).forEach { key ->
+                if (this@VideoPlayerActivity.intent.hasExtra(key)) {
+                    putExtra(key, this@VideoPlayerActivity.intent.getLongExtra(key, -1L))
+                }
+            }
+            this@VideoPlayerActivity.intent.getLongArrayExtra("context_prefetched_history_ids")?.let {
+                putExtra("context_prefetched_history_ids", it)
+            }
+            if (this@VideoPlayerActivity.intent.hasExtra("context_prefetched_total_count")) {
+                putExtra(
+                    "context_prefetched_total_count",
+                    this@VideoPlayerActivity.intent.getIntExtra("context_prefetched_total_count", -1)
+                )
+            }
         }
+    }
+
+    private fun currentPlaybackPendingIntent(): PendingIntent? {
+        val intent = currentPlaybackResumeIntent() ?: return null
         return PendingIntent.getActivity(
             this,
             NotificationUtil.PLAYBACK_NOTIFICATION_ID,
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+    }
+
+    private fun copyHistoryReturnExtrasTo(target: Intent) {
+        if (!intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)) return
+        logHistoryReturn(
+            "copyHistoryReturnExtras position=" +
+                intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION, RecyclerView.NO_POSITION) +
+                " offset=" +
+                intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET, 0) +
+                " itemId=" +
+                intent.getLongExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_ID, -1L) +
+                " itemTop=" +
+                if (intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP)) {
+                    intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP, 0)
+                } else {
+                    "null"
+                }
+        )
+        target.putExtra(
+            HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION,
+            intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION, RecyclerView.NO_POSITION)
+        )
+        target.putExtra(
+            HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET,
+            intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET, 0)
+        )
+        val restoreItemId = intent.getLongExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_ID, -1L)
+        if (restoreItemId > 0L) {
+            target.putExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_ID, restoreItemId)
+        }
+        if (intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP)) {
+            target.putExtra(
+                HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP,
+                intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP, 0)
+            )
+        }
+    }
+
+    private fun savePendingHistoryScrollRestore() {
+        if (!intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)) return
+        val position = intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION, RecyclerView.NO_POSITION)
+        val offset = intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET, 0)
+        val itemId = intent.getLongExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_ID, -1L).takeIf { it > 0L }
+        val itemTop = if (intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP)) {
+            intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP, 0)
+        } else {
+            null
+        }
+        logHistoryReturn(
+            "savePendingHistoryScrollRestore position=$position offset=$offset itemId=$itemId itemTop=$itemTop"
+        )
+        HistoryFragment.savePendingScrollRestore(
+            this,
+            position,
+            offset,
+            itemId,
+            itemTop
+        )
+    }
+
+    private fun mergeNavigationContextIntoIntent(target: Intent, source: Intent?) {
+        val safeSource = source ?: return
+        if (!target.hasExtra(EXTRA_RETURN_DESTINATION)) {
+            safeSource.getStringExtra(EXTRA_RETURN_DESTINATION)?.let { destination ->
+                target.putExtra(EXTRA_RETURN_DESTINATION, destination)
+            }
+        }
+        if (!target.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION) &&
+            safeSource.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)
+        ) {
+            target.putExtra(
+                HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION,
+                safeSource.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION, RecyclerView.NO_POSITION)
+            )
+            target.putExtra(
+                HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET,
+                safeSource.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET, 0)
+            )
+            val restoreItemId = safeSource.getLongExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_ID, -1L)
+                .takeIf { it > 0L }
+            if (restoreItemId != null) {
+                target.putExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_ID, restoreItemId)
+            }
+            if (safeSource.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP)) {
+                target.putExtra(
+                    HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP,
+                    safeSource.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_ITEM_TOP, 0)
+                )
+            }
+        }
+    }
+
+    private fun startMainForBackNavigation(includeHistoryRestore: Boolean) {
+        val destination = intent.getStringExtra(EXTRA_RETURN_DESTINATION)
+        val mainIntent = Intent(this, MainActivity::class.java).apply {
+            action = if (destination.isNullOrBlank()) Intent.ACTION_MAIN else Intent.ACTION_VIEW
+            if (!destination.isNullOrBlank()) {
+                putExtra("destination", destination)
+            }
+            if (includeHistoryRestore) {
+                copyHistoryReturnExtrasTo(this)
+            }
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+            )
+        }
+        suppressAutoPipForBackNavigation = true
+        pendingAutoPipOnLeave = false
+        isBackgroundPlayback = false
+        logHistoryReturn("startMainForBackNavigation includeHistoryRestore=$includeHistoryRestore target=${describeIntent(mainIntent)}")
+        startActivity(mainIntent)
+    }
+
+    private fun handleBackToHistoryIfNeeded(): Boolean {
+        val hasHistoryRestore = intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)
+        val hasReturnDestination = !intent.getStringExtra(EXTRA_RETURN_DESTINATION).isNullOrBlank()
+        if (hasHistoryRestore) {
+            savePendingHistoryScrollRestore()
+            logHistoryReturn("handleBackToHistoryIfNeeded routeToMain taskRoot=$isTaskRoot")
+            startMainForBackNavigation(includeHistoryRestore = true)
+            finish()
+            return true
+        }
+        if (hasReturnDestination) {
+            logHistoryReturn("handleBackToHistoryIfNeeded returnDestination routeToMain taskRoot=$isTaskRoot")
+            startMainForBackNavigation(includeHistoryRestore = false)
+            finish()
+            return true
+        }
+        if (intent.action == ACTION_RESUME_PLAYBACK_UI) {
+            logHistoryReturn("handleBackToHistoryIfNeeded resumeUi routeToMain taskRoot=$isTaskRoot")
+            startMainForBackNavigation(includeHistoryRestore = false)
+            finish()
+            return true
+        }
+        if (isTaskRoot) {
+            logHistoryReturn("handleBackToHistoryIfNeeded taskRoot=true noHistoryRestore")
+            startMainForBackNavigation(includeHistoryRestore = false)
+            finish()
+            return true
+        }
+        logHistoryReturn("handleBackToHistoryIfNeeded taskRoot=false noHistoryRestore")
+        return false
+    }
+
+    private fun logHistoryReturn(event: String) {
+        if (!ENABLE_HISTORY_RETURN_LOGS) return
+        Log.d(
+            HISTORY_RETURN_TAG,
+            "event=$event current=${player?.currentPosition ?: 0L} state=${player?.playbackState ?: -1} " +
+                "taskRoot=$isTaskRoot taskId=$taskId isFinishing=$isFinishing action=${intent.action} " +
+                "intent=${describeIntent(intent)}"
+        )
+    }
+
+    private fun describeIntent(source: Intent?): String {
+        val safeIntent = source ?: return "null"
+        val extras = buildList {
+            if (safeIntent.hasExtra(EXTRA_RETURN_DESTINATION)) {
+                add("returnDestination=${safeIntent.getStringExtra(EXTRA_RETURN_DESTINATION)}")
+            }
+            if (safeIntent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)) {
+                add(
+                    "restore=" +
+                        safeIntent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION, RecyclerView.NO_POSITION) +
+                        "/" +
+                        safeIntent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET, 0)
+                )
+            }
+            if (safeIntent.hasExtra("destination")) {
+                add("destination=${safeIntent.getStringExtra("destination")}")
+            }
+            if (safeIntent.hasExtra("history_id")) {
+                add("historyId=${safeIntent.getLongExtra("history_id", -1L)}")
+            }
+            if (safeIntent.hasExtra("video_path")) {
+                add("videoPath=true")
+            }
+        }.joinToString(",")
+        return "action=${safeIntent.action} flags=0x${safeIntent.flags.toString(16)} extras=[$extras]"
     }
 
     private fun setupMediaNotification() {
@@ -1852,13 +2329,14 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (playbackStateUpdater == null) {
             playbackStateUpdater = Runnable {
                 updateMediaSessionPlaybackState()
+                updatePlaybackUiProgress()
                 if (player?.isPlaying == true) {
-                    playbackStateHandler.postDelayed(playbackStateUpdater!!, 1000L)
+                    playbackStateHandler.postDelayed(playbackStateUpdater!!, 250L)
                 }
             }
         }
         playbackStateHandler.removeCallbacks(playbackStateUpdater!!)
-        playbackStateHandler.postDelayed(playbackStateUpdater!!, 1000L)
+        playbackStateHandler.post(playbackStateUpdater!!)
     }
 
     private fun stopPlaybackStateUpdates() {
@@ -1879,18 +2357,19 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun setMediaNotificationEnabled(enabled: Boolean) {
         if (enabled) {
-            setupMediaNotification()
-            playerNotificationManager?.setPlayer(player)
-            updateMediaSessionMetadata()
-            playerNotificationManager?.invalidate()
             if (isBackgroundPlayback || isInPictureInPictureMode) {
                 setPlaybackForegroundMode(true)
                 PlaybackKeepAliveService.start(
                     context = this,
                     title = currentPlaybackTitle(),
-                    content = currentPlaybackAuthor().ifBlank { currentPlaybackReason() }
+                    content = currentPlaybackAuthor().ifBlank { currentPlaybackReason() },
+                    openIntent = currentPlaybackResumeIntent()
                 )
             }
+            setupMediaNotification()
+            playerNotificationManager?.setPlayer(player)
+            updateMediaSessionMetadata()
+            playerNotificationManager?.invalidate()
         } else {
             playerNotificationManager?.setPlayer(null)
             if (!isBackgroundPlayback && !isInPictureInPictureMode) {
@@ -1919,11 +2398,15 @@ class VideoPlayerActivity : AppCompatActivity() {
             player: Player,
             callback: PlayerNotificationManager.BitmapCallback
         ): Bitmap? {
-            val url = currentThumbUrl()
-            if (url.isNullOrBlank()) return null
+            val item = currentHistoryItem()
+            val source = item?.let { resolvePreferredThumbSource(it) } ?: currentThumbUrl()
+            if (source.isNullOrBlank()) return null
             lifecycleScope.launch {
+                val resolvedSource = withContext(Dispatchers.IO) {
+                    if (item != null) ensureLocalThumbForPlayback(item, source) else source
+                }
                 val bmp = withContext(Dispatchers.IO) {
-                    runCatching { Picasso.get().load(url).resize(512, 0).onlyScaleDown().get() }.getOrNull()
+                    runCatching { Picasso.get().load(resolvedSource).resize(512, 0).onlyScaleDown().get() }.getOrNull()
                 }
                 if (bmp != null) {
                     callback.onBitmap(bmp)
@@ -1985,6 +2468,71 @@ class VideoPlayerActivity : AppCompatActivity() {
         runCatching { player?.setForegroundMode(enabled) }
     }
 
+    private fun updateSystemBarsForOrientation() {
+        val controller = WindowCompat.getInsetsController(window, window.decorView) ?: return
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (isLandscapeMode()) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    private fun applyWindowInsets() {
+        val root = findViewById<View>(R.id.video_player_root)
+        val insets = ViewCompat.getRootWindowInsets(root) ?: return
+        val statusInsets = insets.getInsets(WindowInsetsCompat.Type.statusBars())
+        val navInsets = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+        val cutoutTop = insets.displayCutout?.safeInsetTop ?: 0
+        val topInset = maxOf(statusInsets.top, cutoutTop)
+        val bottomInset = navInsets.bottom
+        val container = playerContainer
+        val containerParams = container?.layoutParams as? ConstraintLayout.LayoutParams
+
+        if (isLandscapeMode()) {
+            if (containerParams != null) {
+                containerParams.topMargin = 0
+                container.layoutParams = containerParams
+            }
+            playerTopBar?.setPadding(
+                playerTopBar?.paddingLeft ?: 0,
+                0,
+                playerTopBar?.paddingRight ?: 0,
+                playerTopBar?.paddingBottom ?: 0
+            )
+            playerBottomArea?.setPadding(
+                playerBottomArea?.paddingLeft ?: 0,
+                playerBottomArea?.paddingTop ?: 0,
+                playerBottomArea?.paddingRight ?: 0,
+                0
+            )
+        } else {
+            if (containerParams != null) {
+                containerParams.topMargin = topInset
+                container.layoutParams = containerParams
+            }
+            playerTopBar?.setPadding(
+                playerTopBar?.paddingLeft ?: 0,
+                0,
+                playerTopBar?.paddingRight ?: 0,
+                playerTopBar?.paddingBottom ?: 0
+            )
+            playerBottomArea?.setPadding(
+                playerBottomArea?.paddingLeft ?: 0,
+                playerBottomArea?.paddingTop ?: 0,
+                playerBottomArea?.paddingRight ?: 0,
+                bottomInset
+            )
+            queueList?.setPadding(
+                queueList?.paddingLeft ?: 0,
+                queueList?.paddingTop ?: 0,
+                queueList?.paddingRight ?: 0,
+                maxOf(dpToPx(12f), bottomInset)
+            )
+        }
+    }
+
     private fun initAspectControl(playerView: PlayerView) {
         aspectButton?.setOnClickListener {
             val next = when (playerView.resizeMode) {
@@ -2008,10 +2556,10 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun initRotateControl() {
         rotateButton?.setOnClickListener {
-            requestedOrientation = if (requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
-                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            requestedOrientation = if (isLandscapeMode()) {
+                ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
             } else {
-                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             }
         }
     }
@@ -2342,6 +2890,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun loadQueueForContext(videoPath: String) {
         if (queueList == null) return
         autoScrollQueueToCurrent = true
+        logPlaybackTiming("loadQueueForContext start videoPath=$videoPath")
         val authorFilter = intent.getStringExtra("context_author").orEmpty()
         val playlistId = intent.getLongExtra("context_playlist_id", -1L)
         val playlistName = intent.getStringExtra("context_playlist_name").orEmpty()
@@ -2352,9 +2901,21 @@ class VideoPlayerActivity : AppCompatActivity() {
         val creatorQueryFilter = intent.getStringExtra("context_creator_query").orEmpty()
         val typeFilter = intent.getStringExtra("context_type").orEmpty()
         val websiteFilter = intent.getStringExtra("context_website").orEmpty()
+        val youtuberGroupId = intent.getLongExtra("context_youtuber_group_id", -1L)
+        val statusFilter = runCatching {
+            HistoryViewModel.HistoryStatus.valueOf(
+                intent.getStringExtra("context_status") ?: HistoryViewModel.HistoryStatus.ALL.name
+            )
+        }.getOrDefault(HistoryViewModel.HistoryStatus.ALL)
         val includeChildCategoryVideos = intent.getBooleanExtra("context_include_child_category_videos", false)
         val excludedChildKeywords = parseCsvSet(intent.getStringExtra("context_excluded_child_keywords").orEmpty())
         val searchFields = parseSearchFields(intent.getStringExtra("context_search_fields").orEmpty())
+        val prefetchedHistoryIds = intent.getLongArrayExtra("context_prefetched_history_ids")
+            ?.asSequence()
+            ?.filter { it > 0L }
+            ?.toList()
+            .orEmpty()
+        val prefetchedTotalCount = intent.getIntExtra("context_prefetched_total_count", -1)
         val sortType = runCatching {
             HistoryRepository.HistorySortType.valueOf(
                 intent.getStringExtra("context_sort_type") ?: HistoryRepository.HistorySortType.DATE.name
@@ -2368,22 +2929,50 @@ class VideoPlayerActivity : AppCompatActivity() {
         updateQueueTitle(authorFilter, playlistId, playlistName)
         val db = DBManager.getInstance(this)
         val initialUri = uriFromPath(videoPath)
-        if (player?.mediaItemCount == 0) {
-            val initialMediaId = launchHistoryId?.toString()
-                ?: queueItems.firstOrNull { it.downloadPath.any { p -> uriFromPath(p) == initialUri } }
-                    ?.id
-                    ?.toString()
-                ?: ""
-            val initialItem = MediaItem.Builder()
-                .setUri(initialUri)
-                .setMediaId(initialMediaId)
-                .build()
-            val startPosition = launchPlaybackPositionMs ?: 0L
-            player?.setMediaItem(initialItem, startPosition)
-            player?.prepare()
-            player?.playWhenReady = true
-        }
         lifecycleScope.launch {
+            if (prefetchedHistoryIds.isNotEmpty()) {
+                val prefetchedItems = withContext(Dispatchers.IO) {
+                    val historyRepo = HistoryRepository(db.historyDao, db.playlistDao)
+                    val itemsById = historyRepo.getItemsFromIDs(prefetchedHistoryIds).associateBy { it.id }
+                    prefetchedHistoryIds.asSequence()
+                        .mapNotNull { id -> itemsById[id] }
+                        .filter { it.type == DownloadType.video }
+                        .filter { passesStatusFilter(it, statusFilter) }
+                        .map { resolveLocalTreePath(db, it) }
+                        .mapNotNull { item ->
+                            val playablePath = item.downloadPath.firstOrNull { it.isNotBlank() } ?: return@mapNotNull null
+                            item to playablePath
+                        }
+                        .toList()
+                }
+                if (prefetchedItems.isNotEmpty()) {
+                    logPlaybackTiming("loadQueueForContext prefetched size=${prefetchedItems.size}")
+                    val previewItems = prefetchedItems.map { it.first }
+                    queuePlayablePathById.clear()
+                    queueMediaUriById.clear()
+                    queueIdByUri.clear()
+                    prefetchedItems.forEach { (item, playablePath) ->
+                        val mediaUri = uriFromPath(playablePath)
+                        queuePlayablePathById[item.id] = playablePath
+                        queueMediaUriById[item.id] = mediaUri
+                        queueIdByUri[mediaUri.toString()] = item.id
+                    }
+                    val currentId = queueIdByUri[initialUri.toString()] ?: previewItems.firstOrNull()?.id
+                    baseQueueItems = previewItems
+                    isShuffled = false
+                    updateShuffleButton()
+                    applyQueueOrder(
+                        items = previewItems,
+                        currentItemId = currentId,
+                        currentPos = resolveQueueStartPositionFromItems(previewItems, currentId, launchPlaybackPositionMs),
+                        playWhenReady = true,
+                        forceScrollCurrentToTop = true
+                    )
+                    if (prefetchedTotalCount > 0 && previewItems.size >= prefetchedTotalCount) {
+                        return@launch
+                    }
+                }
+            }
             val items = withContext(Dispatchers.IO) {
                 val historyRepo = HistoryRepository(db.historyDao, db.playlistDao)
                 val keywordForBaseQuery = if (includeChildCategoryVideos && keywordFilter.isNotBlank()) "" else keywordFilter
@@ -2417,10 +3006,24 @@ class VideoPlayerActivity : AppCompatActivity() {
                     playlistId = playlistId,
                     searchFields = searchFields
                 )
-                val filteredIds = applyChildKeywordFiltersToIds(
+                val groupFilteredIds = filterIdsByYoutuberGroup(
+                    db = db,
                     historyRepo = historyRepo,
                     ids = ids,
-                    relationIds = relationIds,
+                    youtuberGroupId = youtuberGroupId,
+                    includeChildGroups = includeChildCategoryVideos
+                )
+                val groupFilteredRelationIds = filterIdsByYoutuberGroup(
+                    db = db,
+                    historyRepo = historyRepo,
+                    ids = relationIds,
+                    youtuberGroupId = youtuberGroupId,
+                    includeChildGroups = includeChildCategoryVideos
+                )
+                val filteredIds = applyChildKeywordFiltersToIds(
+                    historyRepo = historyRepo,
+                    ids = groupFilteredIds,
+                    relationIds = groupFilteredRelationIds,
                     authorFilter = authorFilter,
                     keywordFilter = keywordFilter,
                     includeChildCategoryVideos = includeChildCategoryVideos,
@@ -2428,6 +3031,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 )
                 historyRepo.getItemsFromIDs(filteredIds).asSequence()
                     .filter { it.type == DownloadType.video }
+                    .filter { passesStatusFilter(it, statusFilter) }
                     .map { resolveLocalTreePath(db, it) }
                     .mapNotNull { item ->
                         val playablePath = item.downloadPath.firstOrNull { it.isNotBlank() } ?: return@mapNotNull null
@@ -2436,81 +3040,95 @@ class VideoPlayerActivity : AppCompatActivity() {
                     .toList()
             }
             val fullItems = sortQueueItems(items.map { it.first }, sortType, sortOrder)
+            logPlaybackTiming("loadQueueForContext full size=${fullItems.size}")
             baseQueueItems = fullItems
-            if (fullItems.isEmpty()) return@launch
-            queuePlayablePathById.clear()
-            queueMediaUriById.clear()
-            queueIdByUri.clear()
-            items.forEach { (item, playablePath) ->
-                val mediaUri = uriFromPath(playablePath)
-                queuePlayablePathById[item.id] = playablePath
-                queueMediaUriById[item.id] = mediaUri
-                queueIdByUri[mediaUri.toString()] = item.id
+            if (fullItems.isEmpty()) {
+                playSinglePath(videoPath, launchHistoryId, launchPlaybackPositionMs ?: 0L)
+                return@launch
             }
-            val chunkSize = 50
-            val currentId = queueIdByUri[initialUri.toString()] ?: fullItems.firstOrNull()?.id
-            val currentIndex = if (currentId != null) fullItems.indexOfFirst { it.id == currentId }.let { if (it >= 0) it else 0 } else 0
-            queueItems = fullItems
-            rebuildQueueIndexes(fullItems)
+            val preparedQueueData = withContext(Dispatchers.Default) {
+                prepareQueueData(
+                    items = fullItems,
+                    preferredPlayablePaths = items.associate { (item, playablePath) -> item.id to playablePath },
+                    previousPlayablePaths = queuePlayablePathById.toMap()
+                )
+            }
+            val currentId = preparedQueueData.idByUri[initialUri.toString()] ?: fullItems.firstOrNull()?.id
             isShuffled = false
             updateShuffleButton()
-            player?.shuffleModeEnabled = false
-            playbackPositionsById.clear()
-            playbackPositionsById.putAll(fullItems.associate { it.id to it.playbackPositionMs })
-            queueAdapter?.submitList(queueItems) {
-                if (currentId != null) {
-                    queueAdapter?.setCurrentItemId(currentId)
-                } else {
-                    queueAdapter?.setCurrentItemId(null)
-                }
-                scrollCurrentToTopIfAllowed(currentId)
+            if (shouldAvoidPlayerTimelineMutation(currentId)) {
+                logPlaybackTiming("loadQueueForContext uiOnly currentId=$currentId")
+                updateQueueDataWithoutTouchingPlayer(
+                    items = fullItems,
+                    currentItemId = currentId,
+                    preparedQueueData = preparedQueueData,
+                    forceScrollCurrentToTop = false
+                )
+                return@launch
             }
-            // Build queue progressively for UI + player.
-            lifecycleScope.launch(Dispatchers.Main) {
-                val preloadedIds = mutableSetOf<Long>()
-
-                // Prioritize neighbors around the current item for faster next/previous transition.
-                val nextItem = fullItems.getOrNull(currentIndex + 1)
-                if (nextItem != null) {
-                    buildQueueMediaItem(nextItem)?.let { mediaItem ->
-                        player?.addMediaItem(mediaItem)
-                        preloadedIds.add(nextItem.id)
-                    }
-                }
-                val prevItem = fullItems.getOrNull(currentIndex - 1)
-                if (prevItem != null) {
-                    buildQueueMediaItem(prevItem)?.let { mediaItem ->
-                        player?.addMediaItem(0, mediaItem)
-                        preloadedIds.add(prevItem.id)
-                    }
-                }
-
-                // Append items after current to player in chunks.
-                val afterItems = fullItems.subList((currentIndex + 1).coerceAtMost(fullItems.size), fullItems.size)
-                afterItems.chunked(chunkSize).forEach { chunk ->
-                    val mediaItems = chunk.mapNotNull { item ->
-                        if (preloadedIds.contains(item.id)) return@mapNotNull null
-                        buildQueueMediaItem(item)
-                    }
-                    if (mediaItems.isNotEmpty()) {
-                        player?.addMediaItems(mediaItems)
-                    }
-                    kotlinx.coroutines.delay(16)
-                }
-                // Prepend items before current in reverse chunks to preserve order.
-                val beforeItems = fullItems.subList(0, currentIndex)
-                beforeItems.chunked(chunkSize).asReversed().forEach { chunk ->
-                    val mediaItems = chunk.mapNotNull { item ->
-                        if (preloadedIds.contains(item.id)) return@mapNotNull null
-                        buildQueueMediaItem(item)
-                    }
-                    if (mediaItems.isNotEmpty()) {
-                        player?.addMediaItems(0, mediaItems)
-                    }
-                    kotlinx.coroutines.delay(16)
-                }
-            }
+            applyQueueOrder(
+                items = fullItems,
+                currentItemId = currentId,
+                currentPos = resolveQueueStartPositionFromItems(fullItems, currentId, launchPlaybackPositionMs),
+                preparedQueueData = preparedQueueData,
+                playWhenReady = true,
+                forceScrollCurrentToTop = true
+            )
         }
+    }
+
+    private fun resolveQueueStartPosition(currentItemId: Long?, requestedPositionMs: Long?): Long {
+        val currentHistoryId = resolveHistoryIdForMediaItem(player?.currentMediaItem)
+        val liveCurrentPosition = player?.currentPosition ?: 0L
+        if (currentItemId != null &&
+            currentHistoryId == currentItemId &&
+            liveCurrentPosition >= 5_000L &&
+            requestedPositionMs != null &&
+            liveCurrentPosition > requestedPositionMs
+        ) {
+            logPlaybackPosition(
+                "resolveQueueStartPosition usingLiveCurrent currentId=$currentItemId requested=$requestedPositionMs resolved=$liveCurrentPosition"
+            )
+            return liveCurrentPosition
+        }
+        val savedPosition = if (currentItemId == null) {
+            null
+        } else {
+            playbackPositionsById[currentItemId]
+                ?: queueItems.firstOrNull { it.id == currentItemId }?.playbackPositionMs
+        }
+        val resolved = if (requestedPositionMs != null && requestedPositionMs > 0L) {
+            maxOf(requestedPositionMs, savedPosition ?: 0L)
+        } else if (currentItemId == null) {
+            0L
+        } else {
+            savedPosition ?: 0L
+        }
+        logPlaybackPosition(
+            "resolveQueueStartPosition currentId=$currentItemId requested=$requestedPositionMs " +
+                "saved=$savedPosition resolved=$resolved current=${player?.currentPosition ?: -1L}"
+        )
+        return resolved
+    }
+
+    private fun resolveQueueStartPositionFromItems(
+        items: List<HistoryItem>,
+        currentItemId: Long?,
+        requestedPositionMs: Long?
+    ): Long {
+        val cachedPosition = currentItemId?.let { getCachedPlaybackPosition(it) }?.takeIf { it > 0L }
+        val itemSavedPosition = currentItemId
+            ?.let { id -> items.firstOrNull { it.id == id }?.playbackPositionMs }
+            ?.takeIf { it > 0L }
+        val resolved = maxOf(
+            requestedPositionMs ?: 0L,
+            itemSavedPosition ?: 0L,
+            cachedPosition ?: 0L
+        )
+        logPlaybackPosition(
+            "resolveQueueStartPositionFromItems currentId=$currentItemId requested=$requestedPositionMs itemSaved=$itemSavedPosition cached=$cachedPosition resolved=$resolved"
+        )
+        return resolved
     }
 
     private fun sortQueueItems(
@@ -2537,6 +3155,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         val layoutManager = recycler.layoutManager as? LinearLayoutManager ?: return
         val localIndex = if (currentId != null) queueIndexById[currentId] ?: -1 else -1
         if (localIndex < 0) return
+        logPlaybackTiming("scrollCurrentToTopIfAllowed request currentId=$currentId index=$localIndex force=$force")
         recycler.post {
             recycler.stopScroll()
             val visibleCount = layoutManager.childCount
@@ -2623,6 +3242,23 @@ class VideoPlayerActivity : AppCompatActivity() {
             .toSet()
     }
 
+    private fun passesStatusFilter(item: HistoryItem, status: HistoryViewModel.HistoryStatus): Boolean {
+        return when (status) {
+            HistoryViewModel.HistoryStatus.DELETED -> item.downloadPath.any { path -> !FileUtil.exists(path) }
+            HistoryViewModel.HistoryStatus.NOT_DELETED -> item.downloadPath.any { path -> FileUtil.exists(path) }
+            HistoryViewModel.HistoryStatus.MISSING_THUMBNAIL -> {
+                val hasCustomThumb = item.customThumb.isNotBlank() && FileUtil.exists(item.customThumb)
+                val hasThumb = item.thumb.isNotBlank()
+                !hasCustomThumb && !hasThumb
+            }
+            HistoryViewModel.HistoryStatus.CUSTOM_THUMBNAIL -> {
+                item.customThumb.isNotBlank() && FileUtil.exists(item.customThumb)
+            }
+            HistoryViewModel.HistoryStatus.HARDSUB_DONE -> item.hardSubDone
+            else -> true
+        }
+    }
+
     private fun applyChildKeywordFiltersToIds(
         historyRepo: HistoryRepository,
         ids: List<Long>,
@@ -2704,6 +3340,67 @@ class VideoPlayerActivity : AppCompatActivity() {
         return value.trim().trim('"').lowercase(java.util.Locale.getDefault())
     }
 
+    private fun extractItemCreators(item: HistoryItem): Set<String> {
+        val creators = linkedSetOf<String>()
+        creators.addAll(splitCreators(item.author))
+        creators.addAll(splitCreators(item.artist))
+        return creators
+    }
+
+    private fun splitCreators(raw: String): List<String> {
+        if (raw.isBlank()) return emptyList()
+        return raw.split(',')
+            .map { it.trim().trim('"') }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase(java.util.Locale.getDefault()) }
+    }
+
+    private fun filterIdsByYoutuberGroup(
+        db: DBManager,
+        historyRepo: HistoryRepository,
+        ids: List<Long>,
+        youtuberGroupId: Long,
+        includeChildGroups: Boolean
+    ): List<Long> {
+        if (youtuberGroupId < 0L || ids.isEmpty()) return ids
+
+        val groupDao = db.youtuberGroupDao
+        val members = groupDao.getAllMembers()
+        if (members.isEmpty()) return emptyList()
+
+        val targetGroupIds = if (includeChildGroups) {
+            val childrenByParent = groupDao.getAllRelations()
+                .groupBy { it.parentGroupId }
+                .mapValues { entry -> entry.value.map { it.childGroupId } }
+            val visited = linkedSetOf<Long>()
+            val stack = ArrayDeque<Long>()
+            stack.addLast(youtuberGroupId)
+            while (stack.isNotEmpty()) {
+                val groupId = stack.removeFirst()
+                if (!visited.add(groupId)) continue
+                childrenByParent[groupId].orEmpty().forEach { stack.addLast(it) }
+            }
+            visited
+        } else {
+            setOf(youtuberGroupId)
+        }
+
+        if (targetGroupIds.isEmpty()) return emptyList()
+        val allowedAuthorsLower = members.asSequence()
+            .filter { targetGroupIds.contains(it.groupId) }
+            .map { normalizeCreator(it.author) }
+            .toSet()
+        if (allowedAuthorsLower.isEmpty()) return emptyList()
+
+        val itemsById = historyRepo.getItemsFromIDs(ids).associateBy { it.id }
+        return ids.filter { id ->
+            val item = itemsById[id] ?: return@filter false
+            extractItemCreators(item).any { creator ->
+                allowedAuthorsLower.contains(normalizeCreator(creator))
+            }
+        }
+    }
+
     private fun splitKeywordsForFilter(raw: String): List<String> {
         if (raw.isBlank()) return emptyList()
         return raw.split(',')
@@ -2764,16 +3461,23 @@ class VideoPlayerActivity : AppCompatActivity() {
         return out
     }
 
-    private fun playSinglePath(path: String) {
-        val historyId = queueItems.firstOrNull { it.downloadPath.contains(path) }?.id
+    private fun playSinglePath(path: String, preferredHistoryId: Long? = null, startPositionMs: Long = 0L) {
+        val historyId = preferredHistoryId ?: queueItems.firstOrNull { it.downloadPath.contains(path) }?.id
         val mediaItem = MediaItem.Builder()
             .setUri(uriFromPath(path))
             .setMediaId(historyId?.toString() ?: "")
             .build()
-        player?.setMediaItem(mediaItem)
+        logPlaybackPosition(
+            "playSinglePath historyId=$historyId start=$startPositionMs current=${player?.currentPosition ?: -1L} path=$path"
+        )
+        if (historyId != null && startPositionMs > 0L) {
+            skipNextPlaybackRestoreHistoryId = historyId
+        }
+        player?.setMediaItem(mediaItem, startPositionMs)
         player?.prepare()
         player?.playWhenReady = true
         updateTitleFromPath(path)
+        updatePlaybackUiProgress()
     }
 
     private fun uriFromPath(path: String): Uri {
@@ -2897,6 +3601,34 @@ class VideoPlayerActivity : AppCompatActivity() {
         return "$sign${formatTime(abs)}"
     }
 
+    private fun resolveSwipeTouchZone(
+        playerWidth: Float,
+        playerHeight: Float,
+        x: Float,
+        y: Float
+    ): SwipeTouchZone {
+        val sideDeadZone = dpToPx(20f).toFloat()
+        val topDeadZone = dpToPx(40f).toFloat()
+        val bottomDeadZone = if (isLandscapeMode()) {
+            dpToPx(80f).toFloat()
+        } else {
+            dpToPx(28f).toFloat()
+        }
+        if (playerWidth <= 0f || playerHeight <= 0f) return SwipeTouchZone.NONE
+        if (x <= sideDeadZone || x >= playerWidth - sideDeadZone) return SwipeTouchZone.NONE
+        if (y <= topDeadZone || y >= playerHeight - bottomDeadZone) return SwipeTouchZone.NONE
+
+        val effectiveLeft = sideDeadZone
+        val effectiveWidth = (playerWidth - sideDeadZone * 2f).coerceAtLeast(1f)
+        val relativeX = ((x - effectiveLeft) / effectiveWidth).coerceIn(0f, 1f)
+
+        return when {
+            relativeX < 0.375f -> SwipeTouchZone.BRIGHTNESS
+            relativeX > 0.625f -> SwipeTouchZone.VOLUME
+            else -> SwipeTouchZone.SEEK
+        }
+    }
+
     private fun initGestureControls(playerView: PlayerView) {
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         maxVolume = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 0
@@ -2915,10 +3647,13 @@ class VideoPlayerActivity : AppCompatActivity() {
             })
         }
 
-        var gestureActionTriggered = false
         if (touchSlop == 0) {
             touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         }
+        val seekActivationThresholdPx = maxOf(dpToPx(40f).toFloat(), touchSlop * 1.4f)
+        val verticalActivationThresholdPx = maxOf(dpToPx(36f).toFloat(), touchSlop * 1.35f)
+        val systemGestureDominanceRatio = 1.15f
+        var touchDownZone = SwipeTouchZone.NONE
         playerView.setOnTouchListener { _, event ->
             if (controlsLocked) {
                 return@setOnTouchListener false
@@ -2929,6 +3664,13 @@ class VideoPlayerActivity : AppCompatActivity() {
             gestureDetector?.onTouchEvent(event)
             when (event.action) {
                 android.view.MotionEvent.ACTION_DOWN -> {
+                    val width = playerView.width.coerceAtLeast(1).toFloat()
+                    val height = playerView.height.coerceAtLeast(1).toFloat()
+                    touchDownZone = resolveSwipeTouchZone(width, height, event.x, event.y)
+                    if (touchDownZone == SwipeTouchZone.NONE) {
+                        holdSpeedRunnable?.let { overlayHandler.removeCallbacks(it) }
+                        return@setOnTouchListener false
+                    }
                     touchStartY = event.y
                     touchStartX = event.x
                     initialVolume = audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0
@@ -2937,7 +3679,9 @@ class VideoPlayerActivity : AppCompatActivity() {
                     initialBrightness = if (currBrightness < 0f) 0.5f else currBrightness
                     adjusting = false
                     seeking = false
-                    gestureActionTriggered = false
+                    activeSwipeGesture = SwipeGestureType.NONE
+                    triggeredCentralSwipeAction = false
+                    consumedGestureInteraction = false
                     initialSeekPosition = player?.currentPosition ?: 0L
                     holdSpeedActive = false
                     holdSpeedOriginal = player?.playbackParameters?.speed ?: 1.0f
@@ -2959,31 +3703,65 @@ class VideoPlayerActivity : AppCompatActivity() {
                     if (!holdSpeedActive && (kotlin.math.abs(deltaX) > touchSlop || kotlin.math.abs(deltaY) > touchSlop)) {
                         holdSpeedRunnable?.let { overlayHandler.removeCallbacks(it) }
                     }
-                    val width = playerView.width.coerceAtLeast(1)
-                    val leftThird = width / 3f
-                    val rightThird = width * 2f / 3f
-                    val isLeftZone = touchStartX < leftThird
-                    val isRightZone = touchStartX > rightThird
-                    val isCenterZone = !isLeftZone && !isRightZone
-                    if (!gestureActionTriggered && isCenterZone && kotlin.math.abs(deltaY) > 80f
-                        && kotlin.math.abs(deltaY) > kotlin.math.abs(deltaX)
-                    ) {
-                        gestureActionTriggered = true
-                        if (deltaY > 0f) {
-                            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                        } else {
-                            if (isLandscapeMode()) {
-                                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                            } else {
-                                enterPipIfSupported()
-                            }
-                        }
+                    if (triggeredCentralSwipeAction) {
                         return@setOnTouchListener true
                     }
-                    if (!adjusting && !seeking && kotlin.math.abs(deltaX) > 40f && kotlin.math.abs(deltaX) > kotlin.math.abs(deltaY)) {
-                        seeking = true
+                    if (activeSwipeGesture == SwipeGestureType.NONE) {
+                        if (touchDownZone == SwipeTouchZone.SEEK &&
+                            kotlin.math.abs(deltaY) > verticalActivationThresholdPx &&
+                            kotlin.math.abs(deltaY) > kotlin.math.abs(deltaX) * systemGestureDominanceRatio
+                        ) {
+                            if (deltaY > 0f) {
+                                consumedGestureInteraction = true
+                                triggeredCentralSwipeAction = true
+                                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                return@setOnTouchListener true
+                            }
+                            if (isLandscapeMode()) {
+                                consumedGestureInteraction = true
+                                triggeredCentralSwipeAction = true
+                                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
+                                return@setOnTouchListener true
+                            }
+                            consumedGestureInteraction = true
+                            triggeredCentralSwipeAction = true
+                            enterPipIfSupported()
+                            return@setOnTouchListener true
+                        }
+                        activeSwipeGesture = when (touchDownZone) {
+                            SwipeTouchZone.SEEK -> {
+                                if (kotlin.math.abs(deltaX) > seekActivationThresholdPx &&
+                                    kotlin.math.abs(deltaX) > kotlin.math.abs(deltaY) * systemGestureDominanceRatio
+                                ) {
+                                    SwipeGestureType.SEEK
+                                } else {
+                                    SwipeGestureType.NONE
+                                }
+                            }
+                            SwipeTouchZone.BRIGHTNESS -> {
+                                if (kotlin.math.abs(deltaY) > verticalActivationThresholdPx &&
+                                    kotlin.math.abs(deltaY) > kotlin.math.abs(deltaX) * systemGestureDominanceRatio
+                                ) {
+                                    SwipeGestureType.BRIGHTNESS
+                                } else {
+                                    SwipeGestureType.NONE
+                                }
+                            }
+                            SwipeTouchZone.VOLUME -> {
+                                if (kotlin.math.abs(deltaY) > verticalActivationThresholdPx &&
+                                    kotlin.math.abs(deltaY) > kotlin.math.abs(deltaX) * systemGestureDominanceRatio
+                                ) {
+                                    SwipeGestureType.VOLUME
+                                } else {
+                                    SwipeGestureType.NONE
+                                }
+                            }
+                            SwipeTouchZone.NONE -> SwipeGestureType.NONE
+                        }
                     }
-                    if (seeking) {
+                    if (activeSwipeGesture == SwipeGestureType.SEEK) {
+                        consumedGestureInteraction = true
+                        seeking = true
                         hideControlsForGesture(playerView)
                         val width = playerView.width.coerceAtLeast(1)
                         val percent = (deltaX / width).coerceIn(-1f, 1f)
@@ -2993,24 +3771,22 @@ class VideoPlayerActivity : AppCompatActivity() {
                         showSeekOverlay(target, seekBy)
                         return@setOnTouchListener true
                     }
-                    if (!adjusting && kotlin.math.abs(deltaY) < 40f) {
+                    if (activeSwipeGesture == SwipeGestureType.NONE) {
                         return@setOnTouchListener true
                     }
-                    if (isCenterZone) {
-                        return@setOnTouchListener true
-                    }
+                    consumedGestureInteraction = true
                     adjusting = true
                     val height = playerView.height.coerceAtLeast(1)
                     val percent = (deltaY / height).coerceIn(-1f, 1f) * 2f
                     hideControlsForGesture(playerView)
-                    if (isLeftZone) {
+                    if (activeSwipeGesture == SwipeGestureType.BRIGHTNESS) {
                         val newBrightness = (initialBrightness + percent).coerceIn(0.0f, 1.0f)
                         val attrs = window.attributes
                         attrs.screenBrightness = newBrightness
                         window.attributes = attrs
                         val brightnessPct = (newBrightness * 100).toInt()
                         showBrightnessOverlay(brightnessPct)
-                    } else if (isRightZone) {
+                    } else if (activeSwipeGesture == SwipeGestureType.VOLUME) {
                         val stepPx = height / 100f
                         val steps = (deltaY / stepPx).toInt()
                         val newPercent = (initialVolumePercent + steps).coerceIn(0, 100)
@@ -3029,11 +3805,15 @@ class VideoPlayerActivity : AppCompatActivity() {
                     }
                     hideHoldSpeedOverlay()
                     hideGestureOverlaysImmediate()
-                    if (!adjusting) {
+                    if (!adjusting && !seeking && !consumedGestureInteraction) {
                         playerView.performClick()
                     }
                     adjusting = false
                     seeking = false
+                    activeSwipeGesture = SwipeGestureType.NONE
+                    triggeredCentralSwipeAction = false
+                    consumedGestureInteraction = false
+                    touchDownZone = SwipeTouchZone.NONE
                     showControlsAfterGesture(playerView)
                     true
                 }
@@ -3063,6 +3843,10 @@ class VideoPlayerActivity : AppCompatActivity() {
             else -> Player.REPEAT_MODE_OFF
         }
         player?.repeatMode = next
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .edit()
+            .putInt(PREF_REPEAT_MODE, next)
+            .apply()
         updateRepeatButton()
     }
 
@@ -3091,9 +3875,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         val currentItem = queueItems.firstOrNull { it.id == currentItemId }
         val remaining = queueItems.filter { it.id != currentItemId }.shuffled()
         val nextList = if (currentItem != null) listOf(currentItem) + remaining else remaining
-        applyQueueOrder(nextList, currentItemId, currentPos, wasPlaying)
+        applyQueueOrder(nextList, currentItemId, currentPos, wasPlaying, forceScrollCurrentToTop = true)
         isShuffled = true
-        player?.shuffleModeEnabled = true
         updateShuffleButton()
     }
 
@@ -3105,9 +3888,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         val currentItem = queueItems.firstOrNull { it.id == currentItemId }
         val remaining = queueItems.filter { it.id != currentItemId }.shuffled()
         val nextList = if (currentItem != null) listOf(currentItem) + remaining else remaining
-        applyQueueOrder(nextList, currentItemId, currentPos, wasPlaying)
+        applyQueueOrder(nextList, currentItemId, currentPos, wasPlaying, forceScrollCurrentToTop = true)
         isShuffled = true
-        player?.shuffleModeEnabled = true
         updateShuffleButton()
     }
 
@@ -3118,7 +3900,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         val currentItemId = resolveHistoryIdForMediaItem(player?.currentMediaItem)
         applyQueueOrder(baseQueueItems, currentItemId, currentPos, wasPlaying)
         isShuffled = false
-        player?.shuffleModeEnabled = false
         updateShuffleButton()
     }
 
@@ -3126,30 +3907,243 @@ class VideoPlayerActivity : AppCompatActivity() {
         shuffleButton?.imageAlpha = if (isShuffled) 255 else 120
     }
 
-    private fun applyQueueOrder(items: List<HistoryItem>, currentItemId: Long?, currentPos: Long, playWhenReady: Boolean) {
+    private fun applyQueueOrder(
+        items: List<HistoryItem>,
+        currentItemId: Long?,
+        currentPos: Long,
+        playWhenReady: Boolean,
+        preparedQueueData: QueuePreparedData? = null,
+        forceScrollCurrentToTop: Boolean = false
+    ) {
+        logPlaybackTiming("applyQueueOrder start size=${items.size} currentId=$currentItemId pos=$currentPos playWhenReady=$playWhenReady")
         queueItems = items
-        rebuildQueueLookups(items)
-        rebuildQueueIndexes(items)
-        playbackPositionsById.clear()
-        playbackPositionsById.putAll(items.associate { it.id to it.playbackPositionMs })
-        val mediaItems = items.mapNotNull { item -> buildQueueMediaItem(item) }
+        val queueData = preparedQueueData ?: prepareQueueData(
+            items = items,
+            previousPlayablePaths = queuePlayablePathById.toMap()
+        )
+        applyQueuePreparedData(queueData)
+        val mediaItems = queueData.mediaItems
         val idx = if (currentItemId != null) queueIndexById[currentItemId] ?: -1 else -1
         queueAdapter?.submitList(items) {
+            logPlaybackTiming("applyQueueOrder submitList committed size=${items.size} currentId=$currentItemId")
             if (idx >= 0 && idx < queueItems.size) {
-                queueAdapter?.setCurrentItemId(queueItems[idx].id)
+                val selectedId = queueItems[idx].id
+                queueAdapter?.setCurrentItemId(selectedId)
+                if (forceScrollCurrentToTop) {
+                    scrollCurrentToTopIfAllowed(selectedId, force = true)
+                }
             } else {
                 queueAdapter?.setCurrentItemId(null)
             }
         }
         if (mediaItems.isNotEmpty()) {
-            player?.setMediaItems(mediaItems, if (idx >= 0) idx else 0, currentPos)
-            player?.prepare()
-            player?.playWhenReady = playWhenReady
+            val syncedInPlace = syncExistingTimelineIfPossible(
+                items = items,
+                currentItemId = currentItemId,
+                currentPos = currentPos,
+                playWhenReady = playWhenReady
+            )
+            logPlaybackTiming("applyQueueOrder timeline synced=$syncedInPlace mediaItems=${mediaItems.size}")
+            if (syncedInPlace && forceScrollCurrentToTop && currentItemId != null) {
+                queueList?.post {
+                    updateCurrentQueueSelection(
+                        scrollToCurrent = true,
+                        resetRecentWatchTimer = false,
+                        forceScrollToCurrentTop = true
+                    )
+                }
+            }
+            if (!syncedInPlace) {
+                val currentResolvedId = resolveHistoryIdForMediaItem(player?.currentMediaItem)
+                val isActivelyPlayingCurrent =
+                    player?.mediaItemCount ?: 0 > 0 &&
+                        currentItemId != null &&
+                        currentResolvedId == currentItemId &&
+                        player?.isPlaying == true
+                if (!isActivelyPlayingCurrent) {
+                    player?.shuffleModeEnabled = false
+                    if (currentItemId != null && currentPos > 0L) {
+                        skipNextPlaybackRestoreHistoryId = currentItemId
+                    }
+                    player?.setMediaItems(mediaItems, if (idx >= 0) idx else 0, currentPos)
+                    player?.prepare()
+                    player?.playWhenReady = playWhenReady
+                }
+            }
+            updatePlaybackUiProgress()
         }
     }
 
+    private fun updateQueueDataWithoutTouchingPlayer(
+        items: List<HistoryItem>,
+        currentItemId: Long?,
+        preparedQueueData: QueuePreparedData? = null,
+        forceScrollCurrentToTop: Boolean = false
+    ) {
+        logPlaybackTiming("updateQueueDataWithoutTouchingPlayer start size=${items.size} currentId=$currentItemId")
+        queueItems = items
+        val queueData = preparedQueueData ?: prepareQueueData(
+            items = items,
+            previousPlayablePaths = queuePlayablePathById.toMap()
+        )
+        applyQueuePreparedData(queueData)
+        if (player?.isPlaying == true) {
+            pendingQueueUiItems = items
+            pendingQueueUiCurrentId = currentItemId
+            pendingQueueUiForceScrollToTop = forceScrollCurrentToTop
+            queueAdapter?.setCurrentItemId(currentItemId)
+            logPlaybackTiming("updateQueueDataWithoutTouchingPlayer deferredUi size=${items.size} currentId=$currentItemId")
+            return
+        }
+        queueAdapter?.submitList(items) {
+            logPlaybackTiming("updateQueueDataWithoutTouchingPlayer submitList committed size=${items.size} currentId=$currentItemId")
+            queueAdapter?.setCurrentItemId(currentItemId)
+            if (forceScrollCurrentToTop) {
+                scrollCurrentToTopIfAllowed(currentItemId, force = true)
+            }
+        }
+        updatePlaybackUiProgress()
+    }
+
+    private fun shouldAvoidPlayerTimelineMutation(currentItemId: Long?): Boolean {
+        val exo = player ?: return false
+        if (!exo.isPlaying) return false
+        if (exo.mediaItemCount <= 0) return false
+        val currentResolvedId = resolveHistoryIdForMediaItem(exo.currentMediaItem)
+        return currentItemId != null && currentResolvedId == currentItemId
+    }
+
+    private fun flushPendingQueueUiRefresh() {
+        val items = pendingQueueUiItems ?: return
+        val currentId = pendingQueueUiCurrentId
+        val forceScrollToTop = pendingQueueUiForceScrollToTop
+        pendingQueueUiItems = null
+        pendingQueueUiCurrentId = null
+        pendingQueueUiForceScrollToTop = false
+        logPlaybackTiming("flushPendingQueueUiRefresh size=${items.size} currentId=$currentId")
+        queueAdapter?.submitList(items) {
+            logPlaybackTiming("flushPendingQueueUiRefresh committed size=${items.size} currentId=$currentId")
+            queueAdapter?.setCurrentItemId(currentId)
+            if (forceScrollToTop) {
+                scrollCurrentToTopIfAllowed(currentId, force = true)
+            }
+        }
+    }
+
+    private fun syncExistingTimelineIfPossible(
+        items: List<HistoryItem>,
+        currentItemId: Long?,
+        currentPos: Long,
+        playWhenReady: Boolean
+    ): Boolean {
+        val exo = player ?: return false
+        if (exo.mediaItemCount <= 0 || items.isEmpty()) return false
+        logPlaybackTiming("syncExistingTimelineIfPossible start targetSize=${items.size} currentId=$currentItemId currentPos=$currentPos")
+
+        val targetIds = items.map { it.id }
+        if (targetIds.distinct().size != targetIds.size) return false
+        val mediaItemsById = items.associate { item ->
+            item.id to (buildQueueMediaItem(item) ?: return false)
+        }
+        val timelineIds = mutableListOf<Long>()
+        for (index in 0 until exo.mediaItemCount) {
+            val mediaId = exo.getMediaItemAt(index).mediaId.toLongOrNull() ?: return false
+            timelineIds.add(mediaId)
+        }
+        if (timelineIds.distinct().size != timelineIds.size) return false
+        val existingOrderInTarget = targetIds.filter { it in timelineIds }
+        val canExpandWithoutReordering = existingOrderInTarget == timelineIds
+        if (canExpandWithoutReordering) {
+            targetIds.forEachIndexed { targetIndex, desiredId ->
+                if (!timelineIds.contains(desiredId)) {
+                    val mediaItem = mediaItemsById[desiredId] ?: return false
+                    exo.addMediaItem(targetIndex, mediaItem)
+                    timelineIds.add(targetIndex, desiredId)
+                }
+            }
+            exo.shuffleModeEnabled = false
+            if (currentItemId != null) {
+                val targetIndex = targetIds.indexOf(currentItemId)
+                val currentResolvedId = resolveHistoryIdForMediaItem(exo.currentMediaItem)
+                if (targetIndex >= 0 &&
+                    (currentResolvedId != currentItemId || exo.currentMediaItemIndex != targetIndex)
+                ) {
+                    logPlaybackTiming(
+                        "syncExistingTimelineIfPossible expanded seek currentResolvedId=$currentResolvedId targetId=$currentItemId targetIndex=$targetIndex currentPos=$currentPos"
+                    )
+                    exo.seekTo(targetIndex, currentPos)
+                }
+            }
+            exo.playWhenReady = playWhenReady
+            logPlaybackTiming("syncExistingTimelineIfPossible expanded inPlace finalSize=${exo.mediaItemCount}")
+            return true
+        }
+        if (exo.isPlaying) return false
+
+        if (timelineIds.any { it !in targetIds }) {
+            for (index in timelineIds.indices.reversed()) {
+                if (timelineIds[index] !in targetIds) {
+                    exo.removeMediaItem(index)
+                    timelineIds.removeAt(index)
+                }
+            }
+        }
+
+        val mutableIds = timelineIds.toMutableList()
+        targetIds.forEachIndexed { targetIndex, desiredId ->
+            val fromIndex = mutableIds.indexOf(desiredId)
+            if (fromIndex == -1) {
+                val mediaItem = mediaItemsById[desiredId] ?: return false
+                exo.addMediaItem(targetIndex, mediaItem)
+                mutableIds.add(targetIndex, desiredId)
+            } else if (fromIndex != targetIndex) {
+                exo.moveMediaItem(fromIndex, targetIndex)
+                mutableIds.removeAt(fromIndex)
+                mutableIds.add(targetIndex, desiredId)
+            }
+        }
+        while (mutableIds.size > targetIds.size) {
+            val lastIndex = mutableIds.lastIndex
+            exo.removeMediaItem(lastIndex)
+            mutableIds.removeAt(lastIndex)
+        }
+
+        exo.shuffleModeEnabled = false
+        if (currentItemId != null) {
+            val currentIndex = targetIds.indexOf(currentItemId)
+            if (currentIndex >= 0) {
+                val currentResolvedId = resolveHistoryIdForMediaItem(exo.currentMediaItem)
+                if (currentResolvedId != currentItemId || exo.currentMediaItemIndex != currentIndex) {
+                    exo.seekTo(currentIndex, currentPos)
+                }
+            }
+        }
+        exo.playWhenReady = playWhenReady
+        logPlaybackTiming("syncExistingTimelineIfPossible reordered finalSize=${exo.mediaItemCount}")
+        return true
+    }
+
+    private fun logPlaybackTiming(event: String) {
+        val sinceStart = if (playbackStartedAtMs > 0L) {
+            SystemClock.elapsedRealtime() - playbackStartedAtMs
+        } else {
+            -1L
+        }
+        Log.d(
+            PLAYBACK_TIMING_TAG,
+            "t=${sinceStart}ms event=$event playing=${player?.isPlaying == true} state=${player?.playbackState ?: -1}"
+        )
+    }
+
+    private fun logPlaybackPosition(event: String) {
+        Log.d(
+            PLAYBACK_POSITION_TAG,
+            "event=$event mediaId=${player?.currentMediaItem?.mediaId ?: ""} current=${player?.currentPosition ?: -1L} state=${player?.playbackState ?: -1}"
+        )
+    }
+
     private fun initTimeBarScrubbing() {
-        val bar = timeBar?.findViewById<DefaultTimeBar>(R.id.exo_progress) ?: return
+        val bar = progressBar ?: return
         bar.addListener(object : TimeBar.OnScrubListener {
             override fun onScrubStart(timeBar: TimeBar, position: Long) {
                 player?.seekTo(position)
@@ -3167,6 +4161,16 @@ class VideoPlayerActivity : AppCompatActivity() {
         })
     }
 
+    private fun updatePlaybackUiProgress() {
+        val exo = player ?: return
+        val duration = exo.duration.takeIf { it != C.TIME_UNSET && it >= 0L } ?: 0L
+        val position = exo.currentPosition.coerceAtLeast(0L)
+        val bufferedPosition = exo.bufferedPosition.coerceAtLeast(position)
+        progressBar?.setDuration(duration)
+        progressBar?.setPosition(position)
+        progressBar?.setBufferedPosition(bufferedPosition)
+    }
+
     private fun getResumePositionForIndex(items: List<HistoryItem>, index: Int): Long {
         if (index < 0 || index >= items.size) return 0L
         val saved = items[index].playbackPositionMs
@@ -3176,20 +4180,39 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun savePlaybackPositionForCurrentItem() {
         val historyId = resolveHistoryIdForMediaItem(player?.currentMediaItem)
         val position = player?.currentPosition ?: 0L
+        logPlaybackPosition("savePlaybackPositionForCurrentItem historyId=$historyId position=$position")
         savePlaybackPositionForHistoryIdWithDurationCheck(historyId, position, useDurationCheck = true)
     }
 
     private fun restorePlaybackPositionForCurrentItem() {
         val historyId = resolveHistoryIdForMediaItem(player?.currentMediaItem) ?: return
+        if (skipNextPlaybackRestoreHistoryId == historyId) {
+            logPlaybackPosition("restorePlaybackPositionForCurrentItem skipped historyId=$historyId reason=skipNext")
+            skipNextPlaybackRestoreHistoryId = null
+            return
+        }
+        logPlaybackPosition("restorePlaybackPositionForCurrentItem historyId=$historyId")
         seekToSavedPlaybackPosition(historyId)
     }
 
     private fun seekToSavedPlaybackPosition(historyId: Long?) {
         val resolvedHistoryId = historyId ?: return
         val saved = playbackPositionsById[resolvedHistoryId] ?: return
-        if (saved < 5_000L) return
+        if (saved < 5_000L) {
+            logPlaybackPosition("seekToSavedPlaybackPosition skipped historyId=$resolvedHistoryId reason=tooSmall saved=$saved")
+            return
+        }
         val duration = player?.duration ?: C.TIME_UNSET
-        if (duration > 0 && saved >= duration - 5_000L) return
+        if (duration > 0 && saved >= duration - 5_000L) {
+            logPlaybackPosition("seekToSavedPlaybackPosition skipped historyId=$resolvedHistoryId reason=nearEnd saved=$saved duration=$duration")
+            return
+        }
+        val currentPosition = player?.currentPosition ?: 0L
+        if (currentPosition >= saved + 2_000L) {
+            logPlaybackPosition("seekToSavedPlaybackPosition skipped historyId=$resolvedHistoryId reason=currentAhead saved=$saved current=$currentPosition")
+            return
+        }
+        logPlaybackPosition("seekToSavedPlaybackPosition apply historyId=$resolvedHistoryId saved=$saved current=$currentPosition duration=$duration")
         player?.seekTo(saved)
     }
 
@@ -3197,7 +4220,23 @@ class VideoPlayerActivity : AppCompatActivity() {
         val resolvedHistoryId = historyId ?: return
         val duration = if (useDurationCheck) player?.duration ?: C.TIME_UNSET else C.TIME_UNSET
         val safePosition = if (duration > 0 && positionMs >= duration - 5_000L) 0L else positionMs
+        logPlaybackPosition(
+            "savePlaybackPositionForHistoryIdWithDurationCheck historyId=$resolvedHistoryId input=$positionMs safe=$safePosition duration=$duration useDurationCheck=$useDurationCheck"
+        )
         savePlaybackPositionForHistoryId(resolvedHistoryId, safePosition)
+    }
+
+    private fun cachePlaybackPosition(historyId: Long, positionMs: Long) {
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .edit()
+            .putLong("$PREF_PLAYBACK_POSITION_CACHE_PREFIX$historyId", positionMs)
+            .apply()
+    }
+
+    private fun getCachedPlaybackPosition(historyId: Long): Long? {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val key = "$PREF_PLAYBACK_POSITION_CACHE_PREFIX$historyId"
+        return if (prefs.contains(key)) prefs.getLong(key, 0L) else null
     }
 
     private fun resolveHistoryIdForMediaItem(mediaItem: MediaItem?): Long? {
@@ -3234,6 +4273,61 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun prepareQueueData(
+        items: List<HistoryItem>,
+        preferredPlayablePaths: Map<Long, String> = emptyMap(),
+        previousPlayablePaths: Map<Long, String> = emptyMap()
+    ): QueuePreparedData {
+        val playablePathById = LinkedHashMap<Long, String>(items.size)
+        val mediaUriById = LinkedHashMap<Long, Uri>(items.size)
+        val idByUri = LinkedHashMap<String, Long>(items.size)
+        val indexById = LinkedHashMap<Long, Int>(items.size)
+        val playbackPositions = LinkedHashMap<Long, Long>(items.size)
+        val mediaItems = ArrayList<MediaItem>(items.size)
+
+        items.forEachIndexed { index, item ->
+            indexById[item.id] = index
+            playbackPositions[item.id] = item.playbackPositionMs
+
+            val playablePath = preferredPlayablePaths[item.id]
+                ?: previousPlayablePaths[item.id]
+                ?: item.downloadPath.firstOrNull { it.isNotBlank() }
+                ?: item.downloadPath.firstOrNull()
+                ?: return@forEachIndexed
+
+            val mediaUri = uriFromPath(playablePath)
+            playablePathById[item.id] = playablePath
+            mediaUriById[item.id] = mediaUri
+            idByUri[mediaUri.toString()] = item.id
+            mediaItems += MediaItem.Builder()
+                .setUri(mediaUri)
+                .setMediaId(item.id.toString())
+                .build()
+        }
+
+        return QueuePreparedData(
+            playablePathById = playablePathById,
+            mediaUriById = mediaUriById,
+            idByUri = idByUri,
+            indexById = indexById,
+            playbackPositionsById = playbackPositions,
+            mediaItems = mediaItems
+        )
+    }
+
+    private fun applyQueuePreparedData(queueData: QueuePreparedData) {
+        queuePlayablePathById.clear()
+        queuePlayablePathById.putAll(queueData.playablePathById)
+        queueMediaUriById.clear()
+        queueMediaUriById.putAll(queueData.mediaUriById)
+        queueIdByUri.clear()
+        queueIdByUri.putAll(queueData.idByUri)
+        queueIndexById.clear()
+        queueIndexById.putAll(queueData.indexById)
+        playbackPositionsById.clear()
+        playbackPositionsById.putAll(queueData.playbackPositionsById)
+    }
+
     private fun buildQueueMediaItem(item: HistoryItem): MediaItem? {
         val mediaUri = queueMediaUriById[item.id] ?: return null
         return MediaItem.Builder()
@@ -3244,6 +4338,7 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun savePlaybackPositionForHistoryId(historyId: Long, positionMs: Long) {
         playbackPositionsById[historyId] = positionMs
+        cachePlaybackPosition(historyId, positionMs)
         lifecycleScope.launch(Dispatchers.IO) {
             DBManager.getInstance(this@VideoPlayerActivity).historyDao.updatePlaybackPosition(historyId, positionMs)
         }
@@ -3319,6 +4414,12 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     companion object {
+        const val EXTRA_RETURN_DESTINATION = "player_return_destination"
+        private const val ENABLE_HISTORY_RETURN_LOGS = false
+        private const val HISTORY_RETURN_TAG = "HistoryReturn"
+        private const val PLAYBACK_TIMING_TAG = "PlaybackTiming"
+        private const val PLAYBACK_POSITION_TAG = "PlaybackPosition"
+        private const val ACTION_RESUME_PLAYBACK_UI = "ytdlnisx.action.RESUME_PLAYBACK_UI"
         private const val ACTION_PIP_PLAY_PAUSE = "ytdlnisx.action.PIP_PLAY_PAUSE"
         private const val ACTION_PIP_BACKGROUND = "ytdlnisx.action.PIP_BACKGROUND"
         private const val ACTION_PIP_NEXT = "ytdlnisx.action.PIP_NEXT"
@@ -3332,6 +4433,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         private const val PREF_SUBTITLE_EMBEDDED_STYLES = "subtitle_embedded_styles"
         private const val PREF_SUBTITLE_EMBEDDED_FONT_SIZES = "subtitle_embedded_font_sizes"
         private const val PREF_VOLUME_NORMALIZATION = "player_volume_normalization"
+        private const val PREF_REPEAT_MODE = "player_repeat_mode"
+        private const val PREF_PLAYBACK_POSITION_CACHE_PREFIX = "player_playback_position_"
         private const val LOUDNESS_TARGET_GAIN_MB = 500
         private const val PREF_HOLD_PLAYBACK_SPEED = "hold_playback_speed"
         private const val PREF_SPEED_PRESET_1 = "speed_preset_1"
@@ -3351,5 +4454,28 @@ class VideoPlayerActivity : AppCompatActivity() {
         val startMs: Long,
         val endMs: Long?
     )
+
+    private data class QueuePreparedData(
+        val playablePathById: Map<Long, String>,
+        val mediaUriById: Map<Long, Uri>,
+        val idByUri: Map<String, Long>,
+        val indexById: Map<Long, Int>,
+        val playbackPositionsById: Map<Long, Long>,
+        val mediaItems: List<MediaItem>
+    )
+
+    private enum class SwipeTouchZone {
+        NONE,
+        BRIGHTNESS,
+        SEEK,
+        VOLUME
+    }
+
+    private enum class SwipeGestureType {
+        NONE,
+        BRIGHTNESS,
+        SEEK,
+        VOLUME
+    }
 
 }

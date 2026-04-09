@@ -47,6 +47,8 @@ data class ObserveSourcesItem(
     @ColumnInfo(defaultValue = "0")
     var runInProgress: Boolean = false,
     @ColumnInfo(defaultValue = "")
-    var currentRunStatus: String = ""
+    var currentRunStatus: String = "",
+    @ColumnInfo(defaultValue = "")
+    var autoAddKeyword: String = ""
 ) : Parcelable
 

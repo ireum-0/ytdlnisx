@@ -80,7 +80,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         order: SORTING,
         website: String,
         playlistId: Long,
-        searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS)
+        searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS),
+        status: Any? = null
     ) = historyDao.getPaginatedSource(
         buildFilterQuery(
             rawQuery = query,
@@ -94,6 +95,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             order = order,
             website = website,
             playlistId = playlistId,
+            status = statusToFilterKey(status),
             searchFields = searchFields
         )
     )
@@ -126,6 +128,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 order,
                 website,
                 playlistId,
+                status = statusToFilterKey(status),
                 selectIds = true,
                 searchFields = searchFields
             )
@@ -142,7 +145,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         creatorQuery: String = "",
         website: String,
         playlistId: Long,
-        searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS)
+        searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS),
+        status: Any? = null
     ): Int {
         return historyDao.getFilteredCount(
             buildFilterQuery(
@@ -157,6 +161,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 SORTING.DESC,
                 website,
                 playlistId,
+                status = statusToFilterKey(status),
                 countOnly = true,
                 searchFields = searchFields
             )
@@ -173,6 +178,10 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
 
     fun getItemsByUrl(url: String): List<HistoryItem> {
         return historyDao.getItemsByUrl(url)
+    }
+
+    fun getItemsWithRemoteThumb(limit: Int): List<HistoryItem> {
+        return historyDao.getItemsWithRemoteThumb(limit)
     }
 
     fun getDownloadPathsFromIDs(ids: List<Long>): List<List<String>> {
@@ -320,7 +329,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
 
     suspend fun delete(item: HistoryItem, deleteFile: Boolean) {
         if (deleteFile) {
-            item.downloadPath.forEach { FileUtil.deleteFile(it) }
+            FileUtil.deleteFilesWithZeroByteSiblings(item.downloadPath)
         }
         playlistDao.deletePlaylistItemsByHistoryIds(listOf(item.id))
         historyDao.delete(item)
@@ -332,7 +341,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             ids.chunked(ID_BATCH_SIZE).forEach { batch ->
                 val items = historyDao.getItemsFromIDs(batch)
                 items.forEach { item ->
-                    item.downloadPath.forEach { FileUtil.deleteFile(it) }
+                    FileUtil.deleteFilesWithZeroByteSiblings(item.downloadPath)
                 }
             }
         }
@@ -349,7 +358,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             items.forEach { item ->
                 val filesPresent = item.downloadPath.all { FileUtil.exists(it) }
                 if (filesPresent) {
-                    item.downloadPath.forEach { FileUtil.deleteFile(it) }
+                    FileUtil.deleteFilesWithZeroByteSiblings(item.downloadPath)
                 }
             }
             playlistDao.deletePlaylistItemsByHistoryIds(batch)
@@ -361,7 +370,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         if (deleteFile) {
             val items = historyDao.getAll()
             items.forEach { item ->
-                item.downloadPath.forEach { FileUtil.deleteFile(it) }
+                FileUtil.deleteFilesWithZeroByteSiblings(item.downloadPath)
             }
         }
         playlistDao.clearPlaylistItems()
@@ -385,6 +394,13 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
 
     fun update(item: HistoryItem) {
         historyDao.update(item)
+    }
+
+    fun updateHardSubScanRemoved(ids: List<Long>, removed: Boolean) {
+        if (ids.isEmpty()) return
+        ids.chunked(ID_BATCH_SIZE).forEach { batch ->
+            historyDao.updateHardSubScanRemovedForIds(batch, removed)
+        }
     }
 
     suspend fun clearDeletedHistory() {
@@ -529,6 +545,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         order: SORTING,
         website: String,
         playlistId: Long,
+        status: String? = null,
         selectIds: Boolean = false,
         countOnly: Boolean = false,
         searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS)
@@ -666,6 +683,22 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             appendClause("id NOT IN (SELECT historyItemId FROM PlaylistItemCrossRef)")
         }
 
+        when (status.orEmpty()) {
+            // DB prefilter for statuses that can be decided without filesystem checks.
+            "HARDSUB_DONE" -> {
+                appendClause("type = 'video'")
+                appendClause("hardSubDone = 1")
+            }
+            "HARDSUB_SCAN_TARGET" -> {
+                appendClause("type = 'video'")
+                appendClause("hardSubDone = 0")
+                appendClause("hardSubScanRemoved = 0")
+            }
+            // Narrow candidate set before in-memory file-existence verification.
+            "CUSTOM_THUMBNAIL" -> appendClause("customThumb != ''")
+            "MISSING_THUMBNAIL" -> appendClause("thumb = ''")
+        }
+
         val select = when {
             countOnly -> "SELECT COUNT(*)"
             selectIds -> "SELECT id"
@@ -687,6 +720,14 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         }
 
         return SimpleSQLiteQuery(sql.toString(), args.toArray())
+    }
+
+    private fun statusToFilterKey(status: Any?): String? {
+        return when (status) {
+            null -> null
+            is Enum<*> -> status.name
+            else -> status.toString()
+        }
     }
 
     private fun parseSearchTokens(rawQuery: String): List<SearchToken> {

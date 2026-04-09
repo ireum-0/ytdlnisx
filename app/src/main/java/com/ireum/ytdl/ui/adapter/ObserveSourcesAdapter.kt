@@ -92,10 +92,17 @@ class ObserveSourcesAdapter(onItemClickListener: OnItemClickListener, activity: 
         val progressBar = card.findViewById<LinearProgressIndicator>(R.id.download_progress)
         progressBar.isIndeterminate = true
         progressBar.isVisible = false
+        val progressStatus = card.findViewById<TextView>(R.id.progress_status)
+        progressStatus.text = item.currentRunStatus
+        progressStatus.isVisible = item.currentRunStatus.isNotBlank()
 
         // BUTTON ----------------------------------
+        val historyBtn = card.findViewById<MaterialButton>(R.id.history)
         val searchBtn = card.findViewById<MaterialButton>(R.id.search)
         val pauseBtn = card.findViewById<MaterialButton>(R.id.pause_resume)
+        historyBtn.setOnClickListener {
+            onItemClickListener.onItemHistory(item)
+        }
         searchBtn.isEnabled = true
         pauseBtn.isEnabled = true
         if (item.status == ObserveSourcesRepository.SourceStatus.STOPPED){
@@ -140,6 +147,7 @@ class ObserveSourcesAdapter(onItemClickListener: OnItemClickListener, activity: 
     interface OnItemClickListener {
 
         fun onItemSearch(item: ObserveSourcesItem)
+        fun onItemHistory(item: ObserveSourcesItem)
         fun onItemStart(item: ObserveSourcesItem, position: Int)
         fun onItemPaused(item: ObserveSourcesItem, position: Int)
         fun onItemClick(item: ObserveSourcesItem)

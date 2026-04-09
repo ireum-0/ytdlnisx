@@ -65,8 +65,11 @@
     <string name="command_download_notification_channel_description">yt-dlp 명령을 사용한 다운로드 진행률을 보여주는 알림</string>
     <string name="items_left">남은 항목</string>
     <string name="hard_sub_progress">하드서브 진행: %1$d/%2$d</string>
-    <string name="hard_sub_scan_title">하드서브 자동 점검</string>
+    <string name="hard_sub_scan_title">하드서브 점검</string>
     <string name="hard_sub_scan_progress">영상 점검 중: %1$d/%2$d</string>
+    <string name="hard_sub_scan_now">하드서브 점검 실행</string>
+    <string name="hard_sub_scan_now_summary">히스토리 영상을 점검하고 필요 시 하드서브 재다운로드를 큐에 추가합니다</string>
+    <string name="hard_sub_scan_started">하드서브 점검을 시작했습니다</string>
     <string name="history_is_empty">기록이 비어 있습니다</string>
     <string name="you_are_going_to_delete">삭제</string>
     <string name="url">URL</string>
@@ -474,6 +477,9 @@
     <string name="missing_thumbnail">썸네일 없음</string>
     <string name="custom_thumbnail_only">커스텀 썸네일만</string>
     <string name="hardsub_done_only">하드 서브 완료만</string>
+    <string name="hardsub_scan_target_only">하드서브 점검 대상만</string>
+    <string name="exclude_from_hardsub_scan">하드서브 점검 대상에서 제외</string>
+    <string name="excluded_from_hardsub_scan">하드서브 점검 대상에서 제외했습니다</string>
     <string name="search_targets">검색 대상</string>
     <string name="search_target_title">제목</string>
     <string name="search_target_keywords">키워드</string>
@@ -704,4 +710,12 @@
     <string name="confirm_delete_groups_desc">%1$d개의 그룹을 삭제할까요?</string>
     <string name="confirm_delete_playlists_desc">%1$d개의 재생목록을 삭제할까요?</string>
     <string name="group_prefix">그룹: %1$s</string>
+    <string name="migrate_default_video_folder">기본 비디오 폴더의 영상을 현재 비디오 폴더로 이동</string>
+    <string name="migrate_default_video_folder_summary">Download/YTDLnisx/Video의 파일을 옮기고 히스토리 카드 경로를 함께 갱신합니다</string>
+    <string name="migrate_default_video_folder_confirm">기본 비디오 폴더의 모든 영상을 이동하고 히스토리 경로를 업데이트할까요?</string>
+    <string name="migrate_default_video_folder_done">%1$d개 파일 이동, %2$d개 카드 업데이트 완료</string>
+    <string name="migrate_default_video_folder_nothing">기본 비디오 폴더에서 이동할 파일이 없습니다</string>
+    <string name="migrate_default_video_folder_failed">%1$d개 파일 이동 실패</string>
+    <string name="migrate_default_video_folder_progress">영상 이동 중... (%1$d/%2$d)</string>
 </resources>
+

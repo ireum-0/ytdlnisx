@@ -188,6 +188,10 @@ object Migrations {
         },
         Migration(46, 47) { _ ->
             // Reserved schema version step to preserve upgrade/downgrade compatibility.
+        },
+        Migration(47, 48) { database ->
+            database.execSQL("ALTER TABLE downloads ADD COLUMN observeSourceId INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE sources ADD COLUMN autoAddKeyword TEXT NOT NULL DEFAULT ''")
         }
     )
 

@@ -8,14 +8,8 @@ import android.util.Log
 import android.widget.Toast
 import androidx.core.content.edit
 import androidx.preference.PreferenceManager
-import androidx.work.Constraints
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.ThemeUtil
-import com.ireum.ytdl.work.HardSubScanWorker
 import com.yausername.aria2c.Aria2c
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
@@ -29,6 +23,8 @@ import java.util.zip.ZipInputStream
 
 
 class App : Application() {
+
+    private val runtimeInstallLock = Any()
 
     override fun onCreate() {
         super.onCreate()
@@ -48,7 +44,6 @@ class App : Application() {
                         putString("version", BuildConfig.VERSION_NAME)
                     }
                 }
-                scheduleHardSubScanWorker()
             }catch (e: Exception){
                 Looper.prepare().runCatching {
                     Toast.makeText(this@App, e.message, Toast.LENGTH_SHORT).show()
@@ -60,16 +55,20 @@ class App : Application() {
     }
     @Throws(YoutubeDLException::class)
     private fun initLibraries() {
-        ensureShellEnvironment()
-        removeLegacyBundledHardSubArtifacts()
-        installBundledFfmpegPayload()
-        ensureFfmpegRuntimeDependencies()
-        installBundledSrv3Converter()
+        ensureRuntimeToolsInstalled()
         YoutubeDL.getInstance().init(this)
         // Do not initialize youtubedl-android FFmpeg wrapper here.
         // Its packaged libffmpeg.so can hard-crash on some builds before hard-sub fallback runs.
         Log.i(TAG, "Skipping FFmpeg wrapper init; hard-sub uses runtime executable fallback path")
         Aria2c.getInstance().init(this)
+    }
+
+    fun ensureRuntimeToolsInstalled() {
+        synchronized(runtimeInstallLock) {
+            ensureShellEnvironment()
+            installBundledFfmpegPayload()
+            installBundledSrv3Converter()
+        }
     }
 
     private fun ensureShellEnvironment() {
@@ -121,34 +120,33 @@ class App : Application() {
         }
     }
 
-    private fun removeLegacyBundledHardSubArtifacts() {
-        runCatching {
-            val bundledFfmpeg = File(filesDir, "bin/ffmpeg")
-            if (bundledFfmpeg.exists()) {
-                bundledFfmpeg.delete()
-                Log.i(TAG, "Removed legacy bundled hard-sub ffmpeg at ${bundledFfmpeg.absolutePath}")
-            }
-        }.onFailure {
-            Log.w(TAG, "Failed to remove legacy bundled hard-sub ffmpeg", it)
-        }
-    }
-
     private fun installBundledFfmpegPayload() {
         val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        val supportedAbis = Build.SUPPORTED_ABIS.joinToString()
         val assetPath = "bin/$abi/ffmpeg_payload.zip"
         val payloadRoot = File(noBackupFilesDir, "youtubedl-android/packages/ffmpeg")
         val revisionFile = File(payloadRoot, ".payload_revision")
-        val expectedRevision = "arm64-termux-ffmpeg-8.0.1-openssl3-r1"
+        val expectedRevision = "arm64-wrapper-libffmpeg-0.18.1-r12"
         val requiredLibs = listOf(
-            "usr/lib/libavdevice.so.62",
-            "usr/lib/libavformat.so.62",
-            "usr/lib/libssl.so.3",
-            "usr/lib/libcrypto.so.3"
+            "usr/lib/libavdevice.so.61",
+            "usr/lib/libavfilter.so.10",
+            "usr/lib/libavformat.so.61",
+            "usr/lib/libavcodec.so.61",
+            "usr/lib/libavutil.so.59"
         )
 
+        val requiredCopiedDeps = listOf(
+            "usr/lib/libc++_shared.so",
+            "usr/lib/libexpat.so.1",
+            "usr/lib/libcrypto.so.3",
+            "usr/lib/libssl.so.3"
+        )
         val alreadyInstalled = requiredLibs.all { rel ->
             val file = File(payloadRoot, rel)
-            file.exists() && file.length() > 0L
+            file.exists() && file.length() > 255L
+        } && requiredCopiedDeps.all { rel ->
+            val file = File(payloadRoot, rel)
+            file.exists() && file.length() > 255L
         } && revisionFile.exists() &&
             revisionFile.readText(Charsets.UTF_8).trim() == expectedRevision
         if (alreadyInstalled) {
@@ -185,129 +183,158 @@ class App : Application() {
                     }
                 }
             }
+            val payloadLibDir = File(payloadRoot, "usr/lib")
+            materializeSharedLibraryLinks(payloadLibDir)
+            copyRequiredBundledRuntimeDependencies(payloadLibDir, abi)
+            copyBundledRuntimeDependencies(payloadLibDir, abi)
             revisionFile.writeText(expectedRevision, Charsets.UTF_8)
             Log.i(TAG, "Installed bundled ffmpeg payload for ABI=$abi at ${payloadRoot.absolutePath}")
-        }.onFailure {
-            Log.w(TAG, "No bundled ffmpeg payload found for ABI=$abi at assets/$assetPath", it)
+        }.onFailure { error ->
+            val assetExists = runCatching { assets.open(assetPath).close(); true }.getOrDefault(false)
+            val payloadState = buildString {
+                append("payloadRoot=")
+                append(payloadRoot.absolutePath)
+                append(" exists=")
+                append(payloadRoot.exists())
+                append(" isDir=")
+                append(payloadRoot.isDirectory)
+                append(" canWrite=")
+                append(payloadRoot.canWrite())
+                append(" assetExists=")
+                append(assetExists)
+                append(" supportedAbis=")
+                append(supportedAbis)
+            }
+            Log.e(TAG, "Bundled ffmpeg payload install failed ABI=$abi asset=$assetPath $payloadState", error)
         }
     }
 
-    private fun ensureFfmpegRuntimeDependencies() {
-        val ffmpegLibDir = File(noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/lib")
-        if (!ffmpegLibDir.exists() || !ffmpegLibDir.isDirectory) return
 
-        val is64BitAbi = Build.SUPPORTED_ABIS.firstOrNull()?.contains("64") == true
-        val genericCandidates = buildList {
-            add(File(applicationInfo.nativeLibraryDir, "libc++_shared.so"))
-            add(File("/data/data/com.termux/files/usr/lib/libc++_shared.so"))
-            add(File("/data/user/0/com.termux/files/usr/lib/libc++_shared.so"))
-            if (is64BitAbi) {
-                add(File("/apex/com.android.runtime/lib64/libc++_shared.so"))
-                add(File("/apex/com.android.runtime/lib64/libc++.so"))
-                add(File("/system/lib64/libc++_shared.so"))
-                add(File("/system/lib64/libc++.so"))
-                add(File("/vendor/lib64/libc++_shared.so"))
-                add(File("/vendor/lib64/libc++.so"))
-            } else {
-                add(File("/apex/com.android.runtime/lib/libc++_shared.so"))
-                add(File("/apex/com.android.runtime/lib/libc++.so"))
-                add(File("/system/lib/libc++_shared.so"))
-                add(File("/system/lib/libc++.so"))
-                add(File("/vendor/lib/libc++_shared.so"))
-                add(File("/vendor/lib/libc++.so"))
-            }
-        }
 
-        fun patchIfMissing(
-            libName: String,
-            extraCandidates: List<File> = emptyList(),
-            forceReplace: Boolean = false
-        ) {
-            val target = File(ffmpegLibDir, libName)
-            if (target.exists() && !forceReplace) return
-            val source = (extraCandidates + genericCandidates)
-                .firstOrNull { it.exists() && it.isFile } ?: return
+    private fun copyRequiredBundledRuntimeDependencies(libDir: File, abi: String) {
+        if (!libDir.exists() || !libDir.isDirectory) return
+        val requiredAssets = listOf(
+            "libc++_shared.so",
+            "libexpat.so.1",
+            "libcrypto.so.3",
+            "libssl.so.3"
+        )
+        val assetLibDir = "bin/$abi"
+        requiredAssets.forEach { name ->
+            val target = File(libDir, name)
+            if (target.exists() && target.length() > 255L) return@forEach
             runCatching {
-                source.inputStream().use { input ->
+                assets.open("$assetLibDir/$name").use { input ->
                     target.outputStream().use { output -> input.copyTo(output) }
                 }
                 target.setReadable(true, true)
-                Log.i(TAG, "Patched ffmpeg runtime dependency: ${source.absolutePath} -> ${target.absolutePath}")
+                Log.i(TAG, "Copied required bundled runtime dependency $name into ffmpeg payload")
             }.onFailure {
-                Log.e(TAG, "Failed to patch ffmpeg runtime dependency: $libName", it)
+                Log.e(TAG, "Failed to copy required bundled runtime dependency $name", it)
             }
         }
-
-        val appLibDir = File(applicationInfo.nativeLibraryDir)
-        patchIfMissing("libc++_shared.so")
-        patchIfMissing("libplacebo.so", listOf(File(appLibDir, "libplacebo.so")))
-        patchIfMissing("libandroid-execinfo.so", listOf(File(appLibDir, "libandroid-execinfo.so")))
-        patchIfMissing("libglslang.so", listOf(File(appLibDir, "libglslang.so")))
-        patchIfMissing("libSPIRV.so", listOf(File(appLibDir, "libSPIRV.so")))
-        patchIfMissing(
-            "libglslang-default-resource-limits.so",
-            listOf(File(appLibDir, "libglslang-default-resource-limits.so"))
-        )
-        patchIfMissing(
-            "libbluray.so.3",
-            listOf(
-                File(ffmpegLibDir, "libbluray.so"),
-                File(appLibDir, "libbluray.so.3"),
-                File(appLibDir, "libbluray.so")
-            )
-        )
-        patchIfMissing(
-            "libvpx.so.12",
-            listOf(
-                File(ffmpegLibDir, "libvpx.so"),
-                File(appLibDir, "libvpx.so.12"),
-                File(appLibDir, "libvpx.so")
-            )
-        )
-        patchIfMissing(
-            "libOpenCL.so",
-            listOf(
-                File(appLibDir, "libOpenCL.so"),
-                File(appLibDir, "libOpenCL.so.1")
-            )
-        )
-        patchIfMissing(
-            "libOpenCL.so.1",
-            listOf(
-                File(appLibDir, "libOpenCL.so.1"),
-                File(appLibDir, "libOpenCL.so")
-            )
-        )
-        patchIfMissing(
-            "libcrypto.so.3",
-            listOf(
-                File(appLibDir, "libcrypto.so.3")
-            )
-        )
-        patchIfMissing(
-            "libssl.so.3",
-            listOf(
-                File(appLibDir, "libssl.so.3")
-            )
-        )
-        patchIfMissing("libexpat.so.1", listOf(File("/system/lib64/libexpat.so")))
     }
 
-    private fun scheduleHardSubScanWorker() {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-
-        val request = OneTimeWorkRequestBuilder<HardSubScanWorker>()
-            .setConstraints(constraints)
-            .addTag(HardSubScanWorker.TAG)
-            .build()
-
-        WorkManager.getInstance(this).enqueueUniqueWork(
-            HardSubScanWorker.UNIQUE_WORK_NAME,
-            ExistingWorkPolicy.REPLACE,
-            request
+    private fun copyBundledRuntimeDependencies(libDir: File, abi: String) {
+        if (!libDir.exists() || !libDir.isDirectory) return
+        val excludedNames = setOf(
+            "libffmpeg.so",
+            "libffprobe.so",
+            "libffmpeg_hardsub.so",
+            "libffmpeg_hardsub_exec.so",
+            "libyttml_exec.so"
         )
+        val assetLibDir = "bin/$abi"
+        val nativeSources = File(applicationInfo.nativeLibraryDir)
+            .listFiles()
+            .orEmpty()
+            .asSequence()
+            .filter { it.isFile && (it.extension == "so" || it.name.contains(".so.")) }
+            .filterNot { it.name in excludedNames }
+            .sortedBy { it.name }
+            .associateBy { it.name }
+            .toMutableMap()
+
+        val assetNames = runCatching { assets.list(assetLibDir)?.toList().orEmpty() }.getOrDefault(emptyList())
+            .filter { name -> (name.endsWith(".so") || name.contains(".so.")) && name !in excludedNames }
+            .sorted()
+
+        val sourceNames = linkedSetOf<String>()
+        sourceNames.addAll(nativeSources.keys)
+        sourceNames.addAll(assetNames)
+
+        sourceNames.forEach { name ->
+            val target = File(libDir, name)
+            if (target.exists() && target.length() > 255L) return@forEach
+            runCatching {
+                val copied = nativeSources[name]?.takeIf { it.exists() && it.isFile }?.let { source ->
+                    source.inputStream().use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    true
+                } ?: run {
+                    assets.open("$assetLibDir/$name").use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    true
+                }
+                if (copied) {
+                    target.setReadable(true, true)
+                    Log.i(TAG, "Copied bundled runtime dependency $name into ffmpeg payload")
+                }
+            }.onFailure {
+                Log.e(TAG, "Failed to copy bundled runtime dependency $name", it)
+            }
+        }
+    }
+
+    private fun materializeSharedLibraryLinks(libDir: File) {
+        if (!libDir.exists() || !libDir.isDirectory) return
+        libDir.listFiles().orEmpty().forEach { file ->
+            if (!file.isFile || file.length() !in 1..255) return@forEach
+            val targetName = runCatching { file.readText(Charsets.UTF_8).trim() }.getOrDefault("")
+            if (targetName.isBlank() || targetName.contains('/') || !targetName.endsWith(".so") && !targetName.contains(".so.")) {
+                return@forEach
+            }
+            val target = File(libDir, targetName)
+            if (!target.exists() || !target.isFile || target.length() <= 255L) return@forEach
+            runCatching {
+                target.inputStream().use { input ->
+                    file.outputStream().use { output -> input.copyTo(output) }
+                }
+                file.setReadable(true, true)
+                Log.i(TAG, "Materialized ffmpeg symlink placeholder ${file.name} -> ${target.name}")
+            }.onFailure {
+                Log.e(TAG, "Failed to materialize ffmpeg symlink placeholder ${file.name}", it)
+            }
+        }
+    }
+
+
+    fun getFfmpegPayloadDiagnostics(): String {
+        val payloadRoot = File(noBackupFilesDir, "youtubedl-android/packages/ffmpeg")
+        val revisionFile = File(payloadRoot, ".payload_revision")
+        val payloadLibDir = File(payloadRoot, "usr/lib")
+        val probeNames = listOf(
+            "libavdevice.so.61",
+            "libavfilter.so.10",
+            "libavformat.so.61",
+            "libavcodec.so.61",
+            "libavutil.so.59",
+            "libc++_shared.so",
+            "libexpat.so.1",
+            "libcrypto.so.3",
+            "libssl.so.3"
+        )
+        return buildString {
+            appendLine("ffmpegPayload:")
+            appendLine(" root=${payloadRoot.absolutePath} exists=${payloadRoot.exists()} isDir=${payloadRoot.isDirectory}")
+            appendLine(" revision=${revisionFile.takeIf { it.exists() }?.readText(Charsets.UTF_8)?.trim() ?: "<missing>"}")
+            probeNames.forEach { name ->
+                val file = File(payloadLibDir, name)
+                appendLine(" lib=$name exists=${file.exists()} size=${if (file.exists()) file.length() else -1L}")
+            }
+        }
     }
 
     companion object {
@@ -316,3 +343,4 @@ class App : Application() {
         lateinit var instance: App
     }
 }
+
