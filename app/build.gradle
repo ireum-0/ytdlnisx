@@ -75,6 +75,8 @@ android {
             debuggable false
             if (hasReleaseSigningConfig) {
                 signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
             }
         }
 
