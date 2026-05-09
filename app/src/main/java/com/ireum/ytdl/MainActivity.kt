@@ -66,6 +66,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.Reader
 import java.nio.charset.Charset
@@ -435,18 +436,27 @@ class MainActivity : BaseActivity() {
                 }
 
                 val safeUri = uri ?: return
-                val `is` = contentResolver.openInputStream(safeUri)
+                val input = contentResolver.openInputStream(safeUri) ?: throw IOException("Could not open shared stream")
                 val textBuilder = StringBuilder()
                 val reader: Reader = BufferedReader(
                     InputStreamReader(
-                        `is`, Charset.forName(
+                        input, Charset.forName(
                             StandardCharsets.UTF_8.name()
                         )
                     )
                 )
-                var c: Int
-                while (reader.read().also { c = it } != -1) {
-                    textBuilder.append(c.toChar())
+                reader.use {
+                    val buffer = CharArray(4096)
+                    var totalChars = 0
+                    while (true) {
+                        val read = it.read(buffer)
+                        if (read == -1) break
+                        totalChars += read
+                        if (totalChars > MAX_SHARED_TEXT_CHARS) {
+                            throw IOException("Shared text file is too large")
+                        }
+                        textBuilder.append(buffer, 0, read)
+                    }
                 }
                 val bundle = Bundle()
                 bundle.putString("url", textBuilder.toString())
@@ -560,6 +570,7 @@ class MainActivity : BaseActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val MAX_SHARED_TEXT_CHARS = 128 * 1024
     }
 
     private fun logHistoryReturn(event: String) {

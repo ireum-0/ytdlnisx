@@ -83,12 +83,12 @@ class AlarmScheduler(private val context: Context) {
 
     fun cancel() {
         val intent = Intent(context, ScheduleAlarmReceiver::class.java)
-        val pendingIntent = PendingIntent.getService(context, 0, intent,
+        val pendingIntent = PendingIntent.getBroadcast(context, 0, intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
 
 
         val cancelIntent = Intent(context, CancelScheduleAlarmReceiver::class.java)
-        val cancelPendingIntent = PendingIntent.getService(context, 0, cancelIntent,
+        val cancelPendingIntent = PendingIntent.getBroadcast(context, 0, cancelIntent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
 
         kotlin.runCatching {

@@ -16,6 +16,7 @@ import androidx.paging.insertHeaderItem
 import androidx.paging.map
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.DBManager.SORTING
+import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.UiModel
 import com.ireum.ytdl.database.models.YoutuberInfo
@@ -88,7 +89,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     val visibleChildYoutubersFilter = MutableStateFlow(setOf<String>())
     val visibleChildKeywordsFilter = MutableStateFlow(setOf<String>())
     private val refreshTrigger = MutableStateFlow(0L)
-    private val typeFilter = MutableStateFlow("")
+    private val typeFilter = MutableStateFlow(DEFAULT_TYPE_FILTER)
     val queryFilterFlow = queryFilter.asStateFlow()
     val titleQueryFilterFlow = titleQueryFilter.asStateFlow()
     val keywordQueryFilterFlow = keywordQueryFilter.asStateFlow()
@@ -923,8 +924,21 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
 
     @Suppress("unused")
     fun setTypeFilter(filter: String) {
-        if (typeFilter.value == filter) return
-        typeFilter.value = filter
+        val normalized = normalizeTypeFilter(filter)
+        if (typeFilter.value == normalized) return
+        typeFilter.value = normalized
+    }
+
+    private fun normalizeTypeFilter(filter: String): String {
+        val selected = filter.split(',')
+            .map { it.trim() }
+            .filter { it == DownloadType.audio.name || it == DownloadType.video.name }
+            .distinct()
+        return when {
+            selected.isEmpty() -> DEFAULT_TYPE_FILTER
+            selected.contains(DownloadType.audio.name) && selected.contains(DownloadType.video.name) -> DEFAULT_TYPE_FILTER
+            else -> selected.first()
+        }
     }
 
     fun setStatusFilter(status: HistoryStatus) {
@@ -1706,6 +1720,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     companion object {
+        val DEFAULT_TYPE_FILTER = "${DownloadType.audio.name},${DownloadType.video.name}"
         private const val FILE_EXISTS_CACHE_TTL_MS = 12_000L
     }
 

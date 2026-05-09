@@ -253,14 +253,13 @@ class FormatViewModel(private val application: Application) : AndroidViewModel(a
     fun checkFreeSpace(size: Long, path: String) = viewModelScope.launch {
         _noFreeSpace.emit(null)
         if (size > 10L) {
-            File(FileUtil.formatPath(path)).apply {
-                if (size > this.freeSpace && this.freeSpace >= 10L) {
-                    val warningTxt = application.getString(R.string.no_free_space_warning) +
-                            "\n" + "${application.getString(R.string.file_size)}:\t${FileUtil.convertFileSize(size)}" +
-                            "\n" + "${application.getString(R.string.freespace)}:\t${FileUtil.convertFileSize(this.freeSpace)}"
+            val freeSpace = FileUtil.getAvailableFreeSpaceBytes(path, application) ?: return@launch
+            if (size > freeSpace && freeSpace >= 10L) {
+                val warningTxt = application.getString(R.string.no_free_space_warning) +
+                        "\n" + "${application.getString(R.string.file_size)}:\t${FileUtil.convertFileSize(size)}" +
+                        "\n" + "${application.getString(R.string.freespace)}:\t${FileUtil.convertFileSize(freeSpace)}"
 
-                    _noFreeSpace.emit(warningTxt)
-                }
+                _noFreeSpace.emit(warningTxt)
             }
         }
     }

@@ -150,7 +150,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
         item = i
 
         //remove outdated player url of 1hr so it can refetch it in the player
-        if (item.creationTime > System.currentTimeMillis() - 3600000) item.urls = ""
+        if (item.creationTime < System.currentTimeMillis() - 3600000) item.urls = ""
 
         activeAdapter = ActiveDownloadMinifiedAdapter(this,requireActivity())
         queuedAdapter = GenericDownloadAdapter(this,requireActivity())
@@ -283,7 +283,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
                     }
                 }
 
-                if (data.first.isEmpty()) throw Exception("No Data found!")
+                if (data.first.isEmpty() || data.first.any { it.isBlank() }) throw Exception("No Data found!")
                 loading.isVisible = false
 
                 val urls = data.first

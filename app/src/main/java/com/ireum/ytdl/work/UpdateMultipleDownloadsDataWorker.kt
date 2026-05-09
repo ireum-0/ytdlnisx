@@ -39,7 +39,7 @@ class UpdateMultipleDownloadsDataWorker(private val context: Context,workerParam
         val resultRepo = ResultRepository(resDao,commandTemplateDao, context)
         val ids = inputData.getLongArray("ids")?.toMutableList() ?: return Result.failure()
 
-        setForegroundSafely()
+        if (!setForegroundSafely()) return Result.retry()
         try{
             ids.forEach {
                 if (!isStopped){

@@ -12,6 +12,7 @@ import android.util.Rational
 import android.content.res.Configuration
 import android.content.pm.ActivityInfo
 import android.content.Intent
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Icon
 import android.graphics.Color
 import android.graphics.Rect
@@ -29,6 +30,7 @@ import androidx.constraintlayout.widget.ConstraintSet
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.AppCompatTextView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.C
 import androidx.media3.common.AudioAttributes
@@ -62,12 +64,14 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.View
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.repository.HistoryRepository
+import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.database.viewmodel.HistoryViewModel
 import com.ireum.ytdl.ui.adapter.VideoQueueAdapter
 import com.ireum.ytdl.ui.downloads.HistoryFragment
@@ -97,6 +101,7 @@ import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import java.io.FileOutputStream
 import java.io.OutputStream
+import java.util.Locale
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import org.json.JSONObject
 
@@ -114,6 +119,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var moreButton: ImageButton? = null
     private var lockButton: ImageButton? = null
     private var queueTitle: TextView? = null
+    private var currentArtworkKey: String? = null
     private var seekOverlay: android.view.View? = null
     private var seekTime: TextView? = null
     private var seekDelta: TextView? = null
@@ -202,6 +208,8 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var playbackStartedAtMs: Long = 0L
     private var currentChapters: List<VideoChapter> = emptyList()
     private var suppressAutoPipForBackNavigation: Boolean = false
+    private val downloadViewModel by lazy { ViewModelProvider(this)[DownloadViewModel::class.java] }
+    private val promptedCompatibleRedownloadIds = mutableSetOf<Long>()
 
     private val pickCustomThumbLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent()
@@ -470,8 +478,89 @@ class VideoPlayerActivity : AppCompatActivity() {
             override fun onRenderedFirstFrame() {
                 logPlaybackTiming("onRenderedFirstFrame current=${player?.currentMediaItemIndex ?: -1}")
             }
+
+            override fun onPlayerError(error: PlaybackException) {
+                logPlaybackTiming("onPlayerError code=${error.errorCodeName} message=${error.message}")
+                maybeOfferCompatibleRedownload(error)
+            }
         })
         updateSubtitlesButtonState()
+    }
+
+    private fun maybeOfferCompatibleRedownload(error: PlaybackException) {
+        if (!isLikelyUnsupportedVideoPlayback(error)) return
+
+        val historyId = resolveHistoryIdForMediaItem(player?.currentMediaItem) ?: launchHistoryId ?: return
+        if (!promptedCompatibleRedownloadIds.add(historyId)) return
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Unsupported video format")
+            .setMessage("This video exceeds this device's playback support. Re-download a compatible version while keeping the same resolution when possible?")
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton("Re-download") { _, _ ->
+                queueCompatibleRedownload(historyId)
+            }
+            .show()
+    }
+
+    private fun queueCompatibleRedownload(historyId: Long) {
+        lifecycleScope.launch {
+            val historyItem = withContext(Dispatchers.IO) {
+                runCatching { DBManager.getInstance(this@VideoPlayerActivity).historyDao.getItem(historyId) }.getOrNull()
+            }
+            if (historyItem == null) {
+                Toast.makeText(this@VideoPlayerActivity, "Unable to find the original download.", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            runCatching {
+                val downloadItem = downloadViewModel.createDownloadItemFromHistory(
+                    historyItem = historyItem,
+                    resolveSubtitleAvailability = false,
+                    preferCompatibleVideo = true
+                )
+                downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = true)
+            }.onSuccess {
+                Toast.makeText(
+                    this@VideoPlayerActivity,
+                    "Queued a compatible re-download for this video.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }.onFailure { error ->
+                Log.e("VideoPlayerActivity", "Failed to queue compatible redownload historyId=$historyId", error)
+                Toast.makeText(
+                    this@VideoPlayerActivity,
+                    "Failed to queue a compatible re-download.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    private fun isLikelyUnsupportedVideoPlayback(error: PlaybackException): Boolean {
+        val details = buildString {
+            append(error.message.orEmpty())
+            var current: Throwable? = error
+            repeat(6) {
+                current = current?.cause
+                if (current == null) return@repeat
+                append('\n')
+                append(current?.javaClass?.name.orEmpty())
+                append(':')
+                append(current?.message.orEmpty())
+            }
+        }.lowercase(Locale.US)
+
+        val codecProblem = details.contains("decoder init failed") ||
+            details.contains("no_exceeds_capabilities") ||
+            details.contains("exceeds_capabilities") ||
+            details.contains("mediacodecvideorenderer error")
+        val videoProblem = details.contains("video/") ||
+            details.contains("vp9") ||
+            details.contains("av01") ||
+            details.contains("h265") ||
+            details.contains("hevc")
+        return codecProblem && videoProblem
     }
 
     private fun configurePlaybackWindow() {
@@ -504,11 +593,12 @@ class VideoPlayerActivity : AppCompatActivity() {
             videoPath.startsWith("file://") -> Uri.parse(videoPath)
             else -> {
                 val file = File(videoPath)
-                if (!file.exists() || !file.isFile) {
+                val documentUri = buildDocumentUriForPath(videoPath)
+                if ((!file.exists() || !file.isFile) && documentUri == null) {
                     Toast.makeText(this, "Invalid video path: $videoPath", Toast.LENGTH_SHORT).show()
                     return
                 }
-                Uri.fromFile(file)
+                documentUri ?: Uri.fromFile(file)
             }
         }
 
@@ -643,7 +733,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             duration = "",
             durationSeconds = 0L,
             thumb = "",
-            type = DownloadType.video,
+            type = if (isAudioPath(path)) DownloadType.audio else DownloadType.video,
             time = 0L,
             downloadPath = listOf(path),
             website = "",
@@ -655,6 +745,16 @@ class VideoPlayerActivity : AppCompatActivity() {
             localTreeUri = "",
             localTreePath = ""
         )
+    }
+
+    private fun HistoryItem.isPlayableInQueue(): Boolean {
+        return type == DownloadType.video || type == DownloadType.audio
+    }
+
+    private fun isAudioPath(path: String): Boolean {
+        val cleanPath = path.substringBefore('?').substringBefore('#')
+        val ext = cleanPath.substringAfterLast('.', "").lowercase(Locale.US)
+        return ext in setOf("aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav", "weba", "wma")
     }
 
     override fun onResume() {
@@ -2853,6 +2953,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             .firstOrNull()
             ?: queueItems.firstOrNull { it.downloadPath.any { p -> p == path || path.endsWith(p) } }
         if (currentItem != null) {
+            updatePlayerArtwork(currentItem)
             updateTitleViews(currentItem.title, currentItem.author)
             playerNotificationManager?.invalidate()
             return
@@ -2866,11 +2967,45 @@ class VideoPlayerActivity : AppCompatActivity() {
                     ?: historyDao.getItemByDownloadPath(path)
             }
             if (item != null) {
+                updatePlayerArtwork(item)
                 updateTitleViews(item.title, item.author)
             } else {
+                updatePlayerArtwork(null)
                 updateTitleViews(File(path).name, "")
             }
             playerNotificationManager?.invalidate()
+        }
+    }
+
+    private fun updatePlayerArtwork(item: HistoryItem?) {
+        if (item?.type != DownloadType.audio) {
+            currentArtworkKey = null
+            playerView?.defaultArtwork = null
+            return
+        }
+
+        val source = resolvePreferredThumbSource(item)
+        if (source.isNullOrBlank()) {
+            currentArtworkKey = null
+            playerView?.defaultArtwork = null
+            return
+        }
+
+        val key = "${item.id}|$source"
+        if (currentArtworkKey == key) return
+        currentArtworkKey = key
+        lifecycleScope.launch {
+            val resolvedSource = withContext(Dispatchers.IO) {
+                ensureLocalThumbForPlayback(item, source)
+            }
+            val bitmap = withContext(Dispatchers.IO) {
+                runCatching {
+                    Picasso.get().load(resolvedSource).resize(1280, 720).centerCrop().get()
+                }.getOrNull()
+            }
+            if (currentArtworkKey == key) {
+                playerView?.defaultArtwork = bitmap?.let { BitmapDrawable(resources, it) }
+            }
         }
     }
 
@@ -2936,7 +3071,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                     val itemsById = historyRepo.getItemsFromIDs(prefetchedHistoryIds).associateBy { it.id }
                     prefetchedHistoryIds.asSequence()
                         .mapNotNull { id -> itemsById[id] }
-                        .filter { it.type == DownloadType.video }
+                        .filter { it.isPlayableInQueue() }
                         .filter { passesStatusFilter(it, statusFilter) }
                         .map { resolveLocalTreePath(db, it) }
                         .mapNotNull { item ->
@@ -3030,7 +3165,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                     excludedChildKeywords = excludedChildKeywords
                 )
                 historyRepo.getItemsFromIDs(filteredIds).asSequence()
-                    .filter { it.type == DownloadType.video }
+                    .filter { it.isPlayableInQueue() }
                     .filter { passesStatusFilter(it, statusFilter) }
                     .map { resolveLocalTreePath(db, it) }
                     .mapNotNull { item ->
@@ -3489,25 +3624,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     private fun buildDocumentUriForPath(path: String): Uri? {
-        if (!path.startsWith("/storage/")) return null
-        val relative = path.removePrefix("/storage/")
-        val splitIndex = relative.indexOf('/')
-        if (splitIndex <= 0 || splitIndex >= relative.length - 1) return null
-        val volumeId = relative.substring(0, splitIndex)
-        val relPath = relative.substring(splitIndex + 1)
-        val docId = "$volumeId:$relPath"
-        val permissions = contentResolver.persistedUriPermissions
-        for (perm in permissions) {
-            if (!perm.isReadPermission) continue
-            val treeUri = perm.uri ?: continue
-            if (!DocumentsContract.isTreeUri(treeUri)) continue
-            val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: continue
-            if (!treeDocId.startsWith("$volumeId:")) continue
-            val treePath = treeDocId.substringAfter(':')
-            if (treePath.isNotEmpty() && !relPath.startsWith(treePath)) continue
-            return DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-        }
-        return null
+        return FileUtil.buildDocumentUriForPath(path)
     }
 
     private fun resolveLocalTreePath(db: DBManager, item: HistoryItem): HistoryItem {

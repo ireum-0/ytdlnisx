@@ -103,8 +103,9 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
 //            return res.getOrDefault(Pair(listOf(""), null))
 //        }
 
-        return ytdlpUtil.getStreamingUrlAndChapters(url)
-            .getOrDefault(Pair(listOf(""), null))
+        val result = ytdlpUtil.getStreamingUrlAndChapters(url)
+            .getOrDefault(Pair(emptyList(), null))
+        return Pair(result.first.filter { it.isNotBlank() }, result.second)
     }
 
     suspend fun search(inputQuery: String, resetResults: Boolean, addToResults: Boolean) : List<ResultItem>{

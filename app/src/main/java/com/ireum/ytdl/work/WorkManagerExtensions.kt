@@ -25,13 +25,15 @@ fun WorkManager.isRunning(tag: String): Boolean {
  * Moving to foreground service context requires the worker to run a bit longer,
  * allowing Service.startForeground() to be called and avoiding system crash.
  */
-suspend fun CoroutineWorker.setForegroundSafely() {
+suspend fun CoroutineWorker.setForegroundSafely(): Boolean {
     try {
         setForeground(getForegroundInfo())
         delay(500)
+        return true
     } catch (e: IllegalStateException) {
         Log.e("ERROR", "Not allowed to set foreground job", e)
     } catch (e: InvalidForegroundServiceTypeException) {
         Log.e("ERROR", "Invalid foreground service type", e)
     }
+    return false
 }

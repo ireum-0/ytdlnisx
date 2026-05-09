@@ -601,8 +601,17 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         appendTokenClauses(parseSearchTokens(creatorQuery), setOf(SearchField.CREATOR))
 
         if (type.isNotBlank()) {
-            appendClause("type = ?")
-            args.add(type)
+            val types = type.split(',')
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+            if (types.size == 1) {
+                appendClause("type = ?")
+                args.add(types.first())
+            } else if (types.isNotEmpty()) {
+                appendClause("type IN (${types.joinToString(",") { "?" }})")
+                args.addAll(types)
+            }
         }
 
         if (author.isNotBlank()) {

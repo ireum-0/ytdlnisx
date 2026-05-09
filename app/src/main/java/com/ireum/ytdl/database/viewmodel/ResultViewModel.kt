@@ -33,6 +33,7 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.util.Collections
 import java.util.concurrent.CancellationException
 
 
@@ -157,7 +158,7 @@ class ResultViewModel(private val application: Application) : AndroidViewModel(a
         }
         val resetResults = inputQueries.size == 1
         uiState.update {it.copy(processing = true, errorMessage = null)}
-        val res = mutableListOf<ResultItem?>()
+        val res = Collections.synchronizedList(mutableListOf<ResultItem?>())
 
         val requestSemaphore = Semaphore(10)
         inputQueries.forEach { inputQuery ->
@@ -183,7 +184,7 @@ class ResultViewModel(private val application: Application) : AndroidViewModel(a
             notificationUtil.showQueriesFinished()
         }
         uiState.update {it.copy(processing = false)}
-        onResult(res)
+        onResult(res.toList())
     }
 
     suspend fun parseQueries(inputQueries: List<String>, onResult: (list: List<ResultItem?>) -> Unit) {

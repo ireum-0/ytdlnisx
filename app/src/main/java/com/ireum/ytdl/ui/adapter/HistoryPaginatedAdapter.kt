@@ -60,11 +60,24 @@ class HistoryPaginatedAdapter(
     private val selectedKeywordGroups: MutableSet<Long> = mutableSetOf()
     private val sharedPreferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(activity)
     private var disableGeneratedThumbnails: Boolean = false
+    private var attachedRecyclerView: RecyclerView? = null
 
     fun setDisableGeneratedThumbnails(disable: Boolean) {
         if (disableGeneratedThumbnails == disable) return
         disableGeneratedThumbnails = disable
-        notifyDataSetChanged()
+        refreshVisibleItems()
+    }
+
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        attachedRecyclerView = recyclerView
+    }
+
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        if (attachedRecyclerView === recyclerView) {
+            attachedRecyclerView = null
+        }
+        super.onDetachedFromRecyclerView(recyclerView)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
@@ -126,6 +139,73 @@ class HistoryPaginatedAdapter(
             is UiModel.KeywordInfoModel -> (holder as? KeywordInfoViewHolder)?.setSelectionState(selectedKeywords.contains(uiModel.keywordInfo.keyword))
             is UiModel.KeywordGroupModel -> (holder as? KeywordGroupViewHolder)?.setSelectionState(selectedKeywordGroups.contains(uiModel.groupInfo.id))
             is UiModel.SeparatorModel -> Unit
+        }
+    }
+
+    private fun refreshVisibleSelectionState() {
+        val recyclerView = attachedRecyclerView ?: return
+        if (recyclerView.isComputingLayout) {
+            recyclerView.post { refreshVisibleSelectionState() }
+            return
+        }
+        forEachAttachedHolder { holder, uiModel ->
+            applySelectionState(holder, uiModel)
+        }
+    }
+
+    fun refreshVisibleItems() {
+        val recyclerView = attachedRecyclerView ?: return
+        if (recyclerView.isComputingLayout) {
+            recyclerView.post { refreshVisibleItems() }
+            return
+        }
+        forEachAttachedHolder { holder, uiModel ->
+            bindAttachedHolder(holder, uiModel)
+        }
+    }
+
+    fun refreshVisibleItem(position: Int) {
+        if (position == RecyclerView.NO_POSITION) {
+            refreshVisibleItems()
+            return
+        }
+        val recyclerView = attachedRecyclerView ?: return
+        if (recyclerView.isComputingLayout) {
+            recyclerView.post { refreshVisibleItem(position) }
+            return
+        }
+        for (index in 0 until recyclerView.childCount) {
+            val holder = recyclerView.getChildViewHolder(recyclerView.getChildAt(index))
+            if (holder.bindingAdapterPosition != position) continue
+            val uiModel = getItemForBoundPosition(position) ?: return
+            bindAttachedHolder(holder, uiModel)
+            return
+        }
+    }
+
+    private fun forEachAttachedHolder(block: (RecyclerView.ViewHolder, UiModel) -> Unit) {
+        val recyclerView = attachedRecyclerView ?: return
+        for (index in 0 until recyclerView.childCount) {
+            val holder = recyclerView.getChildViewHolder(recyclerView.getChildAt(index))
+            val position = holder.bindingAdapterPosition
+            val uiModel = getItemForBoundPosition(position) ?: continue
+            block(holder, uiModel)
+        }
+    }
+
+    private fun getItemForBoundPosition(position: Int): UiModel? {
+        if (position == RecyclerView.NO_POSITION || position !in 0 until itemCount) return null
+        return runCatching { getItem(position) }.getOrNull()
+    }
+
+    private fun bindAttachedHolder(holder: RecyclerView.ViewHolder, uiModel: UiModel) {
+        when (uiModel) {
+            is UiModel.HistoryItemModel -> (holder as? HistoryItemViewHolder)?.bind(uiModel.historyItem)
+            is UiModel.SeparatorModel -> (holder as? SeparatorViewHolder)?.bind(uiModel.author)
+            is UiModel.YoutuberInfoModel -> (holder as? YoutuberInfoViewHolder)?.bind(uiModel.youtuberInfo)
+            is UiModel.YoutuberGroupModel -> (holder as? YoutuberGroupViewHolder)?.bind(uiModel.groupInfo)
+            is UiModel.KeywordInfoModel -> (holder as? KeywordInfoViewHolder)?.bind(uiModel.keywordInfo)
+            is UiModel.KeywordGroupModel -> (holder as? KeywordGroupViewHolder)?.bind(uiModel.groupInfo)
         }
     }
 
@@ -239,25 +319,25 @@ class HistoryPaginatedAdapter(
     fun clearCheckedItems() {
         inverted = false
         checkedItems.clear()
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun checkAll() {
         checkedItems.clear()
         inverted = true
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun checkMultipleItems(list: List<Long>) {
         checkedItems.clear()
         inverted = false
         checkedItems.addAll(list)
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun invertSelected() {
         inverted = !inverted
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun getHistoryItemIdAt(position: Int): Long? {
@@ -527,42 +607,42 @@ class HistoryPaginatedAdapter(
 
     fun clearYoutuberSelection() {
         selectedYoutubers.clear()
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun getSelectedYoutubers(): List<String> = selectedYoutubers.toList()
 
     fun clearYoutuberGroupSelection() {
         selectedYoutuberGroups.clear()
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun getSelectedYoutuberGroups(): List<Long> = selectedYoutuberGroups.toList()
 
     fun clearPlaylistSelection() {
         selectedPlaylists.clear()
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun getSelectedPlaylists(): List<Long> = selectedPlaylists.toList()
 
     fun clearPlaylistGroupSelection() {
         selectedPlaylistGroups.clear()
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun getSelectedPlaylistGroups(): List<Long> = selectedPlaylistGroups.toList()
 
     fun clearKeywordSelection() {
         selectedKeywords.clear()
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun getSelectedKeywords(): List<String> = selectedKeywords.toList()
 
     fun clearKeywordGroupSelection() {
         selectedKeywordGroups.clear()
-        notifyItemRangeChanged(0, itemCount, PAYLOAD_SELECTION)
+        refreshVisibleSelectionState()
     }
 
     fun getSelectedKeywordGroups(): List<Long> = selectedKeywordGroups.toList()

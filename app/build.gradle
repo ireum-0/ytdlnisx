@@ -12,7 +12,7 @@ def properties = new Properties()
 def versionMajor = 1
 def versionMinor = 8
 def versionPatch = 8
-def versionBuild = 2 // bump for dogfood builds, public betas, etc.
+def versionBuild = 4 // bump for dogfood builds, public betas, etc.
 def isBeta = false
 
 def versionExt = ""
@@ -22,6 +22,7 @@ if (versionBuild > 0) {
 if (isBeta) {
     versionExt += "-beta"
 }
+def hasReleaseSigningConfig = false
 
 android {
     namespace 'com.ireum.ytdl'
@@ -29,18 +30,17 @@ android {
 
     try {
         def propertiesFile = rootProject.file("keystore.properties")
-        if(propertiesFile.text != ""){
-            properties.load(new FileInputStream(propertiesFile))
-
+        if(propertiesFile.exists() && propertiesFile.length() > 0){
             properties.load(new FileInputStream(propertiesFile))
             signingConfigs {
-                debug {
+                release {
                     storeFile file(properties["signingConfig.storeFile"])
                     storePassword properties["signingConfig.storePassword"]
                     keyAlias properties["signingConfig.keyAlias"]
                     keyPassword properties["signingConfig.keyPassword"]
                 }
             }
+            hasReleaseSigningConfig = true
         }
     }catch(IOException ignored){}
     defaultConfig {
@@ -73,14 +73,15 @@ android {
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             debuggable false
-            signingConfig signingConfigs.debug
+            if (hasReleaseSigningConfig) {
+                signingConfig signingConfigs.release
+            }
         }
 
         debug {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             debuggable true
-            signingConfig signingConfigs.debug
         }
     }
 

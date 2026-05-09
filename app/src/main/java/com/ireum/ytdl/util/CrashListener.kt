@@ -6,18 +6,15 @@ import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.LogItem
-import com.ireum.ytdl.database.viewmodel.DownloadViewModel
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlin.system.exitProcess
 
 class CrashListener(private val context: Context) : Thread.UncaughtExceptionHandler {
 
     override fun uncaughtException(p0: Thread, p1: Throwable) {
-        Log.e("CrashListener", "Uncaught exception", p1)
-        CoroutineScope(SupervisorJob()).launch(Dispatchers.IO) {
+        Log.e("CrashListener", "Uncaught exception: ${p1.javaClass.simpleName}")
+        runBlocking(Dispatchers.IO) {
             createLog("${p1.message}\n\n${p1.stackTrace.joinToString("\n")}")
         }
     }
@@ -35,7 +32,7 @@ class CrashListener(private val context: Context) : Thread.UncaughtExceptionHand
                 downloadTime = System.currentTimeMillis()
             ))
         }
-        Log.e("ExitTrace", "exitProcess requested (CrashListener)", Throwable())
+        Log.e("ExitTrace", "exitProcess requested (CrashListener)")
         exitProcess(0)
     }
 

@@ -202,7 +202,7 @@ class DownloadVideoFragment(private var resultItem: ResultItem? = null, private 
 
                 freeSpace = view.findViewById(R.id.freespace)
                 val free = FileUtil.convertFileSize(
-                    File(FileUtil.formatPath(downloadItem.downloadPath)).freeSpace)
+                    FileUtil.getAvailableFreeSpaceBytes(downloadItem.downloadPath, requireContext()) ?: -1L)
                 freeSpace.text = String.format( getString(R.string.freespace) + ": " + free)
                 if (free == "?") freeSpace.visibility = View.GONE
 
@@ -604,7 +604,7 @@ class DownloadVideoFragment(private var resultItem: ResultItem? = null, private 
             saveDir.editText?.setText(FileUtil.formatPath(result.data?.data.toString()), TextView.BufferType.EDITABLE)
 
             val free = FileUtil.convertFileSize(
-                File(FileUtil.formatPath(downloadItem.downloadPath)).freeSpace)
+                FileUtil.getAvailableFreeSpaceBytes(downloadItem.downloadPath, requireContext()) ?: -1L)
             freeSpace.text = String.format( getString(R.string.freespace) + ": " + free)
             if (free == "?") freeSpace.visibility = View.GONE
 

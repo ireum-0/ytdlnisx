@@ -193,7 +193,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
         }
 
         //remove outdated player url of 1hr so it can refetch it in the cut player
-        if (result.creationTime > System.currentTimeMillis() - 3600000) result.urls = ""
+        if (result.creationTime < System.currentTimeMillis() - 3600000) result.urls = ""
         val fragmentManager = parentFragmentManager
         fragmentAdapter = DownloadFragmentAdapter(
             fragmentManager,

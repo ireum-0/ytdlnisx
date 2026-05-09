@@ -108,8 +108,8 @@ class NewPipePoTokenGenerator : PoTokenProvider {
         if (BuildConfig.DEBUG) {
             Log.d(
                 TAG,
-                "poToken for $videoId: playerPot=$playerPot, " +
-                        "streamingPot=$streamingPot, visitor_data=$visitorData"
+                "poToken for $videoId: playerPotLength=${playerPot.length}, " +
+                        "streamingPotLength=${streamingPot.length}, visitorDataLength=${visitorData.length}"
             )
         }
 

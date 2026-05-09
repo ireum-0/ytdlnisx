@@ -203,7 +203,7 @@ class DownloadCommandFragment(private val resultItem: ResultItem? = null, privat
 
                 freeSpace = view.findViewById(R.id.freespace)
                 val free = FileUtil.convertFileSize(
-                    File(FileUtil.formatPath(downloadItem.downloadPath)).freeSpace)
+                    FileUtil.getAvailableFreeSpaceBytes(downloadItem.downloadPath, requireContext()) ?: -1L)
                 freeSpace.text = String.format( getString(R.string.freespace) + ": " + free)
                 if (free == "?") freeSpace.visibility = View.GONE
 
@@ -317,7 +317,7 @@ class DownloadCommandFragment(private val resultItem: ResultItem? = null, privat
             saveDir.editText?.setText(FileUtil.formatPath(result.data?.data.toString()), TextView.BufferType.EDITABLE)
 
             freeSpace.text = String.format(getString(R.string.freespace) + ": " + FileUtil.convertFileSize(
-                File(FileUtil.formatPath(downloadItem.downloadPath)).freeSpace
+                FileUtil.getAvailableFreeSpaceBytes(downloadItem.downloadPath, requireContext()) ?: -1L
             ))
         }
     }

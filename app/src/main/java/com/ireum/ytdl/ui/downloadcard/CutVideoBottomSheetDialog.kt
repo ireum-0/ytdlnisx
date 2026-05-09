@@ -198,7 +198,7 @@ class CutVideoBottomSheetDialog(private val _item: DownloadItem? = null, private
                     }
                 }
 
-                if (data.first.isEmpty()) throw Exception("No Data found!")
+                if (data.first.isEmpty() || data.first.any { it.isBlank() }) throw Exception("No Data found!")
 
                 if (chapters!!.isEmpty() && urls!!.isBlank()){
                     chapters = data.second

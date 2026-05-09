@@ -1,0 +1,8 @@
+History stability and filtering improvements.
+
+- Added audio/video type chips to the History filters.
+- Reduced manual RecyclerView refreshes in the paged History list to prevent item-position inconsistency crashes.
+- Improved History empty state, scroll restore, and local-video add progress updates.
+- Improved playback fallback for SAF-backed local files and audio history items.
+- Hardened yt-dlp option handling, shared intents, exported components, FileProvider scope, and SAF deletion behavior.
+- Improved WorkManager foreground handling, download lifecycle ownership, cache moves, alarm cancellation, duplicate detection, and failure privacy.

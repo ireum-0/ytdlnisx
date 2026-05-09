@@ -16,6 +16,7 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, intent: Intent) {
         val id = intent.getIntExtra("itemID", 0)
         if (id > 0) {
+            val result = goAsync()
             runCatching {
                 val notificationUtil = NotificationUtil(c)
                 YoutubeDL.getInstance().destroyProcessById(id.toString())
@@ -23,15 +24,21 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
                 notificationUtil.cancelDownloadNotification(id)
                 val dbManager = DBManager.getInstance(c)
                 CoroutineScope(Dispatchers.IO).launch{
-                    runCatching {
-                        val item = dbManager.downloadDao.getDownloadById(id.toLong())
-                        item.status = DownloadRepository.Status.Cancelled.toString()
-                        dbManager.downloadDao.update(item)
-                    }
-                    runCatching {
-                        dbManager.terminalDao.delete(id.toLong())
+                    try {
+                        runCatching {
+                            val item = dbManager.downloadDao.getDownloadById(id.toLong())
+                            item.status = DownloadRepository.Status.Cancelled.toString()
+                            dbManager.downloadDao.update(item)
+                        }
+                        runCatching {
+                            dbManager.terminalDao.delete(id.toLong())
+                        }
+                    } finally {
+                        result.finish()
                     }
                 }
+            }.onFailure {
+                result.finish()
             }
 
         }

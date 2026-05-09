@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "YTDLnisX"
 
-include ':common', ':app', ':library', ':ffmpeg'
+include ':app'

@@ -59,7 +59,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.flowWithLifecycle
 import androidx.navigation.fragment.findNavController
 import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.GridLayoutManager
@@ -121,6 +121,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -590,11 +591,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         })
         historyAdapter.registerAdapterDataObserver(object : RecyclerView.AdapterDataObserver() {
             override fun onChanged() {
+                updateHistoryEmptyState()
                 if (!shouldLogDetailedRestoreEffects()) return
                 logDetailedRestoreEffect("adapterChanged itemCount=${historyAdapter.itemCount}")
             }
 
             override fun onItemRangeInserted(positionStart: Int, itemCount: Int) {
+                updateHistoryEmptyState()
                 if (!shouldLogDetailedRestoreEffects()) return
                 logDetailedRestoreEffect(
                     "adapterInserted positionStart=$positionStart itemCount=$itemCount total=${historyAdapter.itemCount}"
@@ -602,6 +605,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
 
             override fun onItemRangeRemoved(positionStart: Int, itemCount: Int) {
+                updateHistoryEmptyState()
                 if (!shouldLogDetailedRestoreEffects()) return
                 logDetailedRestoreEffect(
                     "adapterRemoved positionStart=$positionStart itemCount=$itemCount total=${historyAdapter.itemCount}"
@@ -645,6 +649,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             )
         }
         historyAdapter.addLoadStateListener { loadStates ->
+            updateHistoryEmptyState()
             if (loadStates.refresh is androidx.paging.LoadState.NotLoading && historyAdapter.itemCount > 0) {
                 if (tryApplyPendingDirectScrollRestore()) {
                     return@addLoadStateListener
@@ -666,6 +671,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         consumeIntentScrollRestore()
         consumePendingStoredScrollRestore()
         historyAdapter.addOnPagesUpdatedListener {
+            updateHistoryEmptyState()
             if (forceTopOnNextPagesUpdate) {
                 logHistoryReturn("addOnPagesUpdatedListener forceTopOnNextPagesUpdate=true")
                 forceTopOnNextPagesUpdate = false
@@ -1022,7 +1028,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     }
 
     private fun updateHistoryEmptyState() {
-        val isEmpty = totalCount == 0
+        val adapterHasItems = this::historyAdapter.isInitialized && historyAdapter.itemCount > 0
+        val isEmpty = totalCount == 0 && !adapterHasItems
         noResults.isVisible = isEmpty
         selectionChips.isVisible = !isEmpty
         topAppBar.menu.children.firstOrNull { m -> m.itemId == R.id.filters }?.isVisible = !isEmpty
@@ -1032,7 +1039,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         var count = 0
         if (historyViewModel.websiteFilter.value.isNotBlank()) count++
         if (historyViewModel.statusFilter.value != HistoryViewModel.HistoryStatus.ALL) count++
-        if (historyViewModel.typeFilterFlow.value.isNotBlank()) count++
+        if (historyViewModel.typeFilterFlow.value != HistoryViewModel.DEFAULT_TYPE_FILTER) count++
         if (historyViewModel.authorFilter.value.isNotBlank()) count++
         if (historyViewModel.youtuberGroupFilter.value >= 0L) count++
         if (historyViewModel.keywordFilter.value.isNotBlank()) count++
@@ -1306,42 +1313,64 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
         if (localAddProgressJob == null) {
             localAddProgressJob = viewLifecycleOwner.lifecycleScope.launch {
-                viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                    WorkManager.getInstance(requireContext())
-                        .getWorkInfosByTagLiveData(LocalAddWorker.TAG)
-                        .asFlow()
-                        .collectLatest { infos ->
-                            val active = infos.firstOrNull {
-                                it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED
+                WorkManager.getInstance(requireContext())
+                    .getWorkInfosByTagLiveData(LocalAddWorker.TAG)
+                    .asFlow()
+                    .flowWithLifecycle(viewLifecycleOwner.lifecycle, Lifecycle.State.STARTED)
+                    .collectLatest { infos ->
+                        val active = infos.firstOrNull {
+                            it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED
+                        }
+                        val current = localAddSnackbar ?: return@collectLatest
+                        if (active == null) {
+                            if (addLocalJob?.isActive == true) {
+                                current.setText(getString(R.string.local_video_adding))
+                                return@collectLatest
                             }
-                            val current = localAddSnackbar ?: return@collectLatest
-                            val total = active?.progress?.getInt(LocalAddWorker.KEY_TOTAL, 0) ?: 0
-                            val done = active?.progress?.getInt(LocalAddWorker.KEY_DONE, 0) ?: 0
-                            if (total > 0) {
-                                updateLocalAddSnackbarText(current, done, total)
+                            LocalAddStorage.clearProgressSnapshot(requireContext())
+                            maybeOpenPendingLocalAdd()
+                            if (
+                                localMatchDialog != null ||
+                                localMatchCandidates.isNotEmpty() ||
+                                localMatchDeferredCandidates.isNotEmpty()
+                            ) {
+                                current.setText(getString(R.string.apply_ready))
                             } else {
-                                val snapshot = LocalAddStorage.getProgressSnapshot(requireContext())
-                                if (snapshot != null) {
-                                    updateLocalAddSnackbarText(current, snapshot.first, snapshot.second)
-                                } else {
-                                    current.setText(getString(R.string.local_video_adding))
-                                }
+                                current.dismiss()
+                                localAddSnackbar = null
+                            }
+                            return@collectLatest
+                        }
+                        val total = active?.progress?.getInt(LocalAddWorker.KEY_TOTAL, 0) ?: 0
+                        val done = active?.progress?.getInt(LocalAddWorker.KEY_DONE, 0) ?: 0
+                        if (total > 0) {
+                            updateLocalAddSnackbarText(current, done, total)
+                        } else {
+                            val snapshot = LocalAddStorage.getProgressSnapshot(requireContext())
+                            if (snapshot != null) {
+                                updateLocalAddSnackbarText(current, snapshot.first, snapshot.second)
+                            } else {
+                                current.setText(getString(R.string.local_video_adding))
                             }
                         }
-                }
+                    }
             }
         }
         if (localAddProgressTickerJob == null) {
             localAddProgressTickerJob = viewLifecycleOwner.lifecycleScope.launch {
-                viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                flow {
                     while (isActive) {
+                        emit(Unit)
+                        kotlinx.coroutines.delay(1000)
+                    }
+                }
+                    .flowWithLifecycle(viewLifecycleOwner.lifecycle, Lifecycle.State.STARTED)
+                    .collectLatest {
                         val snapshot = LocalAddStorage.getProgressSnapshot(requireContext())
                         val current = localAddSnackbar
                         if (snapshot != null && current != null) {
                             updateLocalAddSnackbarText(current, snapshot.first, snapshot.second)
                         }
-                        kotlinx.coroutines.delay(1000)
-                    }
                 }
             }
         }
@@ -1854,7 +1883,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         historyViewModel.setKeywordQueryFilter("")
         historyViewModel.setCreatorQueryFilter("")
         historyViewModel.setIncludeChildCategoryVideosFilter(false)
-        historyViewModel.setTypeFilter("")
+        historyViewModel.setTypeFilter(HistoryViewModel.DEFAULT_TYPE_FILTER)
         historyViewModel.setWebsiteFilter("")
         historyViewModel.setStatusFilter(HistoryViewModel.HistoryStatus.ALL)
 
@@ -5006,6 +5035,43 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
 
+        val typeGroup = filterSheet.findViewById<ChipGroup>(R.id.typeChipGroup)
+        val typeFilter = historyViewModel.typeFilterFlow.value
+        val selectedTypes = typeFilter.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+        listOf(
+            DownloadType.audio.name to getString(R.string.audio),
+            DownloadType.video.name to getString(R.string.video)
+        ).forEachIndexed { index, (value, label) ->
+            val chip = layoutinflater.inflate(R.layout.filter_chip, typeGroup, false) as Chip
+            chip.id = View.generateViewId()
+            chip.text = label
+            chip.tag = value
+            chip.isChecked = selectedTypes.contains(value)
+            typeGroup?.addView(chip, index)
+        }
+        if (typeGroup?.checkedChipIds?.isEmpty() == true) {
+            for (i in 0 until typeGroup.childCount) {
+                (typeGroup.getChildAt(i) as? Chip)?.isChecked = true
+            }
+        }
+        typeGroup?.setOnCheckedStateChangeListener { group, checkedIds ->
+            if (checkedIds.isEmpty()) {
+                for (i in 0 until group.childCount) {
+                    (group.getChildAt(i) as? Chip)?.isChecked = true
+                }
+                historyViewModel.setTypeFilter(HistoryViewModel.DEFAULT_TYPE_FILTER)
+                return@setOnCheckedStateChangeListener
+            }
+            val selected = checkedIds
+                .mapNotNull { id -> group.findViewById<Chip>(id)?.tag as? String }
+                .toSet()
+            val filter = if (selected.size == 1) selected.first() else HistoryViewModel.DEFAULT_TYPE_FILTER
+            historyViewModel.setTypeFilter(filter)
+        }
+
         val includeChildCategoryVideosCheck = filterSheet.findViewById<com.google.android.material.checkbox.MaterialCheckBox>(R.id.includeChildCategoryVideosCheck)
         val showHiddenOnlyCheck = filterSheet.findViewById<com.google.android.material.checkbox.MaterialCheckBox>(R.id.showHiddenOnlyCheck)
         includeChildCategoryVideosCheck?.isChecked = historyViewModel.includeChildCategoryVideosFilter.value
@@ -5599,7 +5665,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             val item = withContext(Dispatchers.IO) {
                 runCatching { historyViewModel.getByID(itemID) }.getOrNull()
             } ?: return@launch
-            if (item.type.toString() == "video" && filePresent) {
+            if ((item.type == DownloadType.video || item.type == DownloadType.audio) && filePresent) {
                 val path = item.downloadPath.firstOrNull { FileUtil.exists(it) }
                     ?: item.downloadPath.firstOrNull()
                 if (path.isNullOrBlank()) return@launch
@@ -6379,11 +6445,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 val itemID = (viewHolder.itemView.tag as? Long)
                     ?: viewHolder.itemView.tag?.toString()?.toLongOrNull()
                 if (itemID == null) {
-                    if (position != RecyclerView.NO_POSITION) {
-                        historyAdapter.notifyItemChanged(position)
-                    } else {
-                        historyAdapter.notifyDataSetChanged()
-                    }
+                    historyAdapter.refreshVisibleItem(position)
                     return
                 }
                 when (direction) {
@@ -6392,11 +6454,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             val deletedItem = withContext(Dispatchers.IO) {
                                 runCatching { historyViewModel.getByID(itemID) }.getOrNull()
                             }
-                            if (position != RecyclerView.NO_POSITION) {
-                                historyAdapter.notifyItemChanged(position)
-                            } else {
-                                historyAdapter.notifyDataSetChanged()
-                            }
+                            historyAdapter.refreshVisibleItem(position)
                             if (deletedItem == null) return@launch
                             UiUtil.showRemoveHistoryItemDialog(deletedItem, requireActivity(), delete = { item, deleteFile ->
                                 lifecycleScope.launch {
@@ -6415,11 +6473,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             val item = withContext(Dispatchers.IO) {
                                 runCatching { historyViewModel.getByID(itemID) }.getOrNull()
                             }
-                            if (position != RecyclerView.NO_POSITION) {
-                                historyAdapter.notifyItemChanged(position)
-                            } else {
-                                historyAdapter.notifyDataSetChanged()
-                            }
+                            historyAdapter.refreshVisibleItem(position)
                             if (item == null) return@launch
                             findNavController().navigate(
                                 R.id.downloadBottomSheetDialog, bundleOf(

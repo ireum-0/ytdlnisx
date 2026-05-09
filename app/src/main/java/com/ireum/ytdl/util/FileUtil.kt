@@ -1,11 +1,13 @@
 ﻿package com.ireum.ytdl.util
 
 import android.content.Context
+import android.content.ContentValues
 import android.content.Intent
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.StatFs
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
@@ -107,12 +109,12 @@ object FileUtil {
     }
 
     private fun deleteDocumentUri(uri: Uri): Boolean {
+        if (DocumentsContract.isTreeUri(uri) && !DocumentsContract.isDocumentUri(App.instance, uri)) {
+            Log.w("FileUtil", "Refusing to delete tree uri=$uri")
+            return false
+        }
         val single = DocumentFile.fromSingleUri(App.instance, uri)
         if (single?.exists() == true && single.delete()) {
-            return true
-        }
-        val tree = DocumentFile.fromTreeUri(App.instance, uri)
-        if (tree?.exists() == true && tree.delete()) {
             return true
         }
         return runCatching {
@@ -203,13 +205,8 @@ object FileUtil {
     }
 
     fun buildDocumentUriForPath(path: String): Uri? {
-        if (!path.startsWith("/storage/")) return null
-        val relative = path.removePrefix("/storage/")
-        val splitIndex = relative.indexOf('/')
-        if (splitIndex <= 0 || splitIndex >= relative.length - 1) return null
-        val volumeId = relative.substring(0, splitIndex)
-        val relPath = relative.substring(splitIndex + 1)
-        val docId = "$volumeId:$relPath"
+        val storagePath = parseStorageDocumentPath(path) ?: return null
+        val docId = "${storagePath.volumeId}:${storagePath.relativePath}"
 
         val permissions = App.instance.contentResolver.persistedUriPermissions
         for (perm in permissions) {
@@ -217,9 +214,13 @@ object FileUtil {
             val treeUri = perm.uri ?: continue
             if (!DocumentsContract.isTreeUri(treeUri)) continue
             val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: continue
-            if (!treeDocId.startsWith("$volumeId:")) continue
+            if (!treeDocId.startsWith("${storagePath.volumeId}:")) continue
             val treePath = treeDocId.substringAfter(':')
-            if (treePath.isNotEmpty() && !relPath.startsWith(treePath)) continue
+            if (
+                treePath.isNotEmpty() &&
+                storagePath.relativePath != treePath &&
+                !storagePath.relativePath.startsWith("$treePath/")
+            ) continue
             return runCatching {
                 DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
             }.getOrNull()
@@ -231,6 +232,7 @@ object FileUtil {
         var dataValue = path
         if (dataValue.startsWith("/storage/")) return dataValue
         dataValue = dataValue.replace("content://com.android.externalstorage.documents/tree/", "")
+        dataValue = dataValue.replace("content://com.android.externalstorage.documents/document/", "")
         dataValue = dataValue.replace("raw:/storage/", "")
         dataValue = dataValue.replace("^/document/".toRegex(), "")
         dataValue = dataValue.replace("^primary:".toRegex(), "primary/")
@@ -240,11 +242,14 @@ object FileUtil {
         } catch (ignored: Exception) {
         }
         val pieces = dataValue.split("/").toTypedArray()
-        val formattedPath = StringBuilder("/storage/")
+        val primaryRoot = Environment.getExternalStorageDirectory().absolutePath
+            .trimEnd('/', '\\')
+            .replace('\\', '/')
+        val formattedPath = StringBuilder()
         if (pieces[0] == "primary"){
-            formattedPath.append("emulated/${android.os.Binder.getCallingUserHandle().hashCode()}/")
+            formattedPath.append(primaryRoot).append("/")
         }else{
-            formattedPath.append(pieces[0]).append("/")
+            formattedPath.append("/storage/").append(pieces[0]).append("/")
         }
         pieces.forEachIndexed { i, it ->
             if (i > 0 && it.isNotEmpty()){
@@ -252,6 +257,62 @@ object FileUtil {
             }
         }
         return formattedPath.toString()
+    }
+
+    fun canWriteToDestination(path: String, context: Context = App.instance): Boolean {
+        val normalizedPath = path.trim()
+        if (normalizedPath.isBlank()) return false
+
+        if (normalizedPath.startsWith("content://")) {
+            val uri = runCatching { Uri.parse(normalizedPath) }.getOrNull() ?: return false
+            val tree = DocumentFile.fromTreeUri(context, uri)
+            if (tree?.exists() == true && tree.canWrite()) return true
+            val single = DocumentFile.fromSingleUri(context, uri)
+            if (single?.exists() == true && single.canWrite()) return true
+            return context.contentResolver.persistedUriPermissions.any { perm ->
+                perm.isWritePermission && perm.uri == uri
+            }
+        }
+
+        val rawPath = if (normalizedPath.startsWith("file://")) {
+            Uri.parse(normalizedPath).path.orEmpty()
+        } else {
+            formatPath(normalizedPath)
+        }.trim()
+        if (rawPath.isBlank()) return false
+
+        val target = File(rawPath)
+        if (target.exists()) return target.canWrite()
+        val parent = target.parentFile ?: return false
+        return parent.exists() && parent.canWrite()
+    }
+
+    fun getAvailableFreeSpaceBytes(path: String, context: Context = App.instance): Long? {
+        val normalizedPath = path.trim()
+        if (normalizedPath.isBlank()) return null
+
+        val rawPath = when {
+            normalizedPath.startsWith("content://") -> formatPath(normalizedPath)
+            normalizedPath.startsWith("file://") -> Uri.parse(normalizedPath).path.orEmpty()
+            else -> formatPath(normalizedPath)
+        }.trim().trimEnd('/', '\\')
+
+        if (rawPath.isBlank()) return null
+
+        val target = File(rawPath)
+        val probe = when {
+            target.exists() -> target
+            target.parentFile?.exists() == true -> target.parentFile
+            else -> null
+        } ?: return null
+
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                probe.usableSpace
+            } else {
+                StatFs(probe.absolutePath).availableBytes
+            }
+        }.getOrNull()?.takeIf { it >= 0L }
     }
 
 
@@ -272,10 +333,40 @@ object FileUtil {
             val directFileWrite = !destDir.startsWith("content://") && File(normalizedDestDir).canWrite()
             val dir = File(normalizedDestDir)
             if (directFileWrite && !dir.exists()) dir.mkdirs()
+            val shouldPreferPrimaryMediaStore = !destDir.startsWith("content://") && isPrimarySharedStoragePath(normalizedDestDir)
+            if (!directFileWrite && shouldPreferPrimaryMediaStore) {
+                val mediaStoreMoved = runCatching {
+                    moveFilesToPrimaryMediaStore(originDir, context, normalizedDestDir, progress)
+                }.onFailure { e ->
+                    moveErrors.add("MediaStore raw-path move failed raw=$destDir normalized=$normalizedDestDir error=${e.message}")
+                }.getOrNull()
+                if (mediaStoreMoved != null) {
+                    if (!keepCache) {
+                        originDir.deleteRecursively()
+                    }
+                    val scanned = scanMedia(mediaStoreMoved, context)
+                    return@withContext scanned.ifEmpty { mediaStoreMoved }
+                }
+            }
             val safDestinationDir = if (!directFileWrite) {
                 resolveDestinationDocumentDir(context, destDir, normalizedDestDir)
             } else null
             if (!directFileWrite && safDestinationDir == null) {
+                if (!shouldPreferPrimaryMediaStore) {
+                    val mediaStoreMoved = runCatching {
+                        moveFilesToPrimaryMediaStore(originDir, context, normalizedDestDir, progress)
+                    }.onFailure { e ->
+                        moveErrors.add("MediaStore fallback failed raw=$destDir normalized=$normalizedDestDir error=${e.message}")
+                    }.getOrNull()
+                    if (mediaStoreMoved != null) {
+                        if (!keepCache) {
+                            originDir.deleteRecursively()
+                        }
+                        val scanned = scanMedia(mediaStoreMoved, context)
+                        return@withContext scanned.ifEmpty { mediaStoreMoved }
+                    }
+                }
+
                 moveErrors.add("resolveDestinationDocumentDir failed raw=$destDir normalized=$normalizedDestDir perms=${describePersistedUriPermissions(context)}")
             }
             originDir.walk().forEach {
@@ -337,7 +428,7 @@ object FileUtil {
 
                     if (it.isDirectory){
                         withContext(Dispatchers.IO){
-                            curr.copyFolderTo(context, dst!!, skipEmptyFiles = false, callback = object : FolderCallback() {
+                            curr.copyFolderTo(context, dst, skipEmptyFiles = false, callback = object : FolderCallback() {
                                 override fun onStart(folder: DocumentFile, totalFilesToCopy: Int, workerThread: Thread): Long {
                                     return 500 // update progress every half second
                                 }
@@ -384,7 +475,7 @@ object FileUtil {
                         }
                     }else{
                         withContext(Dispatchers.IO){
-                            curr.moveFileTo(context, dst!!, callback = object : FileCallback() {
+                            curr.moveFileTo(context, dst, callback = object : FileCallback() {
                                 override fun onFailed(errorCode: ErrorCode) {
                                     //if its usb?
                                     val recovered = runCatching {
@@ -476,12 +567,7 @@ object FileUtil {
             return null
         }
 
-        if (!normalizedDestDir.startsWith("/storage/")) return null
-        val relative = normalizedDestDir.removePrefix("/storage/").trim('/').replace('\\', '/')
-        val splitIndex = relative.indexOf('/')
-        if (splitIndex <= 0) return null
-        val volumeId = relative.substring(0, splitIndex)
-        val relPath = relative.substring(splitIndex + 1)
+        val storagePath = parseStorageDocumentPath(normalizedDestDir) ?: return null
 
         val permissions = context.contentResolver.persistedUriPermissions
         for (perm in permissions) {
@@ -489,14 +575,14 @@ object FileUtil {
             val treeUri = perm.uri ?: continue
             if (!DocumentsContract.isTreeUri(treeUri)) continue
             val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: continue
-            if (!treeDocId.startsWith("$volumeId:")) continue
+            if (!treeDocId.startsWith("${storagePath.volumeId}:")) continue
 
             val root = DocumentFile.fromTreeUri(context, treeUri) ?: continue
             val treePath = treeDocId.substringAfter(':')
             val relFromTree = when {
-                treePath.isBlank() -> relPath
-                relPath == treePath -> ""
-                relPath.startsWith("$treePath/") -> relPath.removePrefix("$treePath/")
+                treePath.isBlank() -> storagePath.relativePath
+                storagePath.relativePath == treePath -> ""
+                storagePath.relativePath.startsWith("$treePath/") -> storagePath.relativePath.removePrefix("$treePath/")
                 else -> continue
             }
 
@@ -515,6 +601,168 @@ object FileUtil {
             }
         }
         return null
+    }
+
+    private fun parseStorageDocumentPath(path: String): StorageDocumentPath? {
+        if (!path.startsWith("/storage/")) return null
+        val normalized = path.trim().trimEnd('/', '\\').replace('\\', '/')
+        val primaryRoot = Environment.getExternalStorageDirectory().absolutePath
+            .trimEnd('/', '\\')
+            .replace('\\', '/')
+
+        if (normalized == primaryRoot || normalized.startsWith("$primaryRoot/")) {
+            val relativePath = normalized.removePrefix(primaryRoot).trim('/').replace('\\', '/')
+            if (relativePath.isBlank()) return null
+            return StorageDocumentPath("primary", relativePath)
+        }
+
+        val relative = normalized.removePrefix("/storage/").trim('/').replace('\\', '/')
+        val splitIndex = relative.indexOf('/')
+        if (splitIndex <= 0 || splitIndex >= relative.length - 1) return null
+        val volumeId = relative.substring(0, splitIndex)
+        val relativePath = relative.substring(splitIndex + 1)
+        if (relativePath.isBlank()) return null
+        return StorageDocumentPath(volumeId, relativePath)
+    }
+
+    private data class StorageDocumentPath(
+        val volumeId: String,
+        val relativePath: String
+    )
+
+    private fun isPrimarySharedStoragePath(path: String): Boolean {
+        val normalizedPath = path.trimEnd('/', '\\').replace('\\', '/')
+        val primaryRoot = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/', '\\').replace('\\', '/')
+        return normalizedPath.startsWith("$primaryRoot/")
+    }
+
+    private suspend fun moveFilesToPrimaryMediaStore(
+        originDir: File,
+        context: Context,
+        normalizedDestDir: String,
+        progress: (p: Int) -> Unit
+    ): List<String>? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+
+        val primaryRoot = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/', '\\')
+        val destination = normalizedDestDir.trimEnd('/', '\\').replace('\\', '/')
+        if (!destination.startsWith(primaryRoot.replace('\\', '/'))) return null
+
+        val destRelativeRoot = destination
+            .removePrefix(primaryRoot.replace('\\', '/'))
+            .trim('/', '\\')
+            .replace('\\', '/')
+        if (destRelativeRoot.isBlank()) return null
+
+        return withContext(Dispatchers.IO) {
+            val files = originDir.walkTopDown()
+                .filter { file ->
+                    file.isFile &&
+                        file.length() > 0L &&
+                        !file.name.matches("(^config.*.\\.txt\$)|(rList)|(.*.part-Frag.*)|(.*.live_chat)|(.*.ytdl)".toRegex())
+                }
+                .toList()
+            if (files.isEmpty()) return@withContext null
+
+            val outputs = mutableListOf<String>()
+            files.forEachIndexed { index, source ->
+                val relFromOrigin = source.absolutePath
+                    .removePrefix(originDir.absolutePath)
+                    .trimStart(File.separatorChar, '/', '\\')
+                    .replace('\\', '/')
+                val relParent = relFromOrigin.substringBeforeLast('/', "")
+                val targetRelativeDir = listOf(destRelativeRoot, relParent)
+                    .filter { it.isNotBlank() }
+                    .joinToString("/")
+                    .trim('/')
+                val storedPath = moveSingleFileToPrimaryMediaStore(context, source, targetRelativeDir)
+                outputs.add(storedPath)
+                source.delete()
+                progress((((index + 1).toDouble() / files.size.toDouble()) * 100).toInt())
+            }
+            outputs
+        }
+    }
+
+    private fun moveSingleFileToPrimaryMediaStore(context: Context, source: File, relativeDir: String): String {
+        val resolver = context.contentResolver
+        val normalizedRelativeDir = relativeDir.trim('/', '\\').replace('\\', '/') + "/"
+        val displayName = resolveUniqueMediaStoreName(context, normalizedRelativeDir, source.name)
+        val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(source.extension.lowercase(Locale.US))
+            ?: "application/octet-stream"
+        val collection = resolvePrimaryMediaStoreCollection(normalizedRelativeDir, mimeType)
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, normalizedRelativeDir)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(collection, values)
+            ?: throw IOException("MediaStore insert returned null for ${source.name}")
+
+        try {
+            resolver.openOutputStream(uri)?.use { output ->
+                source.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            } ?: throw IOException("Could not open MediaStore output stream for ${source.name}")
+
+            resolver.update(
+                uri,
+                ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
+                null,
+                null
+            )
+        } catch (e: Exception) {
+            runCatching { resolver.delete(uri, null, null) }
+            throw e
+        }
+
+        val primaryRoot = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/', '\\')
+        return "$primaryRoot/${normalizedRelativeDir}${displayName}"
+    }
+
+    private fun resolvePrimaryMediaStoreCollection(relativeDir: String, mimeType: String): Uri {
+        val topLevelDir = relativeDir.substringBefore('/').lowercase(Locale.US)
+        return when {
+            topLevelDir == Environment.DIRECTORY_DOWNLOADS.lowercase(Locale.US) ->
+                MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            mimeType.startsWith("video/") ->
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            mimeType.startsWith("audio/") ->
+                MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            mimeType.startsWith("image/") ->
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            else ->
+                MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        }
+    }
+
+    private fun resolveUniqueMediaStoreName(context: Context, relativeDir: String, filename: String): String {
+        val dot = filename.lastIndexOf('.')
+        val base = if (dot > 0) filename.substring(0, dot) else filename
+        val ext = if (dot > 0) filename.substring(dot) else ""
+        var candidate = filename
+        var index = 1
+        while (mediaStoreFileExists(context, relativeDir, candidate)) {
+            candidate = "$base ($index)$ext"
+            index += 1
+        }
+        return candidate
+    }
+
+    private fun mediaStoreFileExists(context: Context, relativeDir: String, filename: String): Boolean {
+        val projection = arrayOf(MediaStore.MediaColumns._ID)
+        val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
+        return context.contentResolver.query(
+            MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            projection,
+            selection,
+            arrayOf(relativeDir, filename),
+            null
+        )?.use { cursor ->
+            cursor.moveToFirst()
+        } ?: false
     }
 
     private fun moveFileInputStream(it: File, context: Context, dst: DocumentFile) : Uri? {
@@ -555,7 +803,7 @@ object FileUtil {
 
     fun getBackupPath(context: Context) : String {
         val preference = PreferenceManager.getDefaultSharedPreferences(context).getString("backup_path", "")
-        return if (preference.isNullOrBlank() || !File(formatPath(preference)).canWrite()) {
+        return if (preference.isNullOrBlank() || !canWriteToDestination(preference, context)) {
             getDefaultApplicationPath() + "/Backups"
         }else {
             formatPath(preference)
@@ -574,6 +822,37 @@ object FileUtil {
         }else {
             return formatPath(preference)
         }
+    }
+
+    fun deleteCachePathIfAppOwned(context: Context): Boolean {
+        val cacheDir = File(getCachePath(context))
+        if (!isAppOwnedCachePath(context, cacheDir)) {
+            Log.w("FileUtil", "Refusing to recursively delete non app-owned cache path=${cacheDir.absolutePath}")
+            return false
+        }
+        return cacheDir.deleteRecursively()
+    }
+
+    private fun isAppOwnedCachePath(context: Context, cacheDir: File): Boolean {
+        val canonicalCacheDir = runCatching { cacheDir.canonicalFile }.getOrElse { return false }
+        val allowedParents = listOfNotNull(
+            context.cacheDir,
+            context.externalCacheDir,
+            context.getExternalFilesDir(null)
+        ).mapNotNull { runCatching { it.canonicalFile }.getOrNull() }
+
+        return allowedParents.any { parent ->
+            canonicalCacheDir == parent || canonicalCacheDir.startsWithFile(parent)
+        }
+    }
+
+    private fun File.startsWithFile(parent: File): Boolean {
+        var current: File? = this
+        while (current != null) {
+            if (current == parent) return true
+            current = current.parentFile
+        }
+        return false
     }
 
     fun deleteConfigFiles(request: YoutubeDLRequest) {
@@ -640,7 +919,9 @@ object FileUtil {
 
 
     fun openFileIntent(context: Context, downloadPath: String) {
-        val uri = FileProvider.getUriForFile(context, context.packageName + ".fileprovider", File(downloadPath))
+        val uri = runCatching {
+            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", File(downloadPath))
+        }.getOrNull()
         println(uri)
 
         if (uri == null){
@@ -652,7 +933,6 @@ object FileUtil {
             val intent = Intent(Intent.ACTION_VIEW)
                 .setDataAndType(uri, mime)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
 
             context.startActivity(intent)
         }
@@ -667,8 +947,9 @@ object FileUtil {
                     if (this?.exists() == true){
                         this.uri
                     }else if (File(path).exists()){
-                        FileProvider.getUriForFile(context, context.packageName + ".fileprovider",
-                            File(path))
+                        runCatching {
+                            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", File(path))
+                        }.getOrNull()
                     }else null
                 }
                 if (uri != null) uris.add(uri)

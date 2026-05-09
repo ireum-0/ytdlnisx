@@ -2,6 +2,8 @@
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.os.Build
 import android.content.SharedPreferences
 import android.os.Handler
@@ -51,11 +53,40 @@ import java.util.StringJoiner
 import java.util.UUID
 import java.util.zip.CRC32
 import java.util.concurrent.TimeUnit
+import java.util.regex.PatternSyntaxException
 
 class YTDLPUtil(private val context: Context, private val commandTemplateDao: CommandTemplateDao) {
     private var sharedPreferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
     private val formatUtil = FormatUtil(context)
     private val handler = Handler(Looper.getMainLooper())
+
+    private fun validateDataFetchUrl(url: String): String {
+        val trimmed = url.trim()
+        val forbiddenOptions = setOf(
+            "--ffmpeg-location",
+            "--config",
+            "--config-location",
+            "--config-locations"
+        )
+        if (trimmed.isBlank()) throw IllegalArgumentException("Blank URL is not allowed")
+        if (trimmed.startsWith("-")) throw IllegalArgumentException("URL must not start with '-'")
+        if (trimmed.any { it == '\r' || it == '\n' || it.isWhitespace() }) {
+            throw IllegalArgumentException("URL must not contain whitespace or newlines")
+        }
+        if (forbiddenOptions.any { trimmed == it || trimmed.startsWith("$it=") }) {
+            throw IllegalArgumentException("Blocked yt-dlp option passed as URL")
+        }
+        if (!isHttpDataFetchUrl(trimmed)) {
+            throw IllegalArgumentException("Only http and https URLs are allowed")
+        }
+        return trimmed
+    }
+
+    private fun isHttpDataFetchUrl(value: String): Boolean {
+        val trimmed = value.trim()
+        return trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true)
+    }
 
     private fun YoutubeDLRequest.applyDefaultOptionsForFetchingData(url: String?) {
         addOption("--skip-download")
@@ -97,7 +128,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
         extraCommands = if (url != null) {
             extraCommands.filter {
-                it.urlRegex.any { u -> Regex(u).containsMatchIn(url) } ||
+                it.urlRegex.any { u -> safeRegexMatches(u, url, fullMatch = false) } ||
                 it.urlRegex.isEmpty()
             }
         }else{
@@ -115,17 +146,20 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         val searchEngine = sharedPreferences.getString("search_engine", "ytsearch")
 
         val request : YoutubeDLRequest
-        if (query.contains("http")){
-            if (query.isYoutubeWatchVideosURL()) {
+        var dataFetchUrl: String? = null
+        if (isHttpDataFetchUrl(query)){
+            val safeQuery = validateDataFetchUrl(query)
+            dataFetchUrl = safeQuery
+            if (safeQuery.isYoutubeWatchVideosURL()) {
                 request = YoutubeDLRequest(emptyList())
                 val config =
                     File(context.cacheDir.absolutePath + "/config" + System.currentTimeMillis() + "##url.txt")
-                config.writeText(query)
+                config.writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(safeQuery))
                 request.addOption("--config", config.absolutePath)
             }else{
-                request = YoutubeDLRequest(query)
+                request = YoutubeDLRequest(safeQuery)
             }
-            request.addWriteInfoJson(query)
+            request.addWriteInfoJson(safeQuery)
         }else{
             request = YoutubeDLRequest(emptyList())
             when (searchEngine){
@@ -139,7 +173,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             }
         }
         if (searchEngine == "ytsearch" || query.isYoutubeURL()) {
-            request.setYoutubeExtractorArgs(query)
+            val extractorUrl = dataFetchUrl ?: query
+            request.setYoutubeExtractorArgs(
+                extractorUrl,
+                includeWebClientForSubtitles = extractorUrl.isYoutubeURL()
+            )
         }
 
         if (!sharedPreferences.getBoolean("no_flat_playlist", false)) {
@@ -148,7 +186,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
         request.addOption("--lazy-playlist")
         request.addOption(if (singleItem) "-J" else "-j")
-        request.applyDefaultOptionsForFetchingData(if (query.isURL()) query else null)
+        request.applyDefaultOptionsForFetchingData(dataFetchUrl)
         val usePlaylistOriginalURL = sharedPreferences.getBoolean("use_original_url_playlist", false)
 
         val finalResults = mutableListOf<ResultItem>()
@@ -385,13 +423,18 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
     suspend fun getFormatsForAll(urls: List<String>, progress: (progress: ResultViewModel.MultipleFormatProgress) -> Unit) : Result<MutableList<MutableList<Format>>>  {
         val formatCollection = mutableListOf<MutableList<Format>>()
+        val validatedUrls = runCatching {
+            urls.map { validateDataFetchUrl(it) }
+        }.getOrElse {
+            return Result.failure(it)
+        }
 
         val urlsFile = File(context.cacheDir, "urls.txt")
         urlsFile.delete()
         withContext(Dispatchers.IO) {
             urlsFile.createNewFile()
         }
-        urls.forEach {
+        validatedUrls.forEach {
             urlsFile.appendText(it+"\n")
         }
 
@@ -399,46 +442,42 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             val request = YoutubeDLRequest(emptyList())
             request.addOption("--print", "formats")
             request.addOption("-a", urlsFile.absolutePath)
-            request.applyDefaultOptionsForFetchingData(urls.firstOrNull { it.isURL() })
-            if (urls.all { it.isYoutubeURL() }) {
-                request.setYoutubeExtractorArgs(urls[0])
+            request.applyDefaultOptionsForFetchingData(validatedUrls.firstOrNull { it.isURL() })
+            if (validatedUrls.all { it.isYoutubeURL() }) {
+                request.setYoutubeExtractorArgs(validatedUrls[0])
             }
             if (!request.hasOption("--no-check-certificates")) request.addOption("--no-check-certificates")
 
-            val txt = parseYTDLRequestString(request)
-            println(txt)
-
             var urlIdx = 0
-            YoutubeDL.getInstance().execute(request){ progress, _, line ->
+            YoutubeDL.getInstance().execute(request){ _, _, line ->
                 try{
-                    if (line.isNotBlank()){
-                        val url = urls[urlIdx]
-                        println(line)
-                        println(url)
+                    val trimmedLine = line.trim()
+                    if (trimmedLine.isNotBlank()){
+                        val url = validatedUrls.getOrNull(urlIdx) ?: return@execute
 
-                        if (line.contains("unavailable")) {
-                            progress(ResultViewModel.MultipleFormatProgress(url, listOf(), true, line))
+                        if (trimmedLine.contains("unavailable")) {
+                            progress(ResultViewModel.MultipleFormatProgress(url, listOf(), true, trimmedLine))
+                            urlIdx++
                         }else{
-                            val formatsJSON = JSONArray(line)
+                            val formatsJSON = JSONArray(trimmedLine)
                             val formats = parseYTDLFormats(formatsJSON)
 
                             formatCollection.add(formats)
                             progress(ResultViewModel.MultipleFormatProgress(url, formats))
+                            urlIdx++
                         }
                     }
 
                 }catch (e: Exception){
-                    Log.e("GET MULTIPLE FORMATS", e.toString())
+                    Log.e("GET MULTIPLE FORMATS", "Failed to parse formats line: ${e.javaClass.simpleName}")
                 }
-                urlIdx++
             }
         } catch (e: Exception) {
             e.message?.split(System.lineSeparator())?.onEach { line ->
-                println(line)
                 if (line.contains("unavailable")) {
                     runCatching {
                         val id = Regex("""\[.*?\] (\w+):""").find(line)!!.groupValues[1]
-                        val url = urls.first { it.contains(id) }
+                        val url = validatedUrls.first { it.contains(id) }
                         progress(
                             ResultViewModel.MultipleFormatProgress(
                                 url,
@@ -466,12 +505,13 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     }
 
     fun getFormats(url: String) : List<Format> {
-        val request = YoutubeDLRequest(url)
+        val safeUrl = validateDataFetchUrl(url)
+        val request = YoutubeDLRequest(safeUrl)
         request.addOption("--print", "%(formats)s")
         request.addOption("--print", "%(duration)s")
-        request.applyDefaultOptionsForFetchingData(url)
-        if (url.isYoutubeURL()) {
-            request.setYoutubeExtractorArgs(url)
+        request.applyDefaultOptionsForFetchingData(safeUrl)
+        if (safeUrl.isYoutubeURL()) {
+            request.setYoutubeExtractorArgs(safeUrl)
         }
         if (!request.hasOption("--no-check-certificates")) request.addOption("--no-check-certificates")
 
@@ -553,13 +593,14 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
     fun getStreamingUrlAndChapters(url: String) : Result<Pair<List<String>, List<ChapterItem>?>> {
         try {
-            val request = YoutubeDLRequest(url)
+            val safeUrl = validateDataFetchUrl(url)
+            val request = YoutubeDLRequest(safeUrl)
             //request.addOption("--get-url")
             request.addOption("--print", "%(.{urls,chapters})s")
             request.addOption("-S", "res:720,+proto:m3u8")
-            request.applyDefaultOptionsForFetchingData(url)
-            if (url.isYoutubeURL()) {
-                request.setYoutubeExtractorArgs(url)
+            request.applyDefaultOptionsForFetchingData(safeUrl)
+            if (safeUrl.isYoutubeURL()) {
+                request.setYoutubeExtractorArgs(safeUrl)
             }
 
             val youtubeDLResponse = YoutubeDL.getInstance().execute(request)
@@ -687,7 +728,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
     fun buildRequestDiagnostics(downloadItem: DownloadItem, request: YoutubeDLRequest): String {
         val normalizedDownloadPath = FileUtil.formatPath(downloadItem.downloadPath)
-        val canWriteDirectly = File(normalizedDownloadPath).canWrite()
+        val canWriteDirectly = FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
         val writtenPath = downloadItem.type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
         val cacheDownloadsEnabled = sharedPreferences.getBoolean("cache_downloads", true)
         val noCache = writtenPath || (!cacheDownloadsEnabled && canWriteDirectly)
@@ -730,7 +771,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     }
 
 
-    private fun YoutubeDLRequest.setYoutubeExtractorArgs(url: String?) {
+    private fun YoutubeDLRequest.setYoutubeExtractorArgs(
+        url: String?,
+        includeWebClientForSubtitles: Boolean = false
+    ) {
         val extractorArgs = mutableListOf<String>()
         val playerClients = mutableSetOf<String>()
         val poTokens = mutableListOf<String>()
@@ -747,7 +791,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
                     var canUsePoToken = true
                     if (value.urlRegex.isNotEmpty() && url != null) {
-                        canUsePoToken = value.urlRegex.any { url.matches(it.toRegex()) }
+                        canUsePoToken = value.urlRegex.any { safeRegexMatches(it, url, fullMatch = true) }
                     }
 
                     if (canUsePoToken) {
@@ -790,6 +834,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             }
         }
 
+        if (includeWebClientForSubtitles) {
+            playerClients.add("web")
+        }
+
         if (playerClients.isNotEmpty()){
             extractorArgs.add("player_client=${playerClients.joinToString(",")}")
         }else{
@@ -827,11 +875,13 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
     private fun YoutubeDLRequest.addConfig(commandString: String) {
         val normalizedCommandString = normalizeLegacyShellCommand(commandString)
+        val configFile = File(context.cacheDir.absolutePath + "/${System.currentTimeMillis()}${java.util.UUID.randomUUID()}.txt").apply {
+            writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(normalizedCommandString))
+        }
+        YoutubeDLCompat.allowAppGeneratedConfigFile(this, configFile)
         this.addOption(
             "--config-locations",
-            File(context.cacheDir.absolutePath + "/${System.currentTimeMillis()}${java.util.UUID.randomUUID()}.txt").apply {
-                writeText(normalizedCommandString)
-            }.absolutePath
+            configFile.absolutePath
         )
     }
 
@@ -840,6 +890,18 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         return commandString
             .replace("([A-Za-z_][A-Za-z0-9_]*):sh(\\s+-c\\b)".toRegex(), "$1:$shellPath$2")
             .replace("(^|\\s)sh(\\s+-c\\b)".toRegex(), "$1$shellPath$2")
+    }
+
+    private fun safeRegexMatches(pattern: String, value: String, fullMatch: Boolean): Boolean {
+        val safePattern = pattern.takeIf { it.length <= MAX_USER_REGEX_LENGTH } ?: return false
+        return try {
+            val regex = Regex(safePattern)
+            if (fullMatch) regex.matches(value) else regex.containsMatchIn(value)
+        } catch (_: PatternSyntaxException) {
+            false
+        } catch (_: IllegalArgumentException) {
+            false
+        }
     }
 
     private fun StringJoiner.addOption(vararg elements: Any) {
@@ -909,7 +971,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         val type = downloadItem.type
 
         val downDir : File
-        val canWrite = File(FileUtil.formatPath(downloadItem.downloadPath)).canWrite()
+        val canWrite = FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
         val writtenPath = type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
 
         if (writtenPath || (!sharedPreferences.getBoolean("cache_downloads", true) && canWrite)){
@@ -1056,7 +1118,12 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             }
 
             if (downloadItem.url.isYoutubeURL()) {
-                ytDlRequest.setYoutubeExtractorArgs(downloadItem.url)
+                ytDlRequest.setYoutubeExtractorArgs(
+                    downloadItem.url,
+                    includeWebClientForSubtitles = downloadItem.videoPreferences.embedSubs ||
+                        downloadItem.videoPreferences.writeSubs ||
+                        downloadItem.videoPreferences.writeAutoSubs
+                )
             }
 
             /*
@@ -1339,7 +1406,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
                 val preferredCodec = sharedPreferences.getString("video_codec", "")
                 val vCodecPrefIndex = context.getStringArray(R.array.video_codec_values).indexOf(preferredCodec)
-                var vCodecPref = context.getStringArray(R.array.video_codec_values_ytdlp)[vCodecPrefIndex]
+                var vCodecPref = context.getStringArray(R.array.video_codec_values_ytdlp)
+                    .getOrElse(vCodecPrefIndex.coerceAtLeast(0)) { "" }
+                val manualPreferredFormatIds = sharedPreferences.getString("format_id", "").toString()
+                    .split(",")
+                    .filter { it.isNotBlank() }
 
                 if (downloadItem.videoPreferences.compatibilityMode) {
                     vCodecPref = "h264"
@@ -1382,9 +1453,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                         videoF = "bv"
                     }
 
-                    val preferredFormatIDs = sharedPreferences.getString("format_id", "").toString()
-                        .split(",")
-                        .filter { it.isNotEmpty() }
+                    val preferredFormatIDs = manualPreferredFormatIds
                         .ifEmpty { listOf(videoF) }.toMutableList()
                     if (!preferredFormatIDs.contains(videoF)){
                         preferredFormatIDs.add(0, videoF)
@@ -1502,6 +1571,22 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 }
 
                 var formatExpr = f.toString().replace("/$".toRegex(), "")
+                val autoCompatibilityProfile = resolveAutomaticCompatibilityProfile(
+                    usingGenericFormat = usingGenericFormat,
+                    preferredCodec = preferredCodec,
+                    preferredFormatIds = manualPreferredFormatIds,
+                    item = downloadItem
+                )
+                if (autoCompatibilityProfile != null) {
+                    formatExpr = prependCompatibilityFormatFallback(
+                        existingExpr = formatExpr,
+                        profile = autoCompatibilityProfile,
+                        audioSelector = audioF,
+                        altAudioSelector = altAudioF,
+                        preferredAudioLanguage = preferredAudioLanguage,
+                        removeAudio = downloadItem.videoPreferences.removeAudio
+                    )
+                }
                 if (downloadItem.videoPreferences.embedSubs) {
                     // Hard-sub runtime ffmpeg on Android may not include AV1 decoders.
                     // Prefer non-AV1 video streams to keep burn-in path reliable.
@@ -1590,10 +1675,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         cache.mkdirs()
         val conf = File(cache.absolutePath + "/${System.currentTimeMillis()}${UUID.randomUUID()}.txt")
         conf.createNewFile()
-        conf.writeText(request.toString())
+        conf.writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(request.toString()))
         val tmp = mutableListOf<String>()
         tmp.addOption("--config-locations", conf.absolutePath)
         ytDlRequest.addCommands(tmp)
+        YoutubeDLCompat.allowAppGeneratedConfigFile(ytDlRequest, conf)
 
         ytDlRequest.addOption("--cache-dir", cache.absolutePath)
         return ytDlRequest
@@ -1681,6 +1767,144 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         }.getOrElse {
             " $label: error=${it.javaClass.simpleName}:${it.message.orEmpty().take(160)}"
         }
+    }
+
+    private fun resolveAutomaticCompatibilityProfile(
+        usingGenericFormat: Boolean,
+        preferredCodec: String?,
+        preferredFormatIds: List<String>,
+        item: DownloadItem
+    ): AutomaticCompatibilityProfile? {
+        if (!usingGenericFormat) return null
+        if (item.type != DownloadType.video) return null
+        if (item.videoPreferences.compatibilityMode) return null
+        if (item.videoPreferences.recodeVideo) return null
+
+        return listOf(
+            queryDecoderSupport(
+                ytDlpCodec = "h264",
+                codecRegex = "^(avc|h264)",
+                mimeType = MediaFormatMimeTypes.H264
+            ),
+            queryDecoderSupport(
+                ytDlpCodec = "h265",
+                codecRegex = "^(hev|hvc|h265|hevc)",
+                mimeType = MediaFormatMimeTypes.H265
+            ),
+            queryDecoderSupport(
+                ytDlpCodec = "vp9",
+                codecRegex = "^vp9",
+                mimeType = MediaFormatMimeTypes.VP9
+            ),
+            queryDecoderSupport(
+                ytDlpCodec = "av01",
+                codecRegex = "^av01?",
+                mimeType = MediaFormatMimeTypes.AV1
+            )
+        ).firstOrNull { it != null }
+    }
+
+    private fun prependCompatibilityFormatFallback(
+        existingExpr: String,
+        profile: AutomaticCompatibilityProfile,
+        audioSelector: String,
+        altAudioSelector: String,
+        preferredAudioLanguage: String,
+        removeAudio: Boolean
+    ): String {
+        val codecLimitedVideo = "bv*[vcodec~='${profile.codecRegex}'][height<=${profile.maxHeight}]"
+        val heightLimitedVideo = "bv*[height<=${profile.maxHeight}]"
+        val compatibilityTokens = mutableListOf<String>()
+
+        fun addVideoCandidates(videoSelector: String) {
+            if (removeAudio) {
+                compatibilityTokens.add(videoSelector)
+                return
+            }
+            if (audioSelector.isNotBlank()) {
+                compatibilityTokens.add("$videoSelector+$audioSelector")
+            }
+            if (altAudioSelector.isNotBlank()) {
+                compatibilityTokens.add("$videoSelector+$altAudioSelector")
+            }
+            if (preferredAudioLanguage.isNotBlank()) {
+                compatibilityTokens.add("$videoSelector+ba[language^=$preferredAudioLanguage]")
+            }
+            compatibilityTokens.add("$videoSelector+ba")
+            compatibilityTokens.add(videoSelector)
+        }
+
+        addVideoCandidates(codecLimitedVideo)
+        addVideoCandidates(heightLimitedVideo)
+
+        val compatibilityExpr = compatibilityTokens
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .joinToString("/")
+
+        if (compatibilityExpr.isBlank()) return existingExpr
+        if (existingExpr.isBlank()) return compatibilityExpr
+        return "$compatibilityExpr/$existingExpr"
+    }
+
+    private fun queryDecoderSupport(
+        ytDlpCodec: String,
+        codecRegex: String,
+        mimeType: String
+    ): AutomaticCompatibilityProfile? {
+        val maxHeight = runCatching {
+            MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
+                .asSequence()
+                .filterNot { it.isEncoder }
+                .filter { info -> info.supportedTypes.any { type -> type.equals(mimeType, ignoreCase = true) } }
+                .mapNotNull { info ->
+                    val capabilities = runCatching { info.getCapabilitiesForType(mimeType) }.getOrNull()
+                        ?: return@mapNotNull null
+                    val videoCapabilities = capabilities.videoCapabilities ?: return@mapNotNull null
+                    COMMON_VIDEO_HEIGHTS.firstOrNull { height ->
+                        isResolutionSupported(videoCapabilities, height)
+                    }
+                }
+                .maxOrNull()
+        }.getOrNull() ?: return null
+
+        if (maxHeight < 240) return null
+        return AutomaticCompatibilityProfile(
+            ytDlpCodec = ytDlpCodec,
+            codecRegex = codecRegex,
+            maxHeight = maxHeight
+        )
+    }
+
+    private fun isResolutionSupported(
+        capabilities: MediaCodecInfo.VideoCapabilities,
+        height: Int
+    ): Boolean {
+        val width = ((height * 16.0) / 9.0).toInt()
+        return runCatching {
+            capabilities.areSizeAndRateSupported(width, height, 30.0) ||
+                capabilities.areSizeAndRateSupported(height, width, 30.0)
+        }.getOrDefault(false)
+    }
+
+    private object MediaFormatMimeTypes {
+        const val H264 = "video/avc"
+        const val H265 = "video/hevc"
+        const val VP9 = "video/x-vnd.on2.vp9"
+        const val AV1 = "video/av01"
+    }
+
+    private data class AutomaticCompatibilityProfile(
+        val ytDlpCodec: String,
+        val codecRegex: String,
+        val maxHeight: Int
+    )
+
+    companion object {
+        private const val MAX_USER_REGEX_LENGTH = 512
+        private val COMMON_VIDEO_HEIGHTS = listOf(2160, 1440, 1080, 720, 480, 360, 240)
     }
 }
 

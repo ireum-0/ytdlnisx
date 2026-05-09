@@ -39,10 +39,10 @@ import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.yausername.youtubedl_android.YoutubeDL
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -82,7 +82,7 @@ class DownloadWorker(
         val workManager = WorkManager.getInstance(context)
         if (workManager.isRunning("download") || isStopped) return Result.Failure()
 
-        setForegroundSafely()
+        if (!setForegroundSafely()) return Result.retry()
 
         val notificationUtil = NotificationUtil(App.instance)
         val dbManager = DBManager.getInstance(context)
@@ -134,8 +134,8 @@ class DownloadWorker(
         )
         resetHardSubProgress()
 
-        queuedItems.collectLatest { items ->
-            if (this@DownloadWorker.isStopped) return@collectLatest
+        queuedItems.collect { items ->
+            if (this@DownloadWorker.isStopped) return@collect
 
             runningYTDLInstances.clear()
             val activeDownloads = dao.getActiveDownloadsList()
@@ -147,19 +147,19 @@ class DownloadWorker(
             val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
             if (items.isEmpty() && running.isEmpty()) {
                 WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
-                return@collectLatest
+                return@collect
             }
 
             if (useScheduler){
                 if (items.none{it.downloadStartTime > 0L} && running.isEmpty() && !alarmScheduler.isDuringTheScheduledTime()) {
                     WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
-                    return@collectLatest
+                    return@collect
                 }
             }
 
             if (priorityItemIDs.isEmpty() && !continueAfterPriorityIds) {
                 WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
-                return@collectLatest
+                return@collect
             }
 
             val concurrentDownloads = sharedPreferences.getInt("concurrent_downloads", 1) - running.size
@@ -182,18 +182,27 @@ class DownloadWorker(
                 }
             }
 
-            eligibleDownloads.forEach{downloadItem ->
-                if (isHardSubRedownload(downloadItem)) {
-                    registerHardSubTarget(downloadItem.id)
-                    updateHardSubWorkerNotification(notificationUtil)
+            if (eligibleDownloads.isNotEmpty()){
+                eligibleDownloads.forEach {
+                    it.status = DownloadRepository.Status.Active.toString()
+                    priorityItemIDs.remove(it.id)
                 }
-                val notification = notificationUtil.createDownloadServiceNotification(openDownloadQueue, downloadItem.title.ifEmpty { downloadItem.url })
-                notificationUtil.notify(downloadItem.id.toInt(), notification)
+                dao.updateMultiple(eligibleDownloads)
+            }
 
-                CoroutineScope(Dispatchers.IO).launch {
+            coroutineScope {
+                eligibleDownloads.forEach{downloadItem ->
+                    if (isHardSubRedownload(downloadItem)) {
+                        registerHardSubTarget(downloadItem.id)
+                        updateHardSubWorkerNotification(notificationUtil)
+                    }
+                    val notification = notificationUtil.createDownloadServiceNotification(openDownloadQueue, downloadItem.title.ifEmpty { downloadItem.url })
+                    notificationUtil.notify(downloadItem.id.toInt(), notification)
+
+                    launch(Dispatchers.IO) {
                     val writtenPath = downloadItem.format.format_note.contains("-P ")
                     var shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
-                    val noCache = writtenPath || (!sharedPreferences.getBoolean("cache_downloads", true) && File(FileUtil.formatPath(downloadItem.downloadPath)).canWrite())
+                    val noCache = writtenPath || (!sharedPreferences.getBoolean("cache_downloads", true) && FileUtil.canWriteToDestination(downloadItem.downloadPath, context))
 
                     val request = ytdlpUtil.buildYoutubeDLRequest(downloadItem)
 
@@ -204,7 +213,7 @@ class DownloadWorker(
 //                    }
 
                     downloadItem.status = DownloadRepository.Status.Active.toString()
-                    CoroutineScope(Dispatchers.IO).launch {
+                    launch {
                         delay(1500)
                         //update item if its incomplete
                         resultRepo.updateDownloadItem(downloadItem)?.apply {
@@ -215,10 +224,9 @@ class DownloadWorker(
                         }
                     }
 
-                    val cacheDir = FileUtil.getCachePath(context)
-                    val tempFileDir = File(cacheDir, downloadItem.id.toString())
-                    tempFileDir.delete()
-                    tempFileDir.mkdirs()
+                    val rawTempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
+                    var tempFileDir = rawTempFileDir
+                    var validatedTempFileDir: File? = null
 
                     val downloadLocation = downloadItem.downloadPath
                     val keepCache = sharedPreferences.getBoolean("keep_cache", false)
@@ -245,8 +253,12 @@ class DownloadWorker(
                     )
 
 
-                    if (logDownloads) logItem.id = logRepo.insert(logItem)
-                    downloadItem.logID = logItem.id
+                    if (logDownloads) {
+                        logItem.id = logRepo.insert(logItem)
+                        downloadItem.logID = logItem.id
+                    } else {
+                        downloadItem.logID = null
+                    }
                     dao.update(downloadItem)
 
                     val eventBus = EventBus.getDefault()
@@ -255,6 +267,20 @@ class DownloadWorker(
                     val downloadStartedAt = System.currentTimeMillis()
 
                     try {
+                        val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
+                        val canonicalTempFileDir = File(cacheRoot, downloadItem.id.toString()).canonicalFile
+                        if (canonicalTempFileDir.parentFile != cacheRoot || canonicalTempFileDir.name != downloadItem.id.toString()) {
+                            throw IOException("Unsafe temporary download directory: ${canonicalTempFileDir.absolutePath}")
+                        }
+                        tempFileDir = canonicalTempFileDir
+                        validatedTempFileDir = canonicalTempFileDir
+                        if (tempFileDir.exists() && !tempFileDir.deleteRecursively()) {
+                            throw IOException("Failed to clean temporary download directory: ${tempFileDir.absolutePath}")
+                        }
+                        if (!tempFileDir.mkdirs() && !tempFileDir.isDirectory) {
+                            throw IOException("Failed to create temporary download directory: ${tempFileDir.absolutePath}")
+                        }
+
                         YoutubeDL.getInstance().destroyProcessById(downloadItem.id.toString())
                         YoutubeDLCompat.destroyProcessById(downloadItem.id.toString())
                         val response = YoutubeDLCompat.execute(applicationContext, request, downloadItem.id.toString(), true){ progress, _, line ->
@@ -284,7 +310,7 @@ class DownloadWorker(
                                 lastNotificationUpdateAt = now
                                 lastNotificationProgress = intProgress
                             }
-                            CoroutineScope(Dispatchers.IO).launch {
+                            runBlocking(Dispatchers.IO) {
                                 if (logDownloads) {
                                     logRepo.update(line, logItem.id)
                                 }
@@ -293,7 +319,10 @@ class DownloadWorker(
                         }
 
                         resultRepo.updateDownloadItem(downloadItem)?.apply {
-                            dao.updateWithoutUpsert(this)
+                            val status = dao.checkStatus(this.id)
+                            if (status == DownloadRepository.Status.Active){
+                                dao.updateWithoutUpsert(this)
+                            }
                         }
                         //val wasQuickDownloaded = resultDao.getCountInt() == 0
                         var finalPaths = mutableListOf<String>()
@@ -918,7 +947,7 @@ class DownloadWorker(
 
                     } catch (it: Exception) {
                         if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
-                            Log.e(TAG, "HardSub failed id=${downloadItem.id} reason=${it.message}", it)
+                            Log.e(TAG, "HardSub failed id=${downloadItem.id} type=${it.javaClass.simpleName}")
                         }
                         FileUtil.deleteConfigFiles(request)
                         withContext(Dispatchers.Main){
@@ -935,17 +964,12 @@ class DownloadWorker(
 
                         if (logDownloads){
                             logRepo.update(it.message ?: "", logItem.id)
-                        }else{
-                            logString.append("${it.message ?: it.stackTraceToString()}\n")
-                            logItem.content = logString.toString()
-                            val logID = logRepo.insert(logItem)
-                            downloadItem.logID = logID
                         }
 
 
-                        tempFileDir.delete()
+                        validatedTempFileDir?.delete()
 
-                        Log.e(TAG, context.getString(R.string.failed_download), it)
+                        Log.e(TAG, "${context.getString(R.string.failed_download)} id=${downloadItem.id} type=${it.javaClass.simpleName}")
                         notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
 
                         downloadItem.status = DownloadRepository.Status.Error.toString()
@@ -967,14 +991,7 @@ class DownloadWorker(
                     }
                 }
             }
-
-            if (eligibleDownloads.isNotEmpty()){
-                eligibleDownloads.forEach {
-                    it.status = DownloadRepository.Status.Active.toString()
-                    priorityItemIDs.remove(it.id)
-                }
-                dao.updateMultiple(eligibleDownloads)
-            }
+        }
         }
 
         return Result.success()

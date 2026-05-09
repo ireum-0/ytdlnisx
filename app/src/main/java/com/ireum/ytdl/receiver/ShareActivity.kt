@@ -62,6 +62,8 @@ class ShareActivity : BaseActivity() {
     private lateinit var sharedPreferences: SharedPreferences
     private lateinit var navController: NavController
     private var quickDownload by Delegates.notNull<Boolean>()
+    private var overlayWindowManager: WindowManager? = null
+    private var overlayView: View? = null
 
 
 
@@ -89,6 +91,8 @@ class ShareActivity : BaseActivity() {
             val myView: View = inflater.inflate(R.layout.activity_share, null)
             window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             wm.addView(myView, params)
+            overlayWindowManager = wm
+            overlayView = myView
 
 //            window.addFlags(
 //                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -129,6 +133,18 @@ class ShareActivity : BaseActivity() {
         val intent = intent
         handleIntents(intent)
     }
+
+    override fun onDestroy() {
+        overlayView?.let { view ->
+            runCatching {
+                overlayWindowManager?.removeView(view)
+            }
+        }
+        overlayView = null
+        overlayWindowManager = null
+        super.onDestroy()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntents(intent)
@@ -182,8 +198,7 @@ class ShareActivity : BaseActivity() {
             val inputQuery = data.extractURL()
             val ai = packageManager.getActivityInfo(componentName, PackageManager.GET_META_DATA)
 
-            val type = intent.getStringExtra("TYPE")
-            val background = intent.getBooleanExtra("BACKGROUND", ai.metaData?.getBoolean("quick_run_background", false) == true)
+            val background = ai.metaData?.getBoolean("quick_run_background", false) == true
 
             lifecycleScope.launch {
                 val result: ResultItem
@@ -198,7 +213,7 @@ class ShareActivity : BaseActivity() {
                     result = existingResults.first()
                 }
 
-                val downloadType = DownloadType.valueOf(type ?: downloadViewModel.getDownloadType(url = result.url).toString())
+                val downloadType = downloadViewModel.getDownloadType(url = result.url)
                 if (sharedPreferences.getBoolean("download_card", true) && !background){
                     val bundle = Bundle()
                     bundle.putParcelable("result", result)

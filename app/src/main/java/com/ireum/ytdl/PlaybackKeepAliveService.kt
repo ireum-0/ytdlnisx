@@ -39,6 +39,10 @@ class PlaybackKeepAliveService : Service() {
                     buildNotification(title, content, openIntent)
                 )
             }
+            else -> {
+                stopSelf(startId)
+                return START_NOT_STICKY
+            }
         }
         return START_STICKY
     }

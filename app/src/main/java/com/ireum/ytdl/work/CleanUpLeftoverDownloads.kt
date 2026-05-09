@@ -13,7 +13,6 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.google.android.material.snackbar.Snackbar
-import java.io.File
 
 
 class CleanUpLeftoverDownloads(
@@ -38,7 +37,7 @@ class CleanUpLeftoverDownloads(
 
         val activeDownloadCount = downloadRepo.getActiveDownloadsCount()
         if (activeDownloadCount == 0){
-            File(FileUtil.getCachePath(context)).deleteRecursively()
+            FileUtil.deleteCachePathIfAppOwned(context)
         }
 
         return Result.success()

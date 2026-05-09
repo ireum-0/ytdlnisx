@@ -162,12 +162,13 @@
 
     </androidx.constraintlayout.widget.ConstraintLayout>
 
-    <include layout="@layout/no_results"
+    <include
+        android:id="@+id/no_results"
+        layout="@layout/no_results"
         android:visibility="gone" />
 
 
     <include
-        android:id="@+id/no_results"
         layout="@layout/history_item_details_bottom_sheet"
         android:visibility="gone" />
 

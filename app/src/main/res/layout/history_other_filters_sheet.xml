@@ -112,6 +112,34 @@
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/typeFilters"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="20dp"
+            android:layout_marginBottom="10dp"
+            android:text="@string/media_type"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/typeChipGroup"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="20dp"
+            android:layout_marginBottom="20dp"
+            app:chipSpacing="0dp"
+            app:chipSpacingVertical="-10dp"
+            app:selectionRequired="true"
+            app:singleLine="false"
+            app:singleSelection="false" />
+    </LinearLayout>
+
+    <LinearLayout
         android:id="@+id/displayFilters"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

@@ -290,10 +290,13 @@ interface DownloadDao {
     fun getUnfinishedByURLAndFormat(url: String, format: String) : DownloadItem
 
 
-    @Query("SELECT COUNT(downloadStartTime) = 0 from downloads WHERE id in (:items) AND " +
-            "CASE :inverted " +
-            "WHEN :inverted = 'false' THEN downloadStartTime > :currentStartTime " +
-            "WHEN :inverted = 'true' THEN downloadStartTime < :currentStartTime ELSE downloadStartTime < -1 END")
+    @Query(
+        "SELECT COUNT(*) = 0 FROM downloads " +
+            "WHERE id IN (:items) AND (" +
+            "(:inverted = 'false' AND downloadStartTime <= :currentStartTime) OR " +
+            "(:inverted = 'true' AND downloadStartTime >= :currentStartTime)" +
+            ")"
+    )
     fun checkAllQueuedItemsAreScheduledAfterNow(items: List<Long>, inverted: String, currentStartTime: Long) : Boolean
 
 

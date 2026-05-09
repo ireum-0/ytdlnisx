@@ -58,12 +58,15 @@ class LocalAddWorker(
         } else {
             emptyList()
         }
-        if (entries.isEmpty()) return Result.success()
+        if (entries.isEmpty()) {
+            LocalAddStorage.clearProgressSnapshot(context)
+            return Result.success()
+        }
         val dedupedEntries = entries.distinctBy { entry ->
             localEntryIdentity(entry)
         }
         // Prevent background restrictions from stopping a long-running local add session.
-        setForegroundSafely()
+        if (!setForegroundSafely()) return Result.retry()
 
         val db = DBManager.getInstance(context)
         val resultRepository = ResultRepository(db.resultDao, db.commandTemplateDao, context)
@@ -182,6 +185,7 @@ class LocalAddWorker(
             )
         }
 
+        LocalAddStorage.clearProgressSnapshot(context)
         return Result.success()
     }
 

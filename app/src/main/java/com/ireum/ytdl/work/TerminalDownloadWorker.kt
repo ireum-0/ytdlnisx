@@ -26,10 +26,10 @@ import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.greenrobot.eventbus.EventBus
 import java.io.File
 
@@ -53,21 +53,30 @@ class TerminalDownloadWorker(
         val intent = Intent(context, TerminalActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         val notification = notificationUtil.createDownloadServiceNotification(pendingIntent, command.take(65), NotificationUtil.DOWNLOAD_TERMINAL_RUNNING_NOTIFICATION_ID)
-        if (Build.VERSION.SDK_INT >= 33) {
-            setForegroundAsync(ForegroundInfo(itemId, notification, FOREGROUND_SERVICE_TYPE_DATA_SYNC))
+        val foregroundInfo = if (Build.VERSION.SDK_INT >= 33) {
+            ForegroundInfo(itemId, notification, FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         }else{
-            setForegroundAsync(ForegroundInfo(itemId, notification))
+            ForegroundInfo(itemId, notification)
+        }
+        runCatching {
+            setForeground(foregroundInfo)
+            delay(500)
+        }.onFailure {
+            Log.e(TAG, "Failed to enter foreground", it)
+            return Result.retry()
         }
 
         val request = YoutubeDLRequest(emptyList())
         val sharedPreferences =  PreferenceManager.getDefaultSharedPreferences(context)
 
         val downloadLocation = sharedPreferences.getString("command_path", FileUtil.getDefaultCommandPath())
+        val configFile = File(context.cacheDir.absolutePath + "/config-TERMINAL[${System.currentTimeMillis()}].txt").apply {
+            writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(command))
+        }
+        YoutubeDLCompat.allowAppGeneratedConfigFile(request, configFile)
         request.addOption(
             "--config-locations",
-            File(context.cacheDir.absolutePath + "/config-TERMINAL[${System.currentTimeMillis()}].txt").apply {
-                writeText(command)
-            }.absolutePath
+            configFile.absolutePath
         )
 
         if (sharedPreferences.getBoolean("use_cookies", false)){
@@ -83,7 +92,7 @@ class TerminalDownloadWorker(
         }
 
         val commandPath = sharedPreferences.getString("command_path", FileUtil.getDefaultCommandPath()) ?: FileUtil.getDefaultCommandPath()
-        var noCache = !sharedPreferences.getBoolean("cache_downloads", true) && File(FileUtil.formatPath(commandPath)).canWrite()
+        var noCache = !sharedPreferences.getBoolean("cache_downloads", true) && FileUtil.canWriteToDestination(commandPath, context)
 
         if (command.contains("-P ")) {
             noCache = true
@@ -130,29 +139,22 @@ class TerminalDownloadWorker(
                     line, progress.toInt(), title,
                     NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID
                 )
-                CoroutineScope(Dispatchers.IO).launch {
+                runBlocking(Dispatchers.IO) {
                     if (logDownloads) logRepo.update(line, logItem.id)
                     dao.updateLog(line, itemId.toLong())
                 }
             }
 
-            CoroutineScope(Dispatchers.IO).launch {
+            withContext(Dispatchers.IO) {
                 if(!noCache){
                     //move file from internal to set download directory
-                    try {
-                        FileUtil.moveFile(
-                            File(FileUtil.getCachePath(context) + "/TERMINAL/" + itemId),
-                            context,
-                            downloadLocation ?: FileUtil.getDefaultCommandPath(),
-                            false
-                        ){ p ->
-                            eventBus.post(DownloadWorker.WorkerProgress(p, "", itemId.toLong(), logItem.id))
-                        }
-                    }catch (e: Exception){
-                        e.printStackTrace()
-                        handler.postDelayed({
-                            Toast.makeText(context, e.message, Toast.LENGTH_SHORT).show()
-                        }, 1000)
+                    FileUtil.moveFile(
+                        File(FileUtil.getCachePath(context) + "/TERMINAL/" + itemId),
+                        context,
+                        downloadLocation ?: FileUtil.getDefaultCommandPath(),
+                        false
+                    ){ p ->
+                        eventBus.post(DownloadWorker.WorkerProgress(p, "", itemId.toLong(), logItem.id))
                     }
                 }
             }
@@ -163,16 +165,23 @@ class TerminalDownloadWorker(
             dao.delete(itemId.toLong())
             return Result.success()
         } catch (it: Exception) {
+            handler.postDelayed({
+                Toast.makeText(context, it.message, Toast.LENGTH_SHORT).show()
+            }, 1000)
             if (it.message != null){
                 if (logDownloads) logRepo.update(it.message!!, logItem.id)
                 dao.updateLog(it.message!!, itemId.toLong())
             }
             notificationUtil.cancelDownloadNotification(itemId)
-            File(FileUtil.getDefaultCommandPath() + "/" + itemId).deleteRecursively()
+            if (!noCache) {
+                File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
+            }
             Log.e(TAG, context.getString(R.string.failed_download), it)
             delay(1000)
             dao.delete(itemId.toLong())
             return Result.failure()
+        } finally {
+            FileUtil.deleteConfigFiles(request)
         }
         return Result.success()
 

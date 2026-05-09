@@ -546,8 +546,8 @@ class NotificationUtil(var context: Context) {
         )
 
         notificationBuilder
-            .setContentTitle("${res.getString(R.string.failed_download)}: $title")
-            .setContentText(error)
+            .setContentTitle(res.getString(R.string.failed_download))
+            .setContentText(res.getString(R.string.errored))
             .setSmallIcon(R.drawable.baseline_error_24)
             .setLargeIcon(
                 BitmapFactory.decodeResource(
@@ -558,7 +558,7 @@ class NotificationUtil(var context: Context) {
             .setGroup(DOWNLOAD_ERRORED_NOTIFICATION_ID.toString())
             .setContentIntent(errorTabPendingIntent)
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .clearActions()
 
         notificationBuilder.addAction(0, res.getString(R.string.configure_download), reconfigurePendingItent)

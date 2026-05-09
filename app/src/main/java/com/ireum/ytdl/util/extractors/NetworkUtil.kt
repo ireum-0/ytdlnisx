@@ -11,7 +11,7 @@ import java.net.URL
 object NetworkUtil {
 
     fun genericRequest(url: String): JSONObject {
-        Log.e(NetworkUtil.toString(), url)
+        Log.d(NetworkUtil.toString(), "genericRequest")
         val reader: BufferedReader
         var line: String?
         val responseContent = StringBuilder()
@@ -48,14 +48,14 @@ object NetworkUtil {
             }
             conn.disconnect()
         } catch (e: Exception) {
-            Log.e(NetworkUtil.toString(), e.toString())
+            Log.e(NetworkUtil.toString(), "genericRequest failed: ${e.javaClass.simpleName}")
             runCatching { json.put("_httpCode", -1) }
         }
         return json
     }
 
     fun genericArrayRequest(url: String): JSONArray {
-        Log.e(NetworkUtil.toString(), url)
+        Log.d(NetworkUtil.toString(), "genericArrayRequest")
         val reader: BufferedReader
         var line: String?
         val responseContent = StringBuilder()
@@ -85,7 +85,7 @@ object NetworkUtil {
             }
             conn.disconnect()
         } catch (e: Exception) {
-            Log.e(NetworkUtil.toString(), e.toString())
+            Log.e(NetworkUtil.toString(), "genericArrayRequest failed: ${e.javaClass.simpleName}")
         }
         return json
     }

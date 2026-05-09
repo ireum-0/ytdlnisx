@@ -17,27 +17,31 @@ class PauseDownloadNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, intent: Intent) {
         val result = goAsync()
         val id = intent.getIntExtra("itemID", 0)
-        if (id != 0) {
-            runCatching {
-                val title = intent.getStringExtra("title")
-                val notificationUtil = NotificationUtil(c)
-                notificationUtil.cancelDownloadNotification(id)
-                YoutubeDL.getInstance().destroyProcessById(id.toString())
-                YoutubeDLCompat.destroyProcessById(id.toString())
-                val dbManager = DBManager.getInstance(c)
-                CoroutineScope(Dispatchers.IO).launch{
-                    try {
-                        val item = dbManager.downloadDao.getDownloadById(id.toLong())
-                        item.status = DownloadRepository.Status.Paused.toString()
-                        dbManager.downloadDao.update(item)
-                    }finally {
-                        withContext(Dispatchers.Main){
-                            notificationUtil.createResumeDownload(id, title)
-                            result.finish()
-                        }
+        if (id == 0) {
+            result.finish()
+            return
+        }
+        runCatching {
+            val title = intent.getStringExtra("title")
+            val notificationUtil = NotificationUtil(c)
+            notificationUtil.cancelDownloadNotification(id)
+            YoutubeDL.getInstance().destroyProcessById(id.toString())
+            YoutubeDLCompat.destroyProcessById(id.toString())
+            val dbManager = DBManager.getInstance(c)
+            CoroutineScope(Dispatchers.IO).launch{
+                try {
+                    val item = dbManager.downloadDao.getDownloadById(id.toLong())
+                    item.status = DownloadRepository.Status.Paused.toString()
+                    dbManager.downloadDao.update(item)
+                }finally {
+                    withContext(Dispatchers.Main){
+                        notificationUtil.createResumeDownload(id, title)
+                        result.finish()
                     }
                 }
             }
+        }.onFailure {
+            result.finish()
         }
     }
 }

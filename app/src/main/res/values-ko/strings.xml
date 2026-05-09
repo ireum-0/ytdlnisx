@@ -41,6 +41,7 @@
     <string name="downloading_update">새 버전 다운로드 중…</string>
     <string name="audio">오디오</string>
     <string name="video">비디오</string>
+    <string name="media_type">유형</string>
     <string name="concurrent_fragments_summary">동시에 다운로드할 DASH/HLS 네이티브 비디오 조각 수</string>
     <string name="concurrent_fragments">동시 다운로드 조각 수</string>
     <string name="downloading">다운로드</string>
