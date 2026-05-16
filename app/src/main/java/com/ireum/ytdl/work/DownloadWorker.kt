@@ -36,9 +36,14 @@ import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.Extensions.toDurationSeconds
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.SubtitleFileValidator
+import com.ireum.ytdl.util.SubtitleFormatConverter
+import com.ireum.ytdl.util.SubtitleSelection
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
+import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -47,8 +52,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.greenrobot.eventbus.EventBus
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.io.PrintStream
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -204,7 +211,8 @@ class DownloadWorker(
                     var shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
                     val noCache = writtenPath || (!sharedPreferences.getBoolean("cache_downloads", true) && FileUtil.canWriteToDestination(downloadItem.downloadPath, context))
 
-                    val request = ytdlpUtil.buildYoutubeDLRequest(downloadItem)
+                    var request = ytdlpUtil.buildYoutubeDLRequest(downloadItem)
+                    val requestsToCleanup = mutableListOf(request)
 
                     // DISABLED BECAUSE YT_DLP CONSIDERS DOWNLOAD FAILURE IF -U PART FAILS, ytdlnisx #1043
 //                    val updateYTDLP = sharedPreferences.getBoolean("update_ytdlp_while_downloading", false)
@@ -235,7 +243,8 @@ class DownloadWorker(
 
 
                     val commandString = ytdlpUtil.parseYTDLRequestString(request)
-                    val requestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request)
+                    var effectiveCommandString = commandString
+                    val requestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, commandString)
                     val initialLogDetails = "Downloading:\n" +
                             "Title: ${downloadItem.title}\n" +
                             "URL: ${downloadItem.url}\n" +
@@ -265,6 +274,7 @@ class DownloadWorker(
                     var lastNotificationUpdateAt = 0L
                     var lastNotificationProgress = -1
                     val downloadStartedAt = System.currentTimeMillis()
+                    val recentYtdlpOutput = ArrayDeque<String>()
 
                     try {
                         val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
@@ -281,41 +291,90 @@ class DownloadWorker(
                             throw IOException("Failed to create temporary download directory: ${tempFileDir.absolutePath}")
                         }
 
-                        YoutubeDL.getInstance().destroyProcessById(downloadItem.id.toString())
-                        YoutubeDLCompat.destroyProcessById(downloadItem.id.toString())
-                        val response = YoutubeDLCompat.execute(applicationContext, request, downloadItem.id.toString(), true){ progress, _, line ->
-                            if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
-                                val lowerLine = line.lowercase(Locale.US)
-                                if (
-                                    lowerLine.contains("downloading subtitles") ||
-                                    lowerLine.contains("writing video subtitles to:") ||
-                                    lowerLine.contains("subtitle") ||
-                                    lowerLine.contains("subtitlesconvertor")
-                                ) {
-                                    Log.i(TAG, "HardSub sub log id=${downloadItem.id}: $line")
+                        fun executeYtdlpRequest(requestToRun: YoutubeDLRequest): YoutubeDLResponse {
+                            YoutubeDL.getInstance().destroyProcessById(downloadItem.id.toString())
+                            YoutubeDLCompat.destroyProcessById(downloadItem.id.toString())
+                            return YoutubeDLCompat.execute(applicationContext, requestToRun, downloadItem.id.toString(), true){ progress, _, line ->
+                                if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
+                                    val lowerLine = line.lowercase(Locale.US)
+                                    if (
+                                        lowerLine.contains("downloading subtitles") ||
+                                        lowerLine.contains("writing video subtitles to:") ||
+                                        lowerLine.contains("subtitle") ||
+                                        lowerLine.contains("subtitlesconvertor")
+                                    ) {
+                                        Log.i(TAG, "HardSub sub log id=${downloadItem.id}: $line")
+                                    }
+                                }
+                                eventBus.post(WorkerProgress(progress.toInt(), line, downloadItem.id, downloadItem.logID))
+                                val title: String = downloadItem.title.ifEmpty { downloadItem.url }
+                                val now = System.currentTimeMillis()
+                                val intProgress = progress.toInt()
+                                val progressAdvancedEnough = lastNotificationProgress < 0 || (intProgress - lastNotificationProgress) >= 2
+                                if (now - lastNotificationUpdateAt >= 800L || progressAdvancedEnough || intProgress >= 100) {
+                                    notificationUtil.updateDownloadNotification(
+                                        downloadItem.id.toInt(),
+                                        line, intProgress, 0, title,
+                                        NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
+                                        getHardSubStatusText(resources)
+                                    )
+                                    lastNotificationUpdateAt = now
+                                    lastNotificationProgress = intProgress
+                                }
+                                runBlocking(Dispatchers.IO) {
+                                    if (logDownloads) {
+                                        logRepo.update(line, logItem.id)
+                                    }
+                                    logString.append("$line\n")
+                                    recentYtdlpOutput.addLast(line)
+                                    while (recentYtdlpOutput.size > FAILURE_YTDLP_TAIL_LINES) {
+                                        recentYtdlpOutput.removeFirst()
+                                    }
                                 }
                             }
-                            eventBus.post(WorkerProgress(progress.toInt(), line, downloadItem.id, downloadItem.logID))
-                            val title: String = downloadItem.title.ifEmpty { downloadItem.url }
-                            val now = System.currentTimeMillis()
-                            val intProgress = progress.toInt()
-                            val progressAdvancedEnough = lastNotificationProgress < 0 || (intProgress - lastNotificationProgress) >= 2
-                            if (now - lastNotificationUpdateAt >= 800L || progressAdvancedEnough || intProgress >= 100) {
-                                notificationUtil.updateDownloadNotification(
-                                    downloadItem.id.toInt(),
-                                    line, intProgress, 0, title,
-                                    NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
-                                    getHardSubStatusText(resources)
-                                )
-                                lastNotificationUpdateAt = now
-                                lastNotificationProgress = intProgress
+                        }
+                        var retryLogDetails = ""
+                        val response = try {
+                            executeYtdlpRequest(request)
+                        } catch (firstError: Exception) {
+                            if (!shouldRetryWithoutCachedInfoJson(firstError, commandString)) {
+                                throw firstError
                             }
-                            runBlocking(Dispatchers.IO) {
-                                if (logDownloads) {
-                                    logRepo.update(line, logItem.id)
-                                }
-                                logString.append("$line\n")
+
+                            deleteLoadedAppInfoJson(commandString)
+                            val retryNotice = "Cached info JSON media URL returned 403; retrying without --load-info-json"
+                            Log.w(TAG, "$retryNotice id=${downloadItem.id}", firstError)
+                            eventBus.post(WorkerProgress(0, retryNotice, downloadItem.id, downloadItem.logID))
+                            notificationUtil.updateDownloadNotification(
+                                downloadItem.id.toInt(),
+                                retryNotice, 0, 0,
+                                downloadItem.title.ifEmpty { downloadItem.url },
+                                NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
+                                getHardSubStatusText(resources)
+                            )
+                            if (tempFileDir.exists() && !tempFileDir.deleteRecursively()) {
+                                throw IOException("Failed to clean temporary download directory before retry: ${tempFileDir.absolutePath}")
                             }
+                            if (!tempFileDir.mkdirs() && !tempFileDir.isDirectory) {
+                                throw IOException("Failed to recreate temporary download directory before retry: ${tempFileDir.absolutePath}")
+                            }
+
+                            request = ytdlpUtil.buildYoutubeDLRequest(downloadItem, useCachedInfoJson = false)
+                            requestsToCleanup.add(request)
+                            val retryCommandString = ytdlpUtil.parseYTDLRequestString(request)
+                            effectiveCommandString = retryCommandString
+                            val retryRequestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, retryCommandString)
+                            retryLogDetails = "\nRetry:\n" +
+                                "Reason: cached info JSON media URL returned 403\n" +
+                                "First error:\n${firstError.message.orEmpty().takeLast(4000)}\n" +
+                                "Command:\n$retryCommandString \n" +
+                                "$retryRequestDiagnostics\n"
+                            if (logDownloads) {
+                                logRepo.update(retryLogDetails, logItem.id)
+                            }
+                            logString.append(retryLogDetails)
+
+                            executeYtdlpRequest(request)
                         }
 
                         resultRepo.updateDownloadItem(downloadItem)?.apply {
@@ -443,7 +502,7 @@ class DownloadWorker(
                                 } else {
                                     Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${preMoveBurnPaths.size} mode=pre-move")
                                     eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
-                                    val burned = burnSubtitlesInPlace(preMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID)
+                                    val burned = burnSubtitlesInPlace(preMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
                                     hardSubBurned = hardSubBurned || burned
                                     if (burned) {
                                         eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
@@ -479,7 +538,7 @@ class DownloadWorker(
                             if (lateHasMedia) {
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${latePreMoveBurnPaths.size} mode=pre-move-late")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
-                                val burned = burnSubtitlesInPlace(latePreMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID)
+                                val burned = burnSubtitlesInPlace(latePreMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
                                 hardSubBurned = hardSubBurned || burned
                                 if (burned) {
                                     deferBurnUntilPostMove = false
@@ -724,7 +783,7 @@ class DownloadWorker(
                             } else {
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${postMoveBurnPaths.size} mode=post-move")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
-                                val burned = burnSubtitlesInPlace(postMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID)
+                                val burned = burnSubtitlesInPlace(postMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
                                 hardSubBurned = hardSubBurned || burned
                                 if (!burned && isHardSubRedownload(downloadItem)) {
                                     throw IOException("HardSub aborted: no media was burned in post-move stage")
@@ -778,7 +837,7 @@ class DownloadWorker(
                             Log.i(TAG, "HardSub post-remap paths=${finalPaths.size}")
                             Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${finalPaths.size}")
                             eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
-                            val burned = burnSubtitlesInPlace(finalPaths, noKeepSubs, downloadItem.id, downloadItem.logID)
+                            val burned = burnSubtitlesInPlace(finalPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
                             hardSubBurned = hardSubBurned || burned
                             if (!burned && isHardSubRedownload(downloadItem)) {
                                 throw IOException("HardSub aborted: no media was burned")
@@ -791,11 +850,22 @@ class DownloadWorker(
                             }
                         }
 
+                        if (
+                            downloadItem.type == DownloadType.video &&
+                            !downloadItem.videoPreferences.embedSubs &&
+                            (
+                                commandHasYtdlpOption(effectiveCommandString, "--write-subs") ||
+                                    commandHasYtdlpOption(effectiveCommandString, "--write-auto-subs")
+                            )
+                        ) {
+                            validateSavedSubtitleSidecars(downloadItem, finalPaths, downloadLocation, downloadStartedAt)
+                        }
+
                         val nonMediaExtensions = mutableSetOf<String>().apply {
                             addAll(context.getStringArray(R.array.thumbnail_containers_values).map { it.lowercase(Locale.US) })
                             addAll(context.getStringArray(R.array.sub_formats_values).filter { it.isNotBlank() }.map { it.lowercase(Locale.US) })
                             // Hard-sub flow can download rich subtitle sidecars not present in sub_formats_values.
-                            addAll(listOf("srv3", "json3", "ttml"))
+                            addAll(listOf("srv3", "json3", "json", "ttml"))
                             add("description")
                             add("txt")
                         }
@@ -841,7 +911,7 @@ class DownloadWorker(
                             }
                             Log.i(TAG, "HardSub final paths id=${downloadItem.id} count=${finalPaths.size} sample=$summary")
                         }
-                        FileUtil.deleteConfigFiles(request)
+                        requestsToCleanup.forEach { FileUtil.deleteConfigFiles(it) }
 
                         //put download in history
                         if (!downloadItem.incognito) {
@@ -942,14 +1012,16 @@ class DownloadWorker(
                         dao.delete(downloadItem.id)
 
                         if (logDownloads){
-                            logRepo.update(initialLogDetails + response.out, logItem.id, true)
+                            logRepo.update(initialLogDetails + retryLogDetails + response.out, logItem.id, true)
                         }
 
                     } catch (it: Exception) {
                         if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
                             Log.e(TAG, "HardSub failed id=${downloadItem.id} type=${it.javaClass.simpleName}")
                         }
-                        FileUtil.deleteConfigFiles(request)
+                        requestsToCleanup.forEach { requestToCleanup ->
+                            FileUtil.deleteConfigFiles(requestToCleanup)
+                        }
                         withContext(Dispatchers.Main){
                             notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
                         }
@@ -962,14 +1034,25 @@ class DownloadWorker(
                             FileUtil.deleteFile("${cachePath}/${infoJsonName}.info.json")
                         }
 
+                        val failureDiagnostics = buildFailureDiagnostics(
+                            error = it,
+                            item = downloadItem,
+                            requestCommand = effectiveCommandString,
+                            tempDir = validatedTempFileDir ?: tempFileDir,
+                            recentOutput = recentYtdlpOutput.toList()
+                        )
                         if (logDownloads){
-                            logRepo.update(it.message ?: "", logItem.id)
+                            logRepo.update(failureDiagnostics, logItem.id)
                         }
 
 
                         validatedTempFileDir?.delete()
 
-                        Log.e(TAG, "${context.getString(R.string.failed_download)} id=${downloadItem.id} type=${it.javaClass.simpleName}")
+                        Log.e(
+                            TAG,
+                            "${context.getString(R.string.failed_download)} id=${downloadItem.id} type=${it.javaClass.simpleName}",
+                            it
+                        )
                         notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
 
                         downloadItem.status = DownloadRepository.Status.Error.toString()
@@ -1008,12 +1091,151 @@ class DownloadWorker(
         private val hardSubProcessedIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
         private val hardSubDisabledFfmpegSources: MutableSet<String> = ConcurrentHashMap.newKeySet()
         private val hardSubFilterSupportCache: MutableMap<String, Set<String>> = ConcurrentHashMap()
+        private val loadInfoJsonOptionRegex = Regex("""--load-info-json\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
+        private const val FAILURE_YTDLP_TAIL_LINES = 160
+        private const val FAILURE_FILE_LIST_LIMIT = 80
+        private const val FAILURE_STACK_TRACE_LIMIT = 6000
+    }
+
+    private fun commandHasYtdlpOption(commandString: String, option: String): Boolean {
+        return Regex("""(?:^|\s)${Regex.escape(option)}(?:\s|$)""").containsMatchIn(commandString)
+    }
+
+    private fun buildFailureDiagnostics(
+        error: Exception,
+        item: DownloadItem,
+        requestCommand: String,
+        tempDir: File,
+        recentOutput: List<String>
+    ): String {
+        val stackTrace = ByteArrayOutputStream().use { out ->
+            PrintStream(out).use { ps -> error.printStackTrace(ps) }
+            redactFailureDiagnosticValue(out.toString(Charsets.UTF_8.name())).take(FAILURE_STACK_TRACE_LIMIT)
+        }
+        val outputTail = recentOutput
+            .takeLast(FAILURE_YTDLP_TAIL_LINES)
+            .joinToString("\n")
+            .let { redactFailureDiagnosticValue(it) }
+            .ifBlank { "<none>" }
+        val errorMessage = redactFailureDiagnosticValue(error.message.orEmpty()).takeLast(4000)
+
+        return buildString {
+            appendLine()
+            appendLine("Failure Diagnostics:")
+            appendLine("exceptionType: ${error.javaClass.name}")
+            appendLine("exceptionMessage: $errorMessage")
+            appendLine("downloadId: ${item.id}")
+            appendLine("type: ${item.type}")
+            appendLine("formatId: ${item.format.format_id}")
+            appendLine("formatContainer: ${item.format.container}")
+            appendLine("formatVcodec: ${item.format.vcodec}")
+            appendLine("formatAcodec: ${item.format.acodec}")
+            appendLine("selectedContainer: ${item.container}")
+            appendLine("videoRecode: ${item.videoPreferences.recodeVideo}")
+            appendLine("videoCompatibilityMode: ${item.videoPreferences.compatibilityMode}")
+            appendLine("videoEmbedSubs: ${item.videoPreferences.embedSubs}")
+            appendLine("videoWriteSubs: ${item.videoPreferences.writeSubs}")
+            appendLine("videoWriteAutoSubs: ${item.videoPreferences.writeAutoSubs}")
+            appendLine("hasLoadInfoJson: ${commandHasYtdlpOption(requestCommand, "--load-info-json")}")
+            appendLine("mergeOutputFormat: ${requestCommand.firstYtdlpOptionValue("--merge-output-format") ?: "<none>"}")
+            appendLine("formatSelector: ${requestCommand.firstYtdlpOptionValue("-f") ?: "<none>"}")
+            appendLine("sortSelector: ${requestCommand.firstYtdlpOptionValue("-S") ?: "<none>"}")
+            appendLine("tempDir: ${tempDir.absolutePath}")
+            appendLine(buildTempDirectoryDiagnostics(tempDir))
+            appendLine("ytDlpRecentOutputLast${FAILURE_YTDLP_TAIL_LINES}:")
+            appendLine(outputTail)
+            appendLine("stackTrace:")
+            appendLine(stackTrace)
+        }
+    }
+
+    private fun redactFailureDiagnosticValue(value: String): String {
+        return value
+            .replace(Regex("""po_token=[^;"\s]+"""), "po_token=<redacted>")
+            .replace(Regex("""pot=[^&;"\s]+"""), "pot=<redacted>")
+            .replace(Regex("""visitor_data=[^;"\s]+"""), "visitor_data=<redacted>")
+            .replace(Regex("""data_sync_id=[^;"\s]+"""), "data_sync_id=<redacted>")
+            .replace(Regex("""(?i)(authorization|cookie):\s*[^\r\n]+"""), "$1: <redacted>")
+            .replace(Regex("""https?://[^\s"'<>]*googlevideo\.com/[^\s"'<>]+"""), "<googlevideo-url-redacted>")
+    }
+
+    private fun buildTempDirectoryDiagnostics(tempDir: File): String {
+        if (!tempDir.exists()) return "tempFiles: <temp-dir-missing>"
+        if (!tempDir.isDirectory) return "tempFiles: <not-a-directory size=${tempDir.length()}>"
+
+        val files = runCatching {
+            tempDir.walkTopDown()
+                .filter { it.isFile }
+                .sortedByDescending { it.lastModified() }
+                .take(FAILURE_FILE_LIST_LIMIT)
+                .toList()
+        }.getOrElse {
+            return "tempFiles: <scan-failed ${it.javaClass.simpleName}:${it.message.orEmpty().take(200)}>"
+        }
+
+        if (files.isEmpty()) return "tempFiles: <empty>"
+        return buildString {
+            appendLine("tempFiles:")
+            files.forEach { file ->
+                val relativePath = runCatching { file.relativeTo(tempDir).path }.getOrDefault(file.name)
+                appendLine(" - ${relativePath} size=${file.length()} modified=${file.lastModified()} ext=${file.extension.ifBlank { "<none>" }}")
+            }
+            val totalFiles = runCatching { tempDir.walkTopDown().count { it.isFile } }.getOrDefault(files.size)
+            if (totalFiles > files.size) {
+                appendLine(" - <${totalFiles - files.size} more files omitted>")
+            }
+        }.trimEnd()
+    }
+
+    private fun String.firstYtdlpOptionValue(option: String): String? {
+        val pattern = Regex("""(?:^|\s)${Regex.escape(option)}\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
+        return pattern.find(this)
+            ?.groupValues
+            ?.drop(1)
+            ?.firstOrNull { it.isNotBlank() }
     }
 
     private fun isHardSubRedownload(item: DownloadItem): Boolean {
         return item.type == com.ireum.ytdl.database.enums.DownloadType.video &&
             item.videoPreferences.embedSubs &&
             item.playlistURL?.startsWith(HISTORY_REDOWNLOAD_MARKER) == true
+    }
+
+    private fun shouldRetryWithoutCachedInfoJson(error: Exception, commandString: String): Boolean {
+        if (!commandString.contains("--load-info-json")) return false
+        val message = error.message.orEmpty()
+        return message.contains("HTTP Error 403", ignoreCase = true) ||
+            (
+                message.contains("Forbidden", ignoreCase = true) &&
+                    message.contains("unable to download video data", ignoreCase = true)
+            )
+    }
+
+    private fun deleteLoadedAppInfoJson(commandString: String) {
+        val infoJsonRoot = runCatching {
+            File(FileUtil.getCachePath(context), "infojsons").canonicalFile
+        }.getOrNull() ?: return
+
+        loadInfoJsonOptionRegex.findAll(commandString)
+            .mapNotNull { match ->
+                match.groupValues.drop(1).firstOrNull { it.isNotBlank() }
+            }
+            .forEach { path ->
+                runCatching {
+                    val file = File(path).canonicalFile
+                    if (
+                        file.parentFile == infoJsonRoot &&
+                        file.name.endsWith(".info.json") &&
+                        file.exists()
+                    ) {
+                        if (file.delete()) {
+                            Log.i(TAG, "Deleted stale cached info JSON: ${file.name}")
+                        }
+                    }
+                }.onFailure {
+                    Log.w(TAG, "Failed to delete stale cached info JSON from retry command", it)
+                }
+            }
     }
 
     private fun resolveHardSubSkipReason(output: String): String? {
@@ -1067,22 +1289,115 @@ class DownloadWorker(
         }
     }
 
+    private fun validateSubtitleFilesForUse(
+        subtitleFiles: List<File>,
+        subtitleRequest: SubtitleSelection.Request,
+        downloadItemId: Long?,
+        downloadLogId: Long?,
+        fatal: Boolean = true
+    ): List<File> {
+        if (subtitleFiles.isEmpty()) {
+            val message = "Subtitle validation found no subtitle files for ${subtitleRequest.subLanguages}"
+            if (fatal) {
+                val error = "Subtitle validation failed: no subtitle files found for ${subtitleRequest.subLanguages}"
+                Log.e(TAG, "HardSub $error")
+                EventBus.getDefault().post(WorkerProgress(100, error, downloadItemId ?: -1L, downloadLogId))
+                throw IOException(error)
+            }
+            Log.w(TAG, message)
+            EventBus.getDefault().post(WorkerProgress(100, message, downloadItemId ?: -1L, downloadLogId))
+            return emptyList()
+        }
+
+        val validated = subtitleFiles.filter { file ->
+            val result = SubtitleFileValidator.validate(file, subtitleRequest.liveChatOnly)
+            val status = if (result.valid) "ok" else "failed"
+            val message = "Subtitle validation $status file=${file.name} size=${file.length()} cues=${result.cueCount} reason=${result.reason} selected=${subtitleRequest.subLanguages} liveChat=${subtitleRequest.liveChatOnly}"
+            if (result.valid) {
+                Log.i(TAG, message)
+            } else {
+                Log.w(TAG, "$message zeroByte=${file.length() == 0L}")
+            }
+            result.valid
+        }
+
+        if (validated.isEmpty()) {
+            val failed = subtitleFiles.joinToString { "${it.name}:${it.length()}B" }
+            if (fatal) {
+                val error = "Subtitle validation failed: no usable subtitle body for ${subtitleRequest.subLanguages}; files=$failed"
+                Log.e(TAG, "HardSub $error")
+                EventBus.getDefault().post(WorkerProgress(100, error, downloadItemId ?: -1L, downloadLogId))
+                throw IOException(error)
+            }
+            val warning = "Subtitle validation found no usable subtitle body for ${subtitleRequest.subLanguages}; files=$failed"
+            Log.w(TAG, warning)
+            EventBus.getDefault().post(WorkerProgress(100, warning, downloadItemId ?: -1L, downloadLogId))
+            return emptyList()
+        }
+
+        return validated
+    }
+
+    private fun validateSavedSubtitleSidecars(
+        downloadItem: DownloadItem,
+        finalPaths: List<String>,
+        downloadLocation: String,
+        downloadStartedAt: Long
+    ) {
+        val subtitleRequest = SubtitleSelection.normalize(downloadItem.videoPreferences.subsLanguages)
+        val subtitleExts = setOf("srv3", "json3", "json", "ttml", "ass", "vtt", "srt")
+        val fromPaths = finalPaths
+            .map { File(it) }
+            .filter { it.exists() && it.isFile && it.extension.lowercase(Locale.US) in subtitleExts }
+        val fromDirectory = runCatching {
+            File(downloadLocation)
+                .walkTopDown()
+                .filter { it.isFile && it.extension.lowercase(Locale.US) in subtitleExts }
+                .filter { it.lastModified() >= downloadStartedAt }
+                .toList()
+        }.getOrDefault(emptyList())
+
+        val selected = (fromPaths + fromDirectory)
+            .distinctBy { it.absolutePath }
+            .filter { SubtitleSelection.isSelectedSubtitleFile(it, subtitleRequest) }
+
+        Log.i(
+            TAG,
+            "Subtitle sidecar scan id=${downloadItem.id} selected=${subtitleRequest.subLanguages} liveChat=${subtitleRequest.liveChatOnly} candidates=${selected.size}"
+        )
+        validateSubtitleFilesForUse(
+            selected,
+            subtitleRequest,
+            downloadItem.id,
+            downloadItem.logID,
+            fatal = false
+        )
+    }
+
     private fun burnSubtitlesInPlace(
         paths: List<String>,
         removeSubsAfterBurnIn: Boolean,
         downloadItemId: Long? = null,
-        downloadLogId: Long? = null
+        downloadLogId: Long? = null,
+        selectedSubtitleLanguages: String = ""
     ): Boolean {
         val ffmpegRuntime = resolveFfmpegRuntime()
         val supportedFilters = probeSubtitleFilters(ffmpegRuntime)
         val dedicatedSrv3ConverterPath = resolveSrv3ConverterPath()
-        val subtitleExts = listOf("srv3", "json3", "ttml", "ass", "vtt", "srt")
+        val subtitleExts = listOf("srv3", "json3", "json", "ttml", "ass", "vtt", "srt")
+        val subtitleRequest = SubtitleSelection.normalize(selectedSubtitleLanguages)
         val existingFiles = paths
             .map { File(it) }
             .filter { it.exists() && it.isFile }
-        val subtitleFiles = existingFiles.filter { file ->
-            subtitleExts.any { ext -> file.extension.equals(ext, ignoreCase = true) }
-        }
+        val siblingFiles = existingFiles
+            .mapNotNull { it.parentFile }
+            .distinctBy { it.absolutePath }
+            .flatMap { it.listFiles().orEmpty().asList() }
+        val subtitleFiles = (existingFiles + siblingFiles)
+            .distinctBy { it.absolutePath }
+            .filter { file -> subtitleExts.any { ext -> file.extension.equals(ext, ignoreCase = true) } }
+            .filter { file -> SubtitleSelection.isSelectedSubtitleFile(file, subtitleRequest) }
+            .let { validateSubtitleFilesForUse(it, subtitleRequest, downloadItemId, downloadLogId) }
         if (!removeSubsAfterBurnIn) {
             convertSubtitleFilesToSrt(subtitleFiles, ffmpegRuntime, dedicatedSrv3ConverterPath)
         }
@@ -1136,7 +1451,7 @@ class DownloadWorker(
                 )
                 return@forEach
             }
-            val subtitle = prepareSubtitleForBurnIn(media, subtitleExts, subtitleCandidates, ffmpegRuntime, dedicatedSrv3ConverterPath)
+            val subtitle = prepareSubtitleForBurnIn(media, subtitleExts, subtitleCandidates, ffmpegRuntime, dedicatedSrv3ConverterPath, subtitleRequest)
             if (subtitle == null) {
                 Log.w(TAG, "HardSub skip media=${media.name} reason=no-matching-subtitle")
                 return@forEach
@@ -1537,9 +1852,10 @@ class DownloadWorker(
         subtitleExts: List<String>,
         providedSubtitles: List<File>,
         ffmpegRuntime: FfmpegRuntime,
-        dedicatedSrv3ConverterPath: String?
+        dedicatedSrv3ConverterPath: String?,
+        subtitleRequest: SubtitleSelection.Request
     ): BurnInSubtitle? {
-        val candidates = findSubtitleCandidatesForMedia(media, subtitleExts, providedSubtitles)
+        val candidates = findSubtitleCandidatesForMedia(media, subtitleExts, providedSubtitles, subtitleRequest)
         if (candidates.isEmpty()) return null
 
         candidates.forEach { selectedSubtitle ->
@@ -1569,6 +1885,12 @@ class DownloadWorker(
     private fun convertSubtitleToAss(subtitle: File, ffmpegRuntime: FfmpegRuntime, dedicatedSrv3ConverterPath: String?): File? {
         val richSubtitleExts = setOf("srv3", "json3", "ttml")
         val ext = subtitle.extension.lowercase(Locale.US)
+        if (ext in setOf("json", "json3")) {
+            SubtitleFormatConverter.convertJson3ToAss(subtitle)?.let {
+                Log.i(TAG, "HardSub json3 subtitle converted to ass source=${subtitle.name} output=${it.name}")
+                return it
+            }
+        }
         if (
             dedicatedSrv3ConverterPath != null &&
             richSubtitleExts.contains(ext)
@@ -2228,7 +2550,9 @@ class DownloadWorker(
             val target = File(subtitle.parentFile ?: return@forEach, "${subtitle.nameWithoutExtension}.srt")
             if (target.exists() && target.length() > 0L) return@forEach
 
-            val converted = if (dedicatedSrv3ConverterPath != null && ext in setOf("srv3", "json3", "ttml")) {
+            val converted = if (ext in setOf("json", "json3")) {
+                SubtitleFormatConverter.convertJson3ToSrt(subtitle)
+            } else if (dedicatedSrv3ConverterPath != null && ext in setOf("srv3", "json3", "ttml")) {
                 convertSubtitleToSrtWithDedicatedConverter(subtitle, dedicatedSrv3ConverterPath)
             } else {
                 val result = executeFfmpegWithAutoPatch(
@@ -2288,13 +2612,19 @@ class DownloadWorker(
         return null
     }
 
-    private fun findSubtitleCandidatesForMedia(media: File, subtitleExts: List<String>, providedSubtitles: List<File>): List<File> {
+    private fun findSubtitleCandidatesForMedia(
+        media: File,
+        subtitleExts: List<String>,
+        providedSubtitles: List<File>,
+        subtitleRequest: SubtitleSelection.Request
+    ): List<File> {
         val parent = media.parentFile ?: return emptyList()
         val prefix = "${media.nameWithoutExtension}."
         val files = parent.listFiles().orEmpty()
         val allCandidates = (files.asList() + providedSubtitles)
             .asSequence()
             .filter { it.isFile }
+            .filter { SubtitleSelection.isSelectedSubtitleFile(it, subtitleRequest) }
             .distinctBy { it.absolutePath }
             .toList()
 

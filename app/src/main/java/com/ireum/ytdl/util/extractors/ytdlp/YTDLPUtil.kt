@@ -35,6 +35,8 @@ import com.ireum.ytdl.util.Extensions.isYoutubeWatchVideosURL
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.FormatUtil
+import com.ireum.ytdl.util.SubtitleLanguageMatcher
+import com.ireum.ytdl.util.SubtitleSelection
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -320,6 +322,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     availableSubtitles.addAll(jsonObject.getJSONObject("subtitles").keys().asSequence().toList())
                 }
             }
+            availableSubtitles.addAll(collectManualCaptionTrackLanguages(jsonObject))
 
             val res = ResultItem(
                 0,
@@ -683,6 +686,28 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         return infoJsonFile
     }
 
+    private fun cachedInfoJsonHasRequestedSubtitles(
+        infoJsonFile: File,
+        subsLanguages: String,
+        includeManualSubtitles: Boolean,
+        includeAutomaticCaptions: Boolean
+    ): Boolean {
+        val requestedLanguages = subsLanguages.ifEmpty { "en.*,.*-orig" }
+        val availableSubtitles = mutableListOf<String>()
+
+        return runCatching {
+            val jsonObject = JSONObject(infoJsonFile.readText())
+            if (includeManualSubtitles && jsonObject.has("subtitles")) {
+                availableSubtitles.addAll(jsonObject.getJSONObject("subtitles").keys().asSequence().toList())
+            }
+            if (includeAutomaticCaptions && jsonObject.has("automatic_captions")) {
+                availableSubtitles.addAll(jsonObject.getJSONObject("automatic_captions").keys().asSequence().toList())
+            }
+
+            SubtitleLanguageMatcher.hasRequestedSubtitle(availableSubtitles, requestedLanguages)
+        }.getOrDefault(false)
+    }
+
     fun getFilenameTemplatePreview(item: DownloadItem, filenameTemplate: String): String {
         item.customFileNameTemplate = filenameTemplate
         val request = buildYoutubeDLRequest(item)
@@ -723,10 +748,14 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
         }
 
-        return final
+        return redactSensitiveYtdlpArguments(final)
     }
 
-    fun buildRequestDiagnostics(downloadItem: DownloadItem, request: YoutubeDLRequest): String {
+    fun buildRequestDiagnostics(
+        downloadItem: DownloadItem,
+        request: YoutubeDLRequest,
+        commandString: String? = null
+    ): String {
         val normalizedDownloadPath = FileUtil.formatPath(downloadItem.downloadPath)
         val canWriteDirectly = FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
         val writtenPath = downloadItem.type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
@@ -739,11 +768,26 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         val configuredFfmpegLocation = request.getArguments("--ffmpeg-location")
             ?.firstOrNull()
             ?.takeIf { !it.isNullOrBlank() }
+            ?: commandString?.firstYtdlpOptionValue("--ffmpeg-location")
             ?: "<none>"
         val hasLoadInfoJson = request.getArguments("--load-info-json")
             ?.firstOrNull()
             ?.takeIf { !it.isNullOrBlank() }
+            ?: commandString?.firstYtdlpOptionValue("--load-info-json")
             ?: "<none>"
+        val subtitleRequest = SubtitleSelection.normalize(downloadItem.videoPreferences.subsLanguages)
+        val extractorArgs = request.getArguments("--extractor-args")?.firstOrNull().orEmpty()
+        val playerClients = Regex("""player_client=([^;]+)""")
+            .find(extractorArgs)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: "<default>"
+        val poTokenUsed = extractorArgs.contains("po_token=")
+        val webSubsTokenUsed = extractorArgs.contains("web.subs+")
+        val cachedSubtitleDiagnostics = hasLoadInfoJson
+            .takeIf { it != "<none>" }
+            ?.let { buildCachedSubtitleDiagnostics(File(it)) }
+            ?: "infoJsonSubtitles=<not-loaded>\ninfoJsonAutomaticCaptions=<not-loaded>"
 
         return buildString {
             appendLine("Debug:")
@@ -757,11 +801,101 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             appendLine("diagnosticsVersion: ffmpeg-preflight-v25")
             appendLine("requestLoadInfoJson: $hasLoadInfoJson")
             appendLine("requestFfmpegLocation: $configuredFfmpegLocation")
+            appendLine("videoEmbedSubs: ${downloadItem.videoPreferences.embedSubs}")
+            appendLine("videoWriteSubs: ${downloadItem.videoPreferences.writeSubs}")
+            appendLine("videoWriteAutoSubs: ${downloadItem.videoPreferences.writeAutoSubs}")
+            appendLine("subtitleSelected: ${subtitleRequest.subLanguages}")
+            appendLine("subtitleLiveChatOnly: ${subtitleRequest.liveChatOnly}")
+            appendLine("subtitleIgnoredLiveChatMixedWithLanguage: ${subtitleRequest.ignoredLiveChat}")
+            appendLine("subtitleAutomaticCaptionsExcluded: ${downloadItem.url.isYoutubeURL()}")
+            appendLine("youtubePlayerClients: $playerClients")
+            appendLine("youtubePoTokenUsed: $poTokenUsed")
+            appendLine("youtubeWebSubsTokenUsed: $webSubsTokenUsed")
+            appendLine(cachedSubtitleDiagnostics)
             append(ffmpegPayload)
             append(ffmpegResolution)
             appendLine()
             append(ffmpegPreflight)
         }
+    }
+
+    private fun buildCachedSubtitleDiagnostics(infoJsonFile: File): String {
+        val safeInfoJsonFile = resolveAppInfoJsonFile(infoJsonFile)
+            ?: return "infoJsonSubtitles=<skipped-non-app-cache>\ninfoJsonAutomaticCaptions=<skipped-non-app-cache>"
+
+        return runCatching {
+            val jsonObject = JSONObject(safeInfoJsonFile.readText())
+            val subtitles = jsonObject.optJSONObject("subtitles")
+                ?.keys()
+                ?.asSequence()
+                ?.toList()
+                .orEmpty()
+            val automaticCaptions = jsonObject.optJSONObject("automatic_captions")
+                ?.keys()
+                ?.asSequence()
+                ?.toList()
+                .orEmpty()
+            val captionTracks = collectManualCaptionTrackLanguages(jsonObject)
+            "infoJsonSubtitles=${subtitles.joinToString(",").ifBlank { "<none>" }}\n" +
+                "infoJsonAutomaticCaptions=${automaticCaptions.joinToString(",").ifBlank { "<none>" }}\n" +
+                "playerResponseManualCaptionTracks=${captionTracks.joinToString(",").ifBlank { "<none>" }}"
+        }.getOrDefault("infoJsonSubtitles=<parse-failed>\ninfoJsonAutomaticCaptions=<parse-failed>")
+    }
+
+    private fun resolveAppInfoJsonFile(infoJsonFile: File): File? {
+        return runCatching {
+            val infoJsonRoot = File(FileUtil.getCachePath(context), "infojsons").canonicalFile
+            val canonicalFile = infoJsonFile.canonicalFile
+            canonicalFile.takeIf {
+                it.parentFile == infoJsonRoot &&
+                    it.name.endsWith(".info.json") &&
+                    it.exists() &&
+                    it.isFile
+            }
+        }.getOrNull()
+    }
+
+    private fun collectManualCaptionTrackLanguages(jsonObject: JSONObject): List<String> {
+        val playerResponse = jsonObject.optJSONObject("player_response")
+            ?: jsonObject.optJSONObject("playerResponse")
+            ?: jsonObject.optString("player_response")
+                .takeIf { it.isNotBlank() }
+                ?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: return emptyList()
+
+        val captionTracks = playerResponse
+            .optJSONObject("captions")
+            ?.optJSONObject("playerCaptionsTracklistRenderer")
+            ?.optJSONArray("captionTracks")
+            ?: return emptyList()
+
+        val tracks = mutableListOf<String>()
+        for (i in 0 until captionTracks.length()) {
+            val track = captionTracks.optJSONObject(i) ?: continue
+            val languageCode = track.optString("languageCode")
+            val vssId = track.optString("vssId")
+            val kind = track.optString("kind")
+            if (languageCode.isBlank()) continue
+            if (SubtitleSelection.isAutomaticCaption(languageCode, vssId, kind)) continue
+            tracks.add(languageCode)
+        }
+        return tracks.distinct()
+    }
+
+    private fun redactSensitiveYtdlpArguments(value: String): String {
+        return value
+            .replace(Regex("""po_token=[^;"\s]+"""), "po_token=<redacted>")
+            .replace(Regex("""pot=[^&;"\s]+"""), "pot=<redacted>")
+            .replace(Regex("""visitor_data=[^;"\s]+"""), "visitor_data=<redacted>")
+            .replace(Regex("""data_sync_id=[^;"\s]+"""), "data_sync_id=<redacted>")
+    }
+
+    private fun String.firstYtdlpOptionValue(option: String): String? {
+        val pattern = Regex("""(?:^|\s)${Regex.escape(option)}\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
+        return pattern.find(this)
+            ?.groupValues
+            ?.drop(1)
+            ?.firstOrNull { it.isNotBlank() }
     }
 
     private fun MutableList<String>.addOption(vararg options: String) {
@@ -815,16 +949,33 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             if (generatedPoTokens.isNotEmpty()) {
                 for (value in generatedPoTokens) {
                     if (value.enabled) {
-                        for (cl in value.clients) {
-                            playerClients.add(cl)
-                            for (pt in value.poTokens) {
-                                if (pt.token.isNotBlank()) {
-                                    poTokens.add("${cl}.${pt.context}+${pt.token}")
+                        val hasSubtitlePoToken = value.poTokens.any {
+                            it.context.equals("subs", ignoreCase = true) && it.token.isNotBlank()
+                        }
+                        if (includeWebClientForSubtitles) {
+                            value.clients
+                                .filter { it.equals("web", ignoreCase = true) }
+                                .forEach { cl ->
+                                    value.poTokens
+                                        .filter { it.context.equals("subs", ignoreCase = true) && it.token.isNotBlank() }
+                                        .forEach { pt ->
+                                            poTokens.add("${cl}.${pt.context}+${pt.token}")
+                                        }
+                                }
+                        } else {
+                            for (cl in value.clients) {
+                                playerClients.add(cl)
+                                for (pt in value.poTokens) {
+                                    if (pt.token.isNotBlank()) {
+                                        poTokens.add("${cl}.${pt.context}+${pt.token}")
+                                    }
                                 }
                             }
                         }
 
-                        if (dataSyncID.isBlank() && value.useVisitorData) {
+                        val shouldUseVisitorData = value.useVisitorData ||
+                            (includeWebClientForSubtitles && hasSubtitlePoToken && value.visitorData.isNotBlank())
+                        if (dataSyncID.isBlank() && shouldUseVisitorData) {
                             extractorArgs.add("player_skip=webpage,configs")
                             extractorArgs.add("visitor_data=${value.visitorData}")
                         }
@@ -834,10 +985,6 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             }
         }
 
-        if (includeWebClientForSubtitles) {
-            playerClients.add("web")
-        }
-
         if (playerClients.isNotEmpty()){
             extractorArgs.add("player_client=${playerClients.joinToString(",")}")
         }else{
@@ -845,8 +992,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             //extractorArgs.add("player_client=default,-web,-web-safari,-android,-ios,-tv")
         }
 
-        if (poTokens.isNotEmpty() && sharedPreferences.getBoolean("use_cookies", false)) {
+        if (poTokens.isNotEmpty() && (sharedPreferences.getBoolean("use_cookies", false) || includeWebClientForSubtitles)) {
             extractorArgs.add("po_token=${poTokens.joinToString(",")}")
+            if (includeWebClientForSubtitles) {
+                extractorArgs.add("pot_trace=true")
+            }
         }
 
         //extractorArgs.add("skip=translated_subs")
@@ -918,7 +1068,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     }
 
     @SuppressLint("RestrictedApi")
-    fun buildYoutubeDLRequest(downloadItem: DownloadItem) : YoutubeDLRequest {
+    fun buildYoutubeDLRequest(
+        downloadItem: DownloadItem,
+        useCachedInfoJson: Boolean = true
+    ) : YoutubeDLRequest {
         var useItemURL = sharedPreferences.getBoolean("use_itemurl_instead_playlisturl", false)
         // for /releases youtube channel playlists that have playlists inside of them, cant use indexing or match filter id, so download on its own
         if (downloadItem.url.isYoutubeURL() && downloadItem.url.getIDFromYoutubeURL() == null) {
@@ -1137,8 +1290,21 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             if (canUseWriteInfoJson && downloadItem.playlistURL.isNullOrBlank()) {
                 val infoJsonURL = downloadItem.url
                 val infoJsonFile = getInfoJsonFile(infoJsonURL)
+                val needsManualSubtitles = downloadItem.videoPreferences.embedSubs ||
+                    downloadItem.videoPreferences.writeSubs
+                val needsAutomaticCaptions = downloadItem.videoPreferences.writeAutoSubs &&
+                    !downloadItem.url.isYoutubeURL()
+                val needsSubtitles = needsManualSubtitles || needsAutomaticCaptions
+                val canUseCachedInfoJson = infoJsonFile != null &&
+                    System.currentTimeMillis() - infoJsonFile.lastModified() <= (1000 * 60 * 60 * 5) &&
+                    (!needsSubtitles || cachedInfoJsonHasRequestedSubtitles(
+                        infoJsonFile,
+                        SubtitleSelection.normalize(downloadItem.videoPreferences.subsLanguages).subLanguages,
+                        needsManualSubtitles,
+                        needsAutomaticCaptions
+                    ))
                 //ignore info file if its older than 5 hours. puny measure to prevent expired formats in some cases
-                if (infoJsonFile != null && System.currentTimeMillis() - infoJsonFile.lastModified() <= (1000 * 60 * 60 * 5)) {
+                if (useCachedInfoJson && canUseCachedInfoJson) {
                     request.addOption("--load-info-json", infoJsonFile.absolutePath)
                 }else {
                     ytDlRequest.addWriteInfoJson(infoJsonURL)
@@ -1353,21 +1519,27 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 if(outputContainer.isNotEmpty() && outputContainer != "Default" && outputContainer != context.getString(
                         R.string.defaultValue) && supportedContainers.contains(outputContainer)){
                     cont = outputContainer
+                    val normalizedOutputContainer = outputContainer.lowercase(Locale.US)
 
                     val cantRecode = listOf("avi")
                     if (downloadItem.videoPreferences.recodeVideo && !cantRecode.contains(cont)) {
-                        request.addOption("--recode-video", outputContainer.lowercase())
+                        request.addOption("--recode-video", normalizedOutputContainer)
                     }else{
                         if (downloadItem.videoPreferences.compatibilityMode) {
                             request.addOption("--recode-video", "mp4")
                             request.addOption("--merge-output-format", "mp4/mkv")
                         }
                         else {
-                            request.addOption("--merge-output-format", outputContainer.lowercase())
+                            val mergeOutputFormat = if (normalizedOutputContainer == "webm") {
+                                "webm/mkv"
+                            } else {
+                                normalizedOutputContainer
+                            }
+                            request.addOption("--merge-output-format", mergeOutputFormat)
                         }
                     }
 
-                    if (!listOf("webm", "avi", "flv", "gif").contains(outputContainer.lowercase())) {
+                    if (!listOf("webm", "avi", "flv", "gif").contains(normalizedOutputContainer)) {
                         if (downloadItem.videoPreferences.embedThumbnail) {
                             metadataCommands.addOption("--embed-thumbnail")
                             if (!request.toString().contains("--convert-thumbnails")) request.addOption("--convert-thumbnails", thumbnailFormat!!)
@@ -1575,6 +1747,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     usingGenericFormat = usingGenericFormat,
                     preferredCodec = preferredCodec,
                     preferredFormatIds = manualPreferredFormatIds,
+                    outputContainer = outputContainer,
                     item = downloadItem
                 )
                 if (autoCompatibilityProfile != null) {
@@ -1587,6 +1760,15 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                         removeAudio = downloadItem.videoPreferences.removeAudio
                     )
                 }
+                if (outputContainer.equals("webm", ignoreCase = true) &&
+                    !downloadItem.videoPreferences.recodeVideo
+                ) {
+                    formatExpr = prependWebmCompatibleFormatFallback(
+                        existingExpr = formatExpr,
+                        preferredAudioLanguage = preferredAudioLanguage,
+                        removeAudio = downloadItem.videoPreferences.removeAudio
+                    )
+                }
                 if (downloadItem.videoPreferences.embedSubs) {
                     // Hard-sub runtime ffmpeg on Android may not include AV1 decoders.
                     // Prefer non-AV1 video streams to keep burn-in path reliable.
@@ -1594,28 +1776,34 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 }
                 request.addOption("-f", formatExpr)
 
+                val subtitleRequest = SubtitleSelection.normalize(downloadItem.videoPreferences.subsLanguages)
                 val shouldWriteSubs = downloadItem.videoPreferences.writeSubs ||
-                    (downloadItem.videoPreferences.embedSubs && !downloadItem.videoPreferences.writeAutoSubs)
+                    downloadItem.videoPreferences.embedSubs
 
                 if (shouldWriteSubs){
                     request.addOption("--write-subs")
                 }
 
-                if(downloadItem.videoPreferences.writeAutoSubs){
+                val shouldWriteAutoSubs = downloadItem.videoPreferences.writeAutoSubs &&
+                    !downloadItem.url.isYoutubeURL()
+
+                if(shouldWriteAutoSubs){
                     request.addOption("--write-auto-subs")
                 }
 
-                if (downloadItem.videoPreferences.embedSubs || downloadItem.videoPreferences.writeSubs || downloadItem.videoPreferences.writeAutoSubs){
+                if (downloadItem.videoPreferences.embedSubs || downloadItem.videoPreferences.writeSubs || shouldWriteAutoSubs){
                     val subFormat = sharedPreferences.getString("sub_format", "") ?: ""
-                    if (downloadItem.videoPreferences.embedSubs) {
+                    if (subtitleRequest.liveChatOnly) {
+                        request.addOption("--sub-format", "json/best")
+                    } else if (downloadItem.videoPreferences.embedSubs) {
                         // Hard-sub flow converts at burn-in stage in DownloadWorker.
                         // Avoid yt-dlp subtitle conversion here to prevent preprocessing failures.
-                        request.addOption("--sub-format", "srv3/json3/ttml/ass/vtt/srt/best")
+                        request.addOption("--sub-format", "srv3/ttml/json3/vtt/best")
                     } else if(subFormat.isNotBlank()){
                         request.addOption("--sub-format", "${subFormat}/best")
                         request.addOption("--convert-subtitles", subFormat)
                     }
-                    request.addOption("--sub-langs", downloadItem.videoPreferences.subsLanguages.ifEmpty { "en.*,.*-orig" })
+                    request.addOption("--sub-langs", subtitleRequest.subLanguages)
                 }
 
                 if (downloadItem.videoPreferences.embedSubs) {
@@ -1773,12 +1961,28 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         usingGenericFormat: Boolean,
         preferredCodec: String?,
         preferredFormatIds: List<String>,
+        outputContainer: String,
         item: DownloadItem
     ): AutomaticCompatibilityProfile? {
         if (!usingGenericFormat) return null
         if (item.type != DownloadType.video) return null
         if (item.videoPreferences.compatibilityMode) return null
         if (item.videoPreferences.recodeVideo) return null
+
+        if (outputContainer.equals("webm", ignoreCase = true)) {
+            return listOf(
+                queryDecoderSupport(
+                    ytDlpCodec = "vp9",
+                    codecRegex = "^vp9",
+                    mimeType = MediaFormatMimeTypes.VP9
+                ),
+                queryDecoderSupport(
+                    ytDlpCodec = "av01",
+                    codecRegex = "^av01?",
+                    mimeType = MediaFormatMimeTypes.AV1
+                )
+            ).firstOrNull { it != null }
+        }
 
         return listOf(
             queryDecoderSupport(
@@ -1849,6 +2053,49 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         return "$compatibilityExpr/$existingExpr"
     }
 
+    private fun prependWebmCompatibleFormatFallback(
+        existingExpr: String,
+        preferredAudioLanguage: String,
+        removeAudio: Boolean
+    ): String {
+        val webmVideoSelectors = listOf(
+            "bv*[ext=webm][vcodec~='^(vp0?9|vp0?8|av01)']",
+            "bv*[vcodec~='^(vp0?9|vp0?8|av01)']"
+        )
+        val webmAudioSelectors = buildList {
+            if (preferredAudioLanguage.isNotBlank()) {
+                add("ba[language^=$preferredAudioLanguage][ext=webm]")
+                add("ba[language^=$preferredAudioLanguage][acodec~='^(opus|vorbis)']")
+            }
+            add("ba[ext=webm]")
+            add("ba[acodec~='^(opus|vorbis)']")
+            add("ba")
+        }
+
+        val webmTokens = mutableListOf<String>()
+        webmVideoSelectors.forEach { videoSelector ->
+            if (removeAudio) {
+                webmTokens.add(videoSelector)
+            } else {
+                webmAudioSelectors.forEach { audioSelector ->
+                    webmTokens.add("$videoSelector+$audioSelector")
+                }
+                webmTokens.add(videoSelector)
+            }
+        }
+
+        val webmExpr = webmTokens
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .joinToString("/")
+
+        if (webmExpr.isBlank()) return existingExpr
+        if (existingExpr.isBlank()) return webmExpr
+        return "$webmExpr/$existingExpr"
+    }
+
     private fun queryDecoderSupport(
         ytDlpCodec: String,
         codecRegex: String,
@@ -1917,7 +2164,7 @@ private fun enforceHardSubNoAv1Format(formatExpr: String): String {
             if (t.contains("vcodec!*=av01")) return@map t
             if (t == "b") return@map "b*[vcodec!*=av01]"
             if (!t.contains("bv")) return@map t
-            t.replace("bv", "bv*[vcodec!*=av01]")
+            t.replace(Regex("""\bbv\*?"""), "bv*[vcodec!*=av01]")
         }
         .joinToString("/")
 }

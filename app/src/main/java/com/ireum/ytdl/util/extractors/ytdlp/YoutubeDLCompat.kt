@@ -136,7 +136,8 @@ object YoutubeDLCompat {
             }
             if (!ignoreErrors(request, out)) {
                 idProcessMap.remove(processId)
-                throw YoutubeDLException(err)
+                val errorOutput = err.ifBlank { out }.ifBlank { "yt-dlp exited with code $exitCode" }
+                throw YoutubeDLException(errorOutput)
             }
         }
         idProcessMap.remove(processId)
@@ -232,8 +233,10 @@ object YoutubeDLCompat {
     fun stripExternalFfmpegLocationOptions(commandString: String): String {
         val lineSeparator = if (commandString.contains("\r\n")) "\r\n" else "\n"
         var skipNextValueLine = false
-        return commandString
-            .split(Regex("\\r?\\n"), -1)
+        return Regex("\\r?\\n")
+            .toPattern()
+            .split(commandString, -1)
+            .asList()
             .map { line ->
                 if (line.isBlank() || line.trimStart().startsWith("#")) {
                     return@map line
