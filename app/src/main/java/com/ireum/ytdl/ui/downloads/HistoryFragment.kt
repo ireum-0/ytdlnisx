@@ -5878,8 +5878,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
     override fun onCardSelect(isChecked: Boolean, position: Int) {
         lifecycleScope.launch {
-            val selectedObjects = historyAdapter.getSelectedObjectsCount(totalCount)
-            if (actionMode == null) actionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(contextualActionBar)
+            val selectedIDs = contextualActionBar.getSelectedIDs()
+            val selectedObjects = selectedIDs.size
+            if (selectedObjects > 0 && actionMode == null) {
+                actionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(contextualActionBar)
+            }
             actionMode?.apply {
                 when {
                     selectedObjects == 0 -> this.finish()
@@ -5887,7 +5890,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                         actionMode?.title = "$selectedObjects ${getString(R.string.selected)}"
                         this.menu.findItem(R.id.select_between).isVisible = false
                         if (selectedObjects == 2) {
-                            val selectedIDs = contextualActionBar.getSelectedIDs().sortedBy { it }
                             val idsInMiddle = withContext(Dispatchers.IO) {
                                 historyViewModel.getIDsBetweenTwoItems(selectedIDs.first(), selectedIDs.last())
                             }
@@ -5896,34 +5898,33 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     }
                 }
             }
-
-            when {
-                isChecked && actionMode == null -> {
-                    actionMode = (activity as AppCompatActivity?)!!.startSupportActionMode(contextualActionBar)
-                }
-                isChecked -> actionMode!!.title = "$selectedObjects ${getString(R.string.selected)}"
-                else -> {
-                    actionMode?.title = "$selectedObjects ${getString(R.string.selected)}"
-                    if (selectedObjects == 0) actionMode?.finish()
-                }
-            }
         }
     }
 
     private val contextualActionBar = object : ActionMode.Callback {
         override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean {
             mode!!.menuInflater.inflate(R.menu.history_menu_context, menu)
-            mode.title = "${historyAdapter.getSelectedObjectsCount(totalCount)} ${getString(R.string.selected)}"
+            menu?.findItem(R.id.edit_item)?.isVisible = false
+            menu?.findItem(R.id.exclude_from_hardsub_scan)?.isVisible = false
+            lifecycleScope.launch {
+                val selectedCount = getSelectedIDs().size
+                mode.title = "$selectedCount ${getString(R.string.selected)}"
+            }
             (activity as MainActivity).disableBottomNavigation()
             topAppBar.menu.forEach { it.isEnabled = false }
             return true
         }
 
         override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean {
-            val selectedCount = historyAdapter.getSelectedObjectsCount(totalCount)
-            menu?.findItem(R.id.edit_item)?.isVisible = selectedCount == 1
-            menu?.findItem(R.id.exclude_from_hardsub_scan)?.isVisible =
-                selectedCount > 0 && historyViewModel.statusFilter.value == HistoryViewModel.HistoryStatus.HARDSUB_SCAN_TARGET
+            menu?.findItem(R.id.edit_item)?.isVisible = false
+            menu?.findItem(R.id.exclude_from_hardsub_scan)?.isVisible = false
+            lifecycleScope.launch {
+                val selectedCount = getSelectedIDs().size
+                mode?.title = "$selectedCount ${getString(R.string.selected)}"
+                menu?.findItem(R.id.edit_item)?.isVisible = selectedCount == 1
+                menu?.findItem(R.id.exclude_from_hardsub_scan)?.isVisible =
+                    selectedCount > 0 && historyViewModel.statusFilter.value == HistoryViewModel.HistoryStatus.HARDSUB_SCAN_TARGET
+            }
             return true
         }
 
@@ -5931,7 +5932,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             return when (item!!.itemId) {
                 R.id.select_between -> {
                     lifecycleScope.launch {
-                        val selectedIDs = getSelectedIDs().sortedBy { it }
+                        val selectedIDs = getSelectedIDs()
+                        if (selectedIDs.size != 2) {
+                            mode?.menu?.findItem(R.id.select_between)?.isVisible = false
+                            return@launch
+                        }
                         val idsInMiddle = withContext(Dispatchers.IO) {
                             historyViewModel.getIDsBetweenTwoItems(selectedIDs.first(), selectedIDs.last())
                         }.toMutableList()
@@ -6057,15 +6062,19 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 }
                 R.id.select_all -> {
                     historyAdapter.checkAll()
-                    val selectedCount = historyAdapter.getSelectedObjectsCount(totalCount)
-                    mode?.title = "(${selectedCount}) ${resources.getString(R.string.all_items_selected)}"
+                    lifecycleScope.launch {
+                        val selectedCount = getSelectedIDs().size
+                        mode?.title = "(${selectedCount}) ${resources.getString(R.string.all_items_selected)}"
+                    }
                     true
                 }
                 R.id.invert_selected -> {
                     historyAdapter.invertSelected()
-                    val selectedCount = historyAdapter.getSelectedObjectsCount(totalCount)
-                    actionMode?.title = "$selectedCount ${getString(R.string.selected)}"
-                    if (selectedCount == 0) actionMode?.finish()
+                    lifecycleScope.launch {
+                        val selectedCount = getSelectedIDs().size
+                        actionMode?.title = "$selectedCount ${getString(R.string.selected)}"
+                        if (selectedCount == 0) actionMode?.finish()
+                    }
                     true
                 }
                 else -> false
@@ -6080,10 +6089,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
 
         suspend fun getSelectedIDs(): List<Long> {
-            return if (historyAdapter.inverted || historyAdapter.checkedItems.isEmpty()) {
-                withContext(Dispatchers.IO) { historyViewModel.getItemIDsNotPresentIn(historyAdapter.checkedItems.toList()) }
-            } else {
-                historyAdapter.checkedItems.toList()
+            val checkedIdsSnapshot = historyAdapter.checkedItems.toList()
+            val invertedSnapshot = historyAdapter.inverted
+            return withContext(Dispatchers.IO) {
+                historyViewModel.resolveSelectedHistoryIds(
+                    checkedIds = checkedIdsSnapshot,
+                    inverted = invertedSnapshot
+                )
             }
         }
     }
