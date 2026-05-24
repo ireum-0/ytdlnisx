@@ -12,15 +12,22 @@ object SubtitleFormatConverter {
         val text: String
     )
 
-    fun convertJson3ToAss(input: File): File? {
+    fun convertJson3ToAss(input: File, output: File? = null): File? {
         val cues = parseJson3Cues(input)
         if (cues.isEmpty()) return null
 
-        val output = File(input.parentFile ?: return null, "${input.nameWithoutExtension}.burnin_tmp.ass")
+        val outputFile = output ?: File(
+            input.parentFile ?: return null,
+            "ytdlnisx_hardsub_${java.util.UUID.randomUUID()}.ass"
+        )
         return runCatching {
-            output.writeText(buildAss(cues), Charsets.UTF_8)
-            if (output.length() > 0L) output else null
-        }.getOrNull()
+            outputFile.parentFile?.mkdirs()
+            outputFile.writeText(buildAss(cues), Charsets.UTF_8)
+            if (outputFile.length() > 0L) outputFile else null
+        }.getOrElse {
+            runCatching { outputFile.delete() }
+            null
+        }
     }
 
     fun convertJson3ToSrt(input: File): File? {

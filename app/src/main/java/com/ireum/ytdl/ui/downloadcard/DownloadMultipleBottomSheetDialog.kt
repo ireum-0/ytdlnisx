@@ -265,6 +265,14 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                         }
 
                         withContext(Dispatchers.Main){
+                            if (!result.succeeded) {
+                                if (result.duplicateDownloadIDs.isNotEmpty()) {
+                                    handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
+                                } else {
+                                    toggleLoading(false)
+                                }
+                                return@withContext
+                            }
                             handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
                             dismiss()
                         }
@@ -300,6 +308,14 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
 
                     withContext(Dispatchers.Main){
                         progressSnack.dismiss()
+                        if (!result.succeeded) {
+                            if (result.duplicateDownloadIDs.isNotEmpty()) {
+                                handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
+                            } else {
+                                toggleLoading(false)
+                            }
+                            return@withContext
+                        }
                         handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
                         dismiss()
                     }

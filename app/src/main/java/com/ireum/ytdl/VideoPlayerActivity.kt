@@ -519,7 +519,10 @@ class VideoPlayerActivity : AppCompatActivity() {
                     resolveSubtitleAvailability = false,
                     preferCompatibleVideo = true
                 )
-                downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = true)
+                val result = downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = true)
+                if (!result.succeeded) {
+                    throw IllegalStateException(result.message)
+                }
             }.onSuccess {
                 Toast.makeText(
                     this@VideoPlayerActivity,
@@ -528,9 +531,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                 ).show()
             }.onFailure { error ->
                 Log.e("VideoPlayerActivity", "Failed to queue compatible redownload historyId=$historyId", error)
+                val message = error.localizedMessage
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Failed to queue a compatible re-download."
                 Toast.makeText(
                     this@VideoPlayerActivity,
-                    "Failed to queue a compatible re-download.",
+                    message,
                     Toast.LENGTH_SHORT
                 ).show()
             }

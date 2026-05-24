@@ -345,6 +345,16 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
                                 Toast.makeText(requireContext(), result.message, Toast.LENGTH_LONG).show()
                             }
 
+                            if (!result.succeeded) {
+                                if (result.duplicateDownloadIDs.isNotEmpty()) {
+                                    handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
+                                } else {
+                                    scheduleBtn.isEnabled = true
+                                    download.isEnabled = true
+                                }
+                                return@launch
+                            }
+
                             withContext(Dispatchers.Main){
                                 handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
                             }
@@ -358,6 +368,16 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
 
                         if (result.message.isNotBlank()){
                             Toast.makeText(requireContext(), result.message, Toast.LENGTH_LONG).show()
+                        }
+
+                        if (!result.succeeded) {
+                            if (result.duplicateDownloadIDs.isNotEmpty()) {
+                                handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
+                            } else {
+                                scheduleBtn.isEnabled = true
+                                download.isEnabled = true
+                            }
+                            return@launch
                         }
 
                         withContext(Dispatchers.Main){
@@ -386,6 +406,18 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
                             val result = withContext(Dispatchers.IO) {
                                 downloadViewModel.queueDownloads(itemsToQueue, ignoreDuplicates)
                             }
+                            if (result.message.isNotBlank()){
+                                Toast.makeText(requireContext(), result.message, Toast.LENGTH_LONG).show()
+                            }
+                            if (!result.succeeded) {
+                                if (result.duplicateDownloadIDs.isNotEmpty()) {
+                                    handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
+                                } else {
+                                    scheduleBtn.isEnabled = true
+                                    download.isEnabled = true
+                                }
+                                return@launch
+                            }
                             withContext(Dispatchers.Main){
                                 handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
                             }
@@ -394,6 +426,18 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
                 }else{
                     val result = withContext(Dispatchers.IO) {
                         downloadViewModel.queueDownloads(listOf(item), ignoreDuplicates)
+                    }
+                    if (result.message.isNotBlank()){
+                        Toast.makeText(requireContext(), result.message, Toast.LENGTH_LONG).show()
+                    }
+                    if (!result.succeeded) {
+                        if (result.duplicateDownloadIDs.isNotEmpty()) {
+                            handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
+                        } else {
+                            scheduleBtn.isEnabled = true
+                            download.isEnabled = true
+                        }
+                        return@launch
                     }
                     handleDuplicatesAndDismiss(result.duplicateDownloadIDs)
                 }

@@ -119,6 +119,9 @@ class DownloadsAlreadyExistDialog : BottomSheetDialogFragment(), AlreadyExistsAd
                         }
                     }
                 }
+                if (!result.succeeded) {
+                    return@launch
+                }
                 withContext(Dispatchers.Main){
                     dismiss()
                 }

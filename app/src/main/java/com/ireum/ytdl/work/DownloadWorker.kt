@@ -1588,15 +1588,18 @@ class DownloadWorker(
             val finalResult = ffmpegResult ?: FfmpegExecResult(1, "ffmpeg burn-in returned no result")
             if (finalResult.exitCode != 0) {
                 Log.e(TAG, "HardSub ffmpeg burn failed code=${finalResult.exitCode} media=${media.name}")
+                if (subtitle.isTemporary) subtitle.file.delete()
                 throw IOException("ffmpeg burn-in failed (code=${finalResult.exitCode}): ${finalResult.output.takeLast(1200)}")
             }
             if (!output.exists()) {
                 Log.e(TAG, "HardSub ffmpeg output missing media=${media.name}")
+                if (subtitle.isTemporary) subtitle.file.delete()
                 throw IOException("ffmpeg burn-in failed: output was not created")
             }
             if (mediaHadAudioBeforeBurn && !hasAudioStream(output, ffmpegRuntime)) {
                 Log.e(TAG, "HardSub ffmpeg output missing-audio media=${media.name}")
                 if (output.exists()) output.delete()
+                if (subtitle.isTemporary) subtitle.file.delete()
                 throw IOException("ffmpeg burn-in failed: output lost audio stream")
             }
 
@@ -1886,7 +1889,7 @@ class DownloadWorker(
         val richSubtitleExts = setOf("srv3", "json3", "ttml")
         val ext = subtitle.extension.lowercase(Locale.US)
         if (ext in setOf("json", "json3")) {
-            SubtitleFormatConverter.convertJson3ToAss(subtitle)?.let {
+            SubtitleFormatConverter.convertJson3ToAss(subtitle, createHardSubTempAssFile())?.let {
                 Log.i(TAG, "HardSub json3 subtitle converted to ass source=${subtitle.name} output=${it.name}")
                 return it
             }
@@ -1911,8 +1914,7 @@ class DownloadWorker(
             }
         }
 
-        val parent = subtitle.parentFile ?: return null
-        val output = File(parent, "${subtitle.nameWithoutExtension}.burnin_tmp.ass")
+        val output = createHardSubTempAssFile()
         val result = executeFfmpegWithAutoPatch(
             ffmpegRuntime,
             listOf(
@@ -2025,6 +2027,7 @@ class DownloadWorker(
         command.add(runtime.executablePath)
         command.addAll(args)
         val builder = ProcessBuilder(command).redirectErrorStream(true)
+        configureFfmpegEnvironment(builder)
         runtime.libraryPath?.let { libs ->
             val env = builder.environment()
             val current = env["LD_LIBRARY_PATH"].orEmpty()
@@ -2035,6 +2038,35 @@ class DownloadWorker(
             }
         }
         return builder
+    }
+
+    private fun configureFfmpegEnvironment(builder: ProcessBuilder) {
+        val env = builder.environment()
+        val fontconfigDir = File(context.cacheDir, "fontconfig")
+        val fontconfigCacheDir = File(fontconfigDir, "cache")
+        val fontsConfig = File(fontconfigDir, "fonts.conf")
+        runCatching {
+            fontconfigCacheDir.mkdirs()
+            if (!fontsConfig.exists()) {
+                fontsConfig.writeText(
+                    """
+                    <?xml version="1.0"?>
+                    <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+                    <fontconfig>
+                        <dir>/system/fonts</dir>
+                        <cachedir>${fontconfigCacheDir.absolutePath}</cachedir>
+                    </fontconfig>
+                    """.trimIndent(),
+                    Charsets.UTF_8
+                )
+            }
+            env["FONTCONFIG_FILE"] = fontsConfig.absolutePath
+            env["FONTCONFIG_PATH"] = fontconfigDir.absolutePath
+            env["XDG_CACHE_HOME"] = context.cacheDir.absolutePath
+            env["HOME"] = context.filesDir.absolutePath
+        }.onFailure { error ->
+            Log.w(TAG, "HardSub fontconfig environment setup failed reason=${error.message}")
+        }
     }
 
     private fun executeFfmpegWithAutoPatch(
@@ -2428,8 +2460,7 @@ class DownloadWorker(
     }
 
     private fun convertSrv3ToAssWithDedicatedConverter(subtitle: File, converterPath: String): File? {
-        val parent = subtitle.parentFile ?: return null
-        val output = File(parent, "${subtitle.nameWithoutExtension}.burnin_tmp.ass")
+        val output = createHardSubTempAssFile()
         return runDedicatedSubtitleConverter(
             input = subtitle,
             output = output,
@@ -2537,6 +2568,12 @@ class DownloadWorker(
             Log.i(TAG, "HardSub rich subtitle normalized source=${subtitle.name} output=${normalizedFile.name}")
             normalizedFile
         }.getOrNull()
+    }
+
+    private fun createHardSubTempAssFile(): File {
+        val dir = File(context.cacheDir, "hardsub")
+        val parent = if (dir.mkdirs() || dir.isDirectory) dir else context.cacheDir
+        return File(parent, "ytdlnisx_hardsub_${java.util.UUID.randomUUID()}.ass")
     }
 
     private fun convertSubtitleFilesToSrt(

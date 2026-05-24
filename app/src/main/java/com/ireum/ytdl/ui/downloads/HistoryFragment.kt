@@ -5742,8 +5742,17 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     removeItem = { it, deleteFile -> historyViewModel.delete(it, deleteFile) },
                     redownloadItem = {
                         lifecycleScope.launch {
-                            val downloadItem = downloadViewModel.createDownloadItemFromHistory(it)
-                            downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = false)
+                            val result = withContext(Dispatchers.IO) {
+                                val downloadItem = downloadViewModel.createDownloadItemFromHistory(it)
+                                downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = false)
+                            }
+                            if (!result.succeeded) {
+                                Toast.makeText(
+                                    requireContext(),
+                                    result.message.ifBlank { getString(R.string.download_queue_failed) },
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
                         }
                     },
                     redownloadShowDownloadCard = {

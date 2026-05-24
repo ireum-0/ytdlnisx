@@ -907,7 +907,8 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
     private fun YoutubeDLRequest.setYoutubeExtractorArgs(
         url: String?,
-        includeWebClientForSubtitles: Boolean = false
+        includeWebClientForSubtitles: Boolean = false,
+        excludeWebClientForMediaFormats: Boolean = false
     ) {
         val extractorArgs = mutableListOf<String>()
         val playerClients = mutableSetOf<String>()
@@ -919,7 +920,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
             for (value in configuredPlayerClients) {
                 if (value.enabled) {
-                    if (!value.useOnlyPoToken) {
+                    if (!value.useOnlyPoToken && value.canUseAsMediaPlayerClient(excludeWebClientForMediaFormats)) {
                         playerClients.add(value.playerClient)
                     }
 
@@ -964,7 +965,9 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                                 }
                         } else {
                             for (cl in value.clients) {
-                                playerClients.add(cl)
+                                if (cl.canUseAsMediaPlayerClient(excludeWebClientForMediaFormats)) {
+                                    playerClients.add(cl)
+                                }
                                 for (pt in value.poTokens) {
                                     if (pt.token.isNotBlank()) {
                                         poTokens.add("${cl}.${pt.context}+${pt.token}")
@@ -983,6 +986,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     }
                 }
             }
+        }
+
+        if (excludeWebClientForMediaFormats && playerClients.isEmpty()) {
+            playerClients.addAll(DEFAULT_NON_WEB_MEDIA_PLAYER_CLIENTS)
         }
 
         if (playerClients.isNotEmpty()){
@@ -1021,6 +1028,20 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         if (extractorArgs.isNotEmpty()) {
             this.addOption("--extractor-args", "youtube:${extArgs}")
         }
+    }
+
+    private fun YoutubePlayerClientItem.canUseAsMediaPlayerClient(excludeWebClientForMediaFormats: Boolean): Boolean {
+        return playerClient.canUseAsMediaPlayerClient(excludeWebClientForMediaFormats)
+    }
+
+    private fun String.canUseAsMediaPlayerClient(excludeWebClientForMediaFormats: Boolean): Boolean {
+        if (!excludeWebClientForMediaFormats) return true
+        val normalizedClient = lowercase(java.util.Locale.ROOT)
+        return normalizedClient != "all" &&
+            normalizedClient != "default" &&
+            normalizedClient != "web" &&
+            normalizedClient != "mweb" &&
+            !normalizedClient.startsWith("web_")
     }
 
     private fun YoutubeDLRequest.addConfig(commandString: String) {
@@ -1275,7 +1296,8 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     downloadItem.url,
                     includeWebClientForSubtitles = downloadItem.videoPreferences.embedSubs ||
                         downloadItem.videoPreferences.writeSubs ||
-                        downloadItem.videoPreferences.writeAutoSubs
+                        downloadItem.videoPreferences.writeAutoSubs,
+                    excludeWebClientForMediaFormats = downloadItem.type == DownloadType.video
                 )
             }
 
@@ -2152,6 +2174,13 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     companion object {
         private const val MAX_USER_REGEX_LENGTH = 512
         private val COMMON_VIDEO_HEIGHTS = listOf(2160, 1440, 1080, 720, 480, 360, 240)
+        private val DEFAULT_NON_WEB_MEDIA_PLAYER_CLIENTS = listOf(
+            "android",
+            "android_vr",
+            "ios",
+            "tv",
+            "tv_embedded"
+        )
     }
 }
 

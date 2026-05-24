@@ -1005,9 +1005,6 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     suspend fun queueProcessingDownloads(ignoreDuplicates: Boolean = false) : QueueDownloadsResult {
         val processingItems = repository.getAllProcessingDownloads()
-        processingItems.forEach {
-            hydrateHistoryRedownloadBeforeQueue(it)
-        }
         return queueDownloads(processingItems, ignoreDuplicates)
     }
 
@@ -1016,26 +1013,44 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         return detectAndMarkDuplicates(processingItems, ignoreDuplicates)
     }
 
-    private suspend fun hydrateHistoryRedownloadBeforeQueue(item: DownloadItem) {
-        if (item.type != DownloadType.video) return
-        val marker = item.playlistURL ?: return
-        if (!marker.startsWith(HISTORY_REDOWNLOAD_MARKER)) return
-        val historyId = marker.removePrefix(HISTORY_REDOWNLOAD_MARKER).toLongOrNull() ?: return
-        val historyItem = historyRepository.getItem(historyId)
+    private suspend fun hydrateHistoryRedownloadBeforeQueue(item: DownloadItem): Throwable? = withContext(Dispatchers.IO) {
+        if (item.type != DownloadType.video) return@withContext null
+        val marker = item.playlistURL ?: return@withContext null
+        if (!marker.startsWith(HISTORY_REDOWNLOAD_MARKER)) return@withContext null
+        val historyId = marker.removePrefix(HISTORY_REDOWNLOAD_MARKER).toLongOrNull() ?: return@withContext null
+        val historyItem = runCatching {
+            historyRepository.getItem(historyId)
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            Log.w(DUP_LOG_TAG, "Failed to load history item for redownload id=$historyId", error)
+            return@withContext error
+        }
         val subsLanguages = sharedPreferences.getString("subs_lang", "en.*,.*-orig")!!
+        val requiresHardSubLookup =
+            item.videoPreferences.embedSubs ||
+                item.videoPreferences.compatibilityMode ||
+                historyItem.hardSubDone
 
-        val manualSubs = runCatching {
-            resultRepository
-                .getResultsFromSource(
-                    historyItem.url,
-                    resetResults = false,
-                    addToResults = false,
-                    singleItem = true
-                )
-                .firstOrNull()
-                ?.availableSubtitles
-                .orEmpty()
-        }.getOrDefault(listOf())
+        val manualSubs = item.availableSubtitles.takeIf { it.isNotEmpty() }
+            ?: runCatching {
+                resultRepository
+                    .getResultsFromSource(
+                        historyItem.url,
+                        resetResults = false,
+                        addToResults = false,
+                        singleItem = true
+                    )
+                    .firstOrNull()
+                    ?.availableSubtitles
+                    .orEmpty()
+            }.getOrElse { error ->
+                if (error is CancellationException) throw error
+                Log.w(DUP_LOG_TAG, "Failed to resolve subtitles for history redownload id=$historyId", error)
+                if (requiresHardSubLookup) {
+                    return@withContext IllegalStateException("Unable to resolve subtitles for this re-download.", error)
+                }
+                return@withContext null
+            }
 
         item.availableSubtitles = manualSubs
         if (SubtitleLanguageMatcher.hasRequestedSubtitle(manualSubs, subsLanguages)) {
@@ -1043,12 +1058,16 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             item.videoPreferences.writeSubs = true
             item.videoPreferences.writeAutoSubs = false
         }
-        repository.update(item)
+        if (item.id != 0L) {
+            repository.update(item)
+        }
+        null
     }
 
     data class QueueDownloadsResult(
         var message: String,
-        var duplicateDownloadIDs : List<AlreadyExistsIDs>
+        var duplicateDownloadIDs : List<AlreadyExistsIDs>,
+        var succeeded: Boolean = true
     )
 
     suspend fun queueDownloads(items: List<DownloadItem>, ignoreDuplicates : Boolean = false) : QueueDownloadsResult {
@@ -1073,7 +1092,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             queuedItems.add(it)
         }
 
-        val duplicateIDs = detectAndMarkDuplicates(items, ignoreDuplicates)
+        val result = QueueDownloadsResult("", listOf())
+
+        val duplicateIDs = detectAndMarkDuplicates(queuedItems, ignoreDuplicates)
         if (duplicateIDs.isNotEmpty()) {
             existingItemIDs.addAll(duplicateIDs)
             queuedItems.removeAll { item ->
@@ -1081,7 +1102,20 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             }
         }
 
-        val result = QueueDownloadsResult("", listOf())
+        var hydrationError: Throwable? = null
+        for (item in queuedItems) {
+            hydrationError = hydrateHistoryRedownloadBeforeQueue(item)
+            if (hydrationError != null) break
+        }
+        if (hydrationError != null) {
+            result.succeeded = false
+            result.message = hydrationError.localizedMessage ?: context.getString(R.string.download_queue_failed)
+            if (existingItemIDs.isNotEmpty()) {
+                alreadyExistsUiState.value = existingItemIDs.toList()
+                result.duplicateDownloadIDs = existingItemIDs.toList()
+            }
+            return result
+        }
 
         //if scheduler is on
         val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
@@ -1091,6 +1125,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 alarmScheduler.schedule()
             }else{
                 sharedPreferences.edit().putBoolean("use_scheduler", false).apply()
+                result.succeeded = false
                 result.message = context.getString(R.string.enable_alarm_permission)
             }
         }else{
@@ -1105,6 +1140,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                     context.getString(R.string.downloads_have_been_queued) // ?덉떆: 怨좎젙???깃났 硫붿떆吏
                 },
                 onFailure = { exception ->
+                    result.succeeded = false
                     // ?ㅽ뙣 ?? exception 媛앹껜瑜??ъ슜???ㅻ쪟 硫붿떆吏 ?앹꽦
                     // ?덈? ?ㅼ뼱, exception.localizedMessage ?먮뒗 ?ъ슜?먯뿉寃?蹂댁뿬以??쇰컲?곸씤 ?ㅻ쪟 硫붿떆吏
                     exception.localizedMessage ?: context.getString(R.string.download_queue_failed) // ?덉떆: ?ㅽ뙣 硫붿떆吏
