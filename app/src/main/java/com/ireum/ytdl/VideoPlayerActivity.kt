@@ -2072,6 +2072,9 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     private fun copyHistoryReturnExtrasTo(target: Intent) {
+        intent.getBundleExtra(HistoryFragment.EXTRA_RESTORE_SCREEN_SNAPSHOT)?.let { snapshot ->
+            target.putExtra(HistoryFragment.EXTRA_RESTORE_SCREEN_SNAPSHOT, Bundle(snapshot))
+        }
         if (!intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)) return
         logHistoryReturn(
             "copyHistoryReturnExtras position=" +
@@ -2108,6 +2111,10 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     private fun savePendingHistoryScrollRestore() {
+        if (intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCREEN_SNAPSHOT)) {
+            // The return intent carries the full snapshot; keep the legacy pending scroll as a fallback only.
+            logHistoryReturn("savePendingHistoryScrollRestore hasScreenSnapshot")
+        }
         if (!intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)) return
         val position = intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION, RecyclerView.NO_POSITION)
         val offset = intent.getIntExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_OFFSET, 0)
@@ -2134,6 +2141,11 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (!target.hasExtra(EXTRA_RETURN_DESTINATION)) {
             safeSource.getStringExtra(EXTRA_RETURN_DESTINATION)?.let { destination ->
                 target.putExtra(EXTRA_RETURN_DESTINATION, destination)
+            }
+        }
+        if (!target.hasExtra(HistoryFragment.EXTRA_RESTORE_SCREEN_SNAPSHOT)) {
+            safeSource.getBundleExtra(HistoryFragment.EXTRA_RESTORE_SCREEN_SNAPSHOT)?.let { snapshot ->
+                target.putExtra(HistoryFragment.EXTRA_RESTORE_SCREEN_SNAPSHOT, Bundle(snapshot))
             }
         }
         if (!target.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION) &&
