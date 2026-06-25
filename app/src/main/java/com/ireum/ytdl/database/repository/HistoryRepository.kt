@@ -6,6 +6,7 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.KeywordInfo
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.WebsiteUtil
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import androidx.sqlite.db.SimpleSQLiteQuery
@@ -31,7 +32,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         }.distinct().sortedBy { it.lowercase(Locale.getDefault()) }
     }
 
-    val websites = historyDao.websites
+    val websites = historyDao.websites.map { WebsiteUtil.normalizeNames(it) }
 
     enum class SearchField {
         TITLE,
@@ -403,6 +404,13 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         }
     }
 
+    fun updateHardSubDone(ids: List<Long>, done: Boolean): Int {
+        if (ids.isEmpty()) return 0
+        return ids.chunked(ID_BATCH_SIZE).sumOf { batch ->
+            historyDao.updateHardSubDoneForIds(batch, done)
+        }
+    }
+
     suspend fun clearDeletedHistory() {
         val items = historyDao.getAll()
         items.forEach { item ->
@@ -680,9 +688,17 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             }
         }
 
-        if (website.isNotBlank()) {
-            appendClause("website = ?")
-            args.add(website)
+        val selectedWebsites = WebsiteUtil.decodeFilter(website)
+            .map(WebsiteUtil::comparisonKey)
+            .distinct()
+        if (selectedWebsites.isNotEmpty()) {
+            if (selectedWebsites.size == 1) {
+                appendClause("LOWER(TRIM(website)) = ?")
+                args.add(selectedWebsites.first())
+            } else {
+                appendClause("LOWER(TRIM(website)) IN (${selectedWebsites.joinToString(",") { "?" }})")
+                args.addAll(selectedWebsites)
+            }
         }
 
         if (playlistId >= 0L) {

@@ -1538,6 +1538,12 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         invalidateCachedIds(triggerRefresh = true)
     }
 
+    suspend fun setHardSubDone(ids: List<Long>, done: Boolean = true): Int = withContext(Dispatchers.IO) {
+        val updatedCount = repository.updateHardSubDone(ids, done)
+        invalidateCachedIds(triggerRefresh = true)
+        updatedCount
+    }
+
     private fun invalidateCachedIds(triggerRefresh: Boolean = false) {
         cachedIdsKey = null
         cachedIds = null

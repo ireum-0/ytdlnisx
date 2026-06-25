@@ -500,8 +500,19 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
                     if (json.has("observe_sources")) {
                         restoreData.observeSources = json.getAsJsonArray("observe_sources").map {
+                            val sourceJson = it.asJsonObject.deepCopy()
+                            listOf("ignoredLinks", "runHistory", "retryPromptedLinks", "observedLinks").forEach { key ->
+                                if (!sourceJson.has(key) || sourceJson.get(key).isJsonNull) {
+                                    sourceJson.add(key, JsonArray())
+                                }
+                            }
+                            listOf("currentRunStatus", "autoAddKeyword").forEach { key ->
+                                if (!sourceJson.has(key) || sourceJson.get(key).isJsonNull) {
+                                    sourceJson.addProperty(key, "")
+                                }
+                            }
                             val item = gson.fromJson(
-                                it,
+                                sourceJson,
                                 ObserveSourcesItem::class.java
                             )
                             item.id = 0L

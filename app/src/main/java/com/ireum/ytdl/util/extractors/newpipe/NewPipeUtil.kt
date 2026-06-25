@@ -132,7 +132,6 @@ class NewPipeUtil(context: Context) {
             for (i in 0 until res.relatedItems.size) {
                 val element = res.relatedItems[i]
                 if (element is StreamInfoItem) {
-                    if (element.duration <= 0) continue
                     val v = createVideoFromStreamInfoItem(element, element.url) ?: continue
                     items.add(v)
                 }
@@ -158,7 +157,6 @@ class NewPipeUtil(context: Context) {
             for (i in 0 until res.relatedItems.size) {
                 val element = res.relatedItems[i]
                 if (element is StreamInfoItem) {
-                    if (element.duration <= 0) continue
                     val v = createVideoFromStreamInfoItem(element, element.url) ?: continue
                     items.add(v)
                 }
@@ -200,8 +198,13 @@ class NewPipeUtil(context: Context) {
                     val tmp = getChannelTabData(tab, tabInfo, req.name, "${url}/${tabInfo.url.split("/").last()}") {
                         progress(it)
                     }
-                    if (tmp.isFailure) continue
-                    else items.addAll(tmp.getOrNull()!!)
+                    if (tmp.isFailure) {
+                        return Result.failure(
+                            tmp.exceptionOrNull()
+                                ?: IllegalStateException("Failed to load a channel tab")
+                        )
+                    }
+                    items.addAll(tmp.getOrNull().orEmpty())
                 }
             }
             return Result.success(items)
@@ -234,7 +237,6 @@ class NewPipeUtil(context: Context) {
 
                 for (element in req) {
                     if (element is StreamInfoItem) {
-                        if (element.duration <= 0) continue
                         val v = createVideoFromStreamInfoItem(element, element.url) ?: continue
                         v.apply {
                             playlistTitle = playlistName
@@ -279,7 +281,6 @@ class NewPipeUtil(context: Context) {
 
                 for (element in req) {
                     if (element is StreamInfoItem) {
-                        if (element.duration <= 0) continue
                         val v = createVideoFromStreamInfoItem(element, element.url) ?: continue
                         v.apply {
                             playlistTitle = playlistName
@@ -335,7 +336,11 @@ class NewPipeUtil(context: Context) {
             val id = url.getIDFromYoutubeURL()
             val title = stream.name
             val author = stream.uploaderName.removeSuffix(" - Topic")
-            val duration = stream.duration.toInt().toStringDuration(Locale.US)
+            val duration = if (stream.duration > 0L) {
+                stream.duration.toInt().toStringDuration(Locale.US)
+            } else {
+                "-1"
+            }
             val thumb = "https://i.ytimg.com/vi/$id/hqdefault.jpg"
 
             video = ResultItem(0,
@@ -344,7 +349,7 @@ class NewPipeUtil(context: Context) {
                 author,
                 duration,
                 thumb,
-                "youtube",
+                "YouTube",
                 "",
                 ArrayList(),
                 "",
@@ -458,7 +463,7 @@ class NewPipeUtil(context: Context) {
                 author,
                 duration,
                 thumb,
-                "youtube",
+                "YouTube",
                 "",
                 formats,
                 if (stream.hlsUrl.isNotBlank() && stream.hlsUrl != "null") stream.hlsUrl else "",

@@ -49,6 +49,10 @@ data class ObserveSourcesItem(
     @ColumnInfo(defaultValue = "")
     var currentRunStatus: String = "",
     @ColumnInfo(defaultValue = "")
-    var autoAddKeyword: String = ""
+    var autoAddKeyword: String = "",
+    @ColumnInfo(defaultValue = "[]")
+    var retryPromptedLinks: MutableList<String> = mutableListOf(),
+    @ColumnInfo(defaultValue = "[]")
+    var observedLinks: MutableList<String> = mutableListOf()
 ) : Parcelable
 

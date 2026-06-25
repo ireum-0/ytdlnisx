@@ -102,6 +102,9 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE status in('Active','Queued', 'Scheduled')")
     fun getActiveAndQueuedDownloadsList() : List<DownloadItem>
 
+    @Query("SELECT * FROM downloads WHERE status in('Active','Queued','Scheduled','Paused','Processing')")
+    fun getPendingObservationDownloadsList() : List<DownloadItem>
+
     @Query("SELECT COUNT(*) FROM downloads WHERE playlistURL = :marker AND status IN ('Processing','Queued','Active','Paused','Scheduled','Saved')")
     fun countPendingByPlaylistMarker(marker: String): Int
 

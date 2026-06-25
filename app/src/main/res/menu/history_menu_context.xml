@@ -44,6 +44,10 @@
         android:id="@+id/exclude_from_hardsub_scan"
         android:title="@string/exclude_from_hardsub_scan"
         app:showAsAction="never" />
+    <item
+        android:id="@+id/mark_hardsub_done"
+        android:title="@string/mark_hardsub_done"
+        app:showAsAction="never" />
 
     <item
         android:id="@+id/select_all"

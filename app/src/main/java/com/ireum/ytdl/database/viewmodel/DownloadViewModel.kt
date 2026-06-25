@@ -1178,7 +1178,12 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         val activeAndQueuedDownloads = withContext(Dispatchers.IO) {
             repository.getActiveAndQueuedDownloads()
         }
+        val pendingHistoryRedownloads = withContext(Dispatchers.IO) {
+            repository.getPendingObservationDownloads()
+        }
+        val batchItemIds = items.asSequence().map { it.id }.filter { it > 0L }.toSet()
         val seenBatchUrlTypeKeys = mutableSetOf<String>()
+        val seenHistoryRedownloadMarkers = mutableSetOf<String>()
 
         suspend fun markDuplicate(item: DownloadItem, historyId: Long? = null) {
             if (item.id == 0L) {
@@ -1198,6 +1203,26 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 "checkDuplicates idx=$idx id=${it.id} type=${it.type} mode=$checkDuplicate ignore=$ignoreDuplicates url=${it.url} canonical=$canonicalUrl equivalents=$equivalentUrls"
             )
             var isDuplicate = false
+            if (it.isHistoryRedownload()) {
+                val marker = it.playlistURL.orEmpty()
+                val hasExistingPendingRedownload = pendingHistoryRedownloads.any { pending ->
+                    pending.id !in batchItemIds && pending.playlistURL == marker
+                }
+                val isDuplicateInBatch = !seenHistoryRedownloadMarkers.add(marker)
+                if (hasExistingPendingRedownload || isDuplicateInBatch) {
+                    Log.d(
+                        DUP_LOG_TAG,
+                        "duplicate(history-redownload) id=${it.id} marker=$marker pending=$hasExistingPendingRedownload batch=$isDuplicateInBatch"
+                    )
+                    markDuplicate(it)
+                } else {
+                    Log.d(
+                        DUP_LOG_TAG,
+                        "skip original-history duplicate check for redownload id=${it.id} marker=$marker url=${it.url}"
+                    )
+                }
+                return@forEachIndexed
+            }
             if (checkDuplicate.isNotEmpty() && !ignoreDuplicates) {
                 if (checkDuplicate == "url_type") {
                     val batchKey = "${it.type}:$canonicalUrl"
@@ -1316,6 +1341,10 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             alreadyExistsUiState.value = existingItemIDs.toList()
         }
         return existingItemIDs
+    }
+
+    private fun DownloadItem.isHistoryRedownload(): Boolean {
+        return playlistURL?.startsWith(HISTORY_REDOWNLOAD_MARKER) == true
     }
 
     private fun canonicalDuplicateUrl(url: String): String {

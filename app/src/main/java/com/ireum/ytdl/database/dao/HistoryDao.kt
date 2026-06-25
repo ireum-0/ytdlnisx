@@ -103,6 +103,9 @@ interface HistoryDao {
     @Query("UPDATE history SET hardSubScanRemoved = :removed WHERE id IN (:ids) AND type = 'video' AND hardSubDone = 0")
     fun updateHardSubScanRemovedForIds(ids: List<Long>, removed: Boolean)
 
+    @Query("UPDATE history SET hardSubScanRemoved = :done, hardSubDone = :done WHERE id IN (:ids) AND type = 'video'")
+    fun updateHardSubDoneForIds(ids: List<Long>, done: Boolean): Int
+
     @Query("UPDATE history SET hardSubScanRemoved = 0, hardSubDone = 0 WHERE type = 'video' AND hardSubDone = 1")
     fun resetHardSubDoneForRescan()
 

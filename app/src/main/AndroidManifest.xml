@@ -494,6 +494,9 @@
             android:name=".receiver.PauseDownloadNotificationReceiver"
             android:exported="false" />
         <receiver
+            android:name=".receiver.ObserveRetryDecisionReceiver"
+            android:exported="false" />
+        <receiver
             android:name=".receiver.CancelScheduleAlarmReceiver"
             android:exported="false" />
         <receiver

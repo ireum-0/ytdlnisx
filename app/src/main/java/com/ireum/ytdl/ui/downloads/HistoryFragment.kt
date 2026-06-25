@@ -86,6 +86,8 @@ import com.ireum.ytdl.database.viewmodel.HistoryViewModel
 import com.ireum.ytdl.database.viewmodel.PlaylistViewModel
 import com.ireum.ytdl.ui.adapter.HistoryPaginatedAdapter
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.PendingDuplicateDownloadStore
+import com.ireum.ytdl.util.WebsiteUtil
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.Extensions.toDurationSeconds
 import com.ireum.ytdl.util.Extensions.loadThumbnail
@@ -151,6 +153,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         private const val PREF_PENDING_RESTORE_SCROLL_OFFSET = "history_pending_restore_scroll_offset"
         private const val PREF_PENDING_RESTORE_SCROLL_ITEM_ID = "history_pending_restore_scroll_item_id"
         private const val PREF_PENDING_RESTORE_SCROLL_ITEM_TOP = "history_pending_restore_scroll_item_top"
+        private const val STATE_PENDING_RECONNECT_HISTORY_ITEM_ID = "pending_reconnect_history_item_id"
         private const val SNAPSHOT_SORT_TYPE = "sort_type"
         private const val SNAPSHOT_SORT_ORDER = "sort_order"
         private const val SNAPSHOT_AUTHOR = "author"
@@ -301,6 +304,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private var addLocalJob: Job? = null
     private var pendingThumbItem: HistoryItem? = null
     private var pendingThumbCallback: ((String) -> Unit)? = null
+    private var pendingReconnectHistoryItemId: Long? = null
+    private var duplicateDownloadDialogShowing = false
     private var pendingApplyReady: (() -> Unit)? = null
     private val localMatchCandidates: MutableList<LocalMatchCandidate> = mutableListOf()
     private var localMatchSelections: MutableList<LocalMatchSelection>? = null
@@ -494,6 +499,39 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 pendingApplyReady = null
             }
         }
+    }
+
+    private val reconnectDownloadFileLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode != AppCompatActivity.RESULT_OK) {
+            pendingReconnectHistoryItemId = null
+            return@registerForActivityResult
+        }
+        val itemId = pendingReconnectHistoryItemId ?: return@registerForActivityResult
+        pendingReconnectHistoryItemId = null
+        val data = result.data ?: return@registerForActivityResult
+        val uri = data.data ?: return@registerForActivityResult
+        val takeFlags = data.flags and
+            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        runCatching {
+            requireContext().contentResolver.takePersistableUriPermission(uri, takeFlags)
+        }
+        lifecycleScope.launch(Dispatchers.IO) {
+            reconnectDownloadedHistoryItem(itemId, uri)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(requireContext(), getString(R.string.download_history_reconnected), Toast.LENGTH_SHORT).show()
+                historyAdapter.refresh()
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        pendingReconnectHistoryItemId = savedInstanceState
+            ?.takeIf { it.containsKey(STATE_PENDING_RECONNECT_HISTORY_ITEM_ID) }
+            ?.getLong(STATE_PENDING_RECONNECT_HISTORY_ITEM_ID)
+            ?.takeIf { it > 0L }
     }
 
     private val pickCustomThumbLauncher = registerForActivityResult(
@@ -1073,6 +1111,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         topAppBar.updateMenuItemBadge(R.id.filters, computeActiveFilterCount())
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingReconnectHistoryItemId?.let { itemId ->
+            outState.putLong(STATE_PENDING_RECONNECT_HISTORY_ITEM_ID, itemId)
+        }
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onDestroyView() {
         localAddProgressJob?.cancel()
         localAddProgressJob = null
@@ -1111,6 +1156,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         if (pendingDirectScrollRestore != null) {
             tryApplyPendingDirectScrollRestore()
         }
+        maybePromptPendingDuplicateDownload()
         if (restoreScrollOnNextResume) {
             restoreScrollOnNextResume = false
             val state = captureNavigationState()
@@ -5487,17 +5533,31 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             filterSheet.findViewById<View>(R.id.websiteFilters)?.isVisible = false
         } else {
             val websiteGroup = filterSheet.findViewById<ChipGroup>(R.id.websitesChipGroup)
-            val websiteFilter = historyViewModel.websiteFilter.value
+            val storedWebsiteFilter = historyViewModel.websiteFilter.value
+            val selectedWebsites = if (storedWebsiteFilter.isBlank()) {
+                websiteList.toMutableSet()
+            } else {
+                WebsiteUtil.decodeFilter(storedWebsiteFilter).toMutableSet()
+            }
             for (i in websiteList.indices) {
                 val w = websiteList[i]
                 val tmp = layoutinflater.inflate(R.layout.filter_chip, websiteGroup, false) as Chip
                 tmp.text = w
-                tmp.id = i
-                tmp.setOnClickListener {
-                    historyViewModel.setWebsiteFilter(if (tmp.isChecked) tmp.text as String else "")
-                }
-                if (w == websiteFilter) tmp.isChecked = true
+                tmp.id = View.generateViewId()
                 websiteGroup!!.addView(tmp)
+                tmp.isChecked = selectedWebsites.contains(w)
+                tmp.setOnCheckedChangeListener { _, isChecked ->
+                    if (isChecked) {
+                        selectedWebsites.add(w)
+                    } else {
+                        selectedWebsites.remove(w)
+                    }
+                    val allSelected = selectedWebsites.size == websiteList.size &&
+                        selectedWebsites.containsAll(websiteList)
+                    historyViewModel.setWebsiteFilter(
+                        if (allSelected) "" else WebsiteUtil.encodeFilter(selectedWebsites)
+                    )
+                }
             }
         }
 
@@ -6159,6 +6219,215 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         sortSheet.show()
     }
 
+    private data class PendingDuplicateDownload(
+        val key: String,
+        val newHistoryId: Long,
+        val existingHistoryId: Long
+    )
+
+    private fun maybePromptPendingDuplicateDownload() {
+        if (duplicateDownloadDialogShowing || !this::sharedPreferences.isInitialized) return
+        val pending = PendingDuplicateDownloadStore.snapshot(sharedPreferences)
+        if (pending.isEmpty()) return
+        duplicateDownloadDialogShowing = true
+        lifecycleScope.launch(Dispatchers.IO) {
+            val db = DBManager.getInstance(requireContext())
+            val pair = pending.asSequence()
+                .mapNotNull { raw ->
+                    val parts = raw.split(":")
+                    val newId = parts.getOrNull(0)?.toLongOrNull() ?: return@mapNotNull null
+                    val existingId = parts.getOrNull(1)?.toLongOrNull() ?: return@mapNotNull null
+                    PendingDuplicateDownload(raw, newId, existingId)
+                }
+                .firstOrNull { candidate ->
+                    val newItem = runCatching { db.historyDao.getItem(candidate.newHistoryId) }.getOrNull()
+                    val existingItem = runCatching { db.historyDao.getItem(candidate.existingHistoryId) }.getOrNull()
+                    newItem != null && existingItem != null &&
+                        newItem.downloadPath.any { FileUtil.exists(it) } &&
+                        existingItem.downloadPath.any { FileUtil.exists(it) }
+                }
+
+            if (pair == null) {
+                withContext(Dispatchers.Main) {
+                    duplicateDownloadDialogShowing = false
+                }
+                return@launch
+            }
+
+            val newItem = db.historyDao.getItem(pair.newHistoryId)
+            val existingItem = db.historyDao.getItem(pair.existingHistoryId)
+            withContext(Dispatchers.Main) {
+                showPendingDuplicateDownloadDialog(pair, newItem, existingItem)
+            }
+        }
+    }
+
+    private fun showPendingDuplicateDownloadDialog(
+        pair: PendingDuplicateDownload,
+        newItem: HistoryItem,
+        existingItem: HistoryItem
+    ) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.duplicate_download_found))
+            .setMessage(
+                getString(
+                    R.string.duplicate_download_choice_desc,
+                    newItem.title.ifBlank { newItem.url },
+                    existingItem.title.ifBlank { existingItem.url }
+                )
+            )
+            .setPositiveButton(getString(R.string.connect_to_existing_card)) { _, _ ->
+                lifecycleScope.launch(Dispatchers.IO) {
+                    mergeDuplicateDownloadedHistory(pair, newItem, existingItem)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(requireContext(), getString(R.string.duplicate_download_connected), Toast.LENGTH_SHORT).show()
+                        historyAdapter.refresh()
+                    }
+                }
+            }
+            .setNegativeButton(getString(R.string.keep_new_download)) { _, _ ->
+                removePendingDuplicateDownload(pair.key)
+            }
+            .setNeutralButton(getString(R.string.cancel), null)
+            .setOnDismissListener {
+                duplicateDownloadDialogShowing = false
+            }
+            .show()
+    }
+
+    private suspend fun mergeDuplicateDownloadedHistory(
+        pair: PendingDuplicateDownload,
+        newItem: HistoryItem,
+        existingItem: HistoryItem
+    ) {
+        val db = DBManager.getInstance(requireContext())
+        val mergedKeywords = mergeHistoryKeywords(existingItem.keywords, newItem.keywords)
+        if (mergedKeywords != existingItem.keywords) {
+            db.historyDao.update(existingItem.copy(keywords = mergedKeywords))
+        }
+        val retainedPaths = existingItem.downloadPath
+            .map(::normalizeHistoryMediaPathForComparison)
+            .toSet()
+        val pathsToDelete = newItem.downloadPath.filter { path ->
+            normalizeHistoryMediaPathForComparison(path) !in retainedPaths
+        }
+        FileUtil.deleteFilesWithZeroByteSiblings(pathsToDelete)
+        db.playlistDao.deletePlaylistItemsByHistoryIds(listOf(newItem.id))
+        db.historyDao.delete(newItem)
+        removePendingDuplicateDownload(pair.key)
+    }
+
+    private fun normalizeHistoryMediaPathForComparison(path: String): String {
+        val trimmed = path.trim()
+        if (trimmed.startsWith("content://")) {
+            return runCatching { Uri.parse(trimmed).normalizeScheme().toString() }.getOrDefault(trimmed)
+        }
+        val rawPath = if (trimmed.startsWith("file://")) {
+            runCatching { Uri.parse(trimmed).path.orEmpty() }.getOrDefault(trimmed)
+        } else {
+            trimmed
+        }
+        return runCatching { File(rawPath).canonicalPath }.getOrDefault(rawPath)
+    }
+
+    private fun removePendingDuplicateDownload(key: String) {
+        PendingDuplicateDownloadStore.remove(sharedPreferences, key)
+    }
+
+    private fun showMissingDownloadItemDialog(item: HistoryItem) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.reconnect_download_file))
+            .setMessage(getString(R.string.reconnect_download_file_desc, item.title.ifBlank { item.url }))
+            .setPositiveButton(getString(R.string.choose_file)) { _, _ ->
+                launchReconnectFilePicker(item)
+            }
+            .setNegativeButton(getString(R.string.details)) { _, _ ->
+                UiUtil.showHistoryItemDetailsCard(item, requireActivity(), false, sharedPreferences,
+                    removeItem = { it, deleteFile -> historyViewModel.delete(it, deleteFile) },
+                    redownloadItem = {
+                        lifecycleScope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                val downloadItem = downloadViewModel.createDownloadItemFromHistory(it)
+                                downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = false)
+                            }
+                            if (!result.succeeded) {
+                                Toast.makeText(
+                                    requireContext(),
+                                    result.message.ifBlank { getString(R.string.download_queue_failed) },
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    },
+                    redownloadShowDownloadCard = {
+                        findNavController().navigate(
+                            R.id.downloadBottomSheetDialog, bundleOf(
+                                Pair("result", downloadViewModel.createResultItemFromHistory(it)),
+                                Pair("type", it.type),
+                                Pair("source_history_id", it.id),
+                                Pair("ignore_duplicates", false)
+                            )
+                        )
+                    }
+                )
+            }
+            .setNeutralButton(getString(R.string.cancel), null)
+            .show()
+    }
+
+    private fun launchReconnectFilePicker(item: HistoryItem) {
+        pendingReconnectHistoryItemId = item.id
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = when (item.type) {
+                DownloadType.audio -> "audio/*"
+                DownloadType.video -> "video/*"
+                else -> "*/*"
+            }
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        reconnectDownloadFileLauncher.launch(intent)
+    }
+
+    private fun reconnectDownloadedHistoryItem(itemId: Long, uri: Uri) {
+        val db = DBManager.getInstance(requireContext())
+        val item = db.historyDao.getItem(itemId)
+        val document = DocumentFile.fromSingleUri(requireContext(), uri)
+        val name = document?.name ?: uri.lastPathSegment.orEmpty()
+        val ext = name.substringAfterLast('.', item.format.container).ifBlank { item.format.container }
+        val size = document?.length()?.takeIf { it > 0L } ?: item.filesize
+        val updatedFormat = item.format.copy(
+            container = ext,
+            filesize = size
+        )
+        db.historyDao.update(
+            item.copy(
+                downloadPath = listOf(uri.toString()),
+                filesize = size,
+                format = updatedFormat,
+                localTreeUri = "",
+                localTreePath = ""
+            )
+        )
+    }
+
+    private fun mergeHistoryKeywords(existing: String, appended: String): String {
+        if (appended.isBlank()) return existing.trim()
+        val merged = linkedSetOf<String>()
+        val seen = hashSetOf<String>()
+        fun add(raw: String) {
+            val token = raw.trim()
+            if (token.isBlank()) return
+            val key = token.lowercase(Locale.getDefault())
+            if (seen.add(key)) merged.add(token)
+        }
+        existing.split(',').forEach { add(it) }
+        appended.split(',').forEach { add(it) }
+        return merged.joinToString(", ")
+    }
+
     override fun onCardClick(itemID: Long, filePresent: Boolean) {
         lifecycleScope.launch {
             val item = withContext(Dispatchers.IO) {
@@ -6240,6 +6509,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     intent.putExtra("context_youtuber_group_id", youtuberGroupId)
                 }
                 startActivity(intent)
+            } else if ((item.type == DownloadType.video || item.type == DownloadType.audio) && !filePresent) {
+                showMissingDownloadItemDialog(item)
             } else {
                 UiUtil.showHistoryItemDetailsCard(item, requireActivity(), filePresent, sharedPreferences,
                     removeItem = { it, deleteFile -> historyViewModel.delete(it, deleteFile) },
@@ -6536,6 +6807,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             mode!!.menuInflater.inflate(R.menu.history_menu_context, menu)
             menu?.findItem(R.id.edit_item)?.isVisible = false
             menu?.findItem(R.id.exclude_from_hardsub_scan)?.isVisible = false
+            menu?.findItem(R.id.mark_hardsub_done)?.isVisible = false
             lifecycleScope.launch {
                 val selectedCount = getSelectedIDs().size
                 mode.title = "$selectedCount ${getString(R.string.selected)}"
@@ -6548,10 +6820,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean {
             menu?.findItem(R.id.edit_item)?.isVisible = false
             menu?.findItem(R.id.exclude_from_hardsub_scan)?.isVisible = false
+            menu?.findItem(R.id.mark_hardsub_done)?.isVisible = false
             lifecycleScope.launch {
                 val selectedCount = getSelectedIDs().size
                 mode?.title = "$selectedCount ${getString(R.string.selected)}"
                 menu?.findItem(R.id.edit_item)?.isVisible = selectedCount == 1
+                menu?.findItem(R.id.mark_hardsub_done)?.isVisible = selectedCount > 0
                 menu?.findItem(R.id.exclude_from_hardsub_scan)?.isVisible =
                     selectedCount > 0 && historyViewModel.statusFilter.value == HistoryViewModel.HistoryStatus.HARDSUB_SCAN_TARGET
             }
@@ -6687,6 +6961,21 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                         historyAdapter.clearCheckedItems()
                         actionMode?.finish()
                         Toast.makeText(requireContext(), getString(R.string.excluded_from_hardsub_scan), Toast.LENGTH_SHORT).show()
+                    }
+                    true
+                }
+                R.id.mark_hardsub_done -> {
+                    lifecycleScope.launch {
+                        val selectedObjects = getSelectedIDs()
+                        if (selectedObjects.isEmpty()) return@launch
+                        val updatedCount = historyViewModel.setHardSubDone(selectedObjects, done = true)
+                        historyAdapter.clearCheckedItems()
+                        actionMode?.finish()
+                        Toast.makeText(
+                            requireContext(),
+                            getString(R.string.marked_hardsub_done, updatedCount),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                     true
                 }

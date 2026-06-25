@@ -34,6 +34,7 @@ import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.Extensions.isYoutubeWatchVideosURL
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.WebsiteUtil
 import com.ireum.ytdl.util.FormatUtil
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import com.ireum.ytdl.util.SubtitleSelection
@@ -284,6 +285,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
             var website = jsonObject.getStringByAny("extractor_key", "extractor","ie_key")
             if (website == "Generic" || website == "HTML5MediaEmbed") website = jsonObject.getStringByAny("webpage_url_domain")
+            website = WebsiteUtil.canonicalName(website)
 
 
             val formatsInJSON = if (jsonObject.has("formats") && jsonObject.get("formats") is JSONArray) jsonObject.getJSONArray("formats") else null
@@ -908,7 +910,8 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     private fun YoutubeDLRequest.setYoutubeExtractorArgs(
         url: String?,
         includeWebClientForSubtitles: Boolean = false,
-        excludeWebClientForMediaFormats: Boolean = false
+        excludeWebClientForMediaFormats: Boolean = false,
+        includeAuthentication: Boolean = true
     ) {
         val extractorArgs = mutableListOf<String>()
         val playerClients = mutableSetOf<String>()
@@ -929,67 +932,82 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                         canUsePoToken = value.urlRegex.any { safeRegexMatches(it, url, fullMatch = true) }
                     }
 
-                    if (canUsePoToken) {
-                        value.poTokens.forEach { pt ->
-                            poTokens.add("${value.playerClient}.${pt.context}+${pt.token}")
-                        }
+                    if (includeAuthentication && canUsePoToken) {
+                        value.poTokens
+                            .filter { pt -> pt.token.isNotBlank() }
+                            .filter { pt ->
+                                includeWebClientForSubtitles ||
+                                    !pt.context.equals("subs", ignoreCase = true)
+                            }
+                            .forEach { pt ->
+                                poTokens.add("${value.playerClient}.${pt.context}+${pt.token}")
+                            }
                     }
                 }
             }
         }
 
         val dataSyncID = sharedPreferences.getString("youtube_data_sync_id", "")!!
-        if (dataSyncID.isNotBlank()) {
+        if (includeAuthentication && dataSyncID.isNotBlank()) {
             extractorArgs.add("player_skip=webpage,configs")
             extractorArgs.add("data_sync_id=${dataSyncID}")
         }
 
-        val generatedPoTokensRaw = sharedPreferences.getString("youtube_generated_po_tokens", "[]")!!.ifEmpty { "[]" }
-        kotlin.runCatching {
-            val generatedPoTokens = Gson().fromJson(generatedPoTokensRaw,Array<YoutubeGeneratePoTokenItem>::class.java).toMutableList()
-            if (generatedPoTokens.isNotEmpty()) {
-                for (value in generatedPoTokens) {
-                    if (value.enabled) {
-                        val hasSubtitlePoToken = value.poTokens.any {
-                            it.context.equals("subs", ignoreCase = true) && it.token.isNotBlank()
-                        }
-                        if (includeWebClientForSubtitles) {
-                            value.clients
-                                .filter { it.equals("web", ignoreCase = true) }
-                                .forEach { cl ->
+        if (includeAuthentication) {
+            val generatedPoTokensRaw = sharedPreferences.getString("youtube_generated_po_tokens", "[]")!!.ifEmpty { "[]" }
+            kotlin.runCatching {
+                val generatedPoTokens = Gson().fromJson(generatedPoTokensRaw,Array<YoutubeGeneratePoTokenItem>::class.java).toMutableList()
+                if (generatedPoTokens.isNotEmpty()) {
+                    for (value in generatedPoTokens) {
+                        if (value.enabled) {
+                            val hasSubtitlePoToken = value.poTokens.any {
+                                it.context.equals("subs", ignoreCase = true) && it.token.isNotBlank()
+                            }
+                            if (includeWebClientForSubtitles) {
+                                value.clients
+                                    .filter { it.equals("web", ignoreCase = true) }
+                                    .forEach { cl ->
+                                        value.poTokens
+                                            .filter { it.context.equals("subs", ignoreCase = true) && it.token.isNotBlank() }
+                                            .forEach { pt ->
+                                                poTokens.add("${cl}.${pt.context}+${pt.token}")
+                                            }
+                                    }
+                            } else {
+                                for (cl in value.clients) {
+                                    if (cl.canUseAsMediaPlayerClient(excludeWebClientForMediaFormats)) {
+                                        playerClients.add(cl)
+                                    }
                                     value.poTokens
-                                        .filter { it.context.equals("subs", ignoreCase = true) && it.token.isNotBlank() }
+                                        .filter { pt -> pt.token.isNotBlank() }
+                                        .filter { pt -> !pt.context.equals("subs", ignoreCase = true) }
                                         .forEach { pt ->
                                             poTokens.add("${cl}.${pt.context}+${pt.token}")
                                         }
                                 }
-                        } else {
-                            for (cl in value.clients) {
-                                if (cl.canUseAsMediaPlayerClient(excludeWebClientForMediaFormats)) {
-                                    playerClients.add(cl)
-                                }
-                                for (pt in value.poTokens) {
-                                    if (pt.token.isNotBlank()) {
-                                        poTokens.add("${cl}.${pt.context}+${pt.token}")
-                                    }
-                                }
+                            }
+
+                            val shouldUseVisitorData = value.useVisitorData ||
+                                (includeWebClientForSubtitles && hasSubtitlePoToken && value.visitorData.isNotBlank())
+                            if (dataSyncID.isBlank() && shouldUseVisitorData) {
+                                extractorArgs.add("player_skip=webpage,configs")
+                                extractorArgs.add("visitor_data=${value.visitorData}")
                             }
                         }
-
-                        val shouldUseVisitorData = value.useVisitorData ||
-                            (includeWebClientForSubtitles && hasSubtitlePoToken && value.visitorData.isNotBlank())
-                        if (dataSyncID.isBlank() && shouldUseVisitorData) {
-                            extractorArgs.add("player_skip=webpage,configs")
-                            extractorArgs.add("visitor_data=${value.visitorData}")
-                        }
-
                     }
                 }
             }
         }
 
-        if (excludeWebClientForMediaFormats && playerClients.isEmpty()) {
+        if (!includeAuthentication && excludeWebClientForMediaFormats) {
+            playerClients.clear()
             playerClients.addAll(DEFAULT_NON_WEB_MEDIA_PLAYER_CLIENTS)
+        } else if (excludeWebClientForMediaFormats && playerClients.none { it.canUseAsMediaPlayerClient(true) }) {
+            playerClients.addAll(DEFAULT_NON_WEB_MEDIA_PLAYER_CLIENTS)
+        }
+
+        if (includeWebClientForSubtitles && includeAuthentication) {
+            playerClients.add("web")
         }
 
         if (playerClients.isNotEmpty()){
@@ -1020,9 +1038,17 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         }
 
         val otherArgs = sharedPreferences.getString("youtube_other_extractor_args", "")!!
-        if (otherArgs.isNotBlank()) {
-            extractorArgs.add(otherArgs)
-        }
+        otherArgs
+            .split(';')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filterNot { argument ->
+                if (includeAuthentication) return@filterNot false
+                val key = argument.substringBefore('=').trim().lowercase(Locale.ROOT)
+                key in YOUTUBE_AUTH_EXTRACTOR_ARGUMENTS ||
+                    (excludeWebClientForMediaFormats && key == "player_client")
+            }
+            .forEach(extractorArgs::add)
 
         val extArgs = extractorArgs.joinToString(";")
         if (extractorArgs.isNotEmpty()) {
@@ -1091,9 +1117,13 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     @SuppressLint("RestrictedApi")
     fun buildYoutubeDLRequest(
         downloadItem: DownloadItem,
-        useCachedInfoJson: Boolean = true
+        useCachedInfoJson: Boolean = true,
+        includeYoutubeAuthentication: Boolean = true
     ) : YoutubeDLRequest {
         var useItemURL = sharedPreferences.getBoolean("use_itemurl_instead_playlisturl", false)
+        if (downloadItem.observeSourceId > 0L && downloadItem.url.isYoutubeURL() && downloadItem.url.getIDFromYoutubeURL() != null) {
+            useItemURL = true
+        }
         // for /releases youtube channel playlists that have playlists inside of them, cant use indexing or match filter id, so download on its own
         if (downloadItem.url.isYoutubeURL() && downloadItem.url.getIDFromYoutubeURL() == null) {
             useItemURL = true
@@ -1195,7 +1225,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         if (sharedPreferences.getBoolean("force_ipv4", false)){
             request.addOption("-4")
         }
-        if (sharedPreferences.getBoolean("use_cookies", false)){
+        if (includeYoutubeAuthentication && sharedPreferences.getBoolean("use_cookies", false)){
             FileUtil.getCookieFile(context){
                 request.addOption("--cookies", it)
             }
@@ -1297,7 +1327,8 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     includeWebClientForSubtitles = downloadItem.videoPreferences.embedSubs ||
                         downloadItem.videoPreferences.writeSubs ||
                         downloadItem.videoPreferences.writeAutoSubs,
-                    excludeWebClientForMediaFormats = downloadItem.type == DownloadType.video
+                    excludeWebClientForMediaFormats = downloadItem.type == DownloadType.video,
+                    includeAuthentication = includeYoutubeAuthentication
                 )
             }
 
@@ -2180,6 +2211,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             "ios",
             "tv",
             "tv_embedded"
+        )
+        private val YOUTUBE_AUTH_EXTRACTOR_ARGUMENTS = setOf(
+            "po_token",
+            "data_sync_id",
+            "visitor_data"
         )
     }
 }

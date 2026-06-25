@@ -31,11 +31,14 @@ import com.ireum.ytdl.database.models.LogItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.LogRepository
 import com.ireum.ytdl.database.repository.ResultRepository
+import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
 import com.ireum.ytdl.util.Extensions.getMediaDuration
+import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.Extensions.toDurationSeconds
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.PendingDuplicateDownloadStore
 import com.ireum.ytdl.util.SubtitleFileValidator
 import com.ireum.ytdl.util.SubtitleFormatConverter
 import com.ireum.ytdl.util.SubtitleSelection
@@ -50,6 +53,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.greenrobot.eventbus.EventBus
 import java.io.ByteArrayOutputStream
@@ -83,11 +88,14 @@ class DownloadWorker(
 
 
 
+    override suspend fun doWork(): Result = downloadWorkerMutex.withLock {
+        doWorkSerialized()
+    }
+
     @OptIn(ExperimentalStdlibApi::class)
     @SuppressLint("RestrictedApi")
-    override suspend fun doWork(): Result {
-        val workManager = WorkManager.getInstance(context)
-        if (workManager.isRunning("download") || isStopped) return Result.Failure()
+    private suspend fun doWorkSerialized(): Result {
+        if (isStopped) return Result.Failure()
 
         if (!setForegroundSafely()) return Result.retry()
 
@@ -333,16 +341,42 @@ class DownloadWorker(
                                 }
                             }
                         }
+                        fun resetTempDirectoryForRetry() {
+                            if (tempFileDir.exists() && !tempFileDir.deleteRecursively()) {
+                                throw IOException("Failed to clean temporary download directory before retry: ${tempFileDir.absolutePath}")
+                            }
+                            if (!tempFileDir.mkdirs() && !tempFileDir.isDirectory) {
+                                throw IOException("Failed to recreate temporary download directory before retry: ${tempFileDir.absolutePath}")
+                            }
+                        }
                         var retryLogDetails = ""
                         val response = try {
                             executeYtdlpRequest(request)
                         } catch (firstError: Exception) {
-                            if (!shouldRetryWithoutCachedInfoJson(firstError, commandString)) {
+                            val retryProbeText = buildYtdlpRetryProbeText(firstError, recentYtdlpOutput)
+                            val retryWithoutCachedInfoJson = shouldRetryWithoutCachedInfoJson(retryProbeText, commandString)
+                            val retryWithoutYoutubeAuthentication = shouldRetryYoutube403WithoutAuthentication(
+                                retryProbeText = retryProbeText,
+                                commandString = commandString,
+                                item = downloadItem
+                            )
+                            if (!retryWithoutCachedInfoJson && !retryWithoutYoutubeAuthentication) {
                                 throw firstError
                             }
 
-                            deleteLoadedAppInfoJson(commandString)
-                            val retryNotice = "Cached info JSON media URL returned 403; retrying without --load-info-json"
+                            val retryNotice = when {
+                                retryWithoutCachedInfoJson && retryWithoutYoutubeAuthentication -> {
+                                    deleteLoadedAppInfoJson(commandString)
+                                    "Cached authenticated YouTube media request returned 403; retrying without cached metadata or authentication"
+                                }
+                                retryWithoutCachedInfoJson -> {
+                                    deleteLoadedAppInfoJson(commandString)
+                                    "Cached info JSON media URL returned 403; retrying without --load-info-json"
+                                }
+                                else -> {
+                                    "Authenticated YouTube media request returned 403; retrying once with public player clients"
+                                }
+                            }
                             Log.w(TAG, "$retryNotice id=${downloadItem.id}", firstError)
                             eventBus.post(WorkerProgress(0, retryNotice, downloadItem.id, downloadItem.logID))
                             notificationUtil.updateDownloadNotification(
@@ -352,20 +386,19 @@ class DownloadWorker(
                                 NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
                                 getHardSubStatusText(resources)
                             )
-                            if (tempFileDir.exists() && !tempFileDir.deleteRecursively()) {
-                                throw IOException("Failed to clean temporary download directory before retry: ${tempFileDir.absolutePath}")
-                            }
-                            if (!tempFileDir.mkdirs() && !tempFileDir.isDirectory) {
-                                throw IOException("Failed to recreate temporary download directory before retry: ${tempFileDir.absolutePath}")
-                            }
+                            resetTempDirectoryForRetry()
 
-                            request = ytdlpUtil.buildYoutubeDLRequest(downloadItem, useCachedInfoJson = false)
+                            request = ytdlpUtil.buildYoutubeDLRequest(
+                                downloadItem = downloadItem,
+                                useCachedInfoJson = false,
+                                includeYoutubeAuthentication = !retryWithoutYoutubeAuthentication
+                            )
                             requestsToCleanup.add(request)
                             val retryCommandString = ytdlpUtil.parseYTDLRequestString(request)
                             effectiveCommandString = retryCommandString
                             val retryRequestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, retryCommandString)
                             retryLogDetails = "\nRetry:\n" +
-                                "Reason: cached info JSON media URL returned 403\n" +
+                                "Reason: $retryNotice\n" +
                                 "First error:\n${firstError.message.orEmpty().takeLast(4000)}\n" +
                                 "Command:\n$retryCommandString \n" +
                                 "$retryRequestDiagnostics\n"
@@ -937,17 +970,22 @@ class DownloadWorker(
                                         ?.takeIf { it.startsWith(HISTORY_REDOWNLOAD_MARKER) }
                                         ?.removePrefix(HISTORY_REDOWNLOAD_MARKER)
                                         ?.toLongOrNull() ?: 0L
+                                    val isHistoryRedownload = replacedHistoryId > 0L
 
                                     val previousHistoryItem = if (replacedHistoryId > 0L) {
                                         runCatching { historyDao.getItem(replacedHistoryId) }.getOrNull()
                                     } else null
                                     val completedHardSub = hardSubBurned
                                     val restoredPlaybackPositionMs = if (completedHardSub) 0 else (previousHistoryItem?.playbackPositionMs ?: 0)
-                                    val isHistoryRedownload = replacedHistoryId > 0L
                                     val observeKeyword = if (downloadItem.observeSourceId > 0L) {
                                         runCatching { observeSourcesDao.getByID(downloadItem.observeSourceId).autoAddKeyword.trim() }.getOrDefault("")
                                     } else {
                                         ""
+                                    }
+                                    val existingDuplicateHistoryItem = if (!isHistoryRedownload) {
+                                        findExistingHistoryForDownloadedItem(downloadItem, historyDao)
+                                    } else {
+                                        null
                                     }
 
                                     val preferredThumbPath = pickLocalThumbnailPath(finalPaths) ?: downloadItem.thumb
@@ -977,9 +1015,24 @@ class DownloadWorker(
                                         hardSubScanRemoved = if (completedHardSub) true else previousHistoryItem?.hardSubScanRemoved ?: false,
                                         hardSubDone = if (completedHardSub) true else previousHistoryItem?.hardSubDone ?: false
                                     )
-                                    historyDao.insert(historyItem)
+                                    val insertedHistoryId = if (replacedHistoryId > 0L) {
+                                        historyDao.insert(historyItem)
+                                        replacedHistoryId
+                                    } else {
+                                        historyDao.insertAndGetId(historyItem)
+                                    }
                                     if (replacedHistoryId > 0L) {
                                         deleteReplacedHistoryMedia(previousHistoryItem, finalPaths)
+                                    } else if (existingDuplicateHistoryItem != null) {
+                                        PendingDuplicateDownloadStore.add(
+                                            sharedPreferences,
+                                            newHistoryId = insertedHistoryId,
+                                            existingHistoryId = existingDuplicateHistoryItem.id
+                                        )
+                                        Log.i(
+                                            TAG,
+                                            "Duplicate download needs user choice newHistoryId=$insertedHistoryId existingHistoryId=${existingDuplicateHistoryItem.id} url=${downloadItem.url}"
+                                        )
                                     }
                                 }
                             }
@@ -1086,6 +1139,11 @@ class DownloadWorker(
         val runningYTDLInstances: MutableList<Long> = mutableListOf()
         const val TAG = "DownloadWorker"
         const val HISTORY_REDOWNLOAD_MARKER = "history-redownload:"
+        private val downloadWorkerMutex = Mutex()
+        private val hardSubH264Containers = setOf(
+            "mp4", "m4v", "mov", "mkv", "avi", "flv",
+            "ts", "m2ts", "mts", "m2t", "3gp", "3g2"
+        )
 
         private val hardSubTargetIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
         private val hardSubProcessedIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
@@ -1201,13 +1259,42 @@ class DownloadWorker(
             item.playlistURL?.startsWith(HISTORY_REDOWNLOAD_MARKER) == true
     }
 
-    private fun shouldRetryWithoutCachedInfoJson(error: Exception, commandString: String): Boolean {
+    private fun buildYtdlpRetryProbeText(error: Exception, recentOutput: List<String>): String {
+        return buildString {
+            appendLine(error.message.orEmpty())
+            recentOutput.takeLast(FAILURE_YTDLP_TAIL_LINES).forEach(::appendLine)
+        }
+    }
+
+    private fun shouldRetryWithoutCachedInfoJson(retryProbeText: String, commandString: String): Boolean {
         if (!commandString.contains("--load-info-json")) return false
-        val message = error.message.orEmpty()
-        return message.contains("HTTP Error 403", ignoreCase = true) ||
+        return retryProbeText.contains("HTTP Error 403", ignoreCase = true) ||
             (
-                message.contains("Forbidden", ignoreCase = true) &&
-                    message.contains("unable to download video data", ignoreCase = true)
+                retryProbeText.contains("Forbidden", ignoreCase = true) &&
+                    retryProbeText.contains("unable to download video data", ignoreCase = true)
+            )
+    }
+
+    private fun shouldRetryYoutube403WithoutAuthentication(
+        retryProbeText: String,
+        commandString: String,
+        item: DownloadItem
+    ): Boolean {
+        if (
+            item.type != DownloadType.video ||
+            !item.url.isYoutubeURL() ||
+            item.url.getIDFromYoutubeURL() == null
+        ) return false
+        val hasAuthentication = commandHasYtdlpOption(commandString, "--cookies") ||
+            commandString.contains("po_token=") ||
+            commandString.contains("data_sync_id=") ||
+            commandString.contains("visitor_data=")
+        if (!hasAuthentication) return false
+        return retryProbeText.contains("HTTP Error 403", ignoreCase = true) ||
+            retryProbeText.contains("403: Forbidden", ignoreCase = true) ||
+            (
+                retryProbeText.contains("Forbidden", ignoreCase = true) &&
+                    retryProbeText.contains("unable to download video data", ignoreCase = true)
             )
     }
 
@@ -1486,7 +1573,8 @@ class DownloadWorker(
                             "-i",
                             media.absolutePath,
                             "-vf",
-                            subtitleArg,
+                            subtitleArg
+                        ) + hardSubVideoEncodeArgs(media) + listOf(
                             "-c:a",
                             "copy",
                             output.absolutePath
@@ -1525,8 +1613,8 @@ class DownloadWorker(
                             // Fallback to Matroska muxer with broadly available encoders.
                             val mkvOutput = File(media.parentFile, "${media.nameWithoutExtension}.burnin.mkv")
                             val mkvFallbacks = listOf(
-                                listOf("-c:v", "libx264", "-c:a", "copy"),
-                                listOf("-c:v", "mpeg4", "-c:a", "copy")
+                                listOf("-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "copy"),
+                                listOf("-c:v", "mpeg4", "-q:v", "2", "-c:a", "copy")
                             )
                             for (fallback in mkvFallbacks) {
                                 val encoderLabel = fallback.joinToString(" ")
@@ -1660,6 +1748,22 @@ class DownloadWorker(
         }
         if (canonicalSubtitle?.isTemporary == true) canonicalSubtitle.file.delete()
         return true
+    }
+
+    private fun hardSubVideoEncodeArgs(media: File): List<String> {
+        if (media.extension.lowercase(Locale.ROOT) !in hardSubH264Containers) {
+            return emptyList()
+        }
+        return listOf(
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p"
+        )
     }
 
     private fun hasVideoStream(media: File, ffmpegRuntime: FfmpegRuntime): Boolean {
@@ -2764,8 +2868,41 @@ class DownloadWorker(
                 }
                 .onFailure { error ->
                     Log.w(TAG, "HardSub redownload cleanup failed path=$oldPath reason=${error.message}")
-                }
+            }
         }
+    }
+
+    private fun findExistingHistoryForDownloadedItem(
+        downloadItem: DownloadItem,
+        historyDao: com.ireum.ytdl.database.dao.HistoryDao
+    ): HistoryItem? {
+        return equivalentDownloadUrls(downloadItem.url)
+            .flatMap { url -> historyDao.getItemsByUrl(url) }
+            .distinctBy { it.id }
+            .firstOrNull { item ->
+                item.type == downloadItem.type &&
+                    item.downloadPath.any { path -> FileUtil.exists(path) }
+            }
+    }
+
+    private fun canonicalDownloadUrl(url: String): String {
+        val trimmed = url.trim()
+        if (!trimmed.isYoutubeURL()) return trimmed
+        val id = trimmed.getIDFromYoutubeURL() ?: return trimmed
+        return "https://youtu.be/$id"
+    }
+
+    private fun equivalentDownloadUrls(url: String): List<String> {
+        val canonical = canonicalDownloadUrl(url)
+        if (!canonical.startsWith("https://youtu.be/")) return listOf(url)
+        val id = canonical.removePrefix("https://youtu.be/")
+        return listOf(
+            canonical,
+            "https://www.youtube.com/watch?v=$id",
+            "https://youtube.com/watch?v=$id",
+            "https://m.youtube.com/watch?v=$id",
+            "https://music.youtube.com/watch?v=$id"
+        ).distinct()
     }
 
     private suspend fun retryMoveFromTempDirectory(

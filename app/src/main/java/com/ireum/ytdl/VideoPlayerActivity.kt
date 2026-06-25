@@ -202,12 +202,12 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var launchHistoryId: Long? = null
     private var launchPlaybackPositionMs: Long? = null
     private var skipNextPlaybackRestoreHistoryId: Long? = null
-    private var pendingQueueUiItems: List<HistoryItem>? = null
-    private var pendingQueueUiCurrentId: Long? = null
-    private var pendingQueueUiForceScrollToTop: Boolean = false
     private var playbackStartedAtMs: Long = 0L
     private var currentChapters: List<VideoChapter> = emptyList()
     private var suppressAutoPipForBackNavigation: Boolean = false
+    private var backNavigationInProgress: Boolean = false
+    private var lastKnownOrientation: Int = Configuration.ORIENTATION_UNDEFINED
+    private var orientationChangedDuringPlayback: Boolean = false
     private val downloadViewModel by lazy { ViewModelProvider(this)[DownloadViewModel::class.java] }
     private val promptedCompatibleRedownloadIds = mutableSetOf<Long>()
 
@@ -233,14 +233,20 @@ class VideoPlayerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_video_player)
+        lastKnownOrientation = resources.configuration.orientation
         configurePlaybackWindow()
         onBackPressedDispatcher.addCallback(this) {
+            if (backNavigationInProgress) {
+                return@addCallback
+            }
             if (handleBackToHistoryIfNeeded()) {
                 return@addCallback
             }
-            isEnabled = false
-            onBackPressedDispatcher.onBackPressed()
-            isEnabled = true
+            backNavigationInProgress = true
+            suppressAutoPipForBackNavigation = true
+            pendingAutoPipOnLeave = false
+            isBackgroundPlayback = false
+            finish()
         }
 
         val playerView = findViewById<PlayerView>(R.id.player_view)
@@ -274,18 +280,13 @@ class VideoPlayerActivity : AppCompatActivity() {
                     ?: item.downloadPath.firstOrNull { FileUtil.exists(it) }
                     ?: item.downloadPath.firstOrNull()
                 if (path != null) {
-                    val index = queueIndexById[item.id] ?: queueItems.indexOfFirst { it.id == item.id }
+                    val index = findPlayerMediaItemIndex(item.id)
                     if (index >= 0) {
-                        val timelineCount = player?.mediaItemCount ?: 0
-                        if (index < timelineCount) {
-                            autoScrollQueueToCurrent = true
-                            queueAdapter?.setCurrentItemId(item.id)
-                            player?.seekTo(index, 0L)
-                            player?.playWhenReady = true
-                            scrollCurrentToTopIfAllowed(item.id)
-                        } else {
-                            playSinglePath(path)
-                        }
+                        autoScrollQueueToCurrent = true
+                        queueAdapter?.setCurrentItemId(item.id)
+                        player?.seekTo(index, 0L)
+                        player?.playWhenReady = true
+                        scrollCurrentToTopIfAllowed(item.id)
                     } else {
                         playSinglePath(path)
                     }
@@ -455,7 +456,6 @@ class VideoPlayerActivity : AppCompatActivity() {
                 } else {
                     stopPlaybackStateUpdates()
                     stopRecentWatchTimer()
-                    flushPendingQueueUiRefresh()
                 }
                 if (isInPictureInPictureMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     updatePipActions()
@@ -787,13 +787,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         handlePlaybackIntent(mergedIntent, replaceCurrent = true)
     }
 
-    override fun onBackPressed() {
-        if (handleBackToHistoryIfNeeded()) {
-            return
-        }
-        super.onBackPressed()
-    }
-
     override fun onPause() {
         savePlaybackPositionForCurrentItem()
         commitRecentWatchIfEligible()
@@ -932,6 +925,14 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        if (
+            lastKnownOrientation != Configuration.ORIENTATION_UNDEFINED &&
+            newConfig.orientation != Configuration.ORIENTATION_UNDEFINED &&
+            newConfig.orientation != lastKnownOrientation
+        ) {
+            orientationChangedDuringPlayback = true
+        }
+        lastKnownOrientation = newConfig.orientation
         applyOrientationUi()
     }
 
@@ -2199,7 +2200,24 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun handleBackToHistoryIfNeeded(): Boolean {
         val hasHistoryRestore = intent.hasExtra(HistoryFragment.EXTRA_RESTORE_SCROLL_POSITION)
         val hasReturnDestination = !intent.getStringExtra(EXTRA_RETURN_DESTINATION).isNullOrBlank()
+        val mustRecreateMainTask =
+            isTaskRoot || intent.action == ACTION_RESUME_PLAYBACK_UI || orientationChangedDuringPlayback
+
+        if (!mustRecreateMainTask && (hasHistoryRestore || hasReturnDestination)) {
+            backNavigationInProgress = true
+            if (hasHistoryRestore) {
+                savePendingHistoryScrollRestore()
+            }
+            suppressAutoPipForBackNavigation = true
+            pendingAutoPipOnLeave = false
+            isBackgroundPlayback = false
+            logHistoryReturn("handleBackToHistoryIfNeeded finishToExistingMain taskRoot=$isTaskRoot")
+            finish()
+            return true
+        }
+
         if (hasHistoryRestore) {
+            backNavigationInProgress = true
             savePendingHistoryScrollRestore()
             logHistoryReturn("handleBackToHistoryIfNeeded routeToMain taskRoot=$isTaskRoot")
             startMainForBackNavigation(includeHistoryRestore = true)
@@ -2207,18 +2225,21 @@ class VideoPlayerActivity : AppCompatActivity() {
             return true
         }
         if (hasReturnDestination) {
+            backNavigationInProgress = true
             logHistoryReturn("handleBackToHistoryIfNeeded returnDestination routeToMain taskRoot=$isTaskRoot")
             startMainForBackNavigation(includeHistoryRestore = false)
             finish()
             return true
         }
         if (intent.action == ACTION_RESUME_PLAYBACK_UI) {
+            backNavigationInProgress = true
             logHistoryReturn("handleBackToHistoryIfNeeded resumeUi routeToMain taskRoot=$isTaskRoot")
             startMainForBackNavigation(includeHistoryRestore = false)
             finish()
             return true
         }
         if (isTaskRoot) {
+            backNavigationInProgress = true
             logHistoryReturn("handleBackToHistoryIfNeeded taskRoot=true noHistoryRestore")
             startMainForBackNavigation(includeHistoryRestore = false)
             finish()
@@ -3209,16 +3230,6 @@ class VideoPlayerActivity : AppCompatActivity() {
             val currentId = preparedQueueData.idByUri[initialUri.toString()] ?: fullItems.firstOrNull()?.id
             isShuffled = false
             updateShuffleButton()
-            if (shouldAvoidPlayerTimelineMutation(currentId)) {
-                logPlaybackTiming("loadQueueForContext uiOnly currentId=$currentId")
-                updateQueueDataWithoutTouchingPlayer(
-                    items = fullItems,
-                    currentItemId = currentId,
-                    preparedQueueData = preparedQueueData,
-                    forceScrollCurrentToTop = false
-                )
-                return@launch
-            }
             applyQueueOrder(
                 items = fullItems,
                 currentItemId = currentId,
@@ -4089,79 +4100,15 @@ class VideoPlayerActivity : AppCompatActivity() {
                 }
             }
             if (!syncedInPlace) {
-                val currentResolvedId = resolveHistoryIdForMediaItem(player?.currentMediaItem)
-                val isActivelyPlayingCurrent =
-                    player?.mediaItemCount ?: 0 > 0 &&
-                        currentItemId != null &&
-                        currentResolvedId == currentItemId &&
-                        player?.isPlaying == true
-                if (!isActivelyPlayingCurrent) {
-                    player?.shuffleModeEnabled = false
-                    if (currentItemId != null && currentPos > 0L) {
-                        skipNextPlaybackRestoreHistoryId = currentItemId
-                    }
-                    player?.setMediaItems(mediaItems, if (idx >= 0) idx else 0, currentPos)
-                    player?.prepare()
-                    player?.playWhenReady = playWhenReady
+                player?.shuffleModeEnabled = false
+                if (currentItemId != null && currentPos > 0L) {
+                    skipNextPlaybackRestoreHistoryId = currentItemId
                 }
+                player?.setMediaItems(mediaItems, if (idx >= 0) idx else 0, currentPos)
+                player?.prepare()
+                player?.playWhenReady = playWhenReady
             }
             updatePlaybackUiProgress()
-        }
-    }
-
-    private fun updateQueueDataWithoutTouchingPlayer(
-        items: List<HistoryItem>,
-        currentItemId: Long?,
-        preparedQueueData: QueuePreparedData? = null,
-        forceScrollCurrentToTop: Boolean = false
-    ) {
-        logPlaybackTiming("updateQueueDataWithoutTouchingPlayer start size=${items.size} currentId=$currentItemId")
-        queueItems = items
-        val queueData = preparedQueueData ?: prepareQueueData(
-            items = items,
-            previousPlayablePaths = queuePlayablePathById.toMap()
-        )
-        applyQueuePreparedData(queueData)
-        if (player?.isPlaying == true) {
-            pendingQueueUiItems = items
-            pendingQueueUiCurrentId = currentItemId
-            pendingQueueUiForceScrollToTop = forceScrollCurrentToTop
-            queueAdapter?.setCurrentItemId(currentItemId)
-            logPlaybackTiming("updateQueueDataWithoutTouchingPlayer deferredUi size=${items.size} currentId=$currentItemId")
-            return
-        }
-        queueAdapter?.submitList(items) {
-            logPlaybackTiming("updateQueueDataWithoutTouchingPlayer submitList committed size=${items.size} currentId=$currentItemId")
-            queueAdapter?.setCurrentItemId(currentItemId)
-            if (forceScrollCurrentToTop) {
-                scrollCurrentToTopIfAllowed(currentItemId, force = true)
-            }
-        }
-        updatePlaybackUiProgress()
-    }
-
-    private fun shouldAvoidPlayerTimelineMutation(currentItemId: Long?): Boolean {
-        val exo = player ?: return false
-        if (!exo.isPlaying) return false
-        if (exo.mediaItemCount <= 0) return false
-        val currentResolvedId = resolveHistoryIdForMediaItem(exo.currentMediaItem)
-        return currentItemId != null && currentResolvedId == currentItemId
-    }
-
-    private fun flushPendingQueueUiRefresh() {
-        val items = pendingQueueUiItems ?: return
-        val currentId = pendingQueueUiCurrentId
-        val forceScrollToTop = pendingQueueUiForceScrollToTop
-        pendingQueueUiItems = null
-        pendingQueueUiCurrentId = null
-        pendingQueueUiForceScrollToTop = false
-        logPlaybackTiming("flushPendingQueueUiRefresh size=${items.size} currentId=$currentId")
-        queueAdapter?.submitList(items) {
-            logPlaybackTiming("flushPendingQueueUiRefresh committed size=${items.size} currentId=$currentId")
-            queueAdapter?.setCurrentItemId(currentId)
-            if (forceScrollToTop) {
-                scrollCurrentToTopIfAllowed(currentId, force = true)
-            }
         }
     }
 
@@ -4213,8 +4160,6 @@ class VideoPlayerActivity : AppCompatActivity() {
             logPlaybackTiming("syncExistingTimelineIfPossible expanded inPlace finalSize=${exo.mediaItemCount}")
             return true
         }
-        if (exo.isPlaying) return false
-
         if (timelineIds.any { it !in targetIds }) {
             for (index in timelineIds.indices.reversed()) {
                 if (timelineIds[index] !in targetIds) {
@@ -4406,6 +4351,16 @@ class VideoPlayerActivity : AppCompatActivity() {
         items.forEachIndexed { index, item ->
             queueIndexById[item.id] = index
         }
+    }
+
+    private fun findPlayerMediaItemIndex(historyId: Long): Int {
+        val exo = player ?: return C.INDEX_UNSET
+        for (index in 0 until exo.mediaItemCount) {
+            if (resolveHistoryIdForMediaItem(exo.getMediaItemAt(index)) == historyId) {
+                return index
+            }
+        }
+        return C.INDEX_UNSET
     }
 
     private fun prepareQueueData(

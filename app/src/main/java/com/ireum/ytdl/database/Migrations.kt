@@ -192,6 +192,12 @@ object Migrations {
         Migration(47, 48) { database ->
             database.execSQL("ALTER TABLE downloads ADD COLUMN observeSourceId INTEGER NOT NULL DEFAULT 0")
             database.execSQL("ALTER TABLE sources ADD COLUMN autoAddKeyword TEXT NOT NULL DEFAULT ''")
+        },
+        Migration(48, 49) { database ->
+            database.execSQL("ALTER TABLE sources ADD COLUMN retryPromptedLinks TEXT NOT NULL DEFAULT '[]'")
+        },
+        Migration(49, 50) { database ->
+            database.execSQL("ALTER TABLE sources ADD COLUMN observedLinks TEXT NOT NULL DEFAULT '[]'")
         }
     )
 

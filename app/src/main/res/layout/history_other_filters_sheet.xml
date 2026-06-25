@@ -194,7 +194,8 @@
             app:chipSpacing="0dp"
             android:layout_marginHorizontal="20dp"
             android:layout_marginBottom="20dp"
-            app:singleSelection="true"
+            app:selectionRequired="true"
+            app:singleSelection="false"
             android:layout_height="wrap_content"
             app:singleLine="false">
 

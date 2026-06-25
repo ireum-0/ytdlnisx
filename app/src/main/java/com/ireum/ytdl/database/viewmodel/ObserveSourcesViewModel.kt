@@ -16,6 +16,7 @@ import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
+import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.ObserveSourceWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -27,6 +28,7 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
     val items: LiveData<List<ObserveSourcesItem>>
     private val workManager : WorkManager
     private val preferences : SharedPreferences
+    private val notificationUtil = NotificationUtil(application)
 
     init {
         val dao = DBManager.getInstance(application).observeSourcesDao
@@ -50,6 +52,7 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
 
     suspend fun insertUpdate(item: ObserveSourcesItem) : Long {
         if (item.id > 0) {
+            notificationUtil.cancelObserveRetryConfirmation(item.id)
             repository.update(item)
             repository.observeTask(item)
             return item.id
@@ -62,18 +65,21 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
     }
 
     suspend fun stopObserving(item: ObserveSourcesItem) {
+        notificationUtil.cancelObserveRetryConfirmation(item.id)
         item.status = ObserveSourcesRepository.SourceStatus.STOPPED
         repository.update(item)
         repository.cancelObservationTaskByID(item.id)
     }
 
     fun delete(item: ObserveSourcesItem) = viewModelScope.launch(Dispatchers.IO) {
+        notificationUtil.cancelObserveRetryConfirmation(item.id)
         runCatching { repository.cancelObservationTaskByID(item.id) }
         repository.delete(item)
     }
 
     fun deleteAll() = viewModelScope.launch(Dispatchers.IO) {
         getAll().forEach {
+            notificationUtil.cancelObserveRetryConfirmation(it.id)
             runCatching { repository.cancelObservationTaskByID(it.id) }
         }
 

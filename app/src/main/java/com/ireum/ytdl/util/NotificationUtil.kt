@@ -15,6 +15,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.text.TextUtils
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
@@ -26,6 +27,7 @@ import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.receiver.CancelDownloadNotificationReceiver
 import com.ireum.ytdl.receiver.CancelWorkReceiver
+import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
 import com.ireum.ytdl.receiver.PauseDownloadNotificationReceiver
 import com.ireum.ytdl.receiver.ResumeActivity
 import com.ireum.ytdl.util.Extensions.toBitmap
@@ -310,6 +312,81 @@ class NotificationUtil(var context: Context) {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .clearActions()
             .build()
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showObserveRetryConfirmation(
+        sourceId: Long,
+        sourceName: String,
+        videoTitle: String,
+        canonicalUrl: String
+    ): Boolean {
+        if (!canShowObserveRetryConfirmation()) return false
+
+        val notificationId = observeRetryNotificationId(sourceId)
+
+        fun decisionIntent(action: String): PendingIntent {
+            val intent = Intent(context, ObserveRetryDecisionReceiver::class.java).apply {
+                this.action = action
+                putExtra(ObserveRetryDecisionReceiver.EXTRA_SOURCE_ID, sourceId)
+                putExtra(ObserveRetryDecisionReceiver.EXTRA_URL, canonicalUrl)
+                putExtra(ObserveRetryDecisionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+            }
+            return PendingIntent.getBroadcast(
+                context,
+                ("$sourceId|$canonicalUrl|$action".hashCode() and 0x7fffffff),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        val downloadIntent = decisionIntent(ObserveRetryDecisionReceiver.ACTION_DOWNLOAD)
+        val ignoreIntent = decisionIntent(ObserveRetryDecisionReceiver.ACTION_IGNORE)
+        val content = resources.getString(
+            R.string.observe_retry_confirmation_desc,
+            videoTitle.ifBlank { canonicalUrl }
+        )
+        val notification = NotificationCompat.Builder(context, DOWNLOAD_MISC_CHANNEL_ID)
+            .setContentTitle(resources.getString(R.string.observe_retry_confirmation_title))
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$sourceName\n$content"))
+            .setSubText(sourceName)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setLargeIcon(
+                BitmapFactory.decodeResource(
+                    resources,
+                    R.drawable.ic_launcher_foreground_large
+                )
+            )
+            .setCategory(Notification.CATEGORY_RECOMMENDATION)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(true)
+            .addAction(0, resources.getString(R.string.observe_retry_download_action), downloadIntent)
+            .addAction(0, resources.getString(R.string.observe_retry_ignore_action), ignoreIntent)
+            .build()
+
+        return runCatching {
+            notificationManager.notify(notificationId, notification)
+            true
+        }.getOrElse { error ->
+            Log.e("ObserveRetryNotification", "Failed to show retry confirmation", error)
+            false
+        }
+    }
+
+    fun canShowObserveRetryConfirmation(): Boolean {
+        if (!notificationManager.areNotificationsEnabled()) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
+
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val channel = manager.getNotificationChannel(DOWNLOAD_MISC_CHANNEL_ID) ?: return false
+        return channel.importance != NotificationManager.IMPORTANCE_NONE
+    }
+
+    fun cancelObserveRetryConfirmation(sourceId: Long) {
+        notificationManager.cancel(observeRetryNotificationId(sourceId))
     }
 
     fun createDownloadServiceNotification(
@@ -971,8 +1048,15 @@ class NotificationUtil(var context: Context) {
         const val DOWNLOAD_RUNNING_NOTIFICATION_ID =            90000
         const val DOWNLOAD_TERMINAL_RUNNING_NOTIFICATION_ID =   99000
         const val PLAYBACK_NOTIFICATION_ID =                    91000
+        private const val OBSERVE_RETRY_NOTIFICATION_ID_BASE =  120000
 
         private const val PROGRESS_MAX = 100
         private const val PROGRESS_CURR = 0
+
+        private fun observeRetryNotificationId(sourceId: Long): Int {
+            // Keep at most one unanswered retry prompt per observed source.
+            return OBSERVE_RETRY_NOTIFICATION_ID_BASE +
+                (sourceId.hashCode() and 0x0fffffff)
+        }
     }
 }

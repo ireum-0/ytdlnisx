@@ -25,6 +25,8 @@ import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.DownloadWorker
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -152,6 +154,10 @@ class DownloadRepository(private val downloadDao: DownloadDao) {
         return downloadDao.getActiveAndQueuedDownloadsList()
     }
 
+    fun getPendingObservationDownloads() : List<DownloadItem> {
+        return downloadDao.getPendingObservationDownloadsList()
+    }
+
     fun getActiveAndQueuedDownloadIDs() : List<Long> {
         return downloadDao.getActiveAndQueuedDownloadIDs()
     }
@@ -234,45 +240,84 @@ class DownloadRepository(private val downloadDao: DownloadDao) {
     }
 
     @SuppressLint("RestrictedApi")
-    fun startDownloadWorker(queuedItems: List<DownloadItem>, context: Context, continueAfterPriorityItems: Boolean = true) : Result<String> {
+    suspend fun startDownloadWorker(queuedItems: List<DownloadItem>, context: Context, continueAfterPriorityItems: Boolean = true) : Result<String> {
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val allowMeteredNetworks = sharedPreferences.getBoolean("metered_networks", true)
         val workManager = WorkManager.getInstance(context)
 
-        val inputData = Data.Builder()
-        val currentTime = System.currentTimeMillis()
-        var delay = 0L
-        if (queuedItems.isNotEmpty()){
-            val earliestStart = queuedItems.minBy { it.downloadStartTime }
-            delay = if (earliestStart.downloadStartTime != 0L){
-                earliestStart.downloadStartTime.minus(currentTime)
-            } else 0
-            if (delay <= 60000L) delay = 0L
-            inputData.putLongArray("priority_item_ids", queuedItems.take(20).map { it.id }.toLongArray())
-        }
-
         val useAlarmForScheduling = sharedPreferences.getBoolean("use_alarm_for_scheduling", false)
-        if (delay > 0L && useAlarmForScheduling) {
-            AlarmScheduler(context).scheduleAt(queuedItems.minBy { it.downloadStartTime }.downloadStartTime)
-            return Result.success("")
+        val currentTime = System.currentTimeMillis()
+        val scheduledItems = withContext(Dispatchers.IO) {
+            getScheduledDownloads()
+        }
+        val scheduleCandidates = (queuedItems + scheduledItems)
+            .distinctBy { it.id }
+            .filter { it.downloadStartTime > 0L }
+        val futureScheduleGroups = scheduleCandidates
+            .filter { it.downloadStartTime - currentTime > 60_000L }
+            .groupBy { it.downloadStartTime }
+        val immediateItems = (queuedItems + scheduleCandidates)
+            .distinctBy { it.id }
+            .filter { it.downloadStartTime == 0L || it.downloadStartTime - currentTime <= 60_000L }
+        val immediateRequestItems = if (continueAfterPriorityItems) {
+            immediateItems
+        } else {
+            queuedItems
+                .distinctBy { it.id }
+                .filter { it.downloadStartTime == 0L || it.downloadStartTime - currentTime <= 60_000L }
         }
 
         val workConstraints = Constraints.Builder()
         if (!allowMeteredNetworks) workConstraints.setRequiredNetworkType(NetworkType.UNMETERED)
 
-        inputData.putBoolean("continue_after_priority_ids", continueAfterPriorityItems)
+        fun buildRequest(
+            items: List<DownloadItem>,
+            delay: Long,
+            continueAfterPriorityIds: Boolean
+        ) =
+            OneTimeWorkRequestBuilder<DownloadWorker>()
+                .addTag("download")
+                .setConstraints(workConstraints.build())
+                .setInitialDelay(delay.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
+                .setInputData(
+                    Data.Builder()
+                        .putLongArray("priority_item_ids", items.take(20).map { it.id }.toLongArray())
+                        .putBoolean("continue_after_priority_ids", continueAfterPriorityIds)
+                        .build()
+                )
+                .build()
 
-        val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
-            .addTag("download")
-            .setConstraints(workConstraints.build())
-            .setInitialDelay(delay, TimeUnit.MILLISECONDS)
-            .setInputData(inputData.build())
+        if (futureScheduleGroups.isNotEmpty() && useAlarmForScheduling) {
+            AlarmScheduler(context).scheduleAt(futureScheduleGroups.keys.min())
+        } else {
+            futureScheduleGroups.forEach { (startTime, itemsAtStart) ->
+                val request = buildRequest(
+                    items = itemsAtStart,
+                    delay = startTime - currentTime,
+                    continueAfterPriorityIds = true
+                )
+                workManager.enqueueUniqueWork(
+                    "$SCHEDULED_DOWNLOAD_WORK_NAME-$startTime",
+                    ExistingWorkPolicy.REPLACE,
+                    request
+                )
+            }
+        }
 
-        workManager.enqueueUniqueWork(
-            System.currentTimeMillis().toString(),
-            ExistingWorkPolicy.REPLACE,
-            workRequest.build()
-        )
+        if (queuedItems.isEmpty() || immediateRequestItems.isNotEmpty()) {
+            val request = buildRequest(
+                items = immediateRequestItems,
+                delay = 0L,
+                continueAfterPriorityIds = continueAfterPriorityItems
+            )
+            // Keep each trigger independent. A unique KEEP request can be dropped while
+            // the previous worker is shutting down after observing an empty queue.
+            workManager.enqueueUniqueWork(
+                "$DOWNLOAD_WORK_NAME-${request.id}",
+                ExistingWorkPolicy.REPLACE,
+                request
+            )
+        }
 
 
         val message = StringBuilder()
@@ -291,6 +336,11 @@ class DownloadRepository(private val downloadDao: DownloadDao) {
         }
 
         return Result.success(message.toString())
+    }
+
+    companion object {
+        private const val DOWNLOAD_WORK_NAME = "download"
+        private const val SCHEDULED_DOWNLOAD_WORK_NAME = "scheduledDownload"
     }
 
 }

@@ -80,7 +80,7 @@ class YoutubeApiUtil(context: Context) {
                 author,
                 duration,
                 thumb,
-                "youtube",
+                "YouTube",
                 "",
                 ArrayList(),
                 "",

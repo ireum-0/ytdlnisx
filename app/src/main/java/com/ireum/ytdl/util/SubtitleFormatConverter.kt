@@ -6,6 +6,8 @@ import java.io.File
 import java.util.Locale
 
 object SubtitleFormatConverter {
+    private const val DEFAULT_ASS_FONT = "Noto Sans CJK KR"
+
     private data class Cue(
         val startMs: Long,
         val endMs: Long,
@@ -94,7 +96,7 @@ object SubtitleFormatConverter {
             appendLine()
             appendLine("[V4+ Styles]")
             appendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-            appendLine("Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,40,1")
+            appendLine("Style: Default,$DEFAULT_ASS_FONT,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,40,1")
             appendLine()
             appendLine("[Events]")
             appendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")

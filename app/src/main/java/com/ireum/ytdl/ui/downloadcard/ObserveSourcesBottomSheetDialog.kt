@@ -94,6 +94,7 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
     private lateinit var endsOnTime: TextInputLayout
     private lateinit var endsAfterNr: TextInputLayout
     private lateinit var retryMissingDownloads: MaterialSwitch
+    private lateinit var excludeShorts: MaterialSwitch
     private lateinit var getOnlyNewUploads: MaterialSwitch
     private lateinit var syncWithSource: MaterialSwitch
     private lateinit var resetProcessedLinks: MaterialSwitch
@@ -259,6 +260,7 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
         endsAfter = view.findViewById(R.id.after)
         endsAfterNr = view.findViewById(R.id.after_nr)
         retryMissingDownloads = view.findViewById(R.id.retry_missing_downloads)
+        excludeShorts = view.findViewById(R.id.exclude_shorts)
         getOnlyNewUploads = view.findViewById(R.id.get_new_uploads)
         syncWithSource = view.findViewById(R.id.sync_with_source)
         resetProcessedLinks = view.findViewById(R.id.reset_processed_links)
@@ -472,6 +474,7 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
         }
 
         retryMissingDownloads.isChecked = currentItem?.retryMissingDownloads ?: false
+        excludeShorts.isChecked = currentItem?.excludeShorts ?: false
         getOnlyNewUploads.isChecked = currentItem?.getOnlyNewUploads ?: false
         syncWithSource.isChecked = currentItem?.syncWithSource ?: false
         autoAddKeywordInput.editText?.setText(currentItem?.autoAddKeyword.orEmpty())
@@ -529,6 +532,7 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
                     getOnlyNewUploads = getOnlyNewUploads.isChecked,
                     syncWithSource = syncWithSource.isChecked,
                     retryMissingDownloads = retryMissingDownloads.isChecked,
+                    excludeShorts = excludeShorts.isChecked,
                     alreadyProcessedLinks = if (resetProcessedLinks.isChecked){
                         mutableListOf()
                     }else{
@@ -539,7 +543,17 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
                     }else{
                         currentItem?.ignoredLinks ?: mutableListOf()
                     },
-                    autoAddKeyword = autoAddKeywordInput.editText?.text?.toString()?.trim().orEmpty()
+                    autoAddKeyword = autoAddKeywordInput.editText?.text?.toString()?.trim().orEmpty(),
+                    retryPromptedLinks = if (resetProcessedLinks.isChecked) {
+                        mutableListOf()
+                    } else {
+                        currentItem?.retryPromptedLinks ?: mutableListOf()
+                    },
+                    observedLinks = if (resetProcessedLinks.isChecked || !getOnlyNewUploads.isChecked) {
+                        mutableListOf()
+                    } else {
+                        currentItem?.observedLinks ?: mutableListOf()
+                    }
                 )
 
                 withContext(Dispatchers.IO){

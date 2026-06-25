@@ -146,7 +146,7 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
             else -> Result.failure(Throwable())
         }
 
-        val items = if (res.isSuccess) {
+        val items = if (res.isSuccess && res.getOrNull().orEmpty().isNotEmpty()) {
             android.util.Log.d("ResultRepository", "search using NewPipe success query=$inputQuery")
             res.getOrNull()!!
         }else{
@@ -194,7 +194,7 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
             Result.failure(Throwable())
         }
 
-        val response = if (newpipeExtractorResult.isSuccess){
+        val response = if (newpipeExtractorResult.isSuccess && newpipeExtractorResult.getOrNull().orEmpty().isNotEmpty()){
             newpipeExtractorResult.getOrElse { items }
         }else{
             val res = ytdlpUtil.getFromYTDL(inputQuery, resultsGenerated = {})
@@ -216,7 +216,7 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
             Result.failure(Throwable())
         }
 
-        val res = if (newpipeExtractorResult.isSuccess) {
+        val res = if (newpipeExtractorResult.isSuccess && newpipeExtractorResult.getOrNull().orEmpty().isNotEmpty()) {
             newpipeExtractorResult.getOrNull()!!
         }else{
             val youtubeID = inputQuery.getIDFromYoutubeURL()
@@ -258,7 +258,7 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
         }
 
         val finalResults = mutableListOf<ResultItem>()
-        if (ytExtractorResult.isSuccess) {
+        if (ytExtractorResult.isSuccess && ytExtractorResult.getOrNull().orEmpty().isNotEmpty()) {
             ytExtractorResult.getOrElse { items }.apply {
                 finalResults.addAll(this)
                 itemCount.value = this.size
@@ -290,7 +290,7 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
         }
 
         val finalResults = mutableListOf<ResultItem>()
-        if (ytExtractorResult.isSuccess) {
+        if (ytExtractorResult.isSuccess && ytExtractorResult.getOrNull().orEmpty().isNotEmpty()) {
             ytExtractorResult.getOrElse { items }.apply {
                 finalResults.addAll(this)
                 itemCount.value = this.size
