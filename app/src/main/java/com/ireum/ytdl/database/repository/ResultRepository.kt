@@ -460,6 +460,34 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
 
     }
 
+    suspend fun getSingleMetadataFromSource(inputQuery: String): ResultItem? {
+        if (inputQuery.isBlank()) return null
+        val fetched = runCatching {
+            getResultsFromSource(
+                inputQuery,
+                resetResults = false,
+                addToResults = false,
+                singleItem = true
+            ).firstOrNull()
+        }.onFailure {
+            android.util.Log.w("ResultRepository", "Metadata fetch failed url=$inputQuery", it)
+        }.getOrNull()
+
+        if (fetched.hasUsefulMetadata()) return fetched
+
+        val cached = ytdlpUtil.getCachedInfoJsonResult(inputQuery)
+        if (cached.hasUsefulMetadata()) {
+            android.util.Log.d("ResultRepository", "Metadata fetch using cached info JSON url=$inputQuery")
+            return cached
+        }
+
+        return fetched
+    }
+
+    private fun ResultItem?.hasUsefulMetadata(): Boolean {
+        return this != null && (title.isNotBlank() || author.isNotBlank() || thumb.isNotBlank())
+    }
+
     private fun getQueryType(inputQuery: String) : SourceType {
         var type = SourceType.SEARCH_QUERY
         if (inputQuery.isYoutubeURL()) {
@@ -482,13 +510,13 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
     ) : DownloadItem? {
         if (downloadItem.needsDataUpdating()){
             runCatching {
-                val info = getResultsFromSource(downloadItem.url, resetResults = false, addToResults = false, singleItem = true).first()
-                if (downloadItem.title.isEmpty()) downloadItem.title = info.title
-                if (downloadItem.author.isEmpty()) downloadItem.author = info.author
+                val info = getSingleMetadataFromSource(downloadItem.url) ?: return null
+                if (downloadItem.title.isEmpty() && info.title.isNotBlank()) downloadItem.title = info.title
+                if (downloadItem.author.isEmpty() && info.author.isNotBlank()) downloadItem.author = info.author
                 if (downloadItem.playlistTitle.isNotBlank() && downloadItem.playlistTitle != YTDLNIS_SEARCH) downloadItem.playlistTitle = info.playlistTitle
-                downloadItem.duration = info.duration
-                downloadItem.website = info.website
-                if (downloadItem.thumb.isEmpty()) downloadItem.thumb = info.thumb
+                if (info.duration.isNotBlank()) downloadItem.duration = info.duration
+                if (info.website.isNotBlank()) downloadItem.website = info.website
+                if (downloadItem.thumb.isEmpty() && info.thumb.isNotBlank()) downloadItem.thumb = info.thumb
                 return downloadItem
             }
         }

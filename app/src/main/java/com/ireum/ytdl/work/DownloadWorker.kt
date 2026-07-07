@@ -71,6 +71,7 @@ class DownloadWorker(
     private val context: Context,
     workerParams: WorkerParameters
 ) : CoroutineWorker(context, workerParams) {
+    private val workerDownloadIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
 
     override suspend fun getForegroundInfo(): ForegroundInfo {
         val workNotif = NotificationUtil(App.instance).createDefaultWorkerNotification()
@@ -86,10 +87,30 @@ class DownloadWorker(
         )
     }
 
+    private fun cleanupStoppedWorker() {
+        val activeIds = workerDownloadIds.toList()
+        if (activeIds.isEmpty()) return
 
+        activeIds.forEach { downloadId ->
+            cancelYtdlpProcess(downloadId)
+            runCatching {
+                NotificationUtil(context).cancelDownloadNotification(downloadId.toInt())
+            }
+        }
+        runningYTDLInstances.removeAll(activeIds.toSet())
+        Log.i(TAG, "Stopped worker cleanup completed for ${activeIds.size} active download(s)")
+    }
 
-    override suspend fun doWork(): Result = downloadWorkerMutex.withLock {
-        doWorkSerialized()
+    override suspend fun doWork(): Result {
+        return try {
+            downloadWorkerMutex.withLock {
+                doWorkSerialized()
+            }
+        } finally {
+            if (isStopped) {
+                cleanupStoppedWorker()
+            }
+        }
     }
 
     @OptIn(ExperimentalStdlibApi::class)
@@ -207,6 +228,7 @@ class DownloadWorker(
 
             coroutineScope {
                 eligibleDownloads.forEach{downloadItem ->
+                    workerDownloadIds.add(downloadItem.id)
                     if (isHardSubRedownload(downloadItem)) {
                         registerHardSubTarget(downloadItem.id)
                         updateHardSubWorkerNotification(notificationUtil)
@@ -1067,6 +1089,7 @@ class DownloadWorker(
                         if (logDownloads){
                             logRepo.update(initialLogDetails + retryLogDetails + response.out, logItem.id, true)
                         }
+                        workerDownloadIds.remove(downloadItem.id)
 
                     } catch (it: Exception) {
                         if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
@@ -1124,6 +1147,7 @@ class DownloadWorker(
                         )
 
                         eventBus.post(WorkerProgress(100, it.toString(), downloadItem.id, downloadItem.logID))
+                        workerDownloadIds.remove(downloadItem.id)
                     }
                 }
             }
@@ -1153,6 +1177,12 @@ class DownloadWorker(
         private const val FAILURE_YTDLP_TAIL_LINES = 160
         private const val FAILURE_FILE_LIST_LIMIT = 80
         private const val FAILURE_STACK_TRACE_LIMIT = 6000
+
+        private fun cancelYtdlpProcess(downloadId: Long) {
+            val processId = downloadId.toString()
+            YoutubeDL.getInstance().destroyProcessById(processId)
+            YoutubeDLCompat.destroyProcessById(processId)
+        }
     }
 
     private fun commandHasYtdlpOption(commandString: String, option: String): Boolean {

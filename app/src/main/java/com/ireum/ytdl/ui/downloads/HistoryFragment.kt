@@ -3947,12 +3947,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     ): com.ireum.ytdl.database.models.ResultItem? {
         if (url.isBlank()) return null
         return runCatching {
-            resultRepository.getResultsFromSource(
-                url,
-                resetResults = false,
-                addToResults = false,
-                singleItem = true
-            ).firstOrNull()
+            resultRepository.getSingleMetadataFromSource(url)
         }.getOrNull()
     }
 

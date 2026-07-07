@@ -91,7 +91,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             trimmed.startsWith("https://", ignoreCase = true)
     }
 
-    private fun YoutubeDLRequest.applyDefaultOptionsForFetchingData(url: String?) {
+    private fun YoutubeDLRequest.applyDefaultOptionsForFetchingData(
+        url: String?,
+        includeAuthentication: Boolean = true
+    ) {
         addOption("--skip-download")
         addOption("--quiet")
         addOption("--ignore-errors")
@@ -105,7 +108,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             addOption("-4")
         }
 
-        if (sharedPreferences.getBoolean("use_cookies", false)){
+        if (includeAuthentication && sharedPreferences.getBoolean("use_cookies", false)){
             FileUtil.getCookieFile(context){
                 addOption("--cookies", it)
             }
@@ -148,74 +151,108 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     fun getFromYTDL(query: String, singleItem: Boolean = false, resultsGenerated: (results: List<ResultItem>) -> Unit): List<ResultItem> {
         val searchEngine = sharedPreferences.getString("search_engine", "ytsearch")
 
-        val request : YoutubeDLRequest
         var dataFetchUrl: String? = null
-        if (isHttpDataFetchUrl(query)){
-            val safeQuery = validateDataFetchUrl(query)
-            dataFetchUrl = safeQuery
-            if (safeQuery.isYoutubeWatchVideosURL()) {
-                request = YoutubeDLRequest(emptyList())
-                val config =
-                    File(context.cacheDir.absolutePath + "/config" + System.currentTimeMillis() + "##url.txt")
-                config.writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(safeQuery))
-                request.addOption("--config", config.absolutePath)
-            }else{
-                request = YoutubeDLRequest(safeQuery)
-            }
-            request.addWriteInfoJson(safeQuery)
-        }else{
-            request = YoutubeDLRequest(emptyList())
-            when (searchEngine){
-                "ytsearchmusic" -> {
-                    request.addOption("--default-search", "https://music.youtube.com/search?q=")
-                    request.addOption("ytsearch25:\"${query}\"")
-                }
-                else -> {
-                    request.addOption("${searchEngine}25:\"${query}\"")
-                }
-            }
-        }
-        if (searchEngine == "ytsearch" || query.isYoutubeURL()) {
-            val extractorUrl = dataFetchUrl ?: query
-            request.setYoutubeExtractorArgs(
-                extractorUrl,
-                includeWebClientForSubtitles = extractorUrl.isYoutubeURL()
-            )
-        }
-
-        if (!sharedPreferences.getBoolean("no_flat_playlist", false)) {
-            request.addOption("--flat-playlist")
-        }
-
-        request.addOption("--lazy-playlist")
-        request.addOption(if (singleItem) "-J" else "-j")
-        request.applyDefaultOptionsForFetchingData(dataFetchUrl)
         val usePlaylistOriginalURL = sharedPreferences.getBoolean("use_original_url_playlist", false)
 
         val finalResults = mutableListOf<ResultItem>()
         var postedProgress = false
-        YoutubeDL.getInstance().execute(request) { progress, _, line ->
-            runCatching {
-                val generatedResults = parseYTDLPListResults(listOf(line))
-                if (generatedResults.isNotEmpty()) {
+        var retriedWithoutAuthentication = false
 
-                    generatedResults.forEach {
-                        if (!it.playlistURL.isNullOrBlank() && usePlaylistOriginalURL) {
-                            it.playlistURL = query
-                        }
+        fun buildRequest(includeYoutubeAuthentication: Boolean): YoutubeDLRequest {
+            val request: YoutubeDLRequest
+            if (isHttpDataFetchUrl(query)){
+                val safeQuery = validateDataFetchUrl(query)
+                dataFetchUrl = safeQuery
+                if (safeQuery.isYoutubeWatchVideosURL()) {
+                    request = YoutubeDLRequest(emptyList())
+                    val config =
+                        File(context.cacheDir.absolutePath + "/config" + System.currentTimeMillis() + "##url.txt")
+                    config.writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(safeQuery))
+                    request.addOption("--config", config.absolutePath)
+                }else{
+                    request = YoutubeDLRequest(safeQuery)
+                }
+                request.addWriteInfoJson(safeQuery)
+            }else{
+                request = YoutubeDLRequest(emptyList())
+                when (searchEngine){
+                    "ytsearchmusic" -> {
+                        request.addOption("--default-search", "https://music.youtube.com/search?q=")
+                        request.addOption("ytsearch25:\"${query}\"")
                     }
-
-                    finalResults.addAll(generatedResults)
-                    if (!postedProgress) {
-                        if (finalResults.size > 1) {
-                            resultsGenerated(finalResults)
-                            postedProgress = true
-                        }
-                    }else{
-                        resultsGenerated(generatedResults)
+                    else -> {
+                        request.addOption("${searchEngine}25:\"${query}\"")
                     }
                 }
             }
+            if (searchEngine == "ytsearch" || query.isYoutubeURL()) {
+                val extractorUrl = dataFetchUrl ?: query
+                request.setYoutubeExtractorArgs(
+                    extractorUrl,
+                    includeWebClientForSubtitles = extractorUrl.isYoutubeURL(),
+                    includeAuthentication = includeYoutubeAuthentication
+                )
+            }
+
+            if (!sharedPreferences.getBoolean("no_flat_playlist", false)) {
+                request.addOption("--flat-playlist")
+            }
+
+            request.addOption("--lazy-playlist")
+            request.addOption(if (singleItem) "-J" else "-j")
+            request.applyDefaultOptionsForFetchingData(
+                dataFetchUrl,
+                includeAuthentication = includeYoutubeAuthentication
+            )
+            return request
+        }
+
+        fun executeRequest(request: YoutubeDLRequest) {
+            YoutubeDL.getInstance().execute(request) { _, _, line ->
+                runCatching {
+                    val generatedResults = parseYTDLPListResults(listOf(line))
+                    if (generatedResults.isNotEmpty()) {
+
+                        generatedResults.forEach {
+                            if (!it.playlistURL.isNullOrBlank() && usePlaylistOriginalURL) {
+                                it.playlistURL = query
+                            }
+                        }
+
+                        finalResults.addAll(generatedResults)
+                        if (!postedProgress) {
+                            if (finalResults.size > 1) {
+                                resultsGenerated(finalResults)
+                                postedProgress = true
+                            }
+                        }else{
+                            resultsGenerated(generatedResults)
+                        }
+                    }
+                }
+            }
+        }
+
+        val request = buildRequest(includeYoutubeAuthentication = true)
+        runCatching {
+            executeRequest(request)
+        }.onFailure { firstError ->
+            if (postedProgress || !shouldRetryYoutubeMetadataWithoutAuthentication(dataFetchUrl ?: query, firstError)) {
+                throw firstError
+            }
+            Log.w("YTDLPUtil", "Retrying YouTube metadata fetch without authentication url=${dataFetchUrl ?: query}", firstError)
+            finalResults.clear()
+            postedProgress = false
+            retriedWithoutAuthentication = true
+            executeRequest(buildRequest(includeYoutubeAuthentication = false))
+        }
+        if (
+            finalResults.isEmpty() &&
+            !retriedWithoutAuthentication &&
+            shouldRetryYoutubeMetadataWithoutAuthentication(dataFetchUrl ?: query, null)
+        ) {
+            Log.w("YTDLPUtil", "Retrying empty YouTube metadata fetch without authentication url=${dataFetchUrl ?: query}")
+            executeRequest(buildRequest(includeYoutubeAuthentication = false))
         }
 
         if (!postedProgress) resultsGenerated(finalResults)
@@ -688,6 +725,25 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         return infoJsonFile
     }
 
+    fun getCachedInfoJsonResult(url: String): ResultItem? {
+        val infoJsonFile = getInfoJsonFile(url) ?: return null
+        return runCatching {
+            parseYTDLPListResults(listOf(readInfoJsonPayload(infoJsonFile)), url).firstOrNull()
+        }.onFailure {
+            Log.w("YTDLPUtil", "Failed to parse cached info JSON file=${infoJsonFile.name}", it)
+        }.getOrNull()
+    }
+
+    private fun readInfoJsonPayload(infoJsonFile: File): String {
+        val text = infoJsonFile.readText().trim()
+        if (text.startsWith("{")) return text
+        if (text.startsWith("video:{")) return text.removePrefix("video:").trim()
+        return text.lineSequence()
+            .map { line -> line.trim() }
+            .firstOrNull { line -> line.startsWith("{") && line.endsWith("}") }
+            ?: text
+    }
+
     private fun cachedInfoJsonHasRequestedSubtitles(
         infoJsonFile: File,
         subsLanguages: String,
@@ -698,7 +754,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         val availableSubtitles = mutableListOf<String>()
 
         return runCatching {
-            val jsonObject = JSONObject(infoJsonFile.readText())
+            val jsonObject = JSONObject(readInfoJsonPayload(infoJsonFile))
             if (includeManualSubtitles && jsonObject.has("subtitles")) {
                 availableSubtitles.addAll(jsonObject.getJSONObject("subtitles").keys().asSequence().toList())
             }
@@ -898,6 +954,17 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             ?.groupValues
             ?.drop(1)
             ?.firstOrNull { it.isNotBlank() }
+    }
+
+    private fun shouldRetryYoutubeMetadataWithoutAuthentication(url: String?, error: Throwable?): Boolean {
+        if (url.isNullOrBlank() || !url.isYoutubeURL()) return false
+        if (error == null) return true
+        val text = error.message.orEmpty()
+        return text.contains("HTTP Error 403", ignoreCase = true) ||
+            text.contains("403: Forbidden", ignoreCase = true) ||
+            text.contains("Forbidden", ignoreCase = true) ||
+            text.contains("PO Token", ignoreCase = true) ||
+            text.contains("Data Sync ID", ignoreCase = true)
     }
 
     private fun MutableList<String>.addOption(vararg options: String) {

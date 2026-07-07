@@ -38,7 +38,34 @@ class TerminalDownloadWorker(
     private val context: Context,
     workerParams: WorkerParameters
 ) : CoroutineWorker(context, workerParams) {
+    private var itemId : Int = 0
+
+    private fun cleanupStoppedWorker() {
+        if (itemId == 0) return
+
+        val processId = itemId.toString()
+        YoutubeDL.getInstance().destroyProcessById(processId)
+        YoutubeDLCompat.destroyProcessById(processId)
+        runCatching {
+            NotificationUtil(context).cancelDownloadNotification(itemId)
+        }
+        runCatching {
+            File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
+        }
+        Log.i(TAG, "Stopped terminal worker cleanup completed for itemId=$itemId")
+    }
+
     override suspend fun doWork(): Result {
+        return try {
+            doWorkInternal()
+        } finally {
+            if (isStopped) {
+                cleanupStoppedWorker()
+            }
+        }
+    }
+
+    private suspend fun doWorkInternal(): Result {
         itemId = inputData.getInt("id", 0)
         val command = inputData.getString("command")
         val dao = DBManager.getInstance(context).terminalDao
@@ -184,11 +211,9 @@ class TerminalDownloadWorker(
             FileUtil.deleteConfigFiles(request)
         }
         return Result.success()
-
     }
 
     companion object {
-        private var itemId : Int = 0
         const val TAG = "DownloadWorker"
     }
 
