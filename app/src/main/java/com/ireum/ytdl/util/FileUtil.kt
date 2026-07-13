@@ -1,6 +1,7 @@
 ﻿package com.ireum.ytdl.util
 
 import android.content.Context
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
 import android.media.MediaScannerConnection
@@ -47,6 +48,7 @@ object FileUtil {
     @Volatile
     private var lastMoveFailureDetails: String? = null
     private const val SHARED_FILE_PROVIDER_DIR = "shared"
+    private const val MAX_SHARE_CACHE_COPY_BYTES = 50L * 1024L * 1024L
 
     private val zeroByteSiblingMediaExtensions = setOf(
         "webm", "mkv", "mp4", "m4v", "mov", "avi", "ts", "m2ts", "mp3", "m4a", "aac", "opus", "ogg", "wav", "flac"
@@ -937,10 +939,17 @@ object FileUtil {
 
     fun prepareShareUri(context: Context, file: File): Uri? {
         if (!file.exists() || !file.isFile || isBlockedShareFile(file)) return null
-        val providerFile = if (isInsideAllowedProviderRoot(context, file)) {
-            file
-        } else {
-            copyToSharedProviderCache(context, file) ?: return null
+        findMediaStoreUri(context, file)?.let { return it }
+        val providerFile = when {
+            isInsideAllowedProviderRoot(context, file) -> file
+            file.length() > MAX_SHARE_CACHE_COPY_BYTES -> {
+                Log.w(
+                    "FileUtil",
+                    "Refusing to copy large file into share cache size=${file.length()} path=${file.absolutePath}"
+                )
+                return null
+            }
+            else -> copyToSharedProviderCache(context, file) ?: return null
         }
         return runCatching {
             FileProvider.getUriForFile(
@@ -948,6 +957,32 @@ object FileUtil {
                 context.packageName + ".fileprovider",
                 providerFile
             )
+        }.onFailure {
+            Log.w("FileUtil", "Failed to build FileProvider share uri path=${providerFile.absolutePath}", it)
+        }.getOrNull()
+    }
+
+    private fun findMediaStoreUri(context: Context, file: File): Uri? {
+        val canonicalPath = runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
+        val uri = MediaStore.Files.getContentUri("external")
+        val projection = arrayOf(MediaStore.MediaColumns._ID)
+        return runCatching {
+            context.contentResolver.query(
+                uri,
+                projection,
+                "${MediaStore.MediaColumns.DATA} = ?",
+                arrayOf(canonicalPath),
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                    ContentUris.withAppendedId(uri, id)
+                } else {
+                    null
+                }
+            }
+        }.onFailure {
+            Log.w("FileUtil", "Failed to query MediaStore share uri path=$canonicalPath", it)
         }.getOrNull()
     }
 
@@ -966,6 +1001,8 @@ object FileUtil {
             val target = File(sharedDir, uniqueShareFileName(file, safeName))
             file.copyTo(target, overwrite = true)
             target
+        }.onFailure {
+            Log.w("FileUtil", "Failed to copy file into share cache path=${file.absolutePath}", it)
         }.getOrNull()
     }
 
