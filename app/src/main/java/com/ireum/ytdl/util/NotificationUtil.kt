@@ -506,19 +506,20 @@ class NotificationUtil(var context: Context) {
                 val uris = filepath.mapNotNull {
                     FileUtil.prepareShareUri(context, it)
                 }
-
-                val openFileIntent = Intent()
-                val shareFileIntent = Intent()
+                val failedUriCount = filepath.size - uris.size
+                if (failedUriCount > 0) {
+                    Log.w("NotificationUtil", "Failed to prepare $failedUriCount/${filepath.size} finished download share URIs")
+                }
 
                 if (uris.isNotEmpty()){
-                    openFileIntent.apply {
+                    val openFileIntent = Intent().apply {
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         action = Intent.ACTION_VIEW
                         data = uris.first()
                     }
 
-                    shareFileIntent.apply {
+                    val shareFileIntent = Intent().apply {
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         action = Intent.ACTION_SEND_MULTIPLE
@@ -526,25 +527,27 @@ class NotificationUtil(var context: Context) {
                         type = if (uris.size == 1) uris[0].let { context.contentResolver.getType(it) } ?: "media/*" else "*/*"
                         putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                     }
+
+                    val openNotificationPendingIntent: PendingIntent = TaskStackBuilder.create(context).run {
+                        addNextIntentWithParentStack(openFileIntent)
+                        getPendingIntent(id.toInt(),
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                    }
+
+                    //share intent
+                    val shareNotificationPendingIntent: PendingIntent = PendingIntent.getActivity(
+                        context,
+                        id.toInt(),
+                        Intent.createChooser(shareFileIntent, res.getString(R.string.share)),
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+
+                    notificationBuilder.addAction(0, res.getString(R.string.Open_File), openNotificationPendingIntent)
+                    notificationBuilder.addAction(0, res.getString(R.string.share), shareNotificationPendingIntent)
                 }
-
-                val openNotificationPendingIntent: PendingIntent = TaskStackBuilder.create(context).run {
-                    addNextIntentWithParentStack(openFileIntent)
-                    getPendingIntent(id.toInt(),
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                }
-
-                //share intent
-                val shareNotificationPendingIntent: PendingIntent = PendingIntent.getActivity(
-                    context,
-                    id.toInt(),
-                    Intent.createChooser(shareFileIntent, res.getString(R.string.share)),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-
-                notificationBuilder.addAction(0, res.getString(R.string.Open_File), openNotificationPendingIntent)
-                notificationBuilder.addAction(0, res.getString(R.string.share), shareNotificationPendingIntent)
-            }catch (_: Exception){}
+            }catch (e: Exception){
+                Log.w("NotificationUtil", "Failed to prepare finished download notification actions", e)
+            }
         }
         notificationBuilder.setStyle(NotificationCompat.BigTextStyle().bigText(contentText.toString().trimIndent()))
         notificationManager.notify(DOWNLOAD_FINISHED_NOTIFICATION_ID + id.toInt(), notificationBuilder.build())
