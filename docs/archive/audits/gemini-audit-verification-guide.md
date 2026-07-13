@@ -1,14 +1,18 @@
 # Gemini Audit Verification Guide
 
+> Status: Archived
+> Snapshot date: 2026-05-03
+> Revalidate all findings and paths against the current source before treating them as current.
+
 You are reviewing an Android/Kotlin codebase in Android Studio.
 
 The source audit file is:
 
-- docs/codebase-audit.md
+- codebase-audit.md
 
 The verification output file is:
 
-- docs/audit_verification_notes.md
+- audit-verification-notes.md
 
 Your task is NOT to fix code.
 Your task is to verify only the finding IDs explicitly requested by the user.
@@ -22,7 +26,7 @@ If no finding ID is given, stop and ask which finding to verify.
 
 You may modify only:
 
-- docs/audit_verification_notes.md
+- audit-verification-notes.md
 
 Do not modify:
 - Kotlin/Java files
@@ -32,7 +36,7 @@ Do not modify:
 - tests
 - assets
 - native files
-- docs/codebase-audit.md
+- codebase-audit.md
 - this guide file
 - any other docs file
 
@@ -72,7 +76,7 @@ If a requested target section already exists:
 - Do not change spacing, headings, formatting, or content outside the requested section.
 
 If a requested target section does not exist:
-- Append the new section to the end of docs/audit_verification_notes.md.
+- Append the new section to the end of audit-verification-notes.md.
 - Do not reorder existing sections.
 - Do not rewrite existing sections.
 
@@ -91,7 +95,7 @@ If you cannot safely identify the exact section boundary:
 
 For each requested finding:
 
-1. Read the finding from docs/codebase-audit.md.
+1. Read the finding from codebase-audit.md.
 2. Inspect the actual code, manifest, Gradle files, XML resources, and relevant call paths.
 3. Do not trust the audit blindly.
 4. Do not invent unsupported risks.
@@ -177,7 +181,7 @@ Use exactly one:
 
 ## 7. Output format
 
-Write one section per requested finding into docs/audit_verification_notes.md.
+Write one section per requested finding into audit-verification-notes.md.
 
 Use this format:
 
@@ -276,7 +280,7 @@ Provide the smallest useful test plan.
 
 ## 8. Chat response after writing
 
-Because the full result is written to docs/audit_verification_notes.md, do not paste the verification note in chat.
+Because the full result is written to audit-verification-notes.md, do not paste the verification note in chat.
 
 After writing, reply only with this minimal status:
 
@@ -308,12 +312,12 @@ When doing ordinary finding verification, only write or replace the requested fi
 
 ## 10. Safety check before writing
 
-Before modifying docs/audit_verification_notes.md, check:
+Before modifying audit-verification-notes.md, check:
 
 - Am I modifying only the finding sections explicitly requested by the user?
 - Am I preserving all non-requested sections exactly?
 - Am I avoiding global summaries unless explicitly requested?
-- Am I writing only to docs/audit_verification_notes.md?
+- Am I writing only to audit-verification-notes.md?
 - Am I avoiding code edits?
 
 If any answer is no, stop and do not write.

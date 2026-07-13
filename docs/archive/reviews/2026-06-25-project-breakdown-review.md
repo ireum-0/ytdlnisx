@@ -1,5 +1,9 @@
 ﻿# YTDLnisX Project Breakdown and Review
 
+> Status: Archived
+> Snapshot date: 2026-06-25
+> Revalidate all findings against the current source before treating them as current.
+
 Date: 2026-06-25  
 Repository: `D:\AndroidStudioProjects\ytdlnisx`  
 Reviewer: Codex

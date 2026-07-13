@@ -44,6 +44,12 @@
     - `./gradlew :app:assembleRelease -x lint`
 - If verification is skipped, fails, or cannot be run, state that clearly.
 
+## Planned Improvement Work
+- For planned YTDLnisX improvements, start with `docs/codex/README.md`.
+- Read only the selected task and the relevant rules and checks.
+- Treat planning documents as guidance, not permission to expand scope.
+- Revalidate planning assumptions against the current branch before editing.
+
 ## Final Response
 - Summarize meaningful changes, verification status, and remaining risks.
 - Mention changed files with concise paths.

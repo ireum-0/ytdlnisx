@@ -1,5 +1,9 @@
 # Codex 및 Everything Claude Code 부분 도입 검토
 
+> Status: Archived
+> Snapshot date: 2026-05-02
+> Revalidate all findings against the current source before treating them as current.
+
 작성일: 2026-05-02
 
 ## 0. 검토 범위와 자료 확인

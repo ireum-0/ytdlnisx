@@ -1,5 +1,12 @@
 # Codebase Audit
 
+> Status: Archived
+> Snapshot date: 2026-05-03
+> Revalidate all findings against the current source before treating them as current.
+
+> Status: Archived
+> Snapshot date: 2026-05-03
+> Revalidate all findings against the current source before treating them as current.
 ## 1. Executive Summary
 
 This audit reviewed the Android/Kotlin/Gradle codebase with emphasis on lifecycle, workers, Room consistency, file deletion/sharing, yt-dlp command construction, Media3 playback, exported components, data fetching, logging, and packaging risk.

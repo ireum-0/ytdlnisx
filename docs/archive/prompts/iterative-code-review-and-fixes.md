@@ -1,5 +1,9 @@
 # Iterative Code Review and Fixes
 
+> Status: Archived
+> Snapshot date: 2026-06-24
+> Revalidate all instructions against the current repository before using them.
+
 Review, fix, verify, and re-review all current uncommitted changes until no important issues remain. Do not limit the number of iterations; continue until every exit condition is met.
 
 ## Rules
