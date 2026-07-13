@@ -73,6 +73,7 @@ class DownloadWorker(
     workerParams: WorkerParameters
 ) : CoroutineWorker(context, workerParams) {
     private val workerDownloadIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
+    private val workerCleanupDownloadIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
 
     override suspend fun getForegroundInfo(): ForegroundInfo {
         val workNotif = NotificationUtil(App.instance).createDefaultWorkerNotification()
@@ -90,13 +91,18 @@ class DownloadWorker(
 
     private suspend fun cleanupStoppedWorker() = withContext(Dispatchers.IO + NonCancellable) {
         val dao = DBManager.getInstance(context).downloadDao
-        val activeIds = (workerDownloadIds.toList() + runCatching {
-            dao.getActiveDownloadsList().map { it.id }
-        }.getOrDefault(emptyList())).distinct()
+        val workerOwnedIds = workerCleanupDownloadIds.toList()
+        val staleDbIds = runCatching {
+            dao.getActiveAndPostProcessingDownloadsList()
+                .map { it.id }
+                .filter { it !in ownedDownloadIds }
+        }.getOrDefault(emptyList())
+        val activeIds = (workerOwnedIds + staleDbIds).distinct()
         if (activeIds.isEmpty()) return@withContext
 
         activeIds.forEach { downloadId ->
             cancelYtdlpProcess(downloadId)
+            cancelPostProcessingById(downloadId)
             runCatching {
                 NotificationUtil(context).cancelDownloadNotification(downloadId.toInt())
             }
@@ -107,20 +113,25 @@ class DownloadWorker(
                 DownloadRepository.Status.Active.toString(),
                 DownloadRepository.Status.Queued.toString()
             )
+            dao.setStatusMultipleFromStatus(
+                activeIds,
+                DownloadRepository.Status.PostProcessing.toString(),
+                DownloadRepository.Status.Queued.toString()
+            )
         }.onFailure {
             Log.w(TAG, "Failed to requeue stopped active downloads ids=$activeIds", it)
         }
         val activeIdSet = activeIds.toSet()
         workerDownloadIds.removeAll(activeIdSet)
+        workerCleanupDownloadIds.removeAll(activeIdSet)
+        ownedDownloadIds.removeAll(activeIdSet)
         runningYTDLInstances.removeAll(activeIdSet)
         Log.i(TAG, "Stopped worker cleanup completed for ${activeIds.size} active download(s)")
     }
 
     override suspend fun doWork(): Result {
         return try {
-            downloadWorkerMutex.withLock {
-                doWorkSerialized()
-            }
+            doWorkSerialized()
         } finally {
             if (isStopped) {
                 cleanupStoppedWorker()
@@ -188,57 +199,63 @@ class DownloadWorker(
         queuedItems.collect { items ->
             if (this@DownloadWorker.isStopped) return@collect
 
-            runningYTDLInstances.clear()
-            val activeDownloads = dao.getActiveDownloadsList()
-            activeDownloads.forEach {
-                runningYTDLInstances.add(it.id)
-            }
+            val eligibleDownloads = downloadWorkerMutex.withLock {
+                runningYTDLInstances.clear()
+                val activeDownloads = dao.getActiveDownloadsList()
+                activeDownloads.forEach {
+                    runningYTDLInstances.add(it.id)
+                }
 
-            val running = ArrayList(runningYTDLInstances)
-            val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
-            if (items.isEmpty() && running.isEmpty()) {
-                WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
-                return@collect
-            }
-
-            if (useScheduler){
-                if (items.none{it.downloadStartTime > 0L} && running.isEmpty() && !alarmScheduler.isDuringTheScheduledTime()) {
+                val running = ArrayList(runningYTDLInstances)
+                val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
+                if (items.isEmpty() && running.isEmpty()) {
                     WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
                     return@collect
                 }
-            }
 
-            if (priorityItemIDs.isEmpty() && !continueAfterPriorityIds) {
-                WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
-                return@collect
-            }
+                if (useScheduler){
+                    if (items.none{it.downloadStartTime > 0L} && running.isEmpty() && !alarmScheduler.isDuringTheScheduledTime()) {
+                        WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
+                        return@collect
+                    }
+                }
 
-            val concurrentDownloads = sharedPreferences.getInt("concurrent_downloads", 1) - running.size
-            val baseEligibleDownloads = if (priorityItemIDs.isNotEmpty()) {
-                val tmp = priorityItemIDs.take(concurrentDownloads)
-                items.filter { it.id !in running && tmp.contains(it.id) }
-            }else{
-                items.take(concurrentDownloads).filter {  it.id !in running }
-            }
-            val hasRunningHardSub = activeDownloads.any { isHardSubRedownload(it) }
-            val eligibleDownloads = if (hasRunningHardSub) {
-                baseEligibleDownloads.filterNot { isHardSubRedownload(it) }
-            } else {
-                val hardSubs = baseEligibleDownloads.filter { isHardSubRedownload(it) }
-                if (hardSubs.size <= 1) {
-                    baseEligibleDownloads
+                if (priorityItemIDs.isEmpty() && !continueAfterPriorityIds) {
+                    WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
+                    return@collect
+                }
+
+                val concurrentDownloads = sharedPreferences.getInt("concurrent_downloads", 1) - running.size
+                val baseEligibleDownloads = if (priorityItemIDs.isNotEmpty()) {
+                    val tmp = priorityItemIDs.take(concurrentDownloads)
+                    items.filter { it.id !in running && tmp.contains(it.id) }
+                }else{
+                    items.take(concurrentDownloads).filter {  it.id !in running }
+                }
+                val hasRunningHardSub = activeDownloads.any { isHardSubRedownload(it) }
+                val selectedDownloads = if (hasRunningHardSub) {
+                    baseEligibleDownloads.filterNot { isHardSubRedownload(it) }
                 } else {
-                    val firstHardSubId = hardSubs.first().id
-                    baseEligibleDownloads.filter { !isHardSubRedownload(it) || it.id == firstHardSubId }
+                    val hardSubs = baseEligibleDownloads.filter { isHardSubRedownload(it) }
+                    if (hardSubs.size <= 1) {
+                        baseEligibleDownloads
+                    } else {
+                        val firstHardSubId = hardSubs.first().id
+                        baseEligibleDownloads.filter { !isHardSubRedownload(it) || it.id == firstHardSubId }
+                    }
                 }
-            }
 
-            if (eligibleDownloads.isNotEmpty()){
-                eligibleDownloads.forEach {
-                    it.status = DownloadRepository.Status.Active.toString()
-                    priorityItemIDs.remove(it.id)
+                if (selectedDownloads.isNotEmpty()){
+                    selectedDownloads.forEach {
+                        workerDownloadIds.add(it.id)
+                        workerCleanupDownloadIds.add(it.id)
+                        ownedDownloadIds.add(it.id)
+                        it.status = DownloadRepository.Status.Active.toString()
+                        priorityItemIDs.remove(it.id)
+                    }
+                    dao.updateMultiple(selectedDownloads)
                 }
-                dao.updateMultiple(eligibleDownloads)
+                selectedDownloads
             }
 
             coroutineScope {
@@ -254,6 +271,13 @@ class DownloadWorker(
                     var logItem: LogItem? = null
                     var initialLogDetails = ""
                     var retryLogDetails = ""
+                    var hardSubPostProcessLockHeld = false
+                    fun shouldStopForUserRequest(): Boolean {
+                        val latestStatus = runCatching { dao.checkStatus(downloadItem.id) }.getOrNull()
+                        return this@DownloadWorker.isStopped ||
+                            latestStatus == DownloadRepository.Status.Paused ||
+                            latestStatus == DownloadRepository.Status.Cancelled
+                    }
                     try {
                     if (isHardSubRedownload(downloadItem)) {
                         registerHardSubTarget(downloadItem.id)
@@ -524,6 +548,27 @@ class DownloadWorker(
                             Log.w(TAG, "HardSub skipped id=${downloadItem.id} reason=$hardSubSkipReason")
                             eventBus.post(WorkerProgress(100, hardSubSkipReason, downloadItem.id, downloadItem.logID))
                         }
+                        if (shouldBurnHardSub && sharedPreferences.getBoolean("parallel_hardsub_postprocessing", false)) {
+                            downloadItem.status = DownloadRepository.Status.PostProcessing.toString()
+                            dao.update(downloadItem)
+                            runningYTDLInstances.remove(downloadItem.id)
+                            val postProcessingMessage = "Post-processing hard subtitles"
+                            eventBus.post(WorkerProgress(100, postProcessingMessage, downloadItem.id, downloadItem.logID))
+                            notificationUtil.updateDownloadNotification(
+                                downloadItem.id.toInt(),
+                                postProcessingMessage,
+                                100,
+                                0,
+                                downloadItem.title.ifEmpty { downloadItem.url },
+                                NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
+                                getHardSubStatusText(resources)
+                            )
+                            Log.i(TAG, "HardSub post-processing slot released id=${downloadItem.id}")
+                            DownloadRepository(dao).startDownloadWorker(emptyList(), context)
+                            hardSubPostProcessMutex.lock()
+                            hardSubPostProcessLockHeld = true
+                        }
+                        if (shouldStopForUserRequest()) return@launch
 
                         var deferBurnUntilPostMove = false
                         val forceDeferBurn = shouldBurnHardSub && shouldForceHardSubFailpoint("force_hardsub_defer")
@@ -631,6 +676,7 @@ class DownloadWorker(
                                     deferBurnUntilPostMove = true
                                     Log.w(TAG, "HardSub pre-move forced defer id=${downloadItem.id} marker=force_hardsub_defer")
                                 } else {
+                                    if (shouldStopForUserRequest()) return@launch
                                     Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${preMoveBurnPaths.size} mode=pre-move")
                                     eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                                     val burned = burnSubtitlesInPlace(preMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
@@ -667,6 +713,7 @@ class DownloadWorker(
                                 ext !in setOf("ass", "srv3", "json3", "ttml", "vtt", "srt")
                             }
                             if (lateHasMedia) {
+                                if (shouldStopForUserRequest()) return@launch
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${latePreMoveBurnPaths.size} mode=pre-move-late")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                                 val burned = burnSubtitlesInPlace(latePreMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
@@ -912,6 +959,7 @@ class DownloadWorker(
                                     "HardSub post-move skipped id=${downloadItem.id} reason=no-files-found-after-move destSnapshot=${describeDirectorySnapshot(File(downloadLocation))}"
                                 )
                             } else {
+                                if (shouldStopForUserRequest()) return@launch
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${postMoveBurnPaths.size} mode=post-move")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                                 val burned = burnSubtitlesInPlace(postMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
@@ -966,6 +1014,7 @@ class DownloadWorker(
                                 )
                             }
                             Log.i(TAG, "HardSub post-remap paths=${finalPaths.size}")
+                            if (shouldStopForUserRequest()) return@launch
                             Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${finalPaths.size}")
                             eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                             val burned = burnSubtitlesInPlace(finalPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
@@ -1035,6 +1084,7 @@ class DownloadWorker(
                             }
                         }
                         finalPaths = prioritizePrimaryMediaPath(finalPaths, downloadItem.type)
+                        if (shouldStopForUserRequest()) return@launch
                         if (finalPaths.isNotEmpty()) {
                             val summary = finalPaths.joinToString(limit = 5) { path ->
                                 val file = File(path)
@@ -1176,7 +1226,13 @@ class DownloadWorker(
                         withContext(Dispatchers.Main){
                             notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
                         }
-                        if (this@DownloadWorker.isStopped || it is YoutubeDL.CanceledException) {
+                        val latestStatus = runCatching { dao.checkStatus(downloadItem.id) }.getOrNull()
+                        if (
+                            this@DownloadWorker.isStopped ||
+                            it is YoutubeDL.CanceledException ||
+                            latestStatus == DownloadRepository.Status.Paused ||
+                            latestStatus == DownloadRepository.Status.Cancelled
+                        ) {
                             return@launch
                         }
                         if (it.message?.contains("JSONDecodeError") == true) {
@@ -1225,7 +1281,18 @@ class DownloadWorker(
                         eventBus.post(WorkerProgress(100, it.toString(), downloadItem.id, downloadItem.logID))
                     }
                     } finally {
+                        if (hardSubPostProcessLockHeld) {
+                            hardSubPostProcessMutex.unlock()
+                        }
                         workerDownloadIds.remove(downloadItem.id)
+                        val latestStatus = runCatching { dao.checkStatus(downloadItem.id) }.getOrNull()
+                        if (
+                            latestStatus != DownloadRepository.Status.Active &&
+                            latestStatus != DownloadRepository.Status.PostProcessing
+                        ) {
+                            workerCleanupDownloadIds.remove(downloadItem.id)
+                            ownedDownloadIds.remove(downloadItem.id)
+                        }
                     }
                 }
             }
@@ -1249,8 +1316,11 @@ class DownloadWorker(
 
         private val hardSubTargetIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
         private val hardSubProcessedIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
+        private val ownedDownloadIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
         private val hardSubDisabledFfmpegSources: MutableSet<String> = ConcurrentHashMap.newKeySet()
         private val hardSubFilterSupportCache: MutableMap<String, Set<String>> = ConcurrentHashMap()
+        private val hardSubPostProcessMutex = Mutex()
+        private val runningFfmpegProcesses: MutableMap<Long, MutableSet<Process>> = ConcurrentHashMap()
         private val loadInfoJsonOptionRegex = Regex("""--load-info-json\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
         private const val FAILURE_YTDLP_TAIL_LINES = 160
         private const val FAILURE_FILE_LIST_LIMIT = 80
@@ -1260,6 +1330,12 @@ class DownloadWorker(
             val processId = downloadId.toString()
             YoutubeDL.getInstance().destroyProcessById(processId)
             YoutubeDLCompat.destroyProcessById(processId)
+        }
+
+        fun cancelPostProcessingById(downloadId: Long) {
+            runningFfmpegProcesses[downloadId]?.toList().orEmpty().forEach { process ->
+                runCatching { process.destroy() }
+            }
         }
     }
 
@@ -2458,6 +2534,10 @@ class DownloadWorker(
     ): FfmpegExecResult {
         return runCatching {
             val process = buildFfmpegProcess(runtime, args).start()
+            val processSet = progressTarget?.downloadItemId?.let { downloadItemId ->
+                runningFfmpegProcesses.computeIfAbsent(downloadItemId) { ConcurrentHashMap.newKeySet() }
+            }
+            processSet?.add(process)
             val outputBuilder = StringBuilder()
             val startedAt = System.currentTimeMillis()
             var lastLiveLogAt = 0L
@@ -2497,10 +2577,17 @@ class DownloadWorker(
                     }
                 }
             }
-            val exitCode = process.waitFor()
-            val elapsed = System.currentTimeMillis() - startedAt
-            Log.i(TAG, "HardSub ffmpeg end source=${runtime.source} code=$exitCode elapsedMs=$elapsed")
-            FfmpegExecResult(exitCode = exitCode, output = outputBuilder.toString())
+            try {
+                val exitCode = process.waitFor()
+                val elapsed = System.currentTimeMillis() - startedAt
+                Log.i(TAG, "HardSub ffmpeg end source=${runtime.source} code=$exitCode elapsedMs=$elapsed")
+                FfmpegExecResult(exitCode = exitCode, output = outputBuilder.toString())
+            } finally {
+                processSet?.remove(process)
+                progressTarget?.downloadItemId?.let { downloadItemId ->
+                    if (processSet?.isEmpty() == true) runningFfmpegProcesses.remove(downloadItemId)
+                }
+            }
         }.getOrElse { error ->
             Log.e(TAG, "HardSub ffmpeg process start failed source=${runtime.source}", error)
             FfmpegExecResult(exitCode = 1, output = error.message ?: error.toString())

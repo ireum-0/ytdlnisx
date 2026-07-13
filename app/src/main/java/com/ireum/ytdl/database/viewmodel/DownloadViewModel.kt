@@ -908,6 +908,10 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         return repository.getActiveDownloads()
     }
 
+    fun getActiveAndPostProcessingDownloads() : List<DownloadItem>{
+        return dao.getActiveAndPostProcessingDownloadsList()
+    }
+
     fun getActiveDownloadsCount() : Int {
         return repository.getActiveDownloadsCount()
     }
@@ -1639,24 +1643,25 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     fun cancelDownloadOnly(id : Long) {
         YoutubeDL.getInstance().destroyProcessById(id.toString())
         YoutubeDLCompat.destroyProcessById(id.toString())
+        com.ireum.ytdl.work.DownloadWorker.cancelPostProcessingById(id)
         notificationUtil.cancelDownloadNotification(id.toInt())
     }
 
     suspend fun cancelDownload(id: Long) {
-        cancelDownloadOnly(id)
         updateToStatus(id, DownloadRepository.Status.Cancelled)
+        cancelDownloadOnly(id)
     }
 
     suspend fun pauseDownload(id: Long)  {
-        cancelDownloadOnly(id)
         updateToStatus(id, DownloadRepository.Status.Paused)
+        cancelDownloadOnly(id)
     }
 
     suspend fun pauseAllDownloads() {
         pausedAllDownloads.value = PausedAllDownloadsState.PROCESSING
         isPausingResuming = true
         val activeDownloadsList = withContext(Dispatchers.IO){
-            getActiveDownloads()
+            getActiveAndPostProcessingDownloads()
         }
         if (activeDownloadsList.isNotEmpty()) {
             withContext(Dispatchers.IO){
@@ -1701,7 +1706,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     private suspend fun cancelAllDownloadsImpl() {
         WorkManager.getInstance(application).cancelAllWorkByTag("download")
         val activeDownloadsList = withContext(Dispatchers.IO){
-            getActiveDownloads()
+            getActiveAndPostProcessingDownloads()
         }
         activeDownloadsList.forEach {
             cancelDownloadOnly(it.id)

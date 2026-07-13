@@ -143,6 +143,7 @@ class ActiveDownloadAdapter(onItemClickListener: OnItemClickListener, activity: 
         resumeButton.isEnabled = true
         if (resumeButton.hasOnClickListeners()) resumeButton.setOnClickListener(null)
         val isPaused = item.status == DownloadRepository.Status.Paused.toString()
+        val isPostProcessing = item.status == DownloadRepository.Status.PostProcessing.toString()
         if (isPaused) {
             resumeButton.setIconResource(R.drawable.exomedia_ic_play_arrow_white)
             resumeButton.setOnClickListener {
@@ -162,6 +163,10 @@ class ActiveDownloadAdapter(onItemClickListener: OnItemClickListener, activity: 
             progressBar.progress = 0
             cancelButton.isEnabled = true
             output.text = activity.getString(R.string.exo_download_paused)
+        } else if (isPostProcessing && output.text.isBlank()) {
+            progressBar.isIndeterminate = true
+            cancelButton.isEnabled = true
+            output.text = activity.getString(R.string.post_processing)
         } else {
             progressBar.isIndeterminate = progressBar.progress <= 0
             cancelButton.isEnabled = true

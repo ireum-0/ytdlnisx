@@ -7,6 +7,7 @@ import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.work.DownloadWorker
 import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,9 +20,6 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
             val result = goAsync()
             runCatching {
                 val notificationUtil = NotificationUtil(c)
-                YoutubeDL.getInstance().destroyProcessById(id.toString())
-                YoutubeDLCompat.destroyProcessById(id.toString())
-                notificationUtil.cancelDownloadNotification(id)
                 val dbManager = DBManager.getInstance(c)
                 CoroutineScope(Dispatchers.IO).launch{
                     try {
@@ -30,6 +28,10 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
                             item.status = DownloadRepository.Status.Cancelled.toString()
                             dbManager.downloadDao.update(item)
                         }
+                        YoutubeDL.getInstance().destroyProcessById(id.toString())
+                        YoutubeDLCompat.destroyProcessById(id.toString())
+                        DownloadWorker.cancelPostProcessingById(id.toLong())
+                        notificationUtil.cancelDownloadNotification(id)
                         runCatching {
                             dbManager.terminalDao.delete(id.toLong())
                         }

@@ -63,8 +63,8 @@ class DownloadRepository(private val downloadDao: DownloadDao) {
         pagingSourceFactory = {downloadDao.getScheduledDownloads()}
     )
 
-    val activeDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Active).toListString())
-    val activePausedDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Active, Status.Paused).toListString())
+    val activeDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Active, Status.PostProcessing).toListString())
+    val activePausedDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Active, Status.PostProcessing, Status.Paused).toListString())
     val queuedDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Queued).toListString())
     val pausedDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Paused).toListString())
     val cancelledDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Cancelled).toListString())
@@ -73,7 +73,7 @@ class DownloadRepository(private val downloadDao: DownloadDao) {
     val scheduledDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Scheduled).toListString())
 
     enum class Status {
-        Active, Paused, Queued, Error, Cancelled, Saved, Processing, Scheduled, Duplicate
+        Active, PostProcessing, Paused, Queued, Error, Cancelled, Saved, Processing, Scheduled, Duplicate
     }
 
     suspend fun insert(item: DownloadItem) : Long {
@@ -193,7 +193,7 @@ class DownloadRepository(private val downloadDao: DownloadDao) {
     }
 
     fun getActiveDownloadsCount() : Int {
-        return downloadDao.getDownloadsCountByStatus(listOf(Status.Active).toListString())
+        return downloadDao.getDownloadsCountByStatus(listOf(Status.Active, Status.PostProcessing).toListString())
     }
 
     suspend fun deleteScheduled() {

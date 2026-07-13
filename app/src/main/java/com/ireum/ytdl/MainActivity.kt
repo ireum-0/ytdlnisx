@@ -234,7 +234,7 @@ class MainActivity : BaseActivity() {
                     terminateDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
                         lifecycleScope.launch {
                             withContext(Dispatchers.IO) {
-                                val activeDownloads = downloadViewModel.getActiveDownloads().toMutableList()
+                                val activeDownloads = downloadViewModel.getActiveAndPostProcessingDownloads().toMutableList()
                                 activeDownloads.map { it.status = DownloadRepository.Status.Queued.toString() }
                                 activeDownloads.forEach { downloadViewModel.updateDownload(it) }
                             }

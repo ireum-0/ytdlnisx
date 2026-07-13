@@ -202,6 +202,14 @@
             android:summary="@string/hard_sub_scan_now_summary"
             app:title="@string/hard_sub_scan_now" />
 
+        <SwitchPreferenceCompat
+            android:widgetLayout="@layout/preferece_material_switch"
+            app:defaultValue="false"
+            app:icon="@drawable/ic_subtitles"
+            app:key="parallel_hardsub_postprocessing"
+            app:summary="@string/parallel_hardsub_postprocessing_summary"
+            app:title="@string/parallel_hardsub_postprocessing" />
+
 
         <ListPreference
             android:defaultValue=""
