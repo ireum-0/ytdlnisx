@@ -14,6 +14,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.util.Extensions.popup
+import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.progressindicator.LinearProgressIndicator
@@ -60,7 +61,7 @@ class TerminalDownloadsAdapter(onItemClickListener: OnItemClickListener, activit
 
         // COMMAND  ----------------------------------
         val itemTitle = card.findViewById<TextView>(R.id.title)
-        itemTitle.text = item.command.trim()
+        itemTitle.text = SensitiveTextRedactor.redactCommand(item.command).trim()
 
         //OUTPUT
         val output = card.findViewById<TextView>(R.id.output)

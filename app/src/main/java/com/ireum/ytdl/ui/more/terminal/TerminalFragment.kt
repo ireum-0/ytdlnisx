@@ -40,6 +40,7 @@ import com.ireum.ytdl.util.Extensions.enableTextHighlight
 import com.ireum.ytdl.util.Extensions.setCustomTextSize
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.UiUtil
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.bottomappbar.BottomAppBar
@@ -210,7 +211,8 @@ class TerminalFragment : Fragment() {
         fab.setOnClickListener {
             if (fab.text == requireActivity().getString(R.string.run_command)){
                 input.visibility = View.GONE
-                val txt = "${output.text}\n~ $ ${input.text}\n"
+                val redactedInput = SensitiveTextRedactor.redactCommand(input.text.toString())
+                val txt = "${output.text}\n~ $ $redactedInput\n"
                 output.text = txt
                 showCancelFab()
                 imm.hideSoftInputFromWindow(input.windowToken, 0)

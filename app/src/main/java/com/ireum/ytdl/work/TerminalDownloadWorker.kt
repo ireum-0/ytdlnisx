@@ -23,6 +23,7 @@ import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.ui.more.terminal.TerminalActivity
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -81,10 +82,12 @@ class TerminalDownloadWorker(
         val logRepo = LogRepository(dbManager.logDao)
         val notificationUtil = NotificationUtil(context)
         val handler = Handler(Looper.getMainLooper())
+        val redactedCommand = SensitiveTextRedactor.redactCommand(command)
+        val notificationTitle = SensitiveTextRedactor.safeNotificationTitle(redactedCommand)
 
         val intent = Intent(context, TerminalActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
-        val notification = notificationUtil.createDownloadServiceNotification(pendingIntent, command.take(65), NotificationUtil.DOWNLOAD_TERMINAL_RUNNING_NOTIFICATION_ID)
+        val notification = notificationUtil.createDownloadServiceNotification(pendingIntent, notificationTitle, NotificationUtil.DOWNLOAD_TERMINAL_RUNNING_NOTIFICATION_ID)
         val foregroundInfo = if (Build.VERSION.SDK_INT >= 33) {
             ForegroundInfo(itemId, notification, FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         }else{
@@ -144,7 +147,7 @@ class TerminalDownloadWorker(
         val logDownloads = sharedPreferences.getBoolean("log_downloads", false) && !sharedPreferences.getBoolean("incognito", false)
 
         val initialLogDetails = "Terminal Task\n" +
-                "Command:\n${command.trim()}\n\n"
+                "Command:\n${redactedCommand.trim()}\n\n"
         val logItem = LogItem(
             0,
             "Terminal Task",
@@ -164,17 +167,17 @@ class TerminalDownloadWorker(
             YoutubeDL.getInstance().destroyProcessById(itemId.toString())
             YoutubeDLCompat.destroyProcessById(itemId.toString())
             val response = YoutubeDLCompat.execute(applicationContext, request, itemId.toString(), true){ progress, _, line ->
-                eventBus.post(DownloadWorker.WorkerProgress(progress.toInt(), line, itemId.toLong(), logItem.id))
+                val redactedLine = SensitiveTextRedactor.redactOutput(line)
+                eventBus.post(DownloadWorker.WorkerProgress(progress.toInt(), redactedLine, itemId.toLong(), logItem.id))
 
-                val title: String = command.take(65)
                 notificationUtil.updateTerminalDownloadNotification(
                     itemId,
-                    line, progress.toInt(), title,
+                    redactedLine, progress.toInt(), notificationTitle,
                     NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID
                 )
                 runBlocking(Dispatchers.IO) {
-                    if (logDownloads) logRepo.update(line, logItem.id)
-                    dao.updateLog(line, itemId.toLong())
+                    if (logDownloads) logRepo.update(redactedLine, logItem.id)
+                    dao.updateLog(redactedLine, itemId.toLong())
                 }
             }
 
@@ -191,8 +194,9 @@ class TerminalDownloadWorker(
                     }
                 }
             }
-            if (logDownloads) logRepo.update(initialLogDetails + response.out, logItem.id, true)
-            dao.updateLog(response.out, itemId.toLong())
+            val redactedOutput = SensitiveTextRedactor.redactOutput(response.out)
+            if (logDownloads) logRepo.update(initialLogDetails + redactedOutput, logItem.id, true)
+            dao.updateLog(redactedOutput, itemId.toLong())
             notificationUtil.cancelDownloadNotification(itemId)
             delay(1000)
             dao.delete(itemId.toLong())
@@ -209,18 +213,22 @@ class TerminalDownloadWorker(
                 Log.i(TAG, "Terminal worker stopped or cancelled itemId=$itemId")
                 return Result.success()
             }
+            val redactedMessage = it.message?.let { message ->
+                SensitiveTextRedactor.redactOutput(message)
+            }
+            val userMessage = redactedMessage ?: it::class.java.simpleName
             handler.postDelayed({
-                Toast.makeText(context, it.message, Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, userMessage, Toast.LENGTH_SHORT).show()
             }, 1000)
-            if (it.message != null){
-                if (logDownloads) logRepo.update(it.message!!, logItem.id)
-                dao.updateLog(it.message!!, itemId.toLong())
+            if (redactedMessage != null){
+                if (logDownloads) logRepo.update(redactedMessage, logItem.id)
+                dao.updateLog(redactedMessage, itemId.toLong())
             }
             notificationUtil.cancelDownloadNotification(itemId)
             if (!noCache) {
                 File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
             }
-            Log.e(TAG, context.getString(R.string.failed_download), it)
+            Log.e(TAG, "${context.getString(R.string.failed_download)} $userMessage")
             delay(1000)
             dao.delete(itemId.toLong())
             return Result.failure()
