@@ -4,20 +4,36 @@ import java.io.File
 
 object YtdlpArgumentPolicy {
     private const val FFMPEG_LOCATION_OPTION = "--ffmpeg-location"
+    private const val BUNDLED_ARIA2_DOWNLOADER = "libaria2c.so"
+    private const val COPY_STREAM_POSTPROCESSOR = "FFmpegCopyStream"
+    private const val COPY_STREAM_PPA = "CopyStream:-c copy -an"
+    private const val THUMBNAIL_CROP_FILTER =
+        "-vf crop=\\\"'if(gt(ih,iw),iw,ih)':'if(gt(iw,ih),ih,iw)'\\\""
     private val CONFIG_OPTIONS = setOf("--config", "--config-location", "--config-locations")
     private val PROCESS_SPAWNING_OPTIONS = setOf(
         "--exec",
         "--exec-before-download",
         "--exec-after-download",
         "--external-downloader",
-        "--downloader",
         "--external-downloader-args",
         "--downloader-args",
         "--postprocessor-args",
+        "--plugin-dirs",
+        "--netrc-cmd"
+    )
+    private val RESTRICTED_VALUE_OPTIONS = setOf(
+        "--downloader",
         "--ppa",
         "--use-postprocessor"
     )
     private val BLOCKED_EXTERNAL_OPTIONS = CONFIG_OPTIONS + FFMPEG_LOCATION_OPTION + PROCESS_SPAWNING_OPTIONS
+    private val RESTRICTED_EXTERNAL_OPTIONS = BLOCKED_EXTERNAL_OPTIONS + RESTRICTED_VALUE_OPTIONS
+    private val SAFE_PPA_VALUES = setOf(
+        COPY_STREAM_PPA,
+        "ThumbnailsConvertor:-qmin 1 -q:v 1",
+        "ThumbnailsConvertor:-qmin 1 -q:v 1 $THUMBNAIL_CROP_FILTER",
+        "ThumbnailsConvertor:$THUMBNAIL_CROP_FILTER"
+    )
 
     fun sanitize(
         originalArgs: List<String>,
@@ -28,11 +44,11 @@ object YtdlpArgumentPolicy {
         while (i < originalArgs.size) {
             val arg = originalArgs[i]
             val normalizedArg = arg.unwrapMatchingQuotes()
-            if (isBlockedExternalOption(normalizedArg, BLOCKED_EXTERNAL_OPTIONS)) {
-                val inlineValue = normalizedArg.substringAfter("=", "")
-                    .takeIf { normalizedArg.contains("=") }
-                if (inlineValue != null && isBlockedExternalOption(normalizedArg, CONFIG_OPTIONS)) {
-                    if (isAllowedAppGeneratedConfigPath(inlineValue, allowedConfigFiles)) {
+            val blockedOption = blockedExternalOptionFor(normalizedArg, RESTRICTED_EXTERNAL_OPTIONS)
+            if (blockedOption != null) {
+                val inlineValue = inlineOptionValue(normalizedArg, blockedOption)
+                if (inlineValue != null) {
+                    if (canKeepRestrictedOption(blockedOption, inlineValue, allowedConfigFiles)) {
                         args.add(arg)
                     }
                     i += 1
@@ -41,16 +57,15 @@ object YtdlpArgumentPolicy {
 
                 val nextArg = originalArgs.getOrNull(i + 1)
                 if (
-                    isBlockedExternalOption(normalizedArg, CONFIG_OPTIONS) &&
                     nextArg != null &&
-                    isAllowedAppGeneratedConfigPath(nextArg, allowedConfigFiles)
+                    canKeepRestrictedOption(blockedOption, nextArg, allowedConfigFiles)
                 ) {
                     args.add(arg)
                     args.add(nextArg)
                     i += 2
                     continue
                 }
-                i += if (nextArg != null && !nextArg.unwrapMatchingQuotes().startsWith("-")) 2 else 1
+                i += if (nextArg != null) 2 else 1
                 continue
             }
             args.add(arg)
@@ -77,12 +92,8 @@ object YtdlpArgumentPolicy {
                 }
 
                 if (skipNextValueLine) {
-                    val first = tokens.first().unwrapMatchingQuotes()
-                    if (!first.startsWith("-")) {
-                        skipNextValueLine = false
-                        return@map null
-                    }
                     skipNextValueLine = false
+                    return@map null
                 }
 
                 val sanitized = mutableListOf<String>()
@@ -91,12 +102,31 @@ object YtdlpArgumentPolicy {
                 while (i < tokens.size) {
                     val token = tokens[i]
                     val normalizedToken = token.unwrapMatchingQuotes()
+                    val blockedOption = blockedExternalOptionFor(normalizedToken, RESTRICTED_EXTERNAL_OPTIONS)
                     when {
-                        isBlockedExternalOption(normalizedToken, BLOCKED_EXTERNAL_OPTIONS) -> {
+                        blockedOption != null -> {
+                            val inlineValue = inlineOptionValue(normalizedToken, blockedOption)
+                            if (inlineValue != null && canKeepRestrictedOption(blockedOption, inlineValue)) {
+                                sanitized.add(token)
+                                i += 1
+                                continue
+                            }
+
+                            val nextToken = tokens.getOrNull(i + 1)
+                            if (
+                                nextToken != null &&
+                                canKeepRestrictedOption(blockedOption, nextToken)
+                            ) {
+                                sanitized.add(token)
+                                sanitized.add(nextToken)
+                                i += 2
+                                continue
+                            }
+
                             changed = true
                             i += when {
-                                normalizedToken.contains("=") -> 1
-                                i + 1 < tokens.size && !tokens[i + 1].unwrapMatchingQuotes().startsWith("-") -> 2
+                                inlineValue != null -> 1
+                                nextToken != null -> 2
                                 else -> {
                                     skipNextValueLine = true
                                     1
@@ -165,6 +195,14 @@ object YtdlpArgumentPolicy {
         return options.any { isBlockedExternalOption(arg, it) }
     }
 
+    private fun blockedExternalOptionFor(arg: String, options: Set<String>): String? {
+        return options.firstOrNull { isBlockedExternalOption(arg, it) }
+    }
+
+    private fun inlineOptionValue(arg: String, option: String): String? {
+        return arg.substringAfter("$option=", "").takeIf { arg.startsWith("$option=") }
+    }
+
     private fun String.unwrapMatchingQuotes(): String {
         val trimmed = trim()
         if (trimmed.length < 2) return trimmed
@@ -182,5 +220,21 @@ object YtdlpArgumentPolicy {
             val candidate = File(path.unwrapMatchingQuotes()).canonicalFile
             candidate.isFile && allowedConfigFiles.any { it.canonicalFile == candidate }
         }.getOrDefault(false)
+    }
+
+    private fun canKeepRestrictedOption(
+        option: String,
+        rawValue: String,
+        allowedConfigFiles: Set<File> = emptySet()
+    ): Boolean {
+        val value = rawValue.unwrapMatchingQuotes()
+        return when (option) {
+            "--config", "--config-location", "--config-locations" ->
+                isAllowedAppGeneratedConfigPath(value, allowedConfigFiles)
+            "--downloader" -> value == BUNDLED_ARIA2_DOWNLOADER
+            "--use-postprocessor" -> value == COPY_STREAM_POSTPROCESSOR
+            "--ppa" -> value in SAFE_PPA_VALUES
+            else -> false
+        }
     }
 }
