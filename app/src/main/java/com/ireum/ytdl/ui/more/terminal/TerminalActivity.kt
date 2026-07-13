@@ -2,10 +2,9 @@
 
 import android.annotation.SuppressLint
 import android.content.Intent
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavArgument
@@ -15,7 +14,6 @@ import androidx.navigation.fragment.NavHostFragment
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.viewmodel.TerminalViewModel
 import com.ireum.ytdl.ui.BaseActivity
-import com.ireum.ytdl.util.FileUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -49,15 +47,13 @@ class TerminalActivity : BaseActivity() {
         var text : String? = null
         if (action == Intent.ACTION_SEND && type != null) {
             Log.e(TAG, action)
-            text = if (intent.getStringExtra(Intent.EXTRA_TEXT) == null){
-                val uri = if (Build.VERSION.SDK_INT >= 33){
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                }else{
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM)
-                }
-                "-a \"${FileUtil.formatPath(uri?.path ?: "")}\""
-            }else{
-                intent.getStringExtra(Intent.EXTRA_TEXT)
+            text = intent.getStringExtra(Intent.EXTRA_TEXT)
+            if (text == null && intent.hasExtra(Intent.EXTRA_STREAM)) {
+                Toast.makeText(
+                    this,
+                    R.string.terminal_stream_share_not_supported,
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
         navHostFragment = supportFragmentManager.findFragmentById(R.id.frame_layout) as NavHostFragment

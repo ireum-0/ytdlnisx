@@ -158,6 +158,7 @@
     <string name="language">Language</string>
     <string name="command_templates">Command templates</string>
     <string name="terminal">Terminal</string>
+    <string name="terminal_stream_share_not_supported">Shared files are not added to terminal commands automatically.</string>
     <string name="format">Format</string>
     <string name="select_format">Select format</string>
     <string name="please_wait">Please wait</string>
