@@ -4199,7 +4199,8 @@ class VideoPlayerActivity : AppCompatActivity() {
             currentItemId = currentId,
             currentPos = currentPosition,
             playWhenReady = playWhenReady,
-            seekWhenSameWindow = false
+            seekWhenSameWindow = false,
+            allowTimelineRebuild = false
         )
     }
 
@@ -4207,7 +4208,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         currentItemId: Long,
         currentPos: Long,
         playWhenReady: Boolean,
-        seekWhenSameWindow: Boolean = true
+        seekWhenSameWindow: Boolean = true,
+        allowTimelineRebuild: Boolean = true
     ): Boolean {
         val exo = player ?: return false
         val timelineWindow = buildQueueTimelineWindow(queueItems, currentItemId)
@@ -4237,6 +4239,13 @@ class VideoPlayerActivity : AppCompatActivity() {
                     "start=${timelineWindow.queueStartIndex} currentIndex=${timelineWindow.currentMediaIndex}"
             )
             return true
+        }
+        if (!allowTimelineRebuild) {
+            logPlaybackTiming(
+                "setQueueTimelineWindowForItem skipped rebuild currentId=$currentItemId " +
+                    "size=${timelineWindow.mediaItems.size} start=${timelineWindow.queueStartIndex}"
+            )
+            return false
         }
         if (currentPos > 0L) {
             skipNextPlaybackRestoreHistoryId = currentItemId
