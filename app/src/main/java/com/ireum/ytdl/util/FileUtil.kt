@@ -917,11 +917,31 @@ object FileUtil {
         return "${DecimalFormat("#,##0.#", symbols).format(s / 1024.0.pow(digitGroups.toDouble()))} ${units[digitGroups]}"
     }
 
+    fun prepareShareUri(context: Context, path: String): Uri? {
+        return runCatching {
+            val documentFile = DocumentFile.fromSingleUri(context, Uri.parse(path))
+            if (documentFile?.exists() == true) {
+                documentFile.uri
+            } else {
+                prepareShareUri(context, File(path))
+            }
+        }.getOrNull()
+    }
+
+    fun prepareShareUri(context: Context, file: File): Uri? {
+        if (!file.exists()) return null
+        return runCatching {
+            FileProvider.getUriForFile(
+                context,
+                context.packageName + ".fileprovider",
+                file
+            )
+        }.getOrNull()
+    }
+
 
     fun openFileIntent(context: Context, downloadPath: String) {
-        val uri = runCatching {
-            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", File(downloadPath))
-        }.getOrNull()
+        val uri = prepareShareUri(context, File(downloadPath))
         println(uri)
 
         if (uri == null){
@@ -943,15 +963,7 @@ object FileUtil {
         val uris : ArrayList<Uri> = arrayListOf()
         paths.runCatching {
             this.forEach {path ->
-                val uri = DocumentFile.fromSingleUri(context, Uri.parse(path)).run{
-                    if (this?.exists() == true){
-                        this.uri
-                    }else if (File(path).exists()){
-                        runCatching {
-                            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", File(path))
-                        }.getOrNull()
-                    }else null
-                }
+                val uri = prepareShareUri(context, path)
                 if (uri != null) uris.add(uri)
             }
 

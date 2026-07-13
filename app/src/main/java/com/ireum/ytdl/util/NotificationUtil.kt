@@ -18,8 +18,6 @@ import android.text.TextUtils
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.FileProvider
-import androidx.documentfile.provider.DocumentFile
 import androidx.navigation.NavDeepLinkBuilder
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
@@ -31,7 +29,6 @@ import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
 import com.ireum.ytdl.receiver.PauseDownloadNotificationReceiver
 import com.ireum.ytdl.receiver.ResumeActivity
 import com.ireum.ytdl.util.Extensions.toBitmap
-import java.io.File
 import kotlin.random.Random
 
 
@@ -507,16 +504,7 @@ class NotificationUtil(var context: Context) {
             contentText.append("\n\n"+ filepath.joinToString("\n"))
             try{
                 val uris = filepath.mapNotNull {
-                    runCatching {
-                        DocumentFile.fromSingleUri(context, Uri.parse(it)).run{
-                            if (this?.exists() == true){
-                                this.uri
-                            }else if (File(it).exists()){
-                                FileProvider.getUriForFile(context, context.packageName + ".fileprovider",
-                                    File(it))
-                            }else null
-                        }
-                    }.getOrNull()
+                    FileUtil.prepareShareUri(context, it)
                 }
 
                 val openFileIntent = Intent()
