@@ -417,6 +417,10 @@ class VideoPlayerActivity : AppCompatActivity() {
                     if (currentHistoryId != null) {
                         savePlaybackPositionForHistoryId(currentHistoryId, 0L)
                     }
+                    if (skipQueueBy(1)) {
+                        logPlaybackTiming("onPlaybackStateChanged ended advancedToQueueNext")
+                        return
+                    }
                 }
                 if (isInPictureInPictureMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     updatePipActions()
@@ -1425,7 +1429,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun buildPipActions(): List<RemoteAction> {
         val actions = ArrayList<RemoteAction>()
         val isPlaying = player?.isPlaying == true
-        val hasNext = player?.hasNextMediaItem() == true
+        val hasNext = hasQueueOffset(1) || player?.hasNextMediaItem() == true
         val playPauseIcon = if (isPlaying) R.drawable.baseline_pause_24 else R.drawable.baseline_play_arrow_24
         val playPauseTitle = if (isPlaying) getString(R.string.pause) else getString(R.string.play)
         actions.add(createPipAction(
@@ -3085,6 +3089,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         val db = DBManager.getInstance(this)
         val initialUri = uriFromPath(videoPath)
         lifecycleScope.launch {
+            var appliedInitialQueuePlayback = false
             if (prefetchedHistoryIds.isNotEmpty()) {
                 val prefetchedItems = withContext(Dispatchers.IO) {
                     val historyRepo = HistoryRepository(db.historyDao, db.playlistDao)
@@ -3123,6 +3128,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                         playWhenReady = true,
                         forceScrollCurrentToTop = true
                     )
+                    appliedInitialQueuePlayback = true
                     if (prefetchedTotalCount > 0 && previewItems.size >= prefetchedTotalCount) {
                         return@launch
                     }
@@ -3198,7 +3204,15 @@ class VideoPlayerActivity : AppCompatActivity() {
             logPlaybackTiming("loadQueueForContext full size=${fullItems.size}")
             baseQueueItems = fullItems
             if (fullItems.isEmpty()) {
-                playSinglePath(videoPath, launchHistoryId, launchPlaybackPositionMs ?: 0L)
+                if (appliedInitialQueuePlayback) {
+                    applyQueueListOnly(
+                        items = emptyList(),
+                        currentItemId = resolveHistoryIdForMediaItem(player?.currentMediaItem),
+                        forceScrollCurrentToTop = false
+                    )
+                } else {
+                    playSinglePath(videoPath, launchHistoryId, launchPlaybackPositionMs ?: 0L)
+                }
                 return@launch
             }
             val preparedQueueData = withContext(Dispatchers.Default) {
@@ -3211,14 +3225,24 @@ class VideoPlayerActivity : AppCompatActivity() {
             val currentId = preparedQueueData.idByUri[initialUri.toString()] ?: fullItems.firstOrNull()?.id
             isShuffled = false
             updateShuffleButton()
-            applyQueueOrder(
-                items = fullItems,
-                currentItemId = currentId,
-                currentPos = resolveQueueStartPositionFromItems(fullItems, currentId, launchPlaybackPositionMs),
-                preparedQueueData = preparedQueueData,
-                playWhenReady = true,
-                forceScrollCurrentToTop = true
-            )
+            if (appliedInitialQueuePlayback) {
+                applyQueueListOnly(
+                    items = fullItems,
+                    currentItemId = resolveHistoryIdForMediaItem(player?.currentMediaItem) ?: currentId,
+                    preparedQueueData = preparedQueueData,
+                    syncPlayerTimeline = true,
+                    forceScrollCurrentToTop = true
+                )
+            } else {
+                applyQueueOrder(
+                    items = fullItems,
+                    currentItemId = currentId,
+                    currentPos = resolveQueueStartPositionFromItems(fullItems, currentId, launchPlaybackPositionMs),
+                    preparedQueueData = preparedQueueData,
+                    playWhenReady = true,
+                    forceScrollCurrentToTop = true
+                )
+            }
         }
     }
 
@@ -4097,6 +4121,43 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyQueueListOnly(
+        items: List<HistoryItem>,
+        currentItemId: Long?,
+        preparedQueueData: QueuePreparedData? = null,
+        syncPlayerTimeline: Boolean = false,
+        forceScrollCurrentToTop: Boolean = false
+    ) {
+        logPlaybackTiming("applyQueueListOnly size=${items.size} currentId=$currentItemId")
+        queueItems = items
+        val queueData = preparedQueueData ?: prepareQueueData(
+            items = items,
+            previousPlayablePaths = queuePlayablePathById.toMap()
+        )
+        applyQueuePreparedData(queueData)
+        val selectedId = currentItemId?.takeIf { queueIndexById.containsKey(it) }
+            ?: findCurrentQueueItemId()
+        if (syncPlayerTimeline && selectedId != null) {
+            setQueueTimelineWindowForItem(
+                currentItemId = selectedId,
+                currentPos = player?.currentPosition ?: 0L,
+                playWhenReady = player?.playWhenReady == true,
+                seekWhenSameWindow = false
+            )
+        }
+        queueAdapter?.submitList(items) {
+            logPlaybackTiming("applyQueueListOnly submitList committed size=${items.size} selectedId=$selectedId")
+            queueAdapter?.setCurrentItemId(selectedId)
+            if (forceScrollCurrentToTop) {
+                scrollCurrentToTopIfAllowed(selectedId, force = true)
+            }
+        }
+        updatePlaybackUiProgress()
+        updateMediaSessionMetadata()
+        updatePipActions()
+        playerNotificationManager?.invalidate()
+    }
+
     private fun playQueueItem(item: HistoryItem, startPositionMs: Long) {
         val path = queuePlayablePathById[item.id]
             ?: item.downloadPath.firstOrNull { FileUtil.exists(it) }
@@ -4122,18 +4183,31 @@ class VideoPlayerActivity : AppCompatActivity() {
         return true
     }
 
+    private fun hasQueueOffset(offset: Int): Boolean {
+        if (offset == 0 || queueItems.isEmpty()) return false
+        val currentId = findCurrentQueueItemId() ?: return false
+        val currentIndex = queueIndexById[currentId] ?: return false
+        return currentIndex + offset in queueItems.indices
+    }
+
     private fun refreshQueueTimelineWindowForCurrentItem(mediaItem: MediaItem?) {
         if (rebuildingQueueTimeline || queueItems.size <= MAX_PLAYER_TIMELINE_QUEUE_ITEMS) return
         val currentId = resolveHistoryIdForMediaItem(mediaItem ?: player?.currentMediaItem) ?: return
         val currentPosition = player?.currentPosition ?: 0L
         val playWhenReady = player?.playWhenReady == true
-        setQueueTimelineWindowForItem(currentId, currentPosition, playWhenReady)
+        setQueueTimelineWindowForItem(
+            currentItemId = currentId,
+            currentPos = currentPosition,
+            playWhenReady = playWhenReady,
+            seekWhenSameWindow = false
+        )
     }
 
     private fun setQueueTimelineWindowForItem(
         currentItemId: Long,
         currentPos: Long,
-        playWhenReady: Boolean
+        playWhenReady: Boolean,
+        seekWhenSameWindow: Boolean = true
     ): Boolean {
         val exo = player ?: return false
         val timelineWindow = buildQueueTimelineWindow(queueItems, currentItemId)
@@ -4141,8 +4215,27 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (isCurrentTimelineWindow(timelineWindow) &&
             resolveHistoryIdForMediaItem(exo.currentMediaItem) == currentItemId
         ) {
-            exo.seekTo(timelineWindow.currentMediaIndex, currentPos)
+            if (seekWhenSameWindow) {
+                exo.seekTo(timelineWindow.currentMediaIndex, currentPos)
+            }
             exo.playWhenReady = playWhenReady
+            return true
+        }
+        val targetEndIndex = (timelineWindow.queueStartIndex + timelineWindow.mediaItems.size)
+            .coerceAtMost(queueItems.size)
+        val targetWindowItems = queueItems.subList(timelineWindow.queueStartIndex, targetEndIndex)
+        if (targetWindowItems.isNotEmpty() &&
+            syncExistingTimelineIfPossible(
+                items = targetWindowItems,
+                currentItemId = currentItemId,
+                currentPos = currentPos,
+                playWhenReady = playWhenReady
+            )
+        ) {
+            logPlaybackTiming(
+                "setQueueTimelineWindowForItem synced currentId=$currentItemId size=${targetWindowItems.size} " +
+                    "start=${timelineWindow.queueStartIndex} currentIndex=${timelineWindow.currentMediaIndex}"
+            )
             return true
         }
         if (currentPos > 0L) {
