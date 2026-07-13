@@ -54,6 +54,8 @@ class TerminalActivity : BaseActivity() {
                     R.string.terminal_stream_share_not_supported,
                     Toast.LENGTH_LONG
                 ).show()
+                finish()
+                return
             }
         }
         navHostFragment = supportFragmentManager.findFragmentById(R.id.frame_layout) as NavHostFragment
