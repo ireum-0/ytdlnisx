@@ -318,36 +318,21 @@
             android:name=".receiver.TransparentActivity"
             android:configChanges="smallestScreenSize|layoutDirection|locale|orientation|screenSize"
             android:excludeFromRecents="true"
-            android:exported="true"
+            android:exported="false"
             android:launchMode="singleInstance"
-            android:theme="@style/Theme.BottomSheet">
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
+            android:theme="@style/Theme.BottomSheet" />
 
         <activity
             android:name=".ui.more.settings.SettingsActivity"
             android:configChanges="smallestScreenSize|layoutDirection|orientation|screenSize"
-            android:exported="true"
-            android:parentActivityName=".MainActivity">
-            <intent-filter>
-                <action android:name="ytdlnisx.settings.SettingsActivity" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
         <activity
             android:name=".ui.more.terminal.TerminalActivity"
             android:configChanges="smallestScreenSize|layoutDirection|orientation|screenSize"
-            android:exported="true"
+            android:exported="false"
             android:label="@string/terminal"
-            android:parentActivityName=".MainActivity">
-            <intent-filter>
-                <action android:name="ytdlnisx.TerminalActivity" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
+            android:parentActivityName=".MainActivity" />
 
         <activity
             android:name=".VideoPlayerActivity"
