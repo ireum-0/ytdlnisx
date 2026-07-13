@@ -187,6 +187,12 @@ object YoutubeDLCompat {
         return YtdlpArgumentPolicy.stripExternalFfmpegLocationOptions(commandString)
     }
 
+    fun stripExternalFfmpegLocationOptionsWithReport(
+        commandString: String
+    ): YtdlpArgumentPolicy.CommandStringSanitizeResult {
+        return YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(commandString)
+    }
+
     private fun takeAllowedAppGeneratedConfigFiles(request: YoutubeDLRequest): Set<File> {
         return synchronized(allowedConfigFilesByRequest) {
             allowedConfigFilesByRequest.remove(request)?.toSet().orEmpty()

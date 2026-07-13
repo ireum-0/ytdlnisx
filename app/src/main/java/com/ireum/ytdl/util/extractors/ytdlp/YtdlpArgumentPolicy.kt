@@ -35,6 +35,11 @@ object YtdlpArgumentPolicy {
         "ThumbnailsConvertor:$THUMBNAIL_CROP_FILTER"
     )
 
+    data class CommandStringSanitizeResult(
+        val commandString: String,
+        val removedOptions: List<String>
+    )
+
     fun sanitize(
         originalArgs: List<String>,
         allowedConfigFiles: Set<File>
@@ -75,9 +80,14 @@ object YtdlpArgumentPolicy {
     }
 
     fun stripExternalFfmpegLocationOptions(commandString: String): String {
+        return stripExternalFfmpegLocationOptionsWithReport(commandString).commandString
+    }
+
+    fun stripExternalFfmpegLocationOptionsWithReport(commandString: String): CommandStringSanitizeResult {
         val lineSeparator = if (commandString.contains("\r\n")) "\r\n" else "\n"
         var skipNextValueLine = false
-        return Regex("\\r?\\n")
+        val removedOptions = linkedSetOf<String>()
+        val sanitizedCommand = Regex("\\r?\\n")
             .toPattern()
             .split(commandString, -1)
             .asList()
@@ -124,6 +134,7 @@ object YtdlpArgumentPolicy {
                             }
 
                             changed = true
+                            removedOptions += blockedOption
                             i += when {
                                 inlineValue != null -> 1
                                 nextToken != null -> 2
@@ -144,6 +155,10 @@ object YtdlpArgumentPolicy {
             }
             .filterNotNull()
             .joinToString(lineSeparator)
+        return CommandStringSanitizeResult(
+            commandString = sanitizedCommand,
+            removedOptions = removedOptions.toList()
+        )
     }
 
     fun containsOptionWithValue(args: List<String>, option: String): Boolean {

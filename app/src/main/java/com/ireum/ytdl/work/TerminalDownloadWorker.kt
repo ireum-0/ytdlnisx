@@ -105,8 +105,15 @@ class TerminalDownloadWorker(
         val sharedPreferences =  PreferenceManager.getDefaultSharedPreferences(context)
 
         val downloadLocation = sharedPreferences.getString("command_path", FileUtil.getDefaultCommandPath())
+        val sanitizedCommand = YoutubeDLCompat.stripExternalFfmpegLocationOptionsWithReport(command)
+        val removedOptionWarning = if (sanitizedCommand.removedOptions.isNotEmpty()) {
+            "Warning: Removed unsafe or unsupported yt-dlp option(s): " +
+                    sanitizedCommand.removedOptions.joinToString(", ") + "\n\n"
+        } else {
+            ""
+        }
         val configFile = File(context.cacheDir.absolutePath + "/config-TERMINAL[${System.currentTimeMillis()}].txt").apply {
-            writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(command))
+            writeText(sanitizedCommand.commandString)
         }
         YoutubeDLCompat.allowAppGeneratedConfigFile(request, configFile)
         request.addOption(
@@ -147,7 +154,8 @@ class TerminalDownloadWorker(
         val logDownloads = sharedPreferences.getBoolean("log_downloads", false) && !sharedPreferences.getBoolean("incognito", false)
 
         val initialLogDetails = "Terminal Task\n" +
-                "Command:\n${redactedCommand.trim()}\n\n"
+                "Command:\n${redactedCommand.trim()}\n\n" +
+                removedOptionWarning
         val logItem = LogItem(
             0,
             "Terminal Task",
@@ -162,6 +170,11 @@ class TerminalDownloadWorker(
         try {
             if (logDownloads){
                 logItem.id = logRepo.insert(logItem)
+            }
+            if (removedOptionWarning.isNotBlank()) {
+                Log.w(TAG, removedOptionWarning.trim())
+                eventBus.post(DownloadWorker.WorkerProgress(0, removedOptionWarning.trim(), itemId.toLong(), logItem.id))
+                dao.updateLog(removedOptionWarning, itemId.toLong())
             }
 
             YoutubeDL.getInstance().destroyProcessById(itemId.toString())
