@@ -46,9 +46,16 @@ object FileUtil {
 
     @Volatile
     private var lastMoveFailureDetails: String? = null
+    private const val SHARED_FILE_PROVIDER_DIR = "shared"
 
     private val zeroByteSiblingMediaExtensions = setOf(
         "webm", "mkv", "mp4", "m4v", "mov", "avi", "ts", "m2ts", "mp3", "m4a", "aac", "opus", "ogg", "wav", "flac"
+    )
+    private val blockedShareFileNames = setOf(
+        "cookies.txt",
+        "keystore.properties",
+        "local.properties",
+        ".env"
     )
 
     fun deleteFile(path: String){
@@ -929,14 +936,74 @@ object FileUtil {
     }
 
     fun prepareShareUri(context: Context, file: File): Uri? {
-        if (!file.exists()) return null
+        if (!file.exists() || !file.isFile || isBlockedShareFile(file)) return null
+        val providerFile = if (isInsideAllowedProviderRoot(context, file)) {
+            file
+        } else {
+            copyToSharedProviderCache(context, file) ?: return null
+        }
         return runCatching {
             FileProvider.getUriForFile(
                 context,
                 context.packageName + ".fileprovider",
-                file
+                providerFile
             )
         }.getOrNull()
+    }
+
+    private fun isInsideAllowedProviderRoot(context: Context, file: File): Boolean {
+        return isFileInside(file, File(getDefaultApplicationPath())) ||
+                isFileInside(file, File(context.cacheDir, SHARED_FILE_PROVIDER_DIR)) ||
+                isFileInside(file, File(context.getExternalFilesDir(null), SHARED_FILE_PROVIDER_DIR))
+    }
+
+    private fun copyToSharedProviderCache(context: Context, file: File): File? {
+        return runCatching {
+            val sharedDir = File(context.cacheDir, SHARED_FILE_PROVIDER_DIR).apply {
+                mkdirs()
+            }
+            val safeName = sanitizeShareFileName(file.name)
+            val target = File(sharedDir, uniqueShareFileName(file, safeName))
+            file.copyTo(target, overwrite = true)
+            target
+        }.getOrNull()
+    }
+
+    private fun uniqueShareFileName(file: File, safeName: String): String {
+        val dot = safeName.lastIndexOf('.')
+        val suffix = Integer.toHexString(file.absolutePath.hashCode())
+        return if (dot > 0) {
+            "${safeName.substring(0, dot)}-$suffix${safeName.substring(dot)}"
+        } else {
+            "$safeName-$suffix"
+        }
+    }
+
+    private fun sanitizeShareFileName(name: String): String {
+        return name
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .ifBlank { "shared-file" }
+    }
+
+    private fun isBlockedShareFile(file: File): Boolean {
+        val name = file.name.lowercase(Locale.US)
+        return name in blockedShareFileNames ||
+                name.startsWith("config-") ||
+                name.endsWith(".info.json") ||
+                name.endsWith(".db") ||
+                name.endsWith(".sqlite") ||
+                name.endsWith(".sqlite3")
+    }
+
+    private fun isFileInside(file: File, directory: File?): Boolean {
+        if (directory == null) return false
+        return runCatching {
+            val filePath = file.canonicalFile.toPath()
+            val directoryPath = directory.canonicalFile.toPath()
+            filePath.startsWith(directoryPath)
+        }.getOrDefault(false)
     }
 
 

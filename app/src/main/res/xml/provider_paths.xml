@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <external-path name="ytdlnisx_downloads" path="Download/YTDLnisx/" />
-    <external-files-path name="external_app_files" path="." />
-    <cache-path name="cache" path="." />
+    <external-files-path name="shared_external_app_files" path="shared/" />
+    <cache-path name="shared_cache" path="shared/" />
 </paths>
