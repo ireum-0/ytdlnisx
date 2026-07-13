@@ -45,6 +45,7 @@ import com.ireum.ytdl.util.Extensions.needsDataUpdating
 import com.ireum.ytdl.util.Extensions.toListString
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.FormatUtil
+import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
@@ -1348,23 +1349,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     private fun canonicalDuplicateUrl(url: String): String {
-        val trimmed = url.trim()
-        if (!trimmed.isYoutubeURL()) return trimmed
-        val id = trimmed.getIDFromYoutubeURL() ?: return trimmed
-        return "https://youtu.be/$id"
+        return LinkUtil.canonicalYoutubeVideoUrlOrSelf(url)
     }
 
     private fun equivalentDuplicateUrls(url: String): List<String> {
-        val canonical = canonicalDuplicateUrl(url)
-        if (!canonical.startsWith("https://youtu.be/")) return listOf(url)
-        val id = canonical.removePrefix("https://youtu.be/")
-        return listOf(
-            canonical,
-            "https://www.youtube.com/watch?v=$id",
-            "https://youtube.com/watch?v=$id",
-            "https://m.youtube.com/watch?v=$id",
-            "https://music.youtube.com/watch?v=$id"
-        ).distinct()
+        return LinkUtil.equivalentYoutubeVideoUrls(url)
     }
 
     private fun areSameDuplicateUrl(a: String, b: String): Boolean {
@@ -1666,18 +1655,20 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     suspend fun pauseAllDownloads() {
         pausedAllDownloads.value = PausedAllDownloadsState.PROCESSING
         isPausingResuming = true
-        WorkManager.getInstance(application).cancelAllWorkByTag("download")
         val activeDownloadsList = withContext(Dispatchers.IO){
             getActiveDownloads()
         }
+        if (activeDownloadsList.isNotEmpty()) {
+            withContext(Dispatchers.IO){
+                repository.setDownloadStatusMultiple(activeDownloadsList.map { it.id }, DownloadRepository.Status.Paused)
+            }
+        }
+        WorkManager.getInstance(application).cancelAllWorkByTag("download")
         activeDownloadsList.forEach {
             cancelDownloadOnly(it.id)
         }
         delay(1000)
         isPausingResuming = false
-        withContext(Dispatchers.IO){
-            repository.setDownloadStatusMultiple(activeDownloadsList.map { it.id }, DownloadRepository.Status.Paused)
-        }
         pausedAllDownloads.value = PausedAllDownloadsState.RESUME
     }
 

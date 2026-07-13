@@ -28,9 +28,8 @@ import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
 import com.ireum.ytdl.util.Extensions.calculateNextTimeForObserving
-import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
-import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.google.gson.Gson
@@ -55,10 +54,7 @@ class ObserveSourceWorker(
     }
 
     private fun canonicalUrl(url: String): String {
-        val trimmed = url.trim()
-        if (!trimmed.isYoutubeURL()) return trimmed
-        val id = trimmed.getIDFromYoutubeURL() ?: return trimmed
-        return "https://youtu.be/$id"
+        return LinkUtil.canonicalYoutubeVideoUrlOrSelf(url)
     }
 
     private fun areSameSourceUrl(a: String, b: String): Boolean {
@@ -66,16 +62,7 @@ class ObserveSourceWorker(
     }
 
     private fun equivalentUrls(url: String): List<String> {
-        val canonical = canonicalUrl(url)
-        if (!canonical.startsWith("https://youtu.be/")) return listOf(url)
-        val id = canonical.removePrefix("https://youtu.be/")
-        return listOf(
-            canonical,
-            "https://www.youtube.com/watch?v=$id",
-            "https://youtube.com/watch?v=$id",
-            "https://m.youtube.com/watch?v=$id",
-            "https://music.youtube.com/watch?v=$id"
-        ).distinct()
+        return LinkUtil.equivalentYoutubeVideoUrls(url)
     }
 
     private fun getHistoryByEquivalentUrl(historyRepo: HistoryRepository, url: String) =

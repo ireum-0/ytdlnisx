@@ -1,27 +1,18 @@
 ﻿package com.ireum.ytdl.receiver
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Configuration
-import android.graphics.Color
-import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
-import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
-import android.view.LayoutInflater
-import android.view.View
-import android.view.WindowManager
 import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavController
-import androidx.navigation.NavDestination
 import androidx.navigation.fragment.NavHostFragment
 import androidx.navigation.fragment.findNavController
 import androidx.preference.PreferenceManager
@@ -36,9 +27,9 @@ import com.ireum.ytdl.database.viewmodel.ResultViewModel
 import com.ireum.ytdl.ui.BaseActivity
 import com.ireum.ytdl.util.Extensions.extractURL
 import com.ireum.ytdl.util.ThemeUtil
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -53,10 +44,8 @@ class ShareActivity : BaseActivity() {
     private lateinit var downloadViewModel: DownloadViewModel
     private lateinit var cookieViewModel: CookieViewModel
     private lateinit var sharedPreferences: SharedPreferences
-    private lateinit var navController: NavController
     private var quickDownload by Delegates.notNull<Boolean>()
-    private var overlayWindowManager: WindowManager? = null
-    private var overlayView: View? = null
+    private var backStackFinishJob: Job? = null
 
 
 
@@ -69,51 +58,8 @@ class ShareActivity : BaseActivity() {
             insets
         }
 
-        if (Settings.canDrawOverlays(this)){
-            val params = WindowManager.LayoutParams(
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                } else {
-                    WindowManager.LayoutParams.TYPE_SYSTEM_ALERT
-                },
-                PixelFormat.TRANSLUCENT
-            )
-            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-
-            val inflater = getSystemService(LAYOUT_INFLATER_SERVICE) as LayoutInflater
-            val myView: View = inflater.inflate(R.layout.activity_share, null)
-            window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            wm.addView(myView, params)
-            overlayWindowManager = wm
-            overlayView = myView
-
-//            window.addFlags(
-//                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-//                        or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-//                        or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-//            )
-//
-//            val params = window.attributes
-//            params.alpha = 0f
-//            window.attributes = params
-            setContentView(R.layout.activity_share)
-
-        }else{
-            window.run {
-                setBackgroundDrawable(ColorDrawable(0))
-                setLayout(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.MATCH_PARENT
-                )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
-                } else {
-                    setType(WindowManager.LayoutParams.TYPE_SYSTEM_ALERT)
-                }
-            }
-
-            setContentView(R.layout.activity_share)
-        }
+        window.setBackgroundDrawable(ColorDrawable(0))
+        setContentView(R.layout.activity_share)
 
         context = baseContext
         resultViewModel = ViewModelProvider(this)[ResultViewModel::class.java]
@@ -128,13 +74,7 @@ class ShareActivity : BaseActivity() {
     }
 
     override fun onDestroy() {
-        overlayView?.let { view ->
-            runCatching {
-                overlayWindowManager?.removeView(view)
-            }
-        }
-        overlayView = null
-        overlayWindowManager = null
+        backStackFinishJob?.cancel()
         super.onDestroy()
     }
 
@@ -147,24 +87,7 @@ class ShareActivity : BaseActivity() {
         askPermissions()
 
         val navHostFragment = supportFragmentManager.findFragmentById(R.id.frame_layout) as NavHostFragment
-        navController = navHostFragment.findNavController()
-        navController.addOnDestinationChangedListener(object: NavController.OnDestinationChangedListener{
-            @SuppressLint("RestrictedApi")
-            override fun onDestinationChanged(
-                controller: NavController,
-                destination: NavDestination,
-                arguments: Bundle?
-            ) {
-                navController.removeOnDestinationChangedListener(this)
-                CoroutineScope(SupervisorJob()).launch {
-                    navController.currentBackStack.collectLatest {
-                        if (it.isEmpty()){
-                            this@ShareActivity.finish()
-                        }
-                    }
-                }
-            }
-        })
+        val navController = navHostFragment.findNavController()
 
         val action = intent.action
         if (Intent.ACTION_SEND == action || Intent.ACTION_VIEW == action) {
@@ -211,6 +134,7 @@ class ShareActivity : BaseActivity() {
                     bundle.putParcelable("result", result)
                     bundle.putSerializable("type", downloadType)
                     navController.setGraph(R.navigation.share_nav_graph, bundle)
+                    closeWhenShareGraphFinishes(navController)
                 }else{
                     Toast.makeText(this@ShareActivity, "${getString(R.string.downloading)} $inputQuery", Toast.LENGTH_SHORT).show()
 
@@ -227,7 +151,20 @@ class ShareActivity : BaseActivity() {
         }
     }
     override fun onConfigurationChanged(newConfig: Configuration) {
-        startActivity(Intent(this, MainActivity::class.java))
         super.onConfigurationChanged(newConfig)
+    }
+
+    private fun closeWhenShareGraphFinishes(navController: NavController) {
+        backStackFinishJob?.cancel()
+        backStackFinishJob = lifecycleScope.launch {
+            navController.currentBackStack.collectLatest { stack ->
+                if (stack.isEmpty()) {
+                    delay(500)
+                    if (!isChangingConfigurations && !isFinishing) {
+                        finish()
+                    }
+                }
+            }
+        }
     }
 }

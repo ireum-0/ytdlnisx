@@ -59,9 +59,14 @@ class WebViewActivity : BaseActivity() {
     public override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.webview_activity)
-        url = intent.extras!!.getString("url")!!
-        description = intent.extras!!.getString("description", "")
-        incognito = intent.extras!!.getBoolean("incognito", false)
+        val extras = intent.extras
+        url = extras?.getString("url").orEmpty()
+        if (url.isBlank()) {
+            finish()
+            return
+        }
+        description = extras?.getString("description", "").orEmpty()
+        incognito = extras?.getBoolean("incognito", false) == true
 
         cookiesViewModel = ViewModelProvider(this)[CookieViewModel::class.java]
         lifecycleScope.launch {

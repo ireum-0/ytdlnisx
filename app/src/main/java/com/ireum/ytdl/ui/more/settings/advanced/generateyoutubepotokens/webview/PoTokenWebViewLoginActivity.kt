@@ -64,7 +64,12 @@ class PoTokenWebViewLoginActivity : BaseActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.webview_activity)
 
-        val url = intent.getStringExtra("url")!!
+        val url = intent.getStringExtra("url")
+        if (url.isNullOrBlank()) {
+            setResult(RESULT_CANCELED)
+            finish()
+            return
+        }
         var redirectUrl = intent.getStringExtra("redirect_url")
         val noAuth = intent.getBooleanExtra("no_auth", false)
 

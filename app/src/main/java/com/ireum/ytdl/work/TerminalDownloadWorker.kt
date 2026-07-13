@@ -27,6 +27,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -39,9 +40,10 @@ class TerminalDownloadWorker(
     workerParams: WorkerParameters
 ) : CoroutineWorker(context, workerParams) {
     private var itemId : Int = 0
+    private var shouldCleanupTerminalCache = false
 
-    private fun cleanupStoppedWorker() {
-        if (itemId == 0) return
+    private suspend fun cleanupStoppedWorker() = withContext(Dispatchers.IO + NonCancellable) {
+        if (itemId == 0) return@withContext
 
         val processId = itemId.toString()
         YoutubeDL.getInstance().destroyProcessById(processId)
@@ -49,8 +51,11 @@ class TerminalDownloadWorker(
         runCatching {
             NotificationUtil(context).cancelDownloadNotification(itemId)
         }
-        runCatching {
+        if (shouldCleanupTerminalCache) runCatching {
             File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
+        }
+        runCatching {
+            DBManager.getInstance(context).terminalDao.delete(itemId.toLong())
         }
         Log.i(TAG, "Stopped terminal worker cleanup completed for itemId=$itemId")
     }
@@ -130,6 +135,7 @@ class TerminalDownloadWorker(
                 request.addOption("-P", FileUtil.formatPath(commandPath))
             }
         }
+        shouldCleanupTerminalCache = !noCache
 
 
 
@@ -192,6 +198,17 @@ class TerminalDownloadWorker(
             dao.delete(itemId.toLong())
             return Result.success()
         } catch (it: Exception) {
+            if (isStopped || it is YoutubeDL.CanceledException) {
+                notificationUtil.cancelDownloadNotification(itemId)
+                if (!noCache) {
+                    File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
+                }
+                runCatching {
+                    dao.delete(itemId.toLong())
+                }
+                Log.i(TAG, "Terminal worker stopped or cancelled itemId=$itemId")
+                return Result.success()
+            }
             handler.postDelayed({
                 Toast.makeText(context, it.message, Toast.LENGTH_SHORT).show()
             }, 1000)

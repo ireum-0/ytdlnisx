@@ -49,6 +49,43 @@ class MigrationSmokeTest {
     }
 
     @Test
+    fun migrateFromVersion49To50PreservesPopulatedSourceRows() {
+        helper.createDatabase(TEST_DB, 49).apply {
+            execSQL(
+                """
+                INSERT INTO sources (
+                    id, name, url, downloadItemTemplate, everyNr, everyCategory, everyTime,
+                    status, startsTime, retryMissingDownloads, alreadyProcessedLinks,
+                    autoAddKeyword, retryPromptedLinks
+                ) VALUES (
+                    7, 'Source Name', 'https://example.com/feed', '{}', 3, 'Day', 12345,
+                    'Active', 67890, 1, '["old"]', 'keyword', '["retry"]'
+                )
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(
+            TEST_DB,
+            50,
+            true,
+            *Migrations.migrationList
+        )
+
+        db.use {
+            it.query("SELECT name, url, autoAddKeyword, retryPromptedLinks, observedLinks FROM sources WHERE id = 7").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("Source Name", cursor.getString(0))
+                assertEquals("https://example.com/feed", cursor.getString(1))
+                assertEquals("keyword", cursor.getString(2))
+                assertEquals("[\"retry\"]", cursor.getString(3))
+                assertEquals("[]", cursor.getString(4))
+            }
+        }
+    }
+
+    @Test
     fun migrateFromVersion30To50ValidatesCurrentManualMigrationChain() {
         helper.createDatabase(TEST_DB, 30).close()
 

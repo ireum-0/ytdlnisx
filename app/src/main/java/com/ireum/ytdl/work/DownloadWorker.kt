@@ -48,6 +48,7 @@ import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
@@ -87,9 +88,12 @@ class DownloadWorker(
         )
     }
 
-    private fun cleanupStoppedWorker() {
-        val activeIds = workerDownloadIds.toList()
-        if (activeIds.isEmpty()) return
+    private suspend fun cleanupStoppedWorker() = withContext(Dispatchers.IO + NonCancellable) {
+        val dao = DBManager.getInstance(context).downloadDao
+        val activeIds = (workerDownloadIds.toList() + runCatching {
+            dao.getActiveDownloadsList().map { it.id }
+        }.getOrDefault(emptyList())).distinct()
+        if (activeIds.isEmpty()) return@withContext
 
         activeIds.forEach { downloadId ->
             cancelYtdlpProcess(downloadId)
@@ -97,7 +101,18 @@ class DownloadWorker(
                 NotificationUtil(context).cancelDownloadNotification(downloadId.toInt())
             }
         }
-        runningYTDLInstances.removeAll(activeIds.toSet())
+        runCatching {
+            dao.setStatusMultipleFromStatus(
+                activeIds,
+                DownloadRepository.Status.Active.toString(),
+                DownloadRepository.Status.Queued.toString()
+            )
+        }.onFailure {
+            Log.w(TAG, "Failed to requeue stopped active downloads ids=$activeIds", it)
+        }
+        val activeIdSet = activeIds.toSet()
+        workerDownloadIds.removeAll(activeIdSet)
+        runningYTDLInstances.removeAll(activeIdSet)
         Log.i(TAG, "Stopped worker cleanup completed for ${activeIds.size} active download(s)")
     }
 
@@ -228,7 +243,18 @@ class DownloadWorker(
 
             coroutineScope {
                 eligibleDownloads.forEach{downloadItem ->
+                    launch(Dispatchers.IO) {
                     workerDownloadIds.add(downloadItem.id)
+                    var requestsToCleanup = mutableListOf<YoutubeDLRequest>()
+                    var tempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
+                    var validatedTempFileDir: File? = null
+                    var effectiveCommandString = ""
+                    val recentYtdlpOutput = ArrayDeque<String>()
+                    var logDownloads = false
+                    var logItem: LogItem? = null
+                    var initialLogDetails = ""
+                    var retryLogDetails = ""
+                    try {
                     if (isHardSubRedownload(downloadItem)) {
                         registerHardSubTarget(downloadItem.id)
                         updateHardSubWorkerNotification(notificationUtil)
@@ -236,13 +262,12 @@ class DownloadWorker(
                     val notification = notificationUtil.createDownloadServiceNotification(openDownloadQueue, downloadItem.title.ifEmpty { downloadItem.url })
                     notificationUtil.notify(downloadItem.id.toInt(), notification)
 
-                    launch(Dispatchers.IO) {
                     val writtenPath = downloadItem.format.format_note.contains("-P ")
                     var shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
                     val noCache = writtenPath || (!sharedPreferences.getBoolean("cache_downloads", true) && FileUtil.canWriteToDestination(downloadItem.downloadPath, context))
 
                     var request = ytdlpUtil.buildYoutubeDLRequest(downloadItem)
-                    val requestsToCleanup = mutableListOf(request)
+                    requestsToCleanup = mutableListOf(request)
 
                     // DISABLED BECAUSE YT_DLP CONSIDERS DOWNLOAD FAILURE IF -U PART FAILS, ytdlnisx #1043
 //                    val updateYTDLP = sharedPreferences.getBoolean("update_ytdlp_while_downloading", false)
@@ -262,27 +287,25 @@ class DownloadWorker(
                         }
                     }
 
-                    val rawTempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
-                    var tempFileDir = rawTempFileDir
-                    var validatedTempFileDir: File? = null
+                    val rawTempFileDir = tempFileDir
 
                     val downloadLocation = downloadItem.downloadPath
                     val keepCache = sharedPreferences.getBoolean("keep_cache", false)
                     val noKeepSubs = sharedPreferences.getBoolean("no_keep_subs", false)
-                    val logDownloads = sharedPreferences.getBoolean("log_downloads", false) && !downloadItem.incognito
+                    logDownloads = sharedPreferences.getBoolean("log_downloads", false) && !downloadItem.incognito
 
 
                     val commandString = ytdlpUtil.parseYTDLRequestString(request)
-                    var effectiveCommandString = commandString
+                    effectiveCommandString = commandString
                     val requestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, commandString)
-                    val initialLogDetails = "Downloading:\n" +
+                    initialLogDetails = "Downloading:\n" +
                             "Title: ${downloadItem.title}\n" +
                             "URL: ${downloadItem.url}\n" +
                             "Type: ${downloadItem.type}\n" +
                             "Command:\n$commandString \n" +
                             "$requestDiagnostics\n"
                     val logString = StringBuilder(initialLogDetails)
-                    val logItem = LogItem(
+                    val currentLogItem = LogItem(
                         0,
                         downloadItem.title.ifBlank { downloadItem.url },
                         logString.toString(),
@@ -290,11 +313,12 @@ class DownloadWorker(
                         downloadItem.type,
                         System.currentTimeMillis(),
                     )
+                    logItem = currentLogItem
 
 
                     if (logDownloads) {
-                        logItem.id = logRepo.insert(logItem)
-                        downloadItem.logID = logItem.id
+                        currentLogItem.id = logRepo.insert(currentLogItem)
+                        downloadItem.logID = currentLogItem.id
                     } else {
                         downloadItem.logID = null
                     }
@@ -304,7 +328,6 @@ class DownloadWorker(
                     var lastNotificationUpdateAt = 0L
                     var lastNotificationProgress = -1
                     val downloadStartedAt = System.currentTimeMillis()
-                    val recentYtdlpOutput = ArrayDeque<String>()
 
                     try {
                         val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
@@ -353,7 +376,7 @@ class DownloadWorker(
                                 }
                                 runBlocking(Dispatchers.IO) {
                                     if (logDownloads) {
-                                        logRepo.update(line, logItem.id)
+                                        logRepo.update(line, currentLogItem.id)
                                     }
                                     logString.append("$line\n")
                                     recentYtdlpOutput.addLast(line)
@@ -371,7 +394,6 @@ class DownloadWorker(
                                 throw IOException("Failed to recreate temporary download directory before retry: ${tempFileDir.absolutePath}")
                             }
                         }
-                        var retryLogDetails = ""
                         val response = try {
                             executeYtdlpRequest(request)
                         } catch (firstError: Exception) {
@@ -385,15 +407,26 @@ class DownloadWorker(
                             if (!retryWithoutCachedInfoJson && !retryWithoutYoutubeAuthentication) {
                                 throw firstError
                             }
+                            val retryKeepingYoutubePoTokens =
+                                retryWithoutYoutubeAuthentication &&
+                                    commandHasYtdlpOption(commandString, "--cookies") &&
+                                    commandString.contains("po_token=")
 
                             val retryNotice = when {
                                 retryWithoutCachedInfoJson && retryWithoutYoutubeAuthentication -> {
                                     deleteLoadedAppInfoJson(commandString)
-                                    "Cached authenticated YouTube media request returned 403; retrying without cached metadata or authentication"
+                                    if (retryKeepingYoutubePoTokens) {
+                                        "Cached authenticated YouTube media request returned 403; retrying without cached metadata or cookies while keeping PO tokens"
+                                    } else {
+                                        "Cached authenticated YouTube media request returned 403; retrying without cached metadata or authentication"
+                                    }
                                 }
                                 retryWithoutCachedInfoJson -> {
                                     deleteLoadedAppInfoJson(commandString)
                                     "Cached info JSON media URL returned 403; retrying without --load-info-json"
+                                }
+                                retryKeepingYoutubePoTokens -> {
+                                    "Authenticated YouTube media request returned 403; retrying without cookies while keeping PO tokens"
                                 }
                                 else -> {
                                     "Authenticated YouTube media request returned 403; retrying once with public player clients"
@@ -413,7 +446,9 @@ class DownloadWorker(
                             request = ytdlpUtil.buildYoutubeDLRequest(
                                 downloadItem = downloadItem,
                                 useCachedInfoJson = false,
-                                includeYoutubeAuthentication = !retryWithoutYoutubeAuthentication
+                                includeYoutubeAuthentication = !retryWithoutYoutubeAuthentication,
+                                includeYoutubeCookies = !retryWithoutYoutubeAuthentication,
+                                includeYoutubePoTokens = retryKeepingYoutubePoTokens || !retryWithoutYoutubeAuthentication
                             )
                             requestsToCleanup.add(request)
                             val retryCommandString = ytdlpUtil.parseYTDLRequestString(request)
@@ -425,11 +460,52 @@ class DownloadWorker(
                                 "Command:\n$retryCommandString \n" +
                                 "$retryRequestDiagnostics\n"
                             if (logDownloads) {
-                                logRepo.update(retryLogDetails, logItem.id)
+                                logRepo.update(retryLogDetails, currentLogItem.id)
                             }
                             logString.append(retryLogDetails)
 
-                            executeYtdlpRequest(request)
+                            try {
+                                executeYtdlpRequest(request)
+                            } catch (retryError: Exception) {
+                                if (!retryKeepingYoutubePoTokens) {
+                                    throw retryError
+                                }
+
+                                val publicRetryNotice = "PO-token YouTube media retry failed; retrying once with public player clients"
+                                Log.w(TAG, "$publicRetryNotice id=${downloadItem.id}", retryError)
+                                eventBus.post(WorkerProgress(0, publicRetryNotice, downloadItem.id, downloadItem.logID))
+                                notificationUtil.updateDownloadNotification(
+                                    downloadItem.id.toInt(),
+                                    publicRetryNotice, 0, 0,
+                                    downloadItem.title.ifEmpty { downloadItem.url },
+                                    NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
+                                    getHardSubStatusText(resources)
+                                )
+                                resetTempDirectoryForRetry()
+
+                                request = ytdlpUtil.buildYoutubeDLRequest(
+                                    downloadItem = downloadItem,
+                                    useCachedInfoJson = false,
+                                    includeYoutubeAuthentication = false,
+                                    includeYoutubeCookies = false,
+                                    includeYoutubePoTokens = false
+                                )
+                                requestsToCleanup.add(request)
+                                val publicRetryCommandString = ytdlpUtil.parseYTDLRequestString(request)
+                                effectiveCommandString = publicRetryCommandString
+                                val publicRetryRequestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, publicRetryCommandString)
+                                val publicRetryLogDetails = "\nRetry:\n" +
+                                    "Reason: $publicRetryNotice\n" +
+                                    "Previous retry error:\n${retryError.message.orEmpty().takeLast(4000)}\n" +
+                                    "Command:\n$publicRetryCommandString \n" +
+                                    "$publicRetryRequestDiagnostics\n"
+                                if (logDownloads) {
+                                    logRepo.update(publicRetryLogDetails, currentLogItem.id)
+                                }
+                                logString.append(publicRetryLogDetails)
+
+                                executeYtdlpRequest(request)
+                            }
                         }
 
                         resultRepo.updateDownloadItem(downloadItem)?.apply {
@@ -1087,9 +1163,8 @@ class DownloadWorker(
                         dao.delete(downloadItem.id)
 
                         if (logDownloads){
-                            logRepo.update(initialLogDetails + retryLogDetails + response.out, logItem.id, true)
+                            logRepo.update(initialLogDetails + retryLogDetails + response.out, currentLogItem.id, true)
                         }
-                        workerDownloadIds.remove(downloadItem.id)
 
                     } catch (it: Exception) {
                         if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
@@ -1117,8 +1192,9 @@ class DownloadWorker(
                             tempDir = validatedTempFileDir ?: tempFileDir,
                             recentOutput = recentYtdlpOutput.toList()
                         )
-                        if (logDownloads){
-                            logRepo.update(failureDiagnostics, logItem.id)
+                        val failedLogItem = logItem
+                        if (logDownloads && failedLogItem != null){
+                            logRepo.update(failureDiagnostics, failedLogItem.id)
                         }
 
 
@@ -1147,6 +1223,8 @@ class DownloadWorker(
                         )
 
                         eventBus.post(WorkerProgress(100, it.toString(), downloadItem.id, downloadItem.logID))
+                    }
+                    } finally {
                         workerDownloadIds.remove(downloadItem.id)
                     }
                 }

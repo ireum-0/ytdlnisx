@@ -657,30 +657,23 @@ object Extensions {
     }
 
     fun String.isYoutubeURL() : Boolean {
-        return Pattern.compile("((^(https?)://)?(www.)?(m.)?youtu(.be)?)|(^(https?)://(www.)?piped.video)").matcher(this).find()
+        return LinkUtil.isYoutubeUrl(this)
     }
 
     fun String.isYoutubeChannelURL() : Boolean {
-        return Pattern.compile("((^(https?)://)?(www.)?(m.)?youtu(.be)?(be.com))/@[a-zA-Z]+").matcher(this).find()
+        return LinkUtil.isYoutubeChannelUrl(this)
     }
 
     fun String.isYoutubeWatchVideosURL() : Boolean {
-        return Pattern.compile("((^(https?)://)?(www.)?(m.)?youtu(.be)?(be.com))/watch_videos\\?video_ids=.*").matcher(this).find()
+        return LinkUtil.isYoutubeWatchVideosUrl(this)
     }
 
     fun String.extractURL() : String {
-        val res =
-            Pattern.compile("(http|ftp|https)://([\\w_-]+(?:\\.[\\w_-]+)+)([\\w.,@?^=%&:/~+#-]*[\\w@?^=%&/~+#-])")
-                .matcher(this)
-        return if (res.find()) {
-            res.group()
-        } else {
-            this
-        }
+        return LinkUtil.extractFirstUrl(this)
     }
 
     fun String.isURL(): Boolean {
-        return Pattern.compile("(http|ftp|https)://([\\w_-]+(?:\\.[\\w_-]+)+)([\\w.,@?^=%&:/~+#-]*[\\w@?^=%&/~+#-])").matcher(this).find()
+        return LinkUtil.isUrl(this)
     }
 
     fun <T1, T2, T3, T4, T5, T6, T7, R> combine(
@@ -724,14 +717,6 @@ object Extensions {
     }
 
     fun String.getIDFromYoutubeURL() : String? {
-        val regex = Regex(
-            "(?:youtube\\.com/(?:[^/]+/.+/|(?:v|e(?:mbed)?|(?:shorts)?)/|.*?[?&]v=)|youtu\\.be/)([^\"&?/\\s]{11})"
-        )
-        val match = regex.find(this)
-        return if (match != null){
-            match.groupValues[1]
-        }else {
-            null
-        }
+        return LinkUtil.getYoutubeVideoId(this)
     }
 }

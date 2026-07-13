@@ -512,7 +512,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
             if(result.title.isEmpty() && currentDownloadItem == null && !sharedPreferences.getBoolean("quick_download", false) && type != DownloadType.command){
                 initUpdateData()
             }else {
-                val usingGenericFormatsOrEmpty = result.formats.isEmpty() || result.formats.any { it.format_note.contains("ytdlnisxgeneric") }
+                val usingGenericFormatsOrEmpty = result.formats.isEmpty() || result.formats.any { it.isGenericPlaceholderFormat() }
                 if (usingGenericFormatsOrEmpty && sharedPreferences.getBoolean("update_formats", false) && !sharedPreferences.getBoolean("quick_download", false)){
                     initUpdateFormats(result)
                 }
@@ -635,7 +635,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
                             shimmerLoading.stopShimmer()
                             shimmerLoadingSubtitle.stopShimmer()
 
-                            val usingGenericFormatsOrEmpty = res.formats.isEmpty() || res.formats.any { it.format_note.contains("ytdlnisxgeneric") }
+                            val usingGenericFormatsOrEmpty = res.formats.isEmpty() || res.formats.any { it.isGenericPlaceholderFormat() }
                             arguments?.putParcelable("result", res)
                             if (usingGenericFormatsOrEmpty && sharedPreferences.getBoolean("update_formats", false)){
                                 initUpdateFormats(res)
@@ -810,6 +810,11 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
     companion object {
         private const val HISTORY_REDOWNLOAD_MARKER = "history-redownload:"
     }
+}
+
+private fun com.ireum.ytdl.database.models.Format.isGenericPlaceholderFormat(): Boolean {
+    return listOf(format_id, format_note)
+        .any { value -> value.contains("ytdlnisxgeneric") || value.contains("ytdlnisgeneric") }
 }
 
 
