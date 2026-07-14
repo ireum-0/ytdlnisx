@@ -39,7 +39,12 @@ import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.UiUtil
+import com.ireum.ytdl.util.storage.AppCacheCategory
+import com.ireum.ytdl.util.storage.AppCacheCategorySnapshot
+import com.ireum.ytdl.util.storage.AppCacheManager
+import com.ireum.ytdl.util.storage.AppCacheScan
 import com.ireum.ytdl.work.MoveCacheFilesWorker
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -48,6 +53,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.Locale
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 
 
 class FolderSettingsFragment : BaseSettingsFragment() {
@@ -65,11 +72,13 @@ class FolderSettingsFragment : BaseSettingsFragment() {
     private var videoFilenameTemplate : Preference? = null
     private var migrateDefaultVideoFolder: Preference? = null
     private var clearCache: Preference? = null
+    private var clearLogs: Preference? = null
     private var moveCache: Preference? = null
     private lateinit var preferences: SharedPreferences
     private lateinit var editor: SharedPreferences.Editor
 
     private lateinit var downloadViewModel: DownloadViewModel
+    private lateinit var appCacheManager: AppCacheManager
     private var activeDownloadCount = 0
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
@@ -78,6 +87,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
         preferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
         editor = preferences.edit()
         downloadViewModel = ViewModelProvider(requireActivity())[DownloadViewModel::class.java]
+        appCacheManager = AppCacheManager(requireContext().applicationContext)
 
         musicPath = findPreference("music_path")
         videoPath = findPreference("video_path")
@@ -91,6 +101,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
         audioFilenameTemplate = findPreference("file_name_template_audio")
         migrateDefaultVideoFolder = findPreference("migrate_default_video_folder")
         clearCache = findPreference("clear_cache")
+        clearLogs = findPreference("clear_logs")
         moveCache = findPreference("move_cache")
 
         if (preferences.getString("music_path", "")!!.isEmpty()) {
@@ -268,48 +279,54 @@ class FolderSettingsFragment : BaseSettingsFragment() {
             true
         }
 
-        var cacheSize = File(FileUtil.getCachePath(requireContext())).walkBottomUp().fold(0L) { acc, file -> acc + file.length() }
-        val filesize  = if (cacheSize < 10000) {
-            "0B"
-        }else {
-            FileUtil.convertFileSize(cacheSize)
-        }
-        clearCache!!.summary = "${resources.getString(R.string.clear_temporary_files_summary)} (${filesize}) "
-        clearCache!!.onPreferenceClickListener =
-            Preference.OnPreferenceClickListener {
-                lifecycleScope.launch {
-                    activeDownloadCount = withContext(Dispatchers.IO){
-                        downloadViewModel.getActiveDownloadsCount()
-                    }
-                    if (activeDownloadCount == 0){
-                        fun clearCacheFolder(folder: File) {
-                            if (folder.exists() && folder.isDirectory) {
-                                folder.listFiles()?.forEach { file ->
-                                    if (file.isDirectory) {
-                                        clearCacheFolder(file)
-                                        file.delete()
-                                    } else {
-                                        file.delete()
-                                    }
-                                }
-                            }
-                        }
-                        clearCacheFolder(File(FileUtil.getCachePath(requireContext())))
-
-                        Snackbar.make(requireView(), getString(R.string.cache_cleared), Snackbar.LENGTH_SHORT).show()
-                        cacheSize = File(FileUtil.getCachePath(requireContext())).walkBottomUp().fold(0L) { acc, file -> acc + file.length() }
-                        val filesize  = if (cacheSize < 10000) {
-                            "0B"
-                        }else {
-                            FileUtil.convertFileSize(cacheSize)
-                        }
-                        clearCache!!.summary = "${resources.getString(R.string.clear_temporary_files_summary)} (${filesize})"
-                    }else{
-                        Snackbar.make(requireView(), getString(R.string.downloads_running_try_later), Snackbar.LENGTH_SHORT).show()
-                    }
+        refreshCacheSummary()
+        clearCache!!.onPreferenceClickListener = Preference.OnPreferenceClickListener {
+            lifecycleScope.launch {
+                if (hasActiveDownloads()) {
+                    Snackbar.make(
+                        requireView(),
+                        getString(R.string.downloads_running_try_later),
+                        Snackbar.LENGTH_SHORT
+                    ).show()
+                    return@launch
                 }
-                true
+                val scan = withContext(Dispatchers.IO) { appCacheManager.scan() }
+                showCacheCategorySelection(scan)
             }
+            true
+        }
+
+        clearLogs!!.onPreferenceClickListener = Preference.OnPreferenceClickListener {
+            lifecycleScope.launch {
+                if (hasActiveDownloads()) {
+                    Snackbar.make(
+                        requireView(),
+                        getString(R.string.downloads_running_try_later),
+                        Snackbar.LENGTH_SHORT
+                    ).show()
+                    return@launch
+                }
+                val estimatedBytes = withContext(Dispatchers.IO) {
+                    val databaseBytes = DBManager.getInstance(requireContext()).logDao.getTotalContentSize()
+                    val stagedBytes = appCacheManager.scan().categories
+                        .firstOrNull { it.category == AppCacheCategory.LOG_EXPORT_CACHE }
+                        ?.bytes ?: 0L
+                    databaseBytes + stagedBytes
+                }
+                MaterialAlertDialogBuilder(requireContext())
+                    .setTitle(getString(R.string.clear_download_logs))
+                    .setMessage(
+                        getString(
+                            R.string.confirm_clear_download_logs,
+                            readableSize(estimatedBytes)
+                        )
+                    )
+                    .setNegativeButton(getString(R.string.cancel), null)
+                    .setPositiveButton(getString(R.string.ok)) { _, _ -> clearDownloadLogs() }
+                    .show()
+            }
+            true
+        }
 
         moveCache!!.onPreferenceClickListener =
             Preference.OnPreferenceClickListener {
@@ -330,8 +347,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
                         if (list.first() == null) return@observe
 
                         if (list.first().state == WorkInfo.State.SUCCEEDED){
-                            cacheSize = File(FileUtil.getCachePath(requireContext())).walkBottomUp().fold(0L) { acc, file -> acc + file.length() }
-                            clearCache!!.summary = "${resources.getString(R.string.clear_temporary_files_summary)} (${FileUtil.convertFileSize(cacheSize)})"
+                            refreshCacheSummary()
                         }
                     }
 
@@ -350,6 +366,160 @@ class FolderSettingsFragment : BaseSettingsFragment() {
             true
         }
 
+    }
+
+    private suspend fun hasActiveDownloads(): Boolean {
+        val hasActiveWork = withContext(Dispatchers.IO) {
+            activeDownloadCount = downloadViewModel.getActiveDownloadsCount()
+            val activeTerminalCount = DBManager.getInstance(requireContext())
+                .terminalDao
+                .getActiveTerminalsCount()
+            activeDownloadCount > 0 || activeTerminalCount > 0
+        }
+        return hasActiveWork
+    }
+
+    private fun refreshCacheSummary() {
+        lifecycleScope.launch {
+            val scan = withContext(Dispatchers.IO) { appCacheManager.scan() }
+            if (!isAdded) return@launch
+            val scannedAt = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                .format(Date(scan.scannedAtMillis))
+            val removableBytes = scan.categories
+                .filter { it.category != AppCacheCategory.LOG_EXPORT_CACHE }
+                .sumOf(AppCacheCategorySnapshot::bytes)
+            clearCache?.summary = getString(
+                R.string.cache_scan_summary,
+                readableSize(removableBytes),
+                scannedAt
+            )
+        }
+    }
+
+    private fun showCacheCategorySelection(scan: AppCacheScan) {
+        val categories = scan.categories.filter {
+            it.available && it.category != AppCacheCategory.LOG_EXPORT_CACHE
+        }
+        if (categories.isEmpty()) {
+            Snackbar.make(requireView(), getString(R.string.cache_delete_failed), Snackbar.LENGTH_LONG).show()
+            return
+        }
+        val checked = BooleanArray(categories.size) { index -> categories[index].bytes > 0L }
+        val labels = categories.map { snapshot ->
+            "${cacheCategoryName(snapshot.category)} (${readableSize(snapshot.bytes)})"
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.select_cache_categories))
+            .setMultiChoiceItems(labels, checked) { _, which, selected -> checked[which] = selected }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                val selected = categories.filterIndexed { index, _ -> checked[index] }
+                if (selected.isEmpty()) {
+                    Snackbar.make(
+                        requireView(),
+                        getString(R.string.select_at_least_one_category),
+                        Snackbar.LENGTH_LONG
+                    ).show()
+                } else {
+                    confirmCacheDeletion(selected)
+                }
+            }
+            .show()
+    }
+
+    private fun confirmCacheDeletion(categories: List<AppCacheCategorySnapshot>) {
+        val categoryNames = categories.joinToString { cacheCategoryName(it.category) }
+        val bytes = categories.sumOf(AppCacheCategorySnapshot::bytes)
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.clear_temporary_files))
+            .setMessage(
+                getString(
+                    R.string.confirm_cache_deletion,
+                    categoryNames,
+                    readableSize(bytes)
+                )
+            )
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                deleteCacheCategories(categories.map { it.category }.toSet())
+            }
+            .show()
+    }
+
+    private fun deleteCacheCategories(categories: Set<AppCacheCategory>) {
+        lifecycleScope.launch {
+            if (hasActiveDownloads()) {
+                Snackbar.make(
+                    requireView(),
+                    getString(R.string.downloads_running_try_later),
+                    Snackbar.LENGTH_SHORT
+                ).show()
+                return@launch
+            }
+            val result = withContext(Dispatchers.IO) { appCacheManager.delete(categories) }
+            val unresolved = result.failedEntries + result.skippedCategories.size
+            val message = when {
+                result.isComplete -> getString(
+                    R.string.cache_delete_complete,
+                    result.deletedFiles,
+                    readableSize(result.deletedBytes)
+                )
+                result.isPartial -> getString(
+                    R.string.cache_delete_partial,
+                    result.deletedFiles,
+                    readableSize(result.deletedBytes),
+                    unresolved
+                )
+                else -> getString(R.string.cache_delete_failed)
+            }
+            Snackbar.make(requireView(), message, Snackbar.LENGTH_LONG).show()
+            refreshCacheSummary()
+        }
+    }
+
+    private fun clearDownloadLogs() {
+        lifecycleScope.launch {
+            if (hasActiveDownloads()) {
+                Snackbar.make(
+                    requireView(),
+                    getString(R.string.downloads_running_try_later),
+                    Snackbar.LENGTH_SHORT
+                ).show()
+                return@launch
+            }
+            val cleared = withContext(Dispatchers.IO) {
+                runCatching {
+                    val db = DBManager.getInstance(requireContext())
+                    db.logDao.deleteAll()
+                    db.downloadDao.removeAllLogID()
+                    appCacheManager.delete(setOf(AppCacheCategory.LOG_EXPORT_CACHE))
+                }.getOrNull()
+            }
+            val message = when {
+                cleared == null -> getString(R.string.cache_delete_failed)
+                cleared.isComplete -> getString(R.string.download_logs_cleared)
+                else -> getString(R.string.download_logs_cleared_partial)
+            }
+            Snackbar.make(requireView(), message, Snackbar.LENGTH_LONG).show()
+            refreshCacheSummary()
+        }
+    }
+
+    private fun cacheCategoryName(category: AppCacheCategory): String {
+        return getString(
+            when (category) {
+                AppCacheCategory.APP_CACHE -> R.string.cache_category_app
+                AppCacheCategory.EXTERNAL_APP_CACHE -> R.string.cache_category_external
+                AppCacheCategory.DOWNLOAD_TEMP -> R.string.cache_category_download_temp
+                AppCacheCategory.SHARE_CACHE -> R.string.cache_category_share
+                AppCacheCategory.TERMINAL_CACHE -> R.string.cache_category_terminal
+                AppCacheCategory.LOG_EXPORT_CACHE -> R.string.cache_category_logs
+            }
+        )
+    }
+
+    private fun readableSize(bytes: Long): String {
+        return if (bytes <= 0L) "0 B" else FileUtil.convertFileSize(bytes)
     }
 
     override fun onResume() {

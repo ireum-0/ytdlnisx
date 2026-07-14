@@ -4,9 +4,11 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.DialogInterface
 import android.content.SharedPreferences
+import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
 import android.os.Bundle
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuItem
@@ -40,6 +42,15 @@ import com.ireum.ytdl.util.Extensions.enableFastScroll
 import com.ireum.ytdl.util.Extensions.forceFastScrollMode
 import com.ireum.ytdl.util.Extensions.toListString
 import com.ireum.ytdl.util.UiUtil
+import com.ireum.ytdl.util.download.DownloadIssue
+import com.ireum.ytdl.util.download.DownloadIssueClassifier
+import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.util.download.DownloadIssueStage
+import com.ireum.ytdl.util.download.DownloadRetryDecision
+import com.ireum.ytdl.util.download.DownloadRetryMetadata
+import com.ireum.ytdl.util.download.DownloadRetryPolicy
+import com.ireum.ytdl.util.download.DownloadRetryStrategy
+import com.ireum.ytdl.util.download.DownloadSuggestedAction
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -170,6 +181,7 @@ class ErroredDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickL
            val item = withContext(Dispatchers.IO){
                downloadViewModel.getItemByID(itemID)
            }
+           val failureIssue = failureIssueFor(item)
 
            UiUtil.showDownloadItemDetailsCard(
                item,
@@ -182,8 +194,17 @@ class ErroredDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickL
 
                },
                downloadItem = {
-                   lifecycleScope.launch(Dispatchers.IO) {
-                       downloadViewModel.queueDownloads(listOf(it))
+                   lifecycleScope.launch {
+                       val decision = withContext(Dispatchers.IO) {
+                           downloadViewModel.retryFailedDownload(it.id)
+                       }
+                       if (decision is DownloadRetryDecision.Blocked) {
+                           Snackbar.make(
+                               erroredRecyclerView,
+                               downloadViewModel.retryBlockedMessage(decision),
+                               Snackbar.LENGTH_LONG
+                           ).show()
+                       }
                    }
                },
                longClickDownloadButton = {
@@ -193,7 +214,17 @@ class ErroredDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickL
                        Pair("type", it.type)
                    ))
                },
-               scheduleButtonClick = {}
+               scheduleButtonClick = {},
+               failureIssue = failureIssue,
+               viewFailureLog = item.logID?.let { logId ->
+                   {
+                       findNavController().navigate(
+                           R.id.downloadLogFragment,
+                           bundleOf("logID" to logId)
+                       )
+                   }
+               },
+               openFailureSettings = { issue -> openSettingsForIssue(issue) }
            )
        }
     }
@@ -315,7 +346,21 @@ class ErroredDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickL
                                 }
                             }
                         }else {
-                            downloadViewModel.reQueueDownloadItems(selectedObjects)
+                            val blocked = withContext(Dispatchers.IO) {
+                                selectedObjects.mapNotNull { id ->
+                                    when (val decision = downloadViewModel.retryFailedDownload(id)) {
+                                        is DownloadRetryDecision.Blocked -> decision
+                                        is DownloadRetryDecision.Allowed -> null
+                                    }
+                                }
+                            }
+                            blocked.firstOrNull()?.let { decision ->
+                                Snackbar.make(
+                                    erroredRecyclerView,
+                                    downloadViewModel.retryBlockedMessage(decision),
+                                    Snackbar.LENGTH_LONG
+                                ).show()
+                            }
                         }
 
                         adapter.clearCheckedItems()
@@ -456,6 +501,79 @@ class ErroredDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickL
                 )
             }
         }
+
+    private fun failureIssueFor(item: DownloadItem): DownloadIssue {
+        val code = runCatching { DownloadIssueCode.valueOf(item.lastIssueCode) }
+            .getOrDefault(DownloadIssueCode.UNKNOWN)
+        val stage = runCatching { DownloadIssueStage.valueOf(item.lastIssueStage) }
+            .getOrDefault(DownloadIssueStage.DOWNLOAD)
+        val issue = DownloadIssueClassifier.classify(
+            DownloadIssueClassifier.Input(
+                stage = stage,
+                explicitCode = code
+            )
+        ).first()
+        val metadata = DownloadRetryMetadata(
+            operationId = item.operationId,
+            attempt = item.retryAttempt,
+            strategy = runCatching { DownloadRetryStrategy.valueOf(item.retryStrategy) }
+                .getOrDefault(DownloadRetryStrategy.ORIGINAL)
+        )
+        val canRetry = DownloadRetryPolicy.canOffer(
+            metadata,
+            DownloadRetryStrategy.SAME_SETTINGS,
+            issue.retryable
+        )
+        val canReconfigure = DownloadRetryPolicy.canOffer(
+            metadata,
+            DownloadRetryStrategy.RECONFIGURED
+        )
+        val actions = issue.suggestedActions
+            .filterNot {
+                it == DownloadSuggestedAction.RETRY ||
+                    it == DownloadSuggestedAction.RECONFIGURE
+            }
+            .toMutableSet()
+            .apply {
+                if (canRetry) add(DownloadSuggestedAction.RETRY)
+                if (
+                    canReconfigure &&
+                    DownloadSuggestedAction.RECONFIGURE in issue.suggestedActions
+                ) {
+                    add(DownloadSuggestedAction.RECONFIGURE)
+                }
+            }
+        return DownloadIssue.create(
+            stage = issue.stage,
+            code = issue.code,
+            severity = issue.severity,
+            retryable = canRetry,
+            suggestedActions = actions,
+            details = issue.redactedDetails,
+            source = issue.source
+        )
+    }
+
+    private fun openSettingsForIssue(issue: DownloadIssue) {
+        when {
+            DownloadSuggestedAction.OPEN_AUTH_SETTINGS in issue.suggestedActions -> {
+                runCatching { findNavController().navigate(R.id.cookiesFragment) }
+                    .onFailure {
+                        Snackbar.make(
+                            erroredRecyclerView,
+                            getString(R.string.download_retry_not_available),
+                            Snackbar.LENGTH_LONG
+                        ).show()
+                    }
+            }
+            DownloadSuggestedAction.OPEN_NETWORK_SETTINGS in issue.suggestedActions -> {
+                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+            }
+            DownloadSuggestedAction.OPEN_STORAGE_SETTINGS in issue.suggestedActions -> {
+                startActivity(Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS))
+            }
+        }
+    }
 
 }
 

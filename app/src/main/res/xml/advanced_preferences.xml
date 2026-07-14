@@ -87,6 +87,12 @@
     </PreferenceCategory>
 
     <PreferenceCategory android:title="@string/misc">
+        <Preference
+            android:icon="@drawable/ic_info"
+            android:key="runtime_diagnostics"
+            android:summary="@string/runtime_diagnostics_summary"
+            android:title="@string/runtime_diagnostics" />
+
         <SwitchPreferenceCompat
             android:widgetLayout="@layout/preferece_material_switch"
             android:icon="@drawable/ic_search"

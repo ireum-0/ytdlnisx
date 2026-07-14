@@ -29,6 +29,7 @@ import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.Extensions.loadThumbnail
 import com.ireum.ytdl.util.Extensions.popup
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.storage.FileAccessState
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -41,7 +42,8 @@ import kotlin.concurrent.thread
 
 class HistoryPaginatedAdapter(
     private val onItemClickListener: OnItemClickListener,
-    private val activity: Activity
+    private val activity: Activity,
+    private val requestFileAccessState: (HistoryItem) -> Unit
 ) : PagingDataAdapter<UiModel, RecyclerView.ViewHolder>(UiModelDiffCallback) {
     private val logTag = "HistoryThumb"
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -61,6 +63,23 @@ class HistoryPaginatedAdapter(
     private val sharedPreferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(activity)
     private var disableGeneratedThumbnails: Boolean = false
     private var attachedRecyclerView: RecyclerView? = null
+    private var fileAccessStates: Map<Long, FileAccessState> = emptyMap()
+
+    fun setFileAccessStates(states: Map<Long, FileAccessState>) {
+        if (fileAccessStates == states) return
+        val changedIds = (fileAccessStates.keys + states.keys)
+            .filterTo(mutableSetOf()) { id -> fileAccessStates[id] != states[id] }
+        fileAccessStates = states
+        refreshVisibleHistoryItems(changedIds)
+    }
+
+    fun visibleHistoryItems(): List<HistoryItem> {
+        val items = mutableListOf<HistoryItem>()
+        forEachAttachedHolder { _, uiModel ->
+            (uiModel as? UiModel.HistoryItemModel)?.historyItem?.let(items::add)
+        }
+        return items
+    }
 
     fun setDisableGeneratedThumbnails(disable: Boolean) {
         if (disableGeneratedThumbnails == disable) return
@@ -164,6 +183,19 @@ class HistoryPaginatedAdapter(
         }
     }
 
+    private fun refreshVisibleHistoryItems(ids: Set<Long>) {
+        if (ids.isEmpty()) return
+        val recyclerView = attachedRecyclerView ?: return
+        if (recyclerView.isComputingLayout) {
+            recyclerView.post { refreshVisibleHistoryItems(ids) }
+            return
+        }
+        forEachAttachedHolder { holder, uiModel ->
+            val historyItem = (uiModel as? UiModel.HistoryItemModel)?.historyItem ?: return@forEachAttachedHolder
+            if (historyItem.id in ids) bindAttachedHolder(holder, uiModel)
+        }
+    }
+
     fun refreshVisibleItem(position: Int) {
         if (position == RecyclerView.NO_POSITION) {
             refreshVisibleItems()
@@ -244,14 +276,22 @@ class HistoryPaginatedAdapter(
             author.text = item.author.replace("\"", "")
 
             val length = cardView.findViewById<TextView>(R.id.length)
-            length.text = if (item.downloadPath.size == 1) item.duration else ""
+            val fileState = fileAccessStates[item.id] ?: FileAccessState.CHECKING
+            requestFileAccessState(item)
+            length.text = when (fileState) {
+                FileAccessState.EXISTS -> if (item.downloadPath.size == 1) item.duration else ""
+                FileAccessState.MISSING -> activity.getString(R.string.file_missing)
+                FileAccessState.PERMISSION_REQUIRED -> activity.getString(R.string.file_permission_required)
+                FileAccessState.UNKNOWN -> activity.getString(R.string.file_status_unknown)
+                FileAccessState.CHECKING -> activity.getString(R.string.checking_files)
+            }
 
             val datetime = cardView.findViewById<TextView>(R.id.downloads_info_time)
             datetime.text = SimpleDateFormat(android.text.format.DateFormat.getBestDateTimePattern(Locale.getDefault(), "ddMMMyyyy - HHmm"), Locale.getDefault()).format(item.time * 1000L)
             val progressBar = itemView.findViewById<LinearProgressIndicator>(R.id.downloads_progress)
 
             val btn = cardView.findViewById<FloatingActionButton>(R.id.downloads_download_button_type)
-            val filesPresent = item.downloadPath.all { it.isNotBlank() && FileUtil.exists(it) }
+            val filesPresent = fileState == FileAccessState.EXISTS
 
             if (!filesPresent) {
                 thumbnail.colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
@@ -268,10 +308,20 @@ class HistoryPaginatedAdapter(
                 DownloadType.video -> btn.setImageResource(if (filesPresent) R.drawable.ic_video_downloaded else R.drawable.ic_video)
                 else -> btn.setImageResource(if (filesPresent) R.drawable.ic_terminal else R.drawable.baseline_code_off_24)
             }
-            btn.isClickable = filesPresent
+            btn.isClickable = fileState != FileAccessState.CHECKING
+            btn.contentDescription = when (fileState) {
+                FileAccessState.EXISTS -> activity.getString(R.string.share)
+                FileAccessState.MISSING -> activity.getString(R.string.redownload)
+                FileAccessState.PERMISSION_REQUIRED -> activity.getString(R.string.file_permission_required)
+                FileAccessState.UNKNOWN -> activity.getString(R.string.refresh_file_status)
+                FileAccessState.CHECKING -> activity.getString(R.string.checking_files)
+            }
 
             val durationMs = parseDurationToMs(item.duration)
-            if (filesPresent && item.playbackPositionMs >= 5_000L && durationMs > 0L) {
+            progressBar.isIndeterminate = fileState == FileAccessState.CHECKING
+            if (fileState == FileAccessState.CHECKING) {
+                progressBar.visibility = View.VISIBLE
+            } else if (filesPresent && item.playbackPositionMs >= 5_000L && durationMs > 0L) {
                 val percent = ((item.playbackPositionMs * 100) / durationMs).toInt().coerceIn(0, 100)
                 progressBar.visibility = View.VISIBLE
                 progressBar.progress = percent
@@ -289,11 +339,11 @@ class HistoryPaginatedAdapter(
                 if (checkedItems.isNotEmpty() || inverted) {
                     checkCard(cardView, item.id, bindingAdapterPosition)
                 } else {
-                    onItemClickListener.onCardClick(item.id, filesPresent)
+                    onItemClickListener.onCardClick(item.id, fileState)
                 }
             }
             btn.setOnClickListener {
-                onItemClickListener.onButtonClick(item.id, filesPresent)
+                onItemClickListener.onButtonClick(item.id, fileState)
             }
         }
 
@@ -375,8 +425,8 @@ class HistoryPaginatedAdapter(
     }
 
     interface OnItemClickListener {
-        fun onButtonClick(itemID: Long, filePresent: Boolean)
-        fun onCardClick(itemID: Long, filePresent: Boolean)
+        fun onButtonClick(itemID: Long, fileState: FileAccessState)
+        fun onCardClick(itemID: Long, fileState: FileAccessState)
         fun onCardSelect(isChecked: Boolean, position: Int)
         fun onYoutuberSelected(youtuber: String)
         fun onYoutuberLongClick(youtuberInfo: YoutuberInfo)
@@ -717,24 +767,41 @@ class HistoryPaginatedAdapter(
             return
         }
         val customThumb = item.customThumb
-        if (customThumb.isNotBlank() && FileUtil.exists(customThumb)) {
-            val resolved = if (customThumb.startsWith("content://") || customThumb.startsWith("file://")) {
-                customThumb
-            } else {
-                File(customThumb).toURI().toString()
-            }
-            mainHandler.post {
-                if (thumbnail.getTag(R.id.downloads_image_view) == requestKey) {
-                    thumbnail.loadThumbnail(false, resolved)
+        if (customThumb.isNotBlank()) {
+            thread(start = true) {
+                val customThumbAvailable = FileUtil.exists(customThumb)
+                mainHandler.post {
+                    if (thumbnail.getTag(R.id.downloads_image_view) != requestKey) return@post
+                    if (customThumbAvailable) {
+                        val resolved = if (
+                            customThumb.startsWith("content://") || customThumb.startsWith("file://")
+                        ) {
+                            customThumb
+                        } else {
+                            File(customThumb).toURI().toString()
+                        }
+                        thumbnail.loadThumbnail(false, resolved)
+                    } else {
+                        loadHistoryThumbnailFallback(thumbnail, item, path, requestKey)
+                    }
                 }
             }
             return
         }
+        loadHistoryThumbnailFallback(thumbnail, item, path, requestKey)
+    }
+
+    private fun loadHistoryThumbnailFallback(
+        thumbnail: ImageView,
+        item: HistoryItem,
+        path: String,
+        requestKey: String
+    ) {
         if (item.thumb.isNotBlank()) {
             val resolved = when {
                 item.thumb.startsWith("content://") || item.thumb.startsWith("file://") -> item.thumb
                 item.thumb.startsWith("http://") || item.thumb.startsWith("https://") -> item.thumb
-                FileUtil.exists(item.thumb) -> File(item.thumb).toURI().toString()
+                File(item.thumb).isAbsolute -> File(item.thumb).toURI().toString()
                 else -> item.thumb
             }
             mainHandler.post {

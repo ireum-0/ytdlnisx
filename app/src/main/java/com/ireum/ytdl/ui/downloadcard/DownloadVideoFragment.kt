@@ -53,7 +53,13 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 
-class DownloadVideoFragment(private var resultItem: ResultItem? = null, private var currentDownloadItem: DownloadItem? = null, private var url: String = "", private var nonSpecific: Boolean = false) : Fragment(), GUISync {
+class DownloadVideoFragment(
+    private var resultItem: ResultItem? = null,
+    private var currentDownloadItem: DownloadItem? = null,
+    private var url: String = "",
+    private var nonSpecific: Boolean = false,
+    private var initialPresetId: String? = null
+) : Fragment(), GUISync {
     private var fragmentView: View? = null
     private var activity: Activity? = null
     private lateinit var downloadViewModel : DownloadViewModel
@@ -122,7 +128,12 @@ class DownloadVideoFragment(private var resultItem: ResultItem? = null, private 
                     val string = Gson().toJson(currentDownloadItem, DownloadItem::class.java)
                     Gson().fromJson(string, DownloadItem::class.java)
                 }else{
-                    downloadViewModel.createDownloadItemFromResult(resultItem, url, DownloadType.video)
+                    downloadViewModel.createDownloadItemFromResult(
+                        resultItem,
+                        url,
+                        DownloadType.video,
+                        presetId = initialPresetId
+                    )
                 }
             }
 

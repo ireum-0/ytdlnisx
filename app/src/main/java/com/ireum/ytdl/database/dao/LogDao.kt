@@ -57,4 +57,7 @@ interface LogDao {
 
     @Query("SELECT * FROM logs WHERE id=:id LIMIT 1")
     fun getByID(id: Long) : LogItem
+
+    @Query("SELECT COALESCE(SUM(LENGTH(content)), 0) FROM logs")
+    fun getTotalContentSize(): Long
 }

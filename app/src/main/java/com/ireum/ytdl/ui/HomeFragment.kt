@@ -692,13 +692,15 @@ class HomeFragment : Fragment(), HomeAdapter.OnItemClickListener, SearchSuggesti
                         withContext(Dispatchers.Main){
                             showSingleDownloadSheet(
                                 resultItem = downloadViewModel.createEmptyResultItem(queryList.first()),
-                                type = DownloadType.valueOf(sharedPreferences!!.getString("preferred_download_type", "video")!!)
+                                type = DownloadType.valueOf(sharedPreferences!!.getString("preferred_download_type", "video")!!),
+                                quickDownloadContext = true
                             )
                         }
                     } else {
                         val downloadItem = downloadViewModel.createDownloadItemFromResult(
                             result = downloadViewModel.createEmptyResultItem(queryList.first()),
-                            givenType = DownloadType.valueOf(sharedPreferences!!.getString("preferred_download_type", "video")!!)
+                            givenType = DownloadType.valueOf(sharedPreferences!!.getString("preferred_download_type", "video")!!),
+                            applyQuickDownloadPreset = true
                         )
                         downloadViewModel.queueDownloads(listOf(downloadItem))
                     }
@@ -747,7 +749,8 @@ class HomeFragment : Fragment(), HomeAdapter.OnItemClickListener, SearchSuggesti
     private fun showSingleDownloadSheet(
         resultItem: ResultItem,
         type: DownloadType,
-        disableUpdateData : Boolean = false
+        disableUpdateData : Boolean = false,
+        quickDownloadContext: Boolean = false
     ){
         if(findNavController().currentBackStack.value.firstOrNull {it.destination.id == R.id.downloadBottomSheetDialog} == null &&
             findNavController().currentDestination?.id == R.id.homeFragment
@@ -758,6 +761,9 @@ class HomeFragment : Fragment(), HomeAdapter.OnItemClickListener, SearchSuggesti
             bundle.putSerializable("type", downloadViewModel.getDownloadType(type, resultItem.url))
             if (disableUpdateData) {
                 bundle.putBoolean("disableUpdateData", true)
+            }
+            if (quickDownloadContext) {
+                bundle.putBoolean("quick_download_context", true)
             }
             findNavController().navigate(R.id.downloadBottomSheetDialog, bundle)
         }

@@ -4,6 +4,7 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.lifecycle.Lifecycle
 import androidx.viewpager2.adapter.FragmentStateAdapter
+import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.ResultItem
 
@@ -13,7 +14,9 @@ class DownloadFragmentAdapter (
     private var result: ResultItem?,
     private var downloadItem: DownloadItem?,
     nonSpecific: Boolean = false,
-    var isIncognito: Boolean = false
+    var isIncognito: Boolean = false,
+    initialPresetId: String? = null,
+    initialPresetType: DownloadType? = null
 ) : FragmentStateAdapter(fragmentManager, lifecycle) {
 
     fun setResultItem(res: ResultItem){
@@ -37,8 +40,20 @@ class DownloadFragmentAdapter (
 
 
     val fragments = listOf<Fragment>(
-        DownloadAudioFragment(result, downloadItem,"", nonSpecific),
-        DownloadVideoFragment(result, downloadItem,"", nonSpecific),
+        DownloadAudioFragment(
+            result,
+            downloadItem,
+            "",
+            nonSpecific,
+            initialPresetId.takeIf { initialPresetType == DownloadType.audio }
+        ),
+        DownloadVideoFragment(
+            result,
+            downloadItem,
+            "",
+            nonSpecific,
+            initialPresetId.takeIf { initialPresetType == DownloadType.video }
+        ),
         DownloadCommandFragment(result, downloadItem)
     )
 

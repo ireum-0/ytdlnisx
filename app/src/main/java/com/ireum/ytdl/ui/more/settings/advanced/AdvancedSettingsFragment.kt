@@ -6,6 +6,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
 import androidx.preference.Preference
 import androidx.preference.PreferenceManager
@@ -16,7 +17,12 @@ import com.ireum.ytdl.R
 import com.ireum.ytdl.ui.adapter.SortableTextItemAdapter
 import com.ireum.ytdl.ui.more.settings.BaseSettingsFragment
 import com.ireum.ytdl.util.UiUtil
+import com.ireum.ytdl.util.runtime.RuntimeDiagnostics
+import com.ireum.ytdl.util.runtime.RuntimeDiagnosticsFormatter
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 
 class AdvancedSettingsFragment : BaseSettingsFragment() {
@@ -35,6 +41,11 @@ class AdvancedSettingsFragment : BaseSettingsFragment() {
         findPreference<Preference>("generate_po_tokens")?.setOnPreferenceClickListener {
             findNavController().navigate(R.id.generateYoutubePoTokensFragment)
             false
+        }
+
+        findPreference<Preference>("runtime_diagnostics")?.setOnPreferenceClickListener {
+            showRuntimeDiagnostics()
+            true
         }
 
         val formatImportanceAudio: Preference? = findPreference("format_importance_audio")
@@ -95,6 +106,50 @@ class AdvancedSettingsFragment : BaseSettingsFragment() {
             true
         }
 
+    }
+
+    private fun showRuntimeDiagnostics() {
+        var diagnosticJob: Job? = null
+        val progressDialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.runtime_diagnostics))
+            .setMessage(getString(R.string.runtime_diagnostics_running))
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setCancelable(false)
+            .create()
+        progressDialog.setOnShowListener {
+            progressDialog.getButton(DialogInterface.BUTTON_NEGATIVE).setOnClickListener {
+                diagnosticJob?.cancel()
+                progressDialog.dismiss()
+            }
+        }
+        progressDialog.show()
+        diagnosticJob = viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val report = RuntimeDiagnostics(requireContext()).run()
+                if (!isAdded) {
+                    progressDialog.dismiss()
+                    return@launch
+                }
+                progressDialog.dismiss()
+                showRuntimeDiagnosticsResult(RuntimeDiagnosticsFormatter.format(requireContext(), report))
+            } catch (_: CancellationException) {
+                progressDialog.dismiss()
+            }
+        }
+    }
+
+    private fun showRuntimeDiagnosticsResult(result: String) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.runtime_diagnostics))
+            .setMessage(result)
+            .setPositiveButton(getString(R.string.ok), null)
+            .setNeutralButton(getString(R.string.copy)) { _, _ ->
+                UiUtil.copyToClipboard(result, requireActivity())
+            }
+            .setNegativeButton(getString(R.string.run_again)) { _, _ ->
+                showRuntimeDiagnostics()
+            }
+            .show()
     }
 
 

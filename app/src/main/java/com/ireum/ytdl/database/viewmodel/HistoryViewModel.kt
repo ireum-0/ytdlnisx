@@ -24,7 +24,11 @@ import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.HistoryRepository.HistorySortType
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
+import com.ireum.ytdl.util.storage.FileAccessChecker
+import com.ireum.ytdl.util.storage.FileAccessState
+import com.ireum.ytdl.util.storage.FileAccessStateResolver
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
@@ -40,6 +44,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -98,7 +103,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     private var cachedIdsKey: HistoryScope? = null
     private var cachedIds: List<Long>? = null
     private var loggedTreePermissions = false
-    private val fileExistsCache = ConcurrentHashMap<String, Pair<Boolean, Long>>()
+    private val pathAccessCache = ConcurrentHashMap<String, Pair<FileAccessState, Long>>()
+    private val fileCheckJobs = ConcurrentHashMap<Long, Job>()
+    private val fileCheckGenerations = ConcurrentHashMap<Long, Long>()
+    private val fileStateCheckedAt = ConcurrentHashMap<Long, Long>()
+    private val fileStatePaths = ConcurrentHashMap<Long, List<String>>()
+    private val _fileAccessStates = MutableStateFlow<Map<Long, FileAccessState>>(emptyMap())
+    val fileAccessStates = _fileAccessStates.asStateFlow()
     private val pendingYoutuberMeta = Collections.synchronizedSet(mutableSetOf<String>())
     private val youtuberMetaQueue = Collections.synchronizedSet(mutableSetOf<String>())
     private var youtuberMetaJob: Job? = null
@@ -945,24 +956,30 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             val filteredPagingData: PagingData<HistoryItem> = when (filters.status) {
                 HistoryStatus.DELETED -> {
                     pagingData.filter { item: HistoryItem ->
-                        hasMissingMediaPath(item)
+                        withContext(Dispatchers.IO) { hasMissingMediaPath(item) }
                     }
                 }
                 HistoryStatus.NOT_DELETED -> {
                     pagingData.filter { item: HistoryItem ->
-                        hasExistingMediaPath(item)
+                        withContext(Dispatchers.IO) { hasExistingMediaPath(item) }
                     }
                 }
                 HistoryStatus.MISSING_THUMBNAIL -> {
                     pagingData.filter { item: HistoryItem ->
-                        val hasCustomThumb = item.customThumb.isNotBlank() && cachedFileExists(item.customThumb)
-                        val hasThumb = item.thumb.isNotBlank()
-                        !hasCustomThumb && !hasThumb
+                        withContext(Dispatchers.IO) {
+                            val hasCustomThumb = item.customThumb.isNotBlank() &&
+                                cachedFileAccessState(item.customThumb) == FileAccessState.EXISTS
+                            val hasThumb = item.thumb.isNotBlank()
+                            !hasCustomThumb && !hasThumb
+                        }
                     }
                 }
                 HistoryStatus.CUSTOM_THUMBNAIL -> {
                     pagingData.filter { item: HistoryItem ->
-                        item.customThumb.isNotBlank() && cachedFileExists(item.customThumb)
+                        withContext(Dispatchers.IO) {
+                            item.customThumb.isNotBlank() &&
+                                cachedFileAccessState(item.customThumb) == FileAccessState.EXISTS
+                        }
                     }
                 }
                 HistoryStatus.HARDSUB_DONE -> {
@@ -1260,11 +1277,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             HistoryStatus.DELETED -> hasMissingMediaPath(item)
             HistoryStatus.NOT_DELETED -> hasExistingMediaPath(item)
             HistoryStatus.MISSING_THUMBNAIL -> {
-                val hasCustomThumb = item.customThumb.isNotBlank() && cachedFileExists(item.customThumb)
+                val hasCustomThumb = item.customThumb.isNotBlank() &&
+                    cachedFileAccessState(item.customThumb) == FileAccessState.EXISTS
                 val hasThumb = item.thumb.isNotBlank()
                 !hasCustomThumb && !hasThumb
             }
-            HistoryStatus.CUSTOM_THUMBNAIL -> item.customThumb.isNotBlank() && cachedFileExists(item.customThumb)
+            HistoryStatus.CUSTOM_THUMBNAIL -> item.customThumb.isNotBlank() &&
+                cachedFileAccessState(item.customThumb) == FileAccessState.EXISTS
             HistoryStatus.HARDSUB_DONE -> item.hardSubDone
             HistoryStatus.HARDSUB_SCAN_TARGET ->
                 item.type == com.ireum.ytdl.database.enums.DownloadType.video &&
@@ -1767,17 +1786,22 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun hasMissingMediaPath(item: HistoryItem): Boolean {
-        val mediaPaths = mediaPaths(item)
-        return if (mediaPaths.isNotEmpty()) {
-            mediaPaths.any { path -> !cachedFileExists(path) }
-        } else {
-            item.downloadPath.any { path -> !cachedFileExists(path) }
-        }
+        return fileAccessPaths(item)
+            .any { path -> cachedFileAccessState(path) == FileAccessState.MISSING }
     }
 
     private fun hasExistingMediaPath(item: HistoryItem): Boolean {
-        val mediaPaths = mediaPaths(item)
-        return mediaPaths.any { path -> cachedFileExists(path) }
+        return fileAccessPaths(item)
+            .any { path -> cachedFileAccessState(path) == FileAccessState.EXISTS }
+    }
+
+    private fun fileAccessPaths(item: HistoryItem): List<String> {
+        return mediaPaths(item).ifEmpty {
+            item.downloadPath
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .distinct()
+        }
     }
 
     private fun mediaPaths(item: HistoryItem): List<String> {
@@ -1807,23 +1831,56 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         return ext in setOf("srt", "vtt", "ass", "lrc", "srv3", "json3", "ttml", "description", "txt")
     }
 
-    private fun cachedFileExists(path: String): Boolean {
+    private fun cachedFileAccessState(path: String): FileAccessState {
         val normalized = path.trim()
-        if (normalized.isBlank()) return false
+        if (normalized.isBlank()) return FileAccessState.UNKNOWN
         val now = System.currentTimeMillis()
-        fileExistsCache[normalized]?.let { (exists, checkedAt) ->
+        pathAccessCache[normalized]?.let { (state, checkedAt) ->
             if (now - checkedAt <= FILE_EXISTS_CACHE_TTL_MS) {
-                return exists
+                return state
             }
         }
-        val exists = FileUtil.exists(normalized)
-        fileExistsCache[normalized] = exists to now
-        return exists
+        val state = FileAccessChecker.check(getApplication(), normalized)
+        pathAccessCache[normalized] = state to now
+        return state
+    }
+
+    fun requestFileAccessState(item: HistoryItem, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        val paths = fileAccessPaths(item)
+        val lastCheckedAt = fileStateCheckedAt[item.id] ?: 0L
+        val pathsChanged = fileStatePaths[item.id] != paths
+        if (!force && !pathsChanged && now - lastCheckedAt <= FILE_STATE_CACHE_TTL_MS) return
+        if (force || pathsChanged) fileCheckJobs.remove(item.id)?.cancel()
+        if (fileCheckJobs.containsKey(item.id)) return
+        val generation = fileCheckGenerations.merge(item.id, 1L, Long::plus) ?: 1L
+
+        _fileAccessStates.update { states -> states + (item.id to FileAccessState.CHECKING) }
+        val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            val pathStates = paths.associateWith { path ->
+                FileAccessChecker.check(getApplication(), path)
+            }
+            val state = FileAccessStateResolver.combine(pathStates.values.toList())
+            if (fileCheckGenerations[item.id] != generation) return@launch
+            val checkedAt = System.currentTimeMillis()
+            pathStates.forEach { (path, pathState) -> pathAccessCache[path] = pathState to checkedAt }
+            fileStatePaths[item.id] = paths
+            fileStateCheckedAt[item.id] = checkedAt
+            _fileAccessStates.update { states -> states + (item.id to state) }
+        }
+        fileCheckJobs[item.id] = job
+        job.invokeOnCompletion { fileCheckJobs.remove(item.id, job) }
+        job.start()
+    }
+
+    fun refreshVisibleFileAccessStates(items: List<HistoryItem>) {
+        items.distinctBy(HistoryItem::id).forEach { requestFileAccessState(it, force = true) }
     }
 
     companion object {
         val DEFAULT_TYPE_FILTER = "${DownloadType.audio.name},${DownloadType.video.name}"
         private const val FILE_EXISTS_CACHE_TTL_MS = 12_000L
+        private const val FILE_STATE_CACHE_TTL_MS = 60_000L
     }
 
 }

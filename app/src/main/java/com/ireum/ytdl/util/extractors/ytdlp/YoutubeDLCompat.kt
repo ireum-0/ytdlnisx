@@ -34,6 +34,48 @@ object YoutubeDLCompat {
         Collections.synchronizedMap(WeakHashMap<YoutubeDLRequest, MutableSet<File>>())
     private val initLock = Any()
 
+    data class RuntimeLayout(
+        val baseDir: File,
+        val packagesDir: File,
+        val nativeBinDir: File,
+        val pythonBinary: File,
+        val quickJsBinary: File,
+        val ytdlpBinary: File,
+        val ffmpegBinary: File,
+        val ffprobeBinary: File,
+        val aria2cBinary: File,
+        val pythonHome: File,
+        val pythonLibraryDir: File,
+        val ffmpegLibraryDir: File,
+        val aria2cLibraryDir: File,
+        val sslCertificate: File
+    )
+
+    fun runtimeLayout(context: Context): RuntimeLayout {
+        val baseDir = File(context.noBackupFilesDir, BASE_NAME)
+        val packagesDir = File(baseDir, PACKAGES_ROOT)
+        val nativeBinDir = File(context.applicationInfo.nativeLibraryDir)
+        val pythonDir = File(packagesDir, PYTHON_DIR_NAME)
+        val ffmpegDir = File(packagesDir, FFMPEG_DIR_NAME)
+        val aria2cDir = File(packagesDir, ARIA2C_DIR_NAME)
+        return RuntimeLayout(
+            baseDir = baseDir,
+            packagesDir = packagesDir,
+            nativeBinDir = nativeBinDir,
+            pythonBinary = File(nativeBinDir, PYTHON_BIN_NAME),
+            quickJsBinary = File(nativeBinDir, QUICKJS_BIN_NAME),
+            ytdlpBinary = File(File(baseDir, YTDLP_BIN_NAME), YTDLP_BIN_NAME),
+            ffmpegBinary = File(nativeBinDir, "libffmpeg.so"),
+            ffprobeBinary = File(nativeBinDir, "libffprobe.so"),
+            aria2cBinary = File(nativeBinDir, "libaria2c.so"),
+            pythonHome = File(pythonDir, "usr"),
+            pythonLibraryDir = File(pythonDir, "usr/lib"),
+            ffmpegLibraryDir = File(ffmpegDir, "usr/lib"),
+            aria2cLibraryDir = File(aria2cDir, "usr/lib"),
+            sslCertificate = File(pythonDir, "usr/etc/tls/cert.pem")
+        )
+    }
+
     @Throws(YoutubeDLException::class, InterruptedException::class, CanceledException::class)
     fun execute(
         context: Context,
@@ -42,22 +84,18 @@ object YoutubeDLCompat {
         redirectErrorStream: Boolean = false,
         callback: ((Float, Long, String) -> Unit)? = null
     ): YoutubeDLResponse {
-        val baseDir = File(context.noBackupFilesDir, BASE_NAME)
-        val packagesDir = File(baseDir, PACKAGES_ROOT)
-        val nativeBinDir = File(context.applicationInfo.nativeLibraryDir)
-        val pythonPath = File(nativeBinDir, PYTHON_BIN_NAME)
-        val quickJsPath = File(nativeBinDir, QUICKJS_BIN_NAME)
-        val ytdlpPath = File(File(baseDir, YTDLP_BIN_NAME), YTDLP_BIN_NAME)
-        val pythonDir = File(packagesDir, PYTHON_DIR_NAME)
-        val ffmpegDir = File(packagesDir, FFMPEG_DIR_NAME)
-        val aria2cDir = File(packagesDir, ARIA2C_DIR_NAME)
+        val runtime = runtimeLayout(context)
+        val nativeBinDir = runtime.nativeBinDir
+        val pythonPath = runtime.pythonBinary
+        val quickJsPath = runtime.quickJsBinary
+        val ytdlpPath = runtime.ytdlpBinary
         val envLibraryPath = listOf(
-            File(pythonDir, "usr/lib").absolutePath,
-            File(ffmpegDir, "usr/lib").absolutePath,
-            File(aria2cDir, "usr/lib").absolutePath
+            runtime.pythonLibraryDir.absolutePath,
+            runtime.ffmpegLibraryDir.absolutePath,
+            runtime.aria2cLibraryDir.absolutePath
         ).joinToString(":")
-        val envSslCertFile = File(pythonDir, "usr/etc/tls/cert.pem").absolutePath
-        val envPythonHome = File(pythonDir, "usr").absolutePath
+        val envSslCertFile = runtime.sslCertificate.absolutePath
+        val envPythonHome = runtime.pythonHome.absolutePath
 
         ensureRuntimeInitialized(context, pythonPath, quickJsPath, ytdlpPath)
         checkRequiredBinary(pythonPath, "python")
@@ -136,6 +174,14 @@ object YoutubeDLCompat {
             val allowedConfigFiles = allowedConfigFilesByRequest.getOrPut(request) { mutableSetOf() }
             allowedConfigFiles.add(canonicalFile)
         }
+    }
+
+    fun previewSanitizedArguments(context: Context, request: YoutubeDLRequest): List<String> {
+        return sanitizeArguments(
+            context,
+            request.buildCommand(),
+            takeAllowedAppGeneratedConfigFiles(request)
+        )
     }
 
     fun destroyProcessById(processId: String): Boolean {

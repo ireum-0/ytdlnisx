@@ -57,5 +57,15 @@ data class DownloadItem(
     var availableSubtitles: List<String> = listOf(),
     var rowNumber: Int = 0,
     @ColumnInfo(defaultValue = "0")
-    var observeSourceId: Long = 0
+    var observeSourceId: Long = 0,
+    @ColumnInfo(defaultValue = "")
+    var operationId: String = "",
+    @ColumnInfo(defaultValue = "0")
+    var retryAttempt: Int = 0,
+    @ColumnInfo(defaultValue = "ORIGINAL")
+    var retryStrategy: String = "ORIGINAL",
+    @ColumnInfo(defaultValue = "")
+    var lastIssueCode: String = "",
+    @ColumnInfo(defaultValue = "")
+    var lastIssueStage: String = ""
 ) : Parcelable

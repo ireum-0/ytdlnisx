@@ -102,6 +102,12 @@
         app:title="@string/clear_temporary_files" />
 
     <Preference
+        app:icon="@drawable/baseline_delete_24"
+        app:key="clear_logs"
+        android:summary="@string/clear_download_logs_summary"
+        app:title="@string/clear_download_logs" />
+
+    <Preference
         app:icon="@drawable/baseline_reset_tv_24"
         app:key="reset_preferences"
         android:summary="@string/reset_preferences_in_screen"

@@ -9,6 +9,7 @@ import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
 import android.util.DisplayMetrics
 import android.util.Patterns
 import android.view.LayoutInflater
@@ -43,6 +44,9 @@ import com.ireum.ytdl.receiver.ShareActivity
 import com.ireum.ytdl.ui.BaseActivity
 import com.ireum.ytdl.ui.more.cookies.WebViewActivity
 import com.ireum.ytdl.util.UiUtil
+import com.ireum.ytdl.util.preset.DownloadPreset
+import com.ireum.ytdl.util.preset.DownloadPresetStore
+import com.ireum.ytdl.util.preset.DownloadPresetText
 import com.facebook.shimmer.ShimmerFrameLayout
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
@@ -52,6 +56,8 @@ import com.google.android.material.elevation.SurfaceColors
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.tabs.TabLayout
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -80,6 +86,8 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
     private lateinit var shimmerLoadingSubtitle : ShimmerFrameLayout
     private lateinit var subtitle : View
     private lateinit var parentActivity: BaseActivity
+    private lateinit var downloadPresetStore: DownloadPresetStore
+    private lateinit var presetsButton: MaterialButton
 
 
     private lateinit var result: ResultItem
@@ -89,6 +97,8 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
     private var currentDownloadItem: DownloadItem? = null
     private var incognito: Boolean = false
     private var sourceHistoryId: Long = -1L
+    private var quickDownloadContext: Boolean = false
+    private var initialPreset: DownloadPreset? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -97,6 +107,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
         resultViewModel = ViewModelProvider(requireActivity())[ResultViewModel::class.java]
         commandTemplateViewModel = ViewModelProvider(requireActivity())[CommandTemplateViewModel::class.java]
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
+        downloadPresetStore = DownloadPresetStore(requireContext(), sharedPreferences)
         val res: ResultItem?
         val dwl: DownloadItem?
 
@@ -107,7 +118,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
             res = arguments?.getParcelable<ResultItem>("result")
             dwl = arguments?.getParcelable<DownloadItem>("downloadItem")
         }
-        type = arguments?.getSerializable("type") as DownloadType
+        val requestedType = arguments?.getSerializable("type") as DownloadType
         disableUpdateData = arguments?.getBoolean("disableUpdateData") == true
         ignoreDuplicates = arguments?.getBoolean("ignore_duplicates") == true
         sourceHistoryId = arguments?.getLong("source_history_id", -1L) ?: -1L
@@ -118,6 +129,15 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
         }
         result = res
         currentDownloadItem = dwl
+        quickDownloadContext = arguments?.getBoolean("quick_download_context") == true && dwl == null
+        initialPreset = if (quickDownloadContext && requestedType != DownloadType.command) {
+            downloadPresetStore.quickDownloadPreset()
+        } else {
+            null
+        }
+        type = currentDownloadItem?.type
+            ?: initialPreset?.configuration?.type?.toDownloadType()
+            ?: requestedType
         incognito = currentDownloadItem?.incognito ?: sharedPreferences.getBoolean("incognito", false)
     }
 
@@ -150,6 +170,8 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
         tabLayout = view.findViewById(R.id.download_tablayout)
         viewPager2 = view.findViewById(R.id.download_viewpager)
         updateItem = view.findViewById(R.id.update_item)
+        presetsButton = view.findViewById(R.id.download_presets_button)
+        presetsButton.setOnClickListener { showPresetMenu() }
         viewPager2.isUserInputEnabled = sharedPreferences.getBoolean("swipe_gestures_download_card", true)
 
 
@@ -201,7 +223,9 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
             result,
             currentDownloadItem,
             nonSpecific = result.url.endsWith(".txt"),
-            isIncognito = incognito
+            isIncognito = incognito,
+            initialPresetId = initialPreset?.id,
+            initialPresetType = initialPreset?.configuration?.type?.toDownloadType()
         )
 
         viewPager2.adapter = fragmentAdapter
@@ -242,6 +266,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
 
                 (updateItem.parent as LinearLayout).visibility = View.GONE
             }
+            presetsButton.isVisible = viewPager2.currentItem != 2
         }
 
         sharedPreferences.edit(commit = true) {
@@ -292,6 +317,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
         viewPager2.registerOnPageChangeCallback(object: ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
                 tabLayout.selectTab(tabLayout.getTabAt(position))
+                presetsButton.isVisible = position != 2
                 runCatching {
                     sharedPreferences.edit(commit = true) {
                         putString("last_used_download_type",
@@ -325,7 +351,6 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
                 scheduleBtn.isEnabled = false
                 download.isEnabled = false
                 val item: DownloadItem = getDownloadItem()
-                item.status = DownloadRepository.Status.Scheduled.toString()
                 item.downloadStartTime = it.timeInMillis
                 if (item.videoPreferences.alsoDownloadAsAudio){
                     val itemsToQueue = mutableListOf<DownloadItem>()
@@ -333,7 +358,6 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
 
                     getAlsoAudioDownloadItem(finished = { audioDownloadItem ->
                         audioDownloadItem.downloadStartTime = it.timeInMillis
-                        audioDownloadItem.status = DownloadRepository.Status.Scheduled.toString()
                         itemsToQueue.add(audioDownloadItem)
 
                         lifecycleScope.launch {
@@ -476,7 +500,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
             }
 
             //if auto-update after the card is open is off
-            if (result.title.isEmpty() && currentDownloadItem == null && sharedPreferences.getBoolean("quick_download", false)) {
+            if (result.title.isEmpty() && currentDownloadItem == null && quickDownloadContext) {
                 (updateItem.parent as LinearLayout).visibility = View.VISIBLE
                 updateItem.setOnClickListener {
                     (updateItem.parent as LinearLayout).visibility = View.GONE
@@ -509,11 +533,11 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
 
         //update in the background if there is no data
         if (!disableUpdateData) {
-            if(result.title.isEmpty() && currentDownloadItem == null && !sharedPreferences.getBoolean("quick_download", false) && type != DownloadType.command){
+            if(result.title.isEmpty() && currentDownloadItem == null && !quickDownloadContext && type != DownloadType.command){
                 initUpdateData()
             }else {
                 val usingGenericFormatsOrEmpty = result.formats.isEmpty() || result.formats.any { it.isGenericPlaceholderFormat() }
-                if (usingGenericFormatsOrEmpty && sharedPreferences.getBoolean("update_formats", false) && !sharedPreferences.getBoolean("quick_download", false)){
+                if (usingGenericFormatsOrEmpty && sharedPreferences.getBoolean("update_formats", false) && !quickDownloadContext){
                     initUpdateFormats(result)
                 }
             }
@@ -725,6 +749,218 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
             updateItem.isVisible = true
             initUpdateData()
         }
+    }
+
+    private fun showPresetMenu() {
+        val presets = downloadPresetStore.presets()
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        if (presets.isNotEmpty()) {
+            actions += getString(R.string.apply_download_preset) to { showApplyPresetDialog(presets) }
+        }
+        actions += getString(R.string.save_current_as_preset) to { saveCurrentAsPreset() }
+        if (presets.isNotEmpty()) {
+            actions += getString(R.string.manage_download_presets) to { showManagePresetDialog(presets) }
+            actions += getString(R.string.quick_download_preset) to { showQuickDownloadPresetDialog(presets) }
+        }
+
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.download_presets))
+            .setItems(actions.map { it.first }.toTypedArray()) { _, which ->
+                actions.getOrNull(which)?.second?.invoke()
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .show()
+    }
+
+    private fun showApplyPresetDialog(presets: List<DownloadPreset>) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.apply_download_preset))
+            .setItems(presets.map(::presetListLabel).toTypedArray()) { _, which ->
+                presets.getOrNull(which)?.let(::applyPreset)
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .show()
+    }
+
+    private fun applyPreset(preset: DownloadPreset) {
+        val item = runCatching { getDownloadItem() }.getOrNull()
+        if (item == null) {
+            Toast.makeText(requireContext(), getString(R.string.please_wait), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val applied = downloadViewModel.applyDownloadPreset(item, preset).apply {
+            incognito = this@DownloadBottomSheetDialog.incognito
+        }
+        currentDownloadItem = applied
+        initialPreset = null
+        type = applied.type
+        fragmentAdapter = DownloadFragmentAdapter(
+            parentFragmentManager,
+            lifecycle,
+            result,
+            applied,
+            nonSpecific = result.url.endsWith(".txt"),
+            isIncognito = incognito
+        )
+        viewPager2.adapter = fragmentAdapter
+        viewPager2.isSaveFromParentEnabled = false
+        val targetPosition = if (applied.type == DownloadType.audio) 0 else 1
+        viewPager2.post {
+            tabLayout.getTabAt(targetPosition)?.select()
+            viewPager2.setCurrentItem(targetPosition, false)
+            presetsButton.isVisible = true
+        }
+        Snackbar.make(
+            view,
+            getString(R.string.download_preset_applied, preset.name),
+            Snackbar.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun saveCurrentAsPreset() {
+        val item = runCatching { getDownloadItem() }.getOrNull()
+        if (item == null) {
+            Toast.makeText(requireContext(), getString(R.string.please_wait), Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (item.type !in setOf(DownloadType.audio, DownloadType.video)) {
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.download_preset_command_unsupported),
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        showPresetNameDialog(getString(R.string.save_current_as_preset)) { name ->
+            val created = downloadPresetStore.create(name, item)
+            Toast.makeText(
+                requireContext(),
+                getString(
+                    if (created == null) R.string.download_preset_save_failed
+                    else R.string.download_preset_saved
+                ),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    private fun showManagePresetDialog(presets: List<DownloadPreset>) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.manage_download_presets))
+            .setItems(presets.map(::presetListLabel).toTypedArray()) { _, which ->
+                presets.getOrNull(which)?.let(::showPresetDetailsDialog)
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .show()
+    }
+
+    private fun showPresetDetailsDialog(preset: DownloadPreset) {
+        val quickPresetId = downloadPresetStore.quickDownloadPreset()?.id
+        val message = buildString {
+            append(DownloadPresetText.summary(requireContext(), preset))
+            if (quickPresetId == preset.id) {
+                appendLine()
+                append(getString(R.string.current_quick_download_preset))
+            }
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(preset.name)
+            .setMessage(message)
+            .setPositiveButton(getString(R.string.rename)) { _, _ ->
+                showPresetNameDialog(getString(R.string.rename), preset.name) { name ->
+                    val renamed = downloadPresetStore.rename(preset.id, name)
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            if (renamed) R.string.download_preset_renamed
+                            else R.string.download_preset_rename_failed
+                        ),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            .setNegativeButton(getString(R.string.delete)) { _, _ -> confirmDeletePreset(preset) }
+            .setNeutralButton(getString(R.string.cancel), null)
+            .show()
+    }
+
+    private fun confirmDeletePreset(preset: DownloadPreset) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.delete_download_preset))
+            .setMessage(getString(R.string.delete_download_preset_confirm, preset.name))
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton(getString(R.string.delete)) { _, _ ->
+                val deleted = downloadPresetStore.delete(preset.id)
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        if (deleted) R.string.download_preset_deleted
+                        else R.string.download_preset_delete_failed
+                    ),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .show()
+    }
+
+    private fun showQuickDownloadPresetDialog(presets: List<DownloadPreset>) {
+        val currentId = downloadPresetStore.quickDownloadPreset()?.id
+        val options = listOf(getString(R.string.no_download_preset)) + presets.map(::presetListLabel)
+        var selected = presets.indexOfFirst { it.id == currentId }.let { index ->
+            if (index < 0) 0 else index + 1
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.quick_download_preset))
+            .setSingleChoiceItems(options.toTypedArray(), selected) { _, which -> selected = which }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                val selectedId = if (selected == 0) null else presets[selected - 1].id
+                downloadPresetStore.setQuickDownloadPreset(selectedId)
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.quick_download_preset_updated),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .show()
+    }
+
+    private fun showPresetNameDialog(
+        dialogTitle: String,
+        initialName: String = "",
+        onSubmit: (String) -> Unit
+    ) {
+        val input = TextInputEditText(requireContext()).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            isSingleLine = true
+            setText(initialName)
+            setSelection(text?.length ?: 0)
+        }
+        val inputLayout = TextInputLayout(requireContext()).apply {
+            hint = getString(R.string.name)
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            val margin = (24 * resources.displayMetrics.density).toInt()
+            setPadding(margin, 0, margin, 0)
+            addView(
+                input,
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(dialogTitle)
+            .setView(inputLayout)
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                onSubmit(input.text?.toString().orEmpty())
+            }
+            .show()
+    }
+
+    private fun presetListLabel(preset: DownloadPreset): String {
+        return "${preset.name}\n${DownloadPresetText.summary(requireContext(), preset)}"
     }
 
     private fun getDownloadItem(selectedTabPosition: Int = tabLayout.selectedTabPosition) : DownloadItem {

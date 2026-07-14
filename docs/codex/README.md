@@ -97,5 +97,6 @@ A task is complete only when:
 - `RULES.md`: implementation constraints and shared design rules.
 - `TASKS.md`: ordered task registry with acceptance criteria.
 - `CHECKS.md`: verification commands and change-specific test matrices.
+- `../architecture/`: accepted architecture decisions; read the relevant ADR when a task depends on one.
 - `../testing/release-checklist.md`: release-candidate checks, outside the normal task reading path.
-- `../archive/`: historical audits, reviews, prompts, and release notes; never treat them as current guidance.
+- `../archive/`: historical audits, reviews, and prompts; never treat them as current guidance.

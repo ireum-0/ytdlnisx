@@ -77,6 +77,8 @@ import com.ireum.ytdl.ui.adapter.VideoQueueAdapter
 import com.ireum.ytdl.ui.downloads.HistoryFragment
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.player.PlaybackQueuePreparedData
+import com.ireum.ytdl.util.player.PlaybackQueueState
 import com.squareup.picasso.Picasso
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -166,16 +168,16 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var touchSlop: Int = 0
     private var queueList: RecyclerView? = null
     private var queueAdapter: VideoQueueAdapter? = null
-    private var queueItems: List<HistoryItem> = emptyList()
-    private var baseQueueItems: List<HistoryItem> = emptyList()
-    private val queuePlayablePathById: MutableMap<Long, String> = mutableMapOf()
-    private val queueMediaUriById: MutableMap<Long, Uri> = mutableMapOf()
-    private val queueIdByUri: MutableMap<String, Long> = mutableMapOf()
-    private val queueIndexById: MutableMap<Long, Int> = mutableMapOf()
+    private val playbackQueueState = PlaybackQueueState<HistoryItem>(
+        idOf = HistoryItem::id,
+        pathsOf = HistoryItem::downloadPath,
+        playbackPositionOf = HistoryItem::playbackPositionMs
+    )
+    private val queueItems: List<HistoryItem> get() = playbackQueueState.items
+    private val baseQueueItems: List<HistoryItem> get() = playbackQueueState.baseItems
     private var autoScrollQueueToCurrent = true
-    private var isShuffled: Boolean = false
+    private val isShuffled: Boolean get() = playbackQueueState.isShuffled
     private var queueHeader: android.view.View? = null
-    private val playbackPositionsById: MutableMap<Long, Long> = mutableMapOf()
     private var isBackgroundPlayback: Boolean = false
     private var pendingAutoPipOnLeave: Boolean = false
     private var wasInPip: Boolean = false
@@ -635,7 +637,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             commitRecentWatchIfEligible()
             stopRecentWatchTimer()
             autoScrollQueueToCurrent = true
-            isShuffled = false
+            playbackQueueState.setShuffled(false)
             updateShuffleButton()
             queueAdapter?.setCurrentItemId(null)
             if (isSameAsCurrentPlayback) {
@@ -693,8 +695,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                 }
             }
 
-            baseQueueItems = items
-            isShuffled = false
+            playbackQueueState.setBaseItems(items)
+            playbackQueueState.setShuffled(false)
             updateShuffleButton()
             val startUri = uriFromPath(startPath).toString()
             val startId = items.firstOrNull { item ->
@@ -1068,7 +1070,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             mediaUri.scheme.isNullOrBlank() -> return mediaUri.toString()
         }
         if (currentHistoryId != null) {
-            val mapped = queuePlayablePathById[currentHistoryId]
+            val mapped = playbackQueueState.playablePath(currentHistoryId)
             if (!mapped.isNullOrBlank()) return mapped
         }
         return null
@@ -1554,7 +1556,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         val updated = item.copy(thumb = outFile.absolutePath)
         runCatching {
             DBManager.getInstance(this@VideoPlayerActivity).historyDao.update(updated)
-            queueItems = queueItems.map { if (it.id == updated.id) updated else it }
+            playbackQueueState.updateItem(updated)
         }
         return outFile.toURI().toString()
     }
@@ -3108,23 +3110,22 @@ class VideoPlayerActivity : AppCompatActivity() {
                 if (prefetchedItems.isNotEmpty()) {
                     logPlaybackTiming("loadQueueForContext prefetched size=${prefetchedItems.size}")
                     val previewItems = prefetchedItems.map { it.first }
-                    queuePlayablePathById.clear()
-                    queueMediaUriById.clear()
-                    queueIdByUri.clear()
-                    prefetchedItems.forEach { (item, playablePath) ->
-                        val mediaUri = uriFromPath(playablePath)
-                        queuePlayablePathById[item.id] = playablePath
-                        queueMediaUriById[item.id] = mediaUri
-                        queueIdByUri[mediaUri.toString()] = item.id
-                    }
-                    val currentId = queueIdByUri[initialUri.toString()] ?: previewItems.firstOrNull()?.id
-                    baseQueueItems = previewItems
-                    isShuffled = false
+                    val preparedQueueData = prepareQueueData(
+                        items = previewItems,
+                        preferredPlayablePaths = prefetchedItems.associate { (item, path) ->
+                            item.id to path
+                        }
+                    )
+                    val currentId = preparedQueueData.idByMediaKey[initialUri.toString()]
+                        ?: previewItems.firstOrNull()?.id
+                    playbackQueueState.setBaseItems(previewItems)
+                    playbackQueueState.setShuffled(false)
                     updateShuffleButton()
                     applyQueueOrder(
                         items = previewItems,
                         currentItemId = currentId,
                         currentPos = resolveQueueStartPositionFromItems(previewItems, currentId, launchPlaybackPositionMs),
+                        preparedQueueData = preparedQueueData,
                         playWhenReady = true,
                         forceScrollCurrentToTop = true
                     )
@@ -3202,7 +3203,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
             val fullItems = sortQueueItems(items.map { it.first }, sortType, sortOrder)
             logPlaybackTiming("loadQueueForContext full size=${fullItems.size}")
-            baseQueueItems = fullItems
+            playbackQueueState.setBaseItems(fullItems)
             if (fullItems.isEmpty()) {
                 if (appliedInitialQueuePlayback) {
                     applyQueueListOnly(
@@ -3219,11 +3220,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                 prepareQueueData(
                     items = fullItems,
                     preferredPlayablePaths = items.associate { (item, playablePath) -> item.id to playablePath },
-                    previousPlayablePaths = queuePlayablePathById.toMap()
+                    previousPlayablePaths = playbackQueueState.playablePathsSnapshot()
                 )
             }
-            val currentId = preparedQueueData.idByUri[initialUri.toString()] ?: fullItems.firstOrNull()?.id
-            isShuffled = false
+            val currentId = preparedQueueData.idByMediaKey[initialUri.toString()]
+                ?: fullItems.firstOrNull()?.id
+            playbackQueueState.setShuffled(false)
             updateShuffleButton()
             if (appliedInitialQueuePlayback) {
                 applyQueueListOnly(
@@ -3263,7 +3265,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         val savedPosition = if (currentItemId == null) {
             null
         } else {
-            playbackPositionsById[currentItemId]
+            playbackQueueState.playbackPosition(currentItemId)
                 ?: queueItems.firstOrNull { it.id == currentItemId }?.playbackPositionMs
         }
         val resolved = if (requestedPositionMs != null && requestedPositionMs > 0L) {
@@ -3322,7 +3324,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (!force && !autoScrollQueueToCurrent) return
         val recycler = queueList ?: return
         val layoutManager = recycler.layoutManager as? LinearLayoutManager ?: return
-        val localIndex = if (currentId != null) queueIndexById[currentId] ?: -1 else -1
+        val localIndex = if (currentId != null) playbackQueueState.indexOf(currentId) ?: -1 else -1
         if (localIndex < 0) return
         logPlaybackTiming("scrollCurrentToTopIfAllowed request currentId=$currentId index=$localIndex force=$force")
         recycler.post {
@@ -3360,11 +3362,11 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun findCurrentQueueItemId(): Long? {
         val currentMediaId = player?.currentMediaItem?.mediaId?.toLongOrNull()
-        if (currentMediaId != null && queueItems.any { it.id == currentMediaId }) {
+        if (currentMediaId != null && playbackQueueState.containsId(currentMediaId)) {
             return currentMediaId
         }
         val currentUri = player?.currentMediaItem?.localConfiguration?.uri?.toString() ?: return null
-        return queueIdByUri[currentUri] ?: queueItems.firstOrNull { item ->
+        return playbackQueueState.idForMediaKey(currentUri) ?: queueItems.firstOrNull { item ->
             item.downloadPath.any { path -> uriFromPath(path).toString() == currentUri }
         }?.id
     }
@@ -4023,11 +4025,9 @@ class VideoPlayerActivity : AppCompatActivity() {
         val wasPlaying = player?.playWhenReady == true
         val currentPos = player?.currentPosition ?: 0L
         val currentItemId = resolveHistoryIdForMediaItem(player?.currentMediaItem)
-        val currentItem = queueItems.firstOrNull { it.id == currentItemId }
-        val remaining = queueItems.filter { it.id != currentItemId }.shuffled()
-        val nextList = if (currentItem != null) listOf(currentItem) + remaining else remaining
+        val nextList = playbackQueueState.shuffledOrderKeepingCurrent(currentItemId)
         applyQueueOrder(nextList, currentItemId, currentPos, wasPlaying, forceScrollCurrentToTop = true)
-        isShuffled = true
+        playbackQueueState.setShuffled(true)
         updateShuffleButton()
     }
 
@@ -4036,11 +4036,9 @@ class VideoPlayerActivity : AppCompatActivity() {
         val wasPlaying = player?.playWhenReady == true
         val currentPos = player?.currentPosition ?: 0L
         val currentItemId = resolveHistoryIdForMediaItem(player?.currentMediaItem)
-        val currentItem = queueItems.firstOrNull { it.id == currentItemId }
-        val remaining = queueItems.filter { it.id != currentItemId }.shuffled()
-        val nextList = if (currentItem != null) listOf(currentItem) + remaining else remaining
+        val nextList = playbackQueueState.shuffledOrderKeepingCurrent(currentItemId)
         applyQueueOrder(nextList, currentItemId, currentPos, wasPlaying, forceScrollCurrentToTop = true)
-        isShuffled = true
+        playbackQueueState.setShuffled(true)
         updateShuffleButton()
     }
 
@@ -4050,7 +4048,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         val currentPos = player?.currentPosition ?: 0L
         val currentItemId = resolveHistoryIdForMediaItem(player?.currentMediaItem)
         applyQueueOrder(baseQueueItems, currentItemId, currentPos, wasPlaying)
-        isShuffled = false
+        playbackQueueState.setShuffled(false)
         updateShuffleButton()
     }
 
@@ -4063,17 +4061,16 @@ class VideoPlayerActivity : AppCompatActivity() {
         currentItemId: Long?,
         currentPos: Long,
         playWhenReady: Boolean,
-        preparedQueueData: QueuePreparedData? = null,
+        preparedQueueData: PlaybackQueuePreparedData? = null,
         forceScrollCurrentToTop: Boolean = false
     ) {
         logPlaybackTiming("applyQueueOrder start size=${items.size} currentId=$currentItemId pos=$currentPos playWhenReady=$playWhenReady")
-        queueItems = items
         val queueData = preparedQueueData ?: prepareQueueData(
             items = items,
-            previousPlayablePaths = queuePlayablePathById.toMap()
+            previousPlayablePaths = playbackQueueState.playablePathsSnapshot()
         )
-        applyQueuePreparedData(queueData)
-        val idx = if (currentItemId != null) queueIndexById[currentItemId] ?: -1 else -1
+        playbackQueueState.replaceItems(items, queueData)
+        val idx = if (currentItemId != null) playbackQueueState.indexOf(currentItemId) ?: -1 else -1
         val timelineWindow = buildQueueTimelineWindow(items, currentItemId)
         val mediaItems = timelineWindow.mediaItems
         queueAdapter?.submitList(items) {
@@ -4124,18 +4121,17 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun applyQueueListOnly(
         items: List<HistoryItem>,
         currentItemId: Long?,
-        preparedQueueData: QueuePreparedData? = null,
+        preparedQueueData: PlaybackQueuePreparedData? = null,
         syncPlayerTimeline: Boolean = false,
         forceScrollCurrentToTop: Boolean = false
     ) {
         logPlaybackTiming("applyQueueListOnly size=${items.size} currentId=$currentItemId")
-        queueItems = items
         val queueData = preparedQueueData ?: prepareQueueData(
             items = items,
-            previousPlayablePaths = queuePlayablePathById.toMap()
+            previousPlayablePaths = playbackQueueState.playablePathsSnapshot()
         )
-        applyQueuePreparedData(queueData)
-        val selectedId = currentItemId?.takeIf { queueIndexById.containsKey(it) }
+        playbackQueueState.replaceItems(items, queueData)
+        val selectedId = currentItemId?.takeIf(playbackQueueState::containsId)
             ?: findCurrentQueueItemId()
         if (syncPlayerTimeline && selectedId != null) {
             setQueueTimelineWindowForItem(
@@ -4159,7 +4155,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     private fun playQueueItem(item: HistoryItem, startPositionMs: Long) {
-        val path = queuePlayablePathById[item.id]
+        val path = playbackQueueState.playablePath(item.id)
             ?: item.downloadPath.firstOrNull { FileUtil.exists(it) }
             ?: item.downloadPath.firstOrNull()
             ?: return
@@ -4176,18 +4172,15 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun skipQueueBy(offset: Int): Boolean {
         if (offset == 0 || queueItems.isEmpty()) return false
         val currentId = findCurrentQueueItemId() ?: return false
-        val currentIndex = queueIndexById[currentId] ?: return false
-        val targetIndex = currentIndex + offset
-        if (targetIndex !in queueItems.indices) return false
-        playQueueItem(queueItems[targetIndex], startPositionMs = 0L)
+        val target = playbackQueueState.itemAtOffset(currentId, offset) ?: return false
+        playQueueItem(target, startPositionMs = 0L)
         return true
     }
 
     private fun hasQueueOffset(offset: Int): Boolean {
         if (offset == 0 || queueItems.isEmpty()) return false
         val currentId = findCurrentQueueItemId() ?: return false
-        val currentIndex = queueIndexById[currentId] ?: return false
-        return currentIndex + offset in queueItems.indices
+        return playbackQueueState.itemAtOffset(currentId, offset) != null
     }
 
     private fun refreshQueueTimelineWindowForCurrentItem(mediaItem: MediaItem?) {
@@ -4295,7 +4288,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
 
         val selectedQueueIndex = currentItemId
-            ?.let { queueIndexById[it] }
+            ?.let(playbackQueueState::indexOf)
             ?.takeIf { it in items.indices }
             ?: 0
         val maxItems = MAX_PLAYER_TIMELINE_QUEUE_ITEMS.coerceAtLeast(1)
@@ -4496,7 +4489,7 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun seekToSavedPlaybackPosition(historyId: Long?) {
         val resolvedHistoryId = historyId ?: return
-        val saved = playbackPositionsById[resolvedHistoryId] ?: return
+        val saved = playbackQueueState.playbackPosition(resolvedHistoryId) ?: return
         if (saved < 5_000L) {
             logPlaybackPosition("seekToSavedPlaybackPosition skipped historyId=$resolvedHistoryId reason=tooSmall saved=$saved")
             return
@@ -4542,34 +4535,9 @@ class VideoPlayerActivity : AppCompatActivity() {
         val directId = mediaItem?.mediaId?.toLongOrNull()
         if (directId != null) return directId
         val currentUri = mediaItem?.localConfiguration?.uri?.toString() ?: return null
-        return queueIdByUri[currentUri] ?: queueItems.firstOrNull { item ->
+        return playbackQueueState.idForMediaKey(currentUri) ?: queueItems.firstOrNull { item ->
             item.downloadPath.any { path -> uriFromPath(path).toString() == currentUri }
         }?.id
-    }
-
-    private fun rebuildQueueLookups(items: List<HistoryItem>) {
-        val previousPlayablePaths = queuePlayablePathById.toMap()
-        queuePlayablePathById.clear()
-        queueMediaUriById.clear()
-        queueIdByUri.clear()
-        items.forEach { item ->
-            val playablePath = previousPlayablePaths[item.id]
-                ?: item.downloadPath.firstOrNull { it.isNotBlank() }
-                ?: item.downloadPath.firstOrNull()
-            if (playablePath != null) {
-                val mediaUri = uriFromPath(playablePath)
-                queuePlayablePathById[item.id] = playablePath
-                queueMediaUriById[item.id] = mediaUri
-                queueIdByUri[mediaUri.toString()] = item.id
-            }
-        }
-    }
-
-    private fun rebuildQueueIndexes(items: List<HistoryItem>) {
-        queueIndexById.clear()
-        items.forEachIndexed { index, item ->
-            queueIndexById[item.id] = index
-        }
     }
 
     private fun findPlayerMediaItemIndex(historyId: Long): Int {
@@ -4586,53 +4554,17 @@ class VideoPlayerActivity : AppCompatActivity() {
         items: List<HistoryItem>,
         preferredPlayablePaths: Map<Long, String> = emptyMap(),
         previousPlayablePaths: Map<Long, String> = emptyMap()
-    ): QueuePreparedData {
-        val playablePathById = LinkedHashMap<Long, String>(items.size)
-        val mediaUriById = LinkedHashMap<Long, Uri>(items.size)
-        val idByUri = LinkedHashMap<String, Long>(items.size)
-        val indexById = LinkedHashMap<Long, Int>(items.size)
-        val playbackPositions = LinkedHashMap<Long, Long>(items.size)
-
-        items.forEachIndexed { index, item ->
-            indexById[item.id] = index
-            playbackPositions[item.id] = item.playbackPositionMs
-
-            val playablePath = preferredPlayablePaths[item.id]
-                ?: previousPlayablePaths[item.id]
-                ?: item.downloadPath.firstOrNull { it.isNotBlank() }
-                ?: item.downloadPath.firstOrNull()
-                ?: return@forEachIndexed
-
-            val mediaUri = uriFromPath(playablePath)
-            playablePathById[item.id] = playablePath
-            mediaUriById[item.id] = mediaUri
-            idByUri[mediaUri.toString()] = item.id
-        }
-
-        return QueuePreparedData(
-            playablePathById = playablePathById,
-            mediaUriById = mediaUriById,
-            idByUri = idByUri,
-            indexById = indexById,
-            playbackPositionsById = playbackPositions
+    ): PlaybackQueuePreparedData {
+        return playbackQueueState.prepare(
+            value = items,
+            preferredPlayablePaths = preferredPlayablePaths,
+            previousPlayablePaths = previousPlayablePaths,
+            mediaKeyForPath = { path -> uriFromPath(path).toString() }
         )
     }
 
-    private fun applyQueuePreparedData(queueData: QueuePreparedData) {
-        queuePlayablePathById.clear()
-        queuePlayablePathById.putAll(queueData.playablePathById)
-        queueMediaUriById.clear()
-        queueMediaUriById.putAll(queueData.mediaUriById)
-        queueIdByUri.clear()
-        queueIdByUri.putAll(queueData.idByUri)
-        queueIndexById.clear()
-        queueIndexById.putAll(queueData.indexById)
-        playbackPositionsById.clear()
-        playbackPositionsById.putAll(queueData.playbackPositionsById)
-    }
-
     private fun buildQueueMediaItem(item: HistoryItem): MediaItem? {
-        val mediaUri = queueMediaUriById[item.id] ?: return null
+        val mediaUri = playbackQueueState.mediaKey(item.id)?.let(Uri::parse) ?: return null
         return MediaItem.Builder()
             .setUri(mediaUri)
             .setMediaId(item.id.toString())
@@ -4640,7 +4572,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     private fun savePlaybackPositionForHistoryId(historyId: Long, positionMs: Long) {
-        playbackPositionsById[historyId] = positionMs
+        playbackQueueState.recordPlaybackPosition(historyId, positionMs)
         cachePlaybackPosition(historyId, positionMs)
         lifecycleScope.launch(Dispatchers.IO) {
             DBManager.getInstance(this@VideoPlayerActivity).historyDao.updatePlaybackPosition(historyId, positionMs)
@@ -4757,14 +4689,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         val title: String,
         val startMs: Long,
         val endMs: Long?
-    )
-
-    private data class QueuePreparedData(
-        val playablePathById: Map<Long, String>,
-        val mediaUriById: Map<Long, Uri>,
-        val idByUri: Map<String, Long>,
-        val indexById: Map<Long, Int>,
-        val playbackPositionsById: Map<Long, Long>
     )
 
     private data class QueueTimelineWindow(

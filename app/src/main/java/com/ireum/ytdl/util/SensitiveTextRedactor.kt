@@ -31,10 +31,24 @@ object SensitiveTextRedactor {
     )
 
     private val sensitiveQueryPattern =
-        Regex("(?i)([?&](?:access_token|refresh_token|token|api_key|key|password)=)[^\\s&#]+")
+        Regex("(?i)([?&](?:access_token|refresh_token|token|api_key|key|password|po_token)=)[^\\s&#]+")
 
     private val sensitiveAssignmentPattern =
-        Regex("(?i)\\b(access_token|refresh_token|token|api_key|password)\\s*=\\s*[^\\s&]+")
+        Regex("(?i)\\b(access_token|refresh_token|token|api_key|password|po_token|pot|visitor_data|data_sync_id)\\s*=\\s*[^\\s&;,\\]]+")
+
+    private val sensitiveNamedValuePattern = Regex(
+        "(?i)(\\b(?:proxy|username|password|cookie|authorization|client-certificate-password)\\s*[:=]\\s*)(?:\\\"[^\\\"]*\\\"|'[^']*'|[^\\s,;]+)"
+    )
+
+    private val sensitiveLongOptionPattern = Regex(
+        "(?i)(?<!\\S)(--(?:${sensitiveOptions.joinToString("|") { Regex.escape(it.removePrefix("--")) }}))(\\s*=\\s*|\\s+)(?:\\\"[^\\\"]*\\\"|'[^']*'|\\S+)"
+    )
+
+    private val sensitiveShortOptionPattern =
+        Regex("(?<!\\S)(-[up])(\\s*=\\s*|\\s+)?(?:\\\"[^\\\"]*\\\"|'[^']*'|[^\\s]+)")
+
+    private val urlUserInfoPattern =
+        Regex("(?i)(https?://)[^\\s/@:]+:[^\\s/@]+@")
 
     private val sensitivePathPattern =
         Regex("(?i)(?:[A-Za-z]:)?[\\\\/][^\\s\"']*(?:cookies\\.txt|config-TERMINAL\\[[^\\s\"']*\\.txt)")
@@ -45,6 +59,26 @@ object SensitiveTextRedactor {
         val tokens = tokenizeCommand(command)
         if (tokens.isEmpty()) return redactOutput(command)
 
+        return redactOutput(redactArgumentTokens(tokens).joinToString(" ") { quoteIfNeeded(it) })
+    }
+
+    fun redactArguments(arguments: List<String>): List<String> {
+        return redactArgumentTokens(arguments).map(::redactOutput)
+    }
+
+    fun redactPrivatePaths(text: String, privatePathPrefixes: Collection<String>): String {
+        var redacted = redactOutput(text)
+        privatePathPrefixes
+            .filter(String::isNotBlank)
+            .distinct()
+            .sortedByDescending(String::length)
+            .forEach { prefix ->
+                redacted = redacted.replace(prefix, "<app-storage>", ignoreCase = true)
+            }
+        return redacted
+    }
+
+    private fun redactArgumentTokens(tokens: List<String>): List<String> {
         val redactedTokens = mutableListOf<String>()
         var skipNext = false
         for (token in tokens) {
@@ -79,14 +113,19 @@ object SensitiveTextRedactor {
                 else -> redactedTokens += token
             }
         }
-
-        return redactOutput(redactedTokens.joinToString(" ") { quoteIfNeeded(it) })
+        return redactedTokens
     }
 
     fun redactOutput(text: String): String {
         if (text.isBlank()) return text
 
         var redacted = text
+        redacted = sensitiveLongOptionPattern.replace(redacted) { matchResult ->
+            matchResult.groupValues[1] + matchResult.groupValues[2] + REDACTED
+        }
+        redacted = sensitiveShortOptionPattern.replace(redacted) { matchResult ->
+            matchResult.groupValues[1] + matchResult.groupValues[2] + REDACTED
+        }
         sensitiveHeaderPatterns.forEach { pattern ->
             redacted = pattern.replace(redacted) { matchResult ->
                 matchResult.groupValues[1] + REDACTED
@@ -97,6 +136,12 @@ object SensitiveTextRedactor {
         }
         redacted = sensitiveAssignmentPattern.replace(redacted) { matchResult ->
             "${matchResult.groupValues[1]}=$REDACTED"
+        }
+        redacted = sensitiveNamedValuePattern.replace(redacted) { matchResult ->
+            matchResult.groupValues[1] + REDACTED
+        }
+        redacted = urlUserInfoPattern.replace(redacted) { matchResult ->
+            matchResult.groupValues[1] + "$REDACTED@"
         }
         redacted = sensitivePathPattern.replace(redacted, REDACTED)
         return redacted

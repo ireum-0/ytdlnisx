@@ -133,6 +133,7 @@ class ShareActivity : BaseActivity() {
                     val bundle = Bundle()
                     bundle.putParcelable("result", result)
                     bundle.putSerializable("type", downloadType)
+                    bundle.putBoolean("quick_download_context", quickDownload)
                     navController.setGraph(R.navigation.share_nav_graph, bundle)
                     closeWhenShareGraphFinishes(navController)
                 }else{
@@ -141,7 +142,9 @@ class ShareActivity : BaseActivity() {
                     lifecycleScope.launch(Dispatchers.IO){
                         val downloadItem = downloadViewModel.createDownloadItemFromResult(
                             result = result,
-                            givenType = downloadType)
+                            givenType = downloadType,
+                            applyQuickDownloadPreset = quickDownload || background
+                        )
 
                         downloadViewModel.queueDownloads(listOf(downloadItem))
                     }

@@ -17,6 +17,7 @@ import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.ui.BaseActivity
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.ThemeUtil
+import com.ireum.ytdl.util.download.DownloadRetryDecision
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -64,6 +65,7 @@ class ResumeActivity : BaseActivity() {
 
     private fun handleIntents(intent: Intent) {
         val id = intent.getIntExtra("itemID", 0)
+        val retryError = intent.getBooleanExtra("retryError", false)
         if (id != 0) {
             try {
                 val loadingBottomSheet = BottomSheetDialog(this)
@@ -71,11 +73,40 @@ class ResumeActivity : BaseActivity() {
                 loadingBottomSheet.setContentView(R.layout.please_wait_bottom_sheet)
 
                 loadingBottomSheet.setOnShowListener {
-                    NotificationUtil(this).cancelDownloadNotification(NotificationUtil.DOWNLOAD_RESUME_NOTIFICATION_ID + id)
                     lifecycleScope.launch {
-                        val downloadViewModel = ViewModelProvider(this@ResumeActivity)[DownloadViewModel::class.java]
-                        withContext(Dispatchers.IO){
-                            downloadViewModel.reQueueDownloadItems(listOf(id.toLong()))
+                        try {
+                            val decision = withContext(Dispatchers.IO) {
+                                if (retryError) {
+                                    downloadViewModel.retryFailedDownload(id.toLong())
+                                } else {
+                                    downloadViewModel.reQueueDownloadItemsAndWait(listOf(id.toLong()))
+                                    null
+                                }
+                            }
+                            if (decision !is DownloadRetryDecision.Blocked) {
+                                val notificationId = if (retryError) {
+                                    NotificationUtil.DOWNLOAD_ERRORED_NOTIFICATION_ID + id
+                                } else {
+                                    NotificationUtil.DOWNLOAD_RESUME_NOTIFICATION_ID + id
+                                }
+                                NotificationUtil(this@ResumeActivity)
+                                    .cancelDownloadNotification(notificationId)
+                            }
+                            if (decision is DownloadRetryDecision.Blocked) {
+                                Toast.makeText(
+                                    this@ResumeActivity,
+                                    downloadViewModel.retryBlockedMessage(decision),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        } catch (_: Exception) {
+                            Toast.makeText(
+                                this@ResumeActivity,
+                                getString(R.string.error_restarting_download),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } finally {
+                            loadingBottomSheet.dismiss()
                             finishAffinity()
                         }
                     }
@@ -84,8 +115,8 @@ class ResumeActivity : BaseActivity() {
                 loadingBottomSheet.show()
             }catch (e: Exception){
                 Toast.makeText(this, getString(R.string.error_restarting_download), Toast.LENGTH_SHORT).show()
+                finishAffinity()
             }
-            finishAffinity()
         }
     }
 }

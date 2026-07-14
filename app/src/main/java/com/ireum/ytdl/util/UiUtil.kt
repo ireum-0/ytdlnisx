@@ -75,6 +75,12 @@ import com.ireum.ytdl.util.Extensions.enableTextHighlight
 import com.ireum.ytdl.util.Extensions.getMediaDuration
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
+import com.ireum.ytdl.util.download.DownloadIssue
+import com.ireum.ytdl.util.download.DownloadIssueText
+import com.ireum.ytdl.util.download.DownloadSuggestedAction
+import com.ireum.ytdl.util.storage.FileAccessState
+import com.ireum.ytdl.util.storage.OpenStoredLocationResult
+import com.ireum.ytdl.util.storage.StoredLocationKind
 import com.google.android.material.badge.BadgeDrawable
 import com.google.android.material.badge.BadgeUtils
 import com.google.android.material.badge.ExperimentalBadgeUtils
@@ -566,7 +572,10 @@ object UiUtil {
         removeItem : (DownloadItem, BottomSheetDialog) -> Unit,
         downloadItem: (DownloadItem) -> Unit,
         longClickDownloadButton: (DownloadItem) -> Unit,
-        scheduleButtonClick: (DownloadItem) -> Unit?
+        scheduleButtonClick: (DownloadItem) -> Unit?,
+        failureIssue: DownloadIssue? = null,
+        viewFailureLog: (() -> Unit)? = null,
+        openFailureSettings: ((DownloadIssue) -> Unit)? = null
     ){
         val bottomSheet = BottomSheetDialog(context)
         bottomSheet.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -609,6 +618,31 @@ object UiUtil {
         val codec = bottomSheet.findViewById<Chip>(R.id.codec)
         val fileSize = bottomSheet.findViewById<Chip>(R.id.file_size)
         val command = bottomSheet.findViewById<Chip>(R.id.command)
+
+        val failurePanel = bottomSheet.findViewById<LinearLayout>(R.id.failure_panel)
+        val failureStage = bottomSheet.findViewById<TextView>(R.id.failure_stage)
+        val failureSummary = bottomSheet.findViewById<TextView>(R.id.failure_summary)
+        val copyFailureSummary = bottomSheet.findViewById<MaterialButton>(R.id.copy_failure_summary)
+        val openFailureSettingsButton = bottomSheet.findViewById<MaterialButton>(R.id.open_failure_settings)
+        failureIssue?.let { issue ->
+            val formattedSummary = DownloadIssueText.formatted(context.resources, issue)
+            failurePanel?.isVisible = true
+            failureStage?.text = DownloadIssueText.stage(context.resources, issue.stage)
+            failureSummary?.text = DownloadIssueText.summary(context.resources, issue.code)
+            copyFailureSummary?.setOnClickListener {
+                copyToClipboard(formattedSummary, context)
+            }
+            val hasSettingsAction = issue.suggestedActions.any {
+                it == DownloadSuggestedAction.OPEN_AUTH_SETTINGS ||
+                    it == DownloadSuggestedAction.OPEN_NETWORK_SETTINGS ||
+                    it == DownloadSuggestedAction.OPEN_STORAGE_SETTINGS
+            }
+            openFailureSettingsButton?.isVisible = hasSettingsAction && openFailureSettings != null
+            openFailureSettingsButton?.setOnClickListener {
+                openFailureSettings?.invoke(issue)
+                bottomSheet.dismiss()
+            }
+        }
 
         when(status){
             DownloadRepository.Status.Scheduled -> {
@@ -696,6 +730,15 @@ object UiUtil {
         }
         val openFile = bottomSheet.findViewById<Button>(R.id.bottomsheet_open_file_button)
         openFile!!.visibility = View.GONE
+        if (failureIssue != null && viewFailureLog != null) {
+            openFile.visibility = View.VISIBLE
+            openFile.text = context.getString(R.string.logs)
+            openFile.setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_baseline_file_open_24, 0, 0, 0)
+            openFile.setOnClickListener {
+                viewFailureLog()
+                bottomSheet.dismiss()
+            }
+        }
 
         val download = bottomSheet.findViewById<Button>(R.id.bottomsheet_redownload_button)
         download?.tag = item.id
@@ -727,14 +770,22 @@ object UiUtil {
                 download.text = context.getString(R.string.download_now)
             }
             DownloadRepository.Status.Error -> {
-                download?.setOnClickListener {
-                    longClickDownloadButton(item)
-                    bottomSheet.cancel()
-                }
-                download?.setOnLongClickListener {
-                    downloadItem(item)
-                    bottomSheet.cancel()
-                    true
+                when {
+                    failureIssue?.suggestedActions?.contains(DownloadSuggestedAction.RECONFIGURE) == true -> {
+                        download?.text = context.getString(R.string.configure_download)
+                        download?.setOnClickListener {
+                            longClickDownloadButton(item)
+                            bottomSheet.cancel()
+                        }
+                    }
+                    failureIssue?.retryable == true -> {
+                        download?.text = context.getString(R.string.retry_download)
+                        download?.setOnClickListener {
+                            downloadItem(item)
+                            bottomSheet.cancel()
+                        }
+                    }
+                    else -> download?.isVisible = false
                 }
             }
             else -> {
@@ -771,6 +822,8 @@ object UiUtil {
         removeItem: (item:HistoryItem, removeFiles: Boolean) -> Unit,
         redownloadItem: (HistoryItem) -> Unit,
         redownloadShowDownloadCard: (HistoryItem) -> Unit,
+        fileAccessState: FileAccessState = if (isPresent) FileAccessState.EXISTS else FileAccessState.MISSING,
+        refreshFileAccessState: (() -> Unit)? = null,
     ){
         val bottomSheet = BottomSheetDialog(context)
         bottomSheet.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -843,9 +896,16 @@ object UiUtil {
         val fileSize = bottomSheet.findViewById<TextView>(R.id.file_size)
         val command = bottomSheet.findViewById<Chip>(R.id.command)
         val location = bottomSheet.findViewById<Chip>(R.id.location)
-        val bestPath = item.downloadPath.firstOrNull { FileUtil.exists(it) }
-            ?: item.downloadPath.firstOrNull()
-        val file = File(bestPath ?: "")
+        val bestPath = item.downloadPath.firstOrNull()
+        val file = bestPath?.let { path ->
+            when {
+                path.startsWith("content://", ignoreCase = true) -> null
+                path.startsWith("file://", ignoreCase = true) -> {
+                    Uri.parse(path).path?.takeIf(String::isNotBlank)?.let(::File)
+                }
+                else -> File(path)
+            }
+        }
 
         val calendar = Calendar.getInstance()
         calendar.timeInMillis = item.time * 1000L
@@ -869,7 +929,11 @@ object UiUtil {
         }
 
         if (item.format.container != "" && item.downloadPath.size == 1) {
-            container!!.text = if (file.exists()) file.extension.uppercase() else item.format.container.uppercase()
+            val actualExtension = file
+                ?.takeIf { it.exists() && it.isFile }
+                ?.extension
+                ?.takeIf(String::isNotBlank)
+            container!!.text = (actualExtension ?: item.format.container).uppercase()
             container.setChipIconResource(typeImageResource)
         }else {
             container!!.visibility = View.GONE
@@ -890,7 +954,10 @@ object UiUtil {
             codec.text = codecText
         }
 
-        val fileSizeReadable = FileUtil.convertFileSize(if (file.exists()) file.length() else item.format.filesize)
+        val actualFileSize = file
+            ?.takeIf { fileAccessState == FileAccessState.EXISTS && it.isFile }
+            ?.length()
+        val fileSizeReadable = FileUtil.convertFileSize(actualFileSize ?: item.format.filesize)
         if (fileSizeReadable == "?" || item.downloadPath.size > 1) fileSize!!.visibility = View.GONE
         else fileSize!!.text = fileSizeReadable
 
@@ -898,10 +965,29 @@ object UiUtil {
             showGeneratedCommand(context, preferences, item.command)
         }
 
-        val availableFiles = item.downloadPath.filter { FileUtil.exists(it) }
-        location?.isVisible = availableFiles.isNotEmpty()
+        val storedLocations = item.downloadPath.mapNotNull { FileUtil.describeStoredLocation(context, it) }
+        val locationKind = storedLocations.map { it.kind }.distinct().singleOrNull()
+        val locationLabel = when (locationKind) {
+            StoredLocationKind.CONTENT_URI -> context.getString(R.string.uri)
+            StoredLocationKind.RAW_PATH,
+            StoredLocationKind.FILE_URI -> context.getString(R.string.path)
+            null -> context.getString(R.string.locations)
+        }
+        val stateLabel = when (fileAccessState) {
+            FileAccessState.EXISTS -> context.getString(R.string.file_available)
+            FileAccessState.MISSING -> context.getString(R.string.file_missing)
+            FileAccessState.PERMISSION_REQUIRED -> context.getString(R.string.file_permission_required)
+            FileAccessState.UNKNOWN -> context.getString(R.string.file_status_unknown)
+            FileAccessState.CHECKING -> context.getString(R.string.checking_files)
+        }
+        location?.text = "$locationLabel - $stateLabel"
+        location?.isVisible = storedLocations.isNotEmpty()
         location?.setOnClickListener {
-            showFullTextDialog(context, availableFiles.joinToString("\n"), context.getString(R.string.location))
+            showStoredLocationActions(
+                context = context,
+                storedPaths = item.downloadPath,
+                refreshFileAccessState = refreshFileAccessState
+            )
         }
 
 
@@ -948,8 +1034,16 @@ object UiUtil {
             true
         }
 
-        if (!isPresent) openFile.visibility = View.GONE
-        else redownload.visibility = View.GONE
+        when (fileAccessState) {
+            FileAccessState.EXISTS -> redownload.visibility = View.GONE
+            FileAccessState.MISSING -> openFile.visibility = View.GONE
+            FileAccessState.PERMISSION_REQUIRED,
+            FileAccessState.UNKNOWN,
+            FileAccessState.CHECKING -> {
+                openFile.visibility = View.GONE
+                redownload.visibility = View.GONE
+            }
+        }
 
         bottomSheet.show()
         val displayMetrics = DisplayMetrics()
@@ -959,6 +1053,64 @@ object UiUtil {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         )
+    }
+
+    private fun showStoredLocationActions(
+        context: Activity,
+        storedPaths: List<String>,
+        refreshFileAccessState: (() -> Unit)?
+    ) {
+        val locations = storedPaths.mapNotNull { FileUtil.describeStoredLocation(context, it) }
+        if (locations.isEmpty()) return
+        val commonParent = FileUtil.commonParentLocation(context, storedPaths)
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        val allContentUris = locations.all { it.kind == StoredLocationKind.CONTENT_URI }
+        actions += context.getString(
+            if (allContentUris) R.string.copy_file_uri else R.string.copy_file_path
+        ) to {
+            copyToClipboard(
+                locations.joinToString("\n") { location ->
+                    FileUtil.safeFallbackLocationText(location)
+                },
+                context
+            )
+        }
+        commonParent?.let { parent ->
+            actions += context.getString(R.string.copy_parent_location) to {
+                copyToClipboard(FileUtil.safeFallbackLocationText(parent), context)
+            }
+            actions += context.getString(R.string.open_file_location) to {
+                when (FileUtil.openStoredLocation(context, storedPaths)) {
+                    OpenStoredLocationResult.OPENED -> Unit
+                    OpenStoredLocationResult.COPY_PARENT_FALLBACK -> {
+                        copyToClipboard(FileUtil.safeFallbackLocationText(parent), context)
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.folder_open_fallback_copied),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    OpenStoredLocationResult.UNAVAILABLE -> {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.common_parent_unavailable),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+        refreshFileAccessState?.let { refresh ->
+            actions += context.getString(R.string.refresh_file_status) to refresh
+        }
+
+        MaterialAlertDialogBuilder(context)
+            .setTitle(context.getString(R.string.location))
+            .setItems(actions.map { it.first }.toTypedArray()) { _, which ->
+                actions.getOrNull(which)?.second?.invoke()
+            }
+            .setNegativeButton(context.getString(R.string.cancel), null)
+            .show()
     }
     
     fun showFormatDetails(format: Format, activity: Activity){

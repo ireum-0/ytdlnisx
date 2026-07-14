@@ -432,13 +432,15 @@ class NotificationUtil(var context: Context) {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .clearActions()
 
-        val intent = Intent(context, ResumeActivity::class.java)
-        intent.putExtra("itemID", itemID)
+        val intent = Intent(context, ResumeActivity::class.java).apply {
+            action = ACTION_RESUME_DOWNLOAD
+            putExtra("itemID", itemID)
+        }
         val resumeNotificationPendingIntent = PendingIntent.getActivity(
             context,
             itemID,
             intent,
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         notificationBuilder.addAction(0, resources.getString(R.string.resume), resumeNotificationPendingIntent)
@@ -470,7 +472,8 @@ class NotificationUtil(var context: Context) {
         title: String?,
         downloadType: DownloadType,
         filepath: List<String>?,
-        res: Resources
+        res: Resources,
+        warning: String? = null
     ) {
         val notificationBuilder = getBuilder(DOWNLOAD_FINISHED_CHANNEL_ID)
 
@@ -489,10 +492,19 @@ class NotificationUtil(var context: Context) {
         }
 
         val contentText = StringBuilder("$title")
+        if (!warning.isNullOrBlank()) {
+            contentText.append("\n\n").append(warning)
+        }
 
         val bitmap = iconType.toBitmap(context)
         notificationBuilder
-            .setContentTitle("${res.getString(R.string.downloaded)} $title")
+            .setContentTitle(
+                if (warning.isNullOrBlank()) {
+                    "${res.getString(R.string.downloaded)} $title"
+                } else {
+                    res.getString(R.string.download_completed_with_warnings)
+                }
+            )
             .setSmallIcon(R.drawable.ic_launcher_foreground_large)
             .setLargeIcon(bitmap)
             .setGroup(DOWNLOAD_FINISHED_NOTIFICATION_ID.toString())
@@ -575,7 +587,9 @@ class NotificationUtil(var context: Context) {
         title: String?,
         error: String?,
         logID: Long?,
-        res: Resources
+        res: Resources,
+        retryable: Boolean = false,
+        allowReconfigure: Boolean = true
     ) {
         val notificationBuilder = getBuilder(DOWNLOAD_ERRORED_CHANNEL_ID)
 
@@ -601,21 +615,25 @@ class NotificationUtil(var context: Context) {
             PendingIntent.FLAG_IMMUTABLE
         )
 
-        val intent2 = Intent(context, MainActivity::class.java)
-        intent2.setAction(Intent.ACTION_VIEW)
-        intent2.putExtra("reconfigure", id)
-        intent2.putExtra("tab", "error")
-        intent2.putExtra("destination", "Queue")
-        val reconfigurePendingItent = PendingIntent.getActivity(
-            context,
-            Random.nextInt(),
-            intent2,
-            PendingIntent.FLAG_IMMUTABLE
-        )
+        val reconfigurePendingIntent = if (allowReconfigure) {
+            val intent2 = Intent(context, MainActivity::class.java)
+            intent2.setAction(Intent.ACTION_VIEW)
+            intent2.putExtra("reconfigure", id)
+            intent2.putExtra("tab", "error")
+            intent2.putExtra("destination", "Queue")
+            PendingIntent.getActivity(
+                context,
+                Random.nextInt(),
+                intent2,
+                PendingIntent.FLAG_IMMUTABLE
+            )
+        } else {
+            null
+        }
 
         notificationBuilder
             .setContentTitle(res.getString(R.string.failed_download))
-            .setContentText(res.getString(R.string.errored))
+            .setContentText(error?.ifBlank { res.getString(R.string.errored) } ?: res.getString(R.string.errored))
             .setSmallIcon(R.drawable.baseline_error_24)
             .setLargeIcon(
                 BitmapFactory.decodeResource(
@@ -629,7 +647,26 @@ class NotificationUtil(var context: Context) {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .clearActions()
 
-        notificationBuilder.addAction(0, res.getString(R.string.configure_download), reconfigurePendingItent)
+        if (!error.isNullOrBlank()) {
+            notificationBuilder.setStyle(NotificationCompat.BigTextStyle().bigText(error))
+        }
+        if (retryable) {
+            val retryIntent = Intent(context, ResumeActivity::class.java).apply {
+                action = ACTION_RETRY_DOWNLOAD
+                putExtra("itemID", id.toInt())
+                putExtra("retryError", true)
+            }
+            val retryPendingIntent = PendingIntent.getActivity(
+                context,
+                id.toInt(),
+                retryIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            notificationBuilder.addAction(0, res.getString(R.string.retry_download), retryPendingIntent)
+        }
+        reconfigurePendingIntent?.let {
+            notificationBuilder.addAction(0, res.getString(R.string.configure_download), it)
+        }
         if (logID != null){
             notificationBuilder.addAction(0, res.getString(R.string.logs), errorPendingIntent)
         }
@@ -1040,6 +1077,8 @@ class NotificationUtil(var context: Context) {
         const val DOWNLOAD_TERMINAL_RUNNING_NOTIFICATION_ID =   99000
         const val PLAYBACK_NOTIFICATION_ID =                    91000
         private const val OBSERVE_RETRY_NOTIFICATION_ID_BASE =  120000
+        private const val ACTION_RESUME_DOWNLOAD = "com.ireum.ytdl.action.RESUME_DOWNLOAD"
+        private const val ACTION_RETRY_DOWNLOAD = "com.ireum.ytdl.action.RETRY_DOWNLOAD"
 
         private const val PROGRESS_MAX = 100
         private const val PROGRESS_CURR = 0

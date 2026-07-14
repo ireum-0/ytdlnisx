@@ -52,7 +52,13 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 
-class DownloadAudioFragment(private var resultItem: ResultItem? = null, private var currentDownloadItem: DownloadItem? = null, private var url: String = "", private var nonSpecific: Boolean = false) : Fragment(), GUISync {
+class DownloadAudioFragment(
+    private var resultItem: ResultItem? = null,
+    private var currentDownloadItem: DownloadItem? = null,
+    private var url: String = "",
+    private var nonSpecific: Boolean = false,
+    private var initialPresetId: String? = null
+) : Fragment(), GUISync {
     private var fragmentView: View? = null
     private var activity: Activity? = null
     private lateinit var downloadViewModel : DownloadViewModel
@@ -111,7 +117,12 @@ class DownloadAudioFragment(private var resultItem: ResultItem? = null, private 
                     val string = Gson().toJson(currentDownloadItem, DownloadItem::class.java)
                     Gson().fromJson(string, DownloadItem::class.java)
                 }else{
-                    downloadViewModel.createDownloadItemFromResult(resultItem, url, DownloadType.audio)
+                    downloadViewModel.createDownloadItemFromResult(
+                        resultItem,
+                        url,
+                        DownloadType.audio,
+                        presetId = initialPresetId
+                    )
                 }
             }
             val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(requireContext())

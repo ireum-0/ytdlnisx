@@ -10,8 +10,9 @@ import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.repository.DownloadRepository
-import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.storage.AppCacheCategory
+import com.ireum.ytdl.util.storage.AppCacheManager
 import com.google.android.material.snackbar.Snackbar
 
 
@@ -37,7 +38,7 @@ class CleanUpLeftoverDownloads(
 
         val activeDownloadCount = downloadRepo.getActiveDownloadsCount()
         if (activeDownloadCount == 0){
-            FileUtil.deleteCachePathIfAppOwned(context)
+            AppCacheManager(context).delete(setOf(AppCacheCategory.DOWNLOAD_TEMP))
         }
 
         return Result.success()

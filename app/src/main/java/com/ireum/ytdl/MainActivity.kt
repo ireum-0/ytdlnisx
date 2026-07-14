@@ -431,6 +431,7 @@ class MainActivity : BaseActivity() {
 
                         bundle.putParcelable("result", downloadViewModel.createEmptyResultItem(path))
                         bundle.putSerializable("type", downloadType)
+                        bundle.putBoolean("quick_download_context", true)
                         navController.navigate(R.id.downloadBottomSheetDialog, bundle)
                         return
                     }

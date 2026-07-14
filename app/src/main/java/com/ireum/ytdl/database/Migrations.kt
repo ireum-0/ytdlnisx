@@ -200,6 +200,13 @@ object Migrations {
         },
         Migration(49, 50) { database ->
             database.execSQL("ALTER TABLE sources ADD COLUMN observedLinks TEXT NOT NULL DEFAULT '[]'")
+        },
+        Migration(50, 51) { database ->
+            database.execSQL("ALTER TABLE downloads ADD COLUMN operationId TEXT NOT NULL DEFAULT ''")
+            database.execSQL("ALTER TABLE downloads ADD COLUMN retryAttempt INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE downloads ADD COLUMN retryStrategy TEXT NOT NULL DEFAULT 'ORIGINAL'")
+            database.execSQL("ALTER TABLE downloads ADD COLUMN lastIssueCode TEXT NOT NULL DEFAULT ''")
+            database.execSQL("ALTER TABLE downloads ADD COLUMN lastIssueStage TEXT NOT NULL DEFAULT ''")
         }
     )
 

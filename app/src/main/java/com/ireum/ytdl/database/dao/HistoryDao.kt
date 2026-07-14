@@ -34,6 +34,9 @@ interface HistoryDao {
     @Query("SELECT * FROM history WHERE downloadPath LIKE '%' || :path || '%' ESCAPE '\\' LIMIT 1")
     fun getItemByDownloadPath(path: String): HistoryItem?
 
+    @Query("SELECT * FROM history WHERE downloadId = :downloadId LIMIT 1")
+    fun getItemByDownloadId(downloadId: Long): HistoryItem?
+
     @Query("SELECT * FROM history WHERE localTreeUri = :treeUri AND localTreePath = :treePath LIMIT 1")
     fun getItemByLocalTree(treeUri: String, treePath: String): HistoryItem?
 

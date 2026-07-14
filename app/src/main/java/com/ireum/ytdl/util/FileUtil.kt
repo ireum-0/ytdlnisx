@@ -1,6 +1,7 @@
 ﻿package com.ireum.ytdl.util
 
 import android.content.Context
+import android.content.ActivityNotFoundException
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
@@ -25,6 +26,9 @@ import com.anggrayudi.storage.file.getAbsolutePath
 import com.anggrayudi.storage.file.moveFileTo
 import com.ireum.ytdl.App
 import com.ireum.ytdl.R
+import com.ireum.ytdl.util.storage.OpenStoredLocationResult
+import com.ireum.ytdl.util.storage.StoredLocation
+import com.ireum.ytdl.util.storage.StoredLocationKind
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -928,13 +932,164 @@ object FileUtil {
 
     fun prepareShareUri(context: Context, path: String): Uri? {
         return runCatching {
-            val documentFile = DocumentFile.fromSingleUri(context, Uri.parse(path))
-            if (documentFile?.exists() == true) {
-                documentFile.uri
+            val uri = Uri.parse(path)
+            if (uri.scheme.equals("content", ignoreCase = true)) {
+                DocumentFile.fromSingleUri(context, uri)
+                    ?.takeIf { document ->
+                        document.exists() && document.isFile && document.canRead()
+                    }
+                    ?.let { uri }
             } else {
                 prepareShareUri(context, File(path))
             }
         }.getOrNull()
+    }
+
+    fun describeStoredLocation(context: Context, storedPath: String): StoredLocation? {
+        val value = storedPath.trim()
+        if (value.isBlank()) return null
+        return when {
+            value.startsWith("content://", ignoreCase = true) -> {
+                val uri = runCatching { Uri.parse(value) }.getOrNull() ?: return null
+                StoredLocation(
+                    kind = StoredLocationKind.CONTENT_URI,
+                    value = uri.toString(),
+                    parentValue = parentContentUri(context, uri)?.toString(),
+                    isAppPrivate = false
+                )
+            }
+            value.startsWith("file://", ignoreCase = true) -> {
+                val rawPath = runCatching { Uri.parse(value).path }.getOrNull().orEmpty()
+                val file = File(rawPath)
+                StoredLocation(
+                    kind = StoredLocationKind.FILE_URI,
+                    value = value,
+                    parentValue = file.parentFile?.absolutePath,
+                    isAppPrivate = isAppPrivatePath(context, file)
+                )
+            }
+            else -> {
+                val file = File(value)
+                StoredLocation(
+                    kind = StoredLocationKind.RAW_PATH,
+                    value = value,
+                    parentValue = file.parentFile?.absolutePath,
+                    isAppPrivate = isAppPrivatePath(context, file)
+                )
+            }
+        }
+    }
+
+    fun commonParentLocation(context: Context, storedPaths: List<String>): StoredLocation? {
+        val locations = storedPaths.mapNotNull { describeStoredLocation(context, it) }
+        if (locations.isEmpty() || locations.size != storedPaths.count { it.isNotBlank() }) return null
+        val parentValues = locations.mapNotNull(StoredLocation::parentValue)
+        if (parentValues.size != locations.size) return null
+        val normalizedParents = parentValues.map { parent ->
+            if (parent.startsWith("content://", ignoreCase = true)) {
+                runCatching { Uri.parse(parent).normalizeScheme().toString() }.getOrDefault(parent)
+            } else {
+                normalizedAbsolutePath(File(parent))
+            }
+        }.distinct()
+        if (normalizedParents.size != 1) return null
+        val first = locations.first()
+        return StoredLocation(
+            kind = if (parentValues.first().startsWith("content://", ignoreCase = true)) {
+                StoredLocationKind.CONTENT_URI
+            } else {
+                StoredLocationKind.RAW_PATH
+            },
+            value = parentValues.first(),
+            parentValue = null,
+            isAppPrivate = first.isAppPrivate
+        )
+    }
+
+    fun openStoredLocation(context: Context, storedPaths: List<String>): OpenStoredLocationResult {
+        val parent = commonParentLocation(context, storedPaths)
+            ?: return OpenStoredLocationResult.UNAVAILABLE
+        val parentUri = when (parent.kind) {
+            StoredLocationKind.CONTENT_URI -> runCatching { Uri.parse(parent.value) }.getOrNull()
+            StoredLocationKind.RAW_PATH,
+            StoredLocationKind.FILE_URI -> buildDocumentUriForPath(parent.value)
+        } ?: return OpenStoredLocationResult.COPY_PARENT_FALLBACK
+
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            data = parentUri
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (runCatching { context.startActivity(viewIntent) }.isSuccess) {
+            return OpenStoredLocationResult.OPENED
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val treeIntent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, parentUri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (runCatching { context.startActivity(treeIntent) }.isSuccess) {
+                return OpenStoredLocationResult.OPENED
+            }
+        }
+        return OpenStoredLocationResult.COPY_PARENT_FALLBACK
+    }
+
+    fun safeFallbackLocationText(location: StoredLocation): String {
+        return if (location.isAppPrivate) {
+            location.value.substringAfterLast(File.separatorChar).ifBlank { "App storage" }
+        } else {
+            location.value
+        }
+    }
+
+    private fun parentContentUri(context: Context, uri: Uri): Uri? {
+        if (DocumentsContract.isTreeUri(uri) && !DocumentsContract.isDocumentUri(context, uri)) {
+            return uri
+        }
+        if (DocumentsContract.isDocumentUri(context, uri)) {
+            val documentId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()
+                ?: return null
+            val treeId = if (DocumentsContract.isTreeUri(uri)) {
+                runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull()
+            } else {
+                null
+            }
+            val parentId = documentId.substringBeforeLast('/', missingDelimiterValue = treeId.orEmpty())
+                .ifBlank { treeId.orEmpty() }
+                .ifBlank { return null }
+            return if (DocumentsContract.isTreeUri(uri)) {
+                runCatching { DocumentsContract.buildDocumentUriUsingTree(uri, parentId) }.getOrNull()
+            } else {
+                uri.authority?.let { authority ->
+                    runCatching { DocumentsContract.buildDocumentUri(authority, parentId) }.getOrNull()
+                }
+            }
+        }
+        val segments = uri.pathSegments
+        if (segments.size <= 1) return null
+        return uri.buildUpon().path(segments.dropLast(1).joinToString("/", prefix = "/")).build()
+    }
+
+    private fun isAppPrivatePath(context: Context, file: File): Boolean {
+        val candidate = normalizedAbsolutePath(file)
+        return listOfNotNull(
+            context.cacheDir,
+            context.filesDir,
+            context.externalCacheDir,
+            context.getExternalFilesDir(null)
+        ).any { root ->
+            val normalizedRoot = normalizedAbsolutePath(root)
+            candidate == normalizedRoot || candidate.startsWith(normalizedRoot + File.separator)
+        }
+    }
+
+    private fun normalizedAbsolutePath(file: File): String {
+        return runCatching { file.toPath().toAbsolutePath().normalize().toString() }
+            .getOrDefault(file.absolutePath)
     }
 
     fun prepareShareUri(context: Context, file: File): Uri? {
@@ -1045,20 +1200,27 @@ object FileUtil {
 
 
     fun openFileIntent(context: Context, downloadPath: String) {
-        val uri = prepareShareUri(context, File(downloadPath))
-        println(uri)
+        val uri = prepareShareUri(context, downloadPath)
 
         if (uri == null){
-            Toast.makeText(context, "Error opening file!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.error_opening_file), Toast.LENGTH_SHORT).show()
         }else{
-            val ext = downloadPath.substring(downloadPath.lastIndexOf(".") + 1).lowercase()
-            val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            val ext = downloadPath.substringBefore('?').substringAfterLast('.', "").lowercase()
+            val mime = context.contentResolver.getType(uri)
+                ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+                ?: "*/*"
 
             val intent = Intent(Intent.ACTION_VIEW)
                 .setDataAndType(uri, mime)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 
-            context.startActivity(intent)
+            try {
+                context.startActivity(intent)
+            } catch (_: ActivityNotFoundException) {
+                Toast.makeText(context, context.getString(R.string.error_opening_file), Toast.LENGTH_SHORT).show()
+            } catch (_: SecurityException) {
+                Toast.makeText(context, context.getString(R.string.file_permission_required), Toast.LENGTH_SHORT).show()
+            }
         }
 
     }

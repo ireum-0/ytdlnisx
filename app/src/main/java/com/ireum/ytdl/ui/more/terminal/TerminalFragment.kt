@@ -36,13 +36,19 @@ import com.ireum.ytdl.R
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.database.viewmodel.CommandTemplateViewModel
 import com.ireum.ytdl.database.viewmodel.TerminalViewModel
+import com.ireum.ytdl.util.AppPrivatePathRedactor
 import com.ireum.ytdl.util.Extensions.enableTextHighlight
 import com.ireum.ytdl.util.Extensions.setCustomTextSize
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.UiUtil
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
+import com.ireum.ytdl.util.terminal.TerminalCommandPlanner
+import com.ireum.ytdl.util.terminal.TerminalCommandPreviewFormatter
 import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.bottomappbar.BottomAppBar
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
 import com.google.android.material.slider.Slider
@@ -51,6 +57,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.properties.Delegates
 
 
@@ -199,6 +206,7 @@ class TerminalFragment : Fragment() {
                     intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                     commandPathResultLauncher.launch(intent)
                 }
+                R.id.terminal_dry_run -> showTerminalDryRun()
 
             }
             true
@@ -217,7 +225,7 @@ class TerminalFragment : Fragment() {
                 showCancelFab()
                 imm.hideSoftInputFromWindow(input.windowToken, 0)
                 lifecycleScope.launch {
-                    val command = input.text.toString().replaceFirst("yt-dlp", "")
+                    val command = TerminalCommandPlanner.normalizeInput(input.text.toString())
                     downloadID = withContext(Dispatchers.IO){
                         terminalViewModel.insert(TerminalItem(command = command, log = output.text.toString()))
                     }
@@ -316,6 +324,64 @@ class TerminalFragment : Fragment() {
         sharedPreferences.getBoolean("wrap_text_terminal", false).apply {
             if (this){
                 bottomAppBar.menu.performIdentifierAction(R.id.wrap, 0)
+            }
+        }
+    }
+
+    private fun showTerminalDryRun() {
+        val appContext = requireContext().applicationContext
+        val command = TerminalCommandPlanner.normalizeInput(input.text.toString())
+        val configHeading = getString(R.string.terminal_dry_run_config)
+        val argumentsHeading = getString(R.string.terminal_dry_run_arguments)
+        val removedHeading = getString(R.string.terminal_dry_run_removed)
+        lifecycleScope.launch {
+            val previewResult = withContext(Dispatchers.IO) {
+                runCatching {
+                    val plan = TerminalCommandPlanFactory.create(
+                        context = appContext,
+                        preferences = sharedPreferences,
+                        command = command,
+                        taskId = "preview"
+                    )
+                    val configFile = File.createTempFile(
+                        "config-TERMINAL[preview-",
+                        "].txt",
+                        appContext.cacheDir
+                    )
+                    try {
+                        configFile.writeText(plan.sanitizedConfig)
+                        val request = plan.createRequest(configFile)
+                        val arguments = YoutubeDLCompat.previewSanitizedArguments(appContext, request)
+                        TerminalCommandPreviewFormatter.format(
+                            plan = plan,
+                            effectiveArguments = arguments,
+                            privatePathPrefixes = AppPrivatePathRedactor.prefixes(appContext),
+                            configHeading = configHeading,
+                            argumentsHeading = argumentsHeading,
+                            removedHeading = removedHeading
+                        )
+                    } finally {
+                        configFile.delete()
+                    }
+                }
+            }
+            previewResult.onSuccess { preview ->
+                val dialogView = layoutInflater.inflate(R.layout.command_dialog, null)
+                dialogView.findViewById<TextView>(R.id.commandText).text = preview
+                MaterialAlertDialogBuilder(requireContext())
+                    .setTitle(R.string.terminal_dry_run)
+                    .setView(dialogView)
+                    .setNegativeButton(R.string.cancel, null)
+                    .setPositiveButton(R.string.terminal_dry_run_copy) { _, _ ->
+                        UiUtil.copyToClipboard(preview, requireActivity())
+                    }
+                    .show()
+            }.onFailure {
+                Toast.makeText(
+                    requireContext(),
+                    R.string.terminal_dry_run_failed,
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }

@@ -20,4 +20,9 @@
         android:title="@string/command_directory"
         android:icon="@drawable/baseline_folder_24"
         app:showAsAction="ifRoom"/>
+    <item
+        android:id="@+id/terminal_dry_run"
+        android:icon="@drawable/ic_code"
+        android:title="@string/terminal_dry_run"
+        app:showAsAction="ifRoom" />
 </menu>

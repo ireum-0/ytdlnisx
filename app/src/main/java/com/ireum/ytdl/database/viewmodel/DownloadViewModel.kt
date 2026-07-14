@@ -48,8 +48,18 @@ import com.ireum.ytdl.util.FormatUtil
 import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
+import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.util.download.DownloadRetryDecision
+import com.ireum.ytdl.util.download.DownloadRetryItemState
+import com.ireum.ytdl.util.download.DownloadRetryMetadata
+import com.ireum.ytdl.util.download.DownloadRetryPolicy
+import com.ireum.ytdl.util.download.DownloadRetryStrategy
+import com.ireum.ytdl.util.download.supportsSameSettingsRetry
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
+import com.ireum.ytdl.util.preset.DownloadPreset
+import com.ireum.ytdl.util.preset.DownloadPresetMapper
+import com.ireum.ytdl.util.preset.DownloadPresetStore
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.UpdateMultipleDownloadsDataWorker
 import com.ireum.ytdl.work.UpdateMultipleDownloadsFormatsWorker
@@ -68,6 +78,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.parcelize.Parcelize
 import java.io.File
 import java.util.Locale
+import java.util.UUID
 
 
 class DownloadViewModel(private val application: Application) : AndroidViewModel(application) {
@@ -84,6 +95,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     private val notificationUtil = NotificationUtil(application)
     private val ytdlpUtil: YTDLPUtil
     private val resources : Resources
+    private val downloadPresetStore: DownloadPresetStore
 
     val allDownloads : Flow<PagingData<DownloadItem>>
     val queuedDownloads : Flow<PagingData<DownloadItemSimple>>
@@ -145,6 +157,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao)
         resultRepository = ResultRepository(dbManager.resultDao, commandTemplateDao, application)
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(application)
+        downloadPresetStore = DownloadPresetStore(application, sharedPreferences)
         ytdlpUtil = YTDLPUtil(application, commandTemplateDao)
 
         activeDownloadsCount = repository.activeDownloadsCount
@@ -268,8 +281,22 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
     }
 
-    fun createDownloadItemFromResult(result: ResultItem?, url: String = "", givenType: DownloadType) : DownloadItem {
+    fun createDownloadItemFromResult(
+        result: ResultItem?,
+        url: String = "",
+        givenType: DownloadType,
+        presetId: String? = null,
+        applyQuickDownloadPreset: Boolean = false
+    ) : DownloadItem {
         val resultItem = result ?: createEmptyResultItem(url)
+        val baseType = getDownloadType(givenType, resultItem.url)
+        val requestedPreset = when {
+            applyQuickDownloadPreset && baseType != DownloadType.command -> {
+                downloadPresetStore.quickDownloadPreset()
+            }
+            presetId != null -> downloadPresetStore.preset(presetId)
+            else -> null
+        }
 
         val embedSubs = sharedPreferences.getBoolean("embed_subtitles", false)
         val saveSubs = sharedPreferences.getBoolean("write_subtitles", false)
@@ -281,7 +308,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         val videoEmbedThumb = sharedPreferences.getBoolean("video_embed_thumbnail", false)
         val cropThumb = sharedPreferences.getBoolean("crop_thumbnail", false)
 
-        var type = getDownloadType(givenType, resultItem.url)
+        var type = if (applyQuickDownloadPreset && requestedPreset != null) {
+            requestedPreset.configuration.type.toDownloadType()
+        } else {
+            baseType
+        }
         if(type == DownloadType.command && commandTemplateDao.getTotalNumber() == 0) type = DownloadType.video
 
         val customFileNameTemplate = when(type) {
@@ -323,17 +354,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             embedThumbnail = videoEmbedThumb
         )
 
-        val extraCommands = when(type){
-            DownloadType.audio -> extraCommandsForAudio
-            DownloadType.video -> extraCommandsForVideo
-            else -> listOf()
-        }.filter {
-            it.urlRegex.isEmpty() || it.urlRegex.any { u ->
-                Regex(u).containsMatchIn(resultItem.url)
-            }
-        }.joinToString(" ") { it.content }
+        val extraCommands = siteExtraCommands(type, resultItem.url)
 
-        return DownloadItem(0,
+        val downloadItem = DownloadItem(0,
             resultItem.url,
             resultItem.title,
             resultItem.author,
@@ -360,6 +383,59 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             incognito = sharedPreferences.getBoolean("incognito", false),
             availableSubtitles = resultItem.availableSubtitles
         )
+        val shouldApplyPreset = requestedPreset != null && (
+            applyQuickDownloadPreset || requestedPreset.configuration.type.toDownloadType() == downloadItem.type
+        )
+        return if (shouldApplyPreset) applyDownloadPreset(downloadItem, requestedPreset) else downloadItem
+    }
+
+    fun applyDownloadPreset(item: DownloadItem, preset: DownloadPreset): DownloadItem {
+        val targetType = preset.configuration.type.toDownloadType()
+        val targetItem = if (targetType == item.type) {
+            item
+        } else {
+            item.copy(
+                downloadPath = when (targetType) {
+                    DownloadType.audio -> sharedPreferences.getString(
+                        "music_path",
+                        FileUtil.getDefaultAudioPath()
+                    )!!
+                    else -> sharedPreferences.getString(
+                        "video_path",
+                        FileUtil.getDefaultVideoPath()
+                    )!!
+                },
+                customFileNameTemplate = when (targetType) {
+                    DownloadType.audio -> sharedPreferences.getString(
+                        "file_name_template_audio",
+                        "%(uploader).30B - %(title).170B"
+                    )!!
+                    else -> sharedPreferences.getString(
+                        "file_name_template",
+                        "%(uploader).30B - %(title).170B"
+                    )!!
+                },
+                extraCommands = siteExtraCommands(targetType, item.url)
+            )
+        }
+        val resolvedFormat = if (targetType == item.type) {
+            item.format
+        } else {
+            runCatching { getFormat(item.allFormats, targetType, item.url) }.getOrDefault(item.format)
+        }
+        return DownloadPresetMapper.applyTo(targetItem, preset, resolvedFormat)
+    }
+
+    private fun siteExtraCommands(type: DownloadType, url: String): String {
+        return when (type) {
+            DownloadType.audio -> extraCommandsForAudio
+            DownloadType.video -> extraCommandsForVideo
+            else -> emptyList()
+        }.filter { template ->
+            template.urlRegex.isEmpty() || template.urlRegex.any { pattern ->
+                runCatching { Regex(pattern).containsMatchIn(url) }.getOrDefault(false)
+            }
+        }.joinToString(" ") { it.content }
     }
 
     fun createResultItemFromDownload(downloadItem: DownloadItem) : ResultItem {
@@ -556,7 +632,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 it.equals("Default", ignoreCase = true) || it.equals("webm", ignoreCase = true)
             } ?: "mkv"
         }
-        return DownloadItem(0,
+        val downloadItem = DownloadItem(0,
             historyItem.url,
             historyItem.title,
             historyItem.author,
@@ -583,7 +659,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             incognito = sharedPreferences.getBoolean("incognito", false),
             availableSubtitles = availableSubtitles
         )
-
+        return downloadItem
     }
 
     private fun String.isLocalFormatLike(): Boolean {
@@ -741,6 +817,18 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 itemIDs.forEach {
                     val item = repository.getItemByID(it)
                     if (processingItemsJob?.isCancelled == true) throw CancellationException()
+                    if (item.status == DownloadRepository.Status.Error.toString()) {
+                        when (val decision = prepareRetryMetadata(
+                            item = item,
+                            strategy = DownloadRetryStrategy.RECONFIGURED,
+                            settingsConfirmed = true
+                        )) {
+                            is DownloadRetryDecision.Allowed ->
+                                applyRetryMetadata(item, decision.metadata)
+                            is DownloadRetryDecision.Blocked ->
+                                throw IllegalStateException(retryBlockedMessage(decision))
+                        }
+                    }
                     if (!deleteExisting) item.id = 0
                     item.status = DownloadRepository.Status.Processing.toString()
                     repository.update(item)
@@ -1004,8 +1092,81 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     fun reQueueDownloadItems(items: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
+        reQueueDownloadItemsAndWait(items)
+    }
+
+    suspend fun reQueueDownloadItemsAndWait(items: List<Long>) = withContext(Dispatchers.IO) {
         dbManager.downloadDao.reQueueDownloadItems(items)
         repository.startDownloadWorker(emptyList(), application)
+    }
+
+    suspend fun retryFailedDownload(itemId: Long): DownloadRetryDecision {
+        val item = repository.getItemByID(itemId)
+        val decision = prepareRetryMetadata(
+            item = item,
+            strategy = DownloadRetryStrategy.SAME_SETTINGS,
+            settingsConfirmed = false
+        )
+        if (decision is DownloadRetryDecision.Allowed) {
+            applyRetryMetadata(item, decision.metadata)
+            item.status = DownloadRepository.Status.Queued.toString()
+            item.downloadStartTime = 0L
+            repository.update(item)
+            repository.startDownloadWorker(listOf(item), application, false)
+        }
+        return decision
+    }
+
+    private fun prepareRetryMetadata(
+        item: DownloadItem,
+        strategy: DownloadRetryStrategy,
+        settingsConfirmed: Boolean
+    ): DownloadRetryDecision {
+        val state = when (item.status) {
+            DownloadRepository.Status.Error.toString() -> DownloadRetryItemState.ERROR
+            DownloadRepository.Status.Cancelled.toString() -> DownloadRetryItemState.CANCELED
+            else -> DownloadRetryItemState.OTHER
+        }
+        val issueCode = runCatching { DownloadIssueCode.valueOf(item.lastIssueCode) }
+            .getOrDefault(DownloadIssueCode.UNKNOWN)
+        val currentStrategy = runCatching { DownloadRetryStrategy.valueOf(item.retryStrategy) }
+            .getOrDefault(DownloadRetryStrategy.ORIGINAL)
+        val hasValidOutput = runCatching {
+            dbManager.historyDao.getItemByDownloadId(item.id)
+                ?.downloadPath
+                ?.any(FileUtil::exists) == true
+        }.getOrDefault(false)
+        return DownloadRetryPolicy.prepare(
+            current = DownloadRetryMetadata(
+                operationId = item.operationId,
+                attempt = item.retryAttempt,
+                strategy = currentStrategy
+            ),
+            itemState = state,
+            requestedStrategy = strategy,
+            issueRetryable = issueCode.supportsSameSettingsRetry(),
+            hasValidOutput = hasValidOutput,
+            settingsConfirmed = settingsConfirmed,
+            operationIdFactory = { UUID.randomUUID().toString() }
+        )
+    }
+
+    private fun applyRetryMetadata(item: DownloadItem, metadata: DownloadRetryMetadata) {
+        item.operationId = metadata.operationId
+        item.retryAttempt = metadata.attempt
+        item.retryStrategy = metadata.strategy.name
+    }
+
+    fun retryBlockedMessage(decision: DownloadRetryDecision.Blocked): String {
+        return when (decision.reason) {
+            com.ireum.ytdl.util.download.DownloadRetryBlockReason.ATTEMPT_LIMIT ->
+                resources.getString(R.string.retry_attempt_limit_reached)
+            com.ireum.ytdl.util.download.DownloadRetryBlockReason.NOT_RETRYABLE ->
+                resources.getString(R.string.retry_requires_reconfiguration)
+            com.ireum.ytdl.util.download.DownloadRetryBlockReason.CANCELED ->
+                resources.getString(R.string.canceled_download_not_retried)
+            else -> resources.getString(R.string.download_retry_not_available)
+        }
     }
 
     suspend fun queueProcessingDownloads(ignoreDuplicates: Boolean = false) : QueueDownloadsResult {
@@ -1084,6 +1245,27 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         //history item id if the existing item is already downloaded
         //if history id is empty, it just found an existing item in the queue/active list
         val existingItemIDs = mutableListOf<AlreadyExistsIDs>()
+
+        items.forEach { item ->
+            if (item.status == DownloadRepository.Status.Error.toString()) {
+                when (val decision = prepareRetryMetadata(
+                    item = item,
+                    strategy = DownloadRetryStrategy.RECONFIGURED,
+                    settingsConfirmed = true
+                )) {
+                    is DownloadRetryDecision.Allowed -> applyRetryMetadata(item, decision.metadata)
+                    is DownloadRetryDecision.Blocked -> {
+                        return QueueDownloadsResult(
+                            message = retryBlockedMessage(decision),
+                            duplicateDownloadIDs = emptyList(),
+                            succeeded = false
+                        )
+                    }
+                }
+            } else if (item.operationId.isBlank()) {
+                item.operationId = UUID.randomUUID().toString()
+            }
+        }
 
         items.forEachIndexed { idx, it ->
             if (it.downloadStartTime > 0) {
@@ -1289,7 +1471,12 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                                 id = 0,
                                 logID = null,
                                 customFileNameTemplate = it.customFileNameTemplate,
-                                status = DownloadRepository.Status.Queued.toString()
+                                status = DownloadRepository.Status.Queued.toString(),
+                                operationId = it.operationId,
+                                retryAttempt = it.retryAttempt,
+                                retryStrategy = it.retryStrategy,
+                                lastIssueCode = it.lastIssueCode,
+                                lastIssueStage = it.lastIssueStage
                             )
                             normalized.toString() == it.toString()
                         }

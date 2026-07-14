@@ -96,6 +96,7 @@ import com.ireum.ytdl.util.NavbarUtil
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.util.Extensions.updateMenuItemBadge
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
+import com.ireum.ytdl.util.storage.FileAccessState
 import com.ireum.ytdl.util.LocalAddCandidateDto
 import com.ireum.ytdl.util.LocalAddMatchDto
 import androidx.work.OneTimeWorkRequestBuilder
@@ -621,8 +622,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             requireActivity().onBackPressedDispatcher.onBackPressed()
             isEnabled = true
         }
-        historyAdapter = HistoryPaginatedAdapter(this, requireActivity())
+        historyViewModel = ViewModelProvider(this)[HistoryViewModel::class.java]
+        historyAdapter = HistoryPaginatedAdapter(this, requireActivity()) { item ->
+            historyViewModel.requestFileAccessState(item)
+        }
         recyclerView = view.findViewById(R.id.recyclerviewhistorys)
+        viewLifecycleOwner.lifecycleScope.launch {
+            historyViewModel.fileAccessStates
+                .flowWithLifecycle(viewLifecycleOwner.lifecycle, Lifecycle.State.STARTED)
+                .collectLatest(historyAdapter::setFileAccessStates)
+        }
         applyPendingDirectRestoreVisibility()
 
         val preferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
@@ -633,7 +642,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
         recyclerView.layoutManager = GridLayoutManager(context, resources.getInteger(R.integer.grid_size))
         noResults.isVisible = false
-        historyViewModel = ViewModelProvider(this)[HistoryViewModel::class.java]
         playlistViewModel = ViewModelProvider(this)[PlaylistViewModel::class.java]
         historyViewModel.backfillRemoteThumbnails()
         loadHiddenStateFromPrefs()
@@ -2441,6 +2449,15 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         topAppBar.setOnMenuItemClickListener { m: MenuItem ->
             when (m.itemId) {
                 R.id.search_history -> showSearchDialog()
+                R.id.refresh_file_status -> {
+                    val visibleItems = historyAdapter.visibleHistoryItems()
+                    historyViewModel.refreshVisibleFileAccessStates(visibleItems)
+                    Snackbar.make(
+                        recyclerView,
+                        getString(R.string.refreshing_visible_file_status),
+                        Snackbar.LENGTH_SHORT
+                    ).show()
+                }
                 R.id.add_local_video -> {
                     val options = arrayOf(
                         getString(R.string.add_local_video),
@@ -6337,37 +6354,82 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 launchReconnectFilePicker(item)
             }
             .setNegativeButton(getString(R.string.details)) { _, _ ->
-                UiUtil.showHistoryItemDetailsCard(item, requireActivity(), false, sharedPreferences,
-                    removeItem = { it, deleteFile -> historyViewModel.delete(it, deleteFile) },
-                    redownloadItem = {
-                        lifecycleScope.launch {
-                            val result = withContext(Dispatchers.IO) {
-                                val downloadItem = downloadViewModel.createDownloadItemFromHistory(it)
-                                downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = false)
-                            }
-                            if (!result.succeeded) {
-                                Toast.makeText(
-                                    requireContext(),
-                                    result.message.ifBlank { getString(R.string.download_queue_failed) },
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
-                    },
-                    redownloadShowDownloadCard = {
-                        findNavController().navigate(
-                            R.id.downloadBottomSheetDialog, bundleOf(
-                                Pair("result", downloadViewModel.createResultItemFromHistory(it)),
-                                Pair("type", it.type),
-                                Pair("source_history_id", it.id),
-                                Pair("ignore_duplicates", false)
-                            )
-                        )
-                    }
-                )
+                showHistoryDetailsCard(item, FileAccessState.MISSING)
             }
             .setNeutralButton(getString(R.string.cancel), null)
             .show()
+    }
+
+    private fun showFilePermissionRequiredDialog(item: HistoryItem) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.file_permission_required))
+            .setMessage(getString(R.string.file_permission_required_desc))
+            .setPositiveButton(getString(R.string.choose_file)) { _, _ ->
+                launchReconnectFilePicker(item)
+            }
+            .setNegativeButton(getString(R.string.details)) { _, _ ->
+                showHistoryDetailsCard(item, FileAccessState.PERMISSION_REQUIRED)
+            }
+            .setNeutralButton(getString(R.string.refresh_file_status)) { _, _ ->
+                historyViewModel.requestFileAccessState(item, force = true)
+            }
+            .show()
+    }
+
+    private fun showUnknownFileStateDialog(item: HistoryItem) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.file_status_unknown))
+            .setMessage(getString(R.string.file_status_unknown_desc))
+            .setPositiveButton(getString(R.string.refresh_file_status)) { _, _ ->
+                historyViewModel.requestFileAccessState(item, force = true)
+            }
+            .setNegativeButton(getString(R.string.details)) { _, _ ->
+                showHistoryDetailsCard(item, FileAccessState.UNKNOWN)
+            }
+            .setNeutralButton(getString(R.string.cancel), null)
+            .show()
+    }
+
+    private fun showHistoryDetailsCard(item: HistoryItem, fileState: FileAccessState) {
+        UiUtil.showHistoryItemDetailsCard(
+            item,
+            requireActivity(),
+            fileState == FileAccessState.EXISTS,
+            sharedPreferences,
+            removeItem = { historyItem, deleteFile ->
+                historyViewModel.delete(historyItem, deleteFile)
+            },
+            redownloadItem = { historyItem ->
+                lifecycleScope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        val downloadItem = downloadViewModel.createDownloadItemFromHistory(historyItem)
+                        downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = false)
+                    }
+                    if (!result.succeeded) {
+                        Toast.makeText(
+                            requireContext(),
+                            result.message.ifBlank { getString(R.string.download_queue_failed) },
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            },
+            redownloadShowDownloadCard = { historyItem ->
+                findNavController().navigate(
+                    R.id.downloadBottomSheetDialog,
+                    bundleOf(
+                        Pair("result", downloadViewModel.createResultItemFromHistory(historyItem)),
+                        Pair("type", historyItem.type),
+                        Pair("source_history_id", historyItem.id),
+                        Pair("ignore_duplicates", false)
+                    )
+                )
+            },
+            fileAccessState = fileState,
+            refreshFileAccessState = {
+                historyViewModel.requestFileAccessState(item, force = true)
+            }
+        )
     }
 
     private fun launchReconnectFilePicker(item: HistoryItem) {
@@ -6423,14 +6485,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         return merged.joinToString(", ")
     }
 
-    override fun onCardClick(itemID: Long, filePresent: Boolean) {
+    override fun onCardClick(itemID: Long, fileState: FileAccessState) {
         lifecycleScope.launch {
             val item = withContext(Dispatchers.IO) {
                 runCatching { historyViewModel.getByID(itemID) }.getOrNull()
             } ?: return@launch
-            if ((item.type == DownloadType.video || item.type == DownloadType.audio) && filePresent) {
-                val path = item.downloadPath.firstOrNull { FileUtil.exists(it) }
-                    ?: item.downloadPath.firstOrNull()
+            if (
+                (item.type == DownloadType.video || item.type == DownloadType.audio) &&
+                fileState == FileAccessState.EXISTS
+            ) {
+                val path = item.downloadPath.firstOrNull()
                 if (path.isNullOrBlank()) return@launch
                 val currentEntry = captureNavigationEntry()
                 val currentState = currentEntry.state
@@ -6504,37 +6568,23 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     intent.putExtra("context_youtuber_group_id", youtuberGroupId)
                 }
                 startActivity(intent)
-            } else if ((item.type == DownloadType.video || item.type == DownloadType.audio) && !filePresent) {
+            } else if (
+                (item.type == DownloadType.video || item.type == DownloadType.audio) &&
+                fileState == FileAccessState.MISSING
+            ) {
                 showMissingDownloadItemDialog(item)
+            } else if (fileState == FileAccessState.PERMISSION_REQUIRED) {
+                showFilePermissionRequiredDialog(item)
+            } else if (fileState == FileAccessState.UNKNOWN) {
+                showUnknownFileStateDialog(item)
+            } else if (fileState == FileAccessState.CHECKING) {
+                Snackbar.make(
+                    recyclerView,
+                    getString(R.string.checking_files),
+                    Snackbar.LENGTH_SHORT
+                ).show()
             } else {
-                UiUtil.showHistoryItemDetailsCard(item, requireActivity(), filePresent, sharedPreferences,
-                    removeItem = { it, deleteFile -> historyViewModel.delete(it, deleteFile) },
-                    redownloadItem = {
-                        lifecycleScope.launch {
-                            val result = withContext(Dispatchers.IO) {
-                                val downloadItem = downloadViewModel.createDownloadItemFromHistory(it)
-                                downloadViewModel.queueDownloads(listOf(downloadItem), ignoreDuplicates = false)
-                            }
-                            if (!result.succeeded) {
-                                Toast.makeText(
-                                    requireContext(),
-                                    result.message.ifBlank { getString(R.string.download_queue_failed) },
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
-                    },
-                    redownloadShowDownloadCard = {
-                        findNavController().navigate(
-                            R.id.downloadBottomSheetDialog, bundleOf(
-                                Pair("result", downloadViewModel.createResultItemFromHistory(it)),
-                                Pair("type", it.type),
-                                Pair("source_history_id", it.id),
-                                Pair("ignore_duplicates", false)
-                            )
-                        )
-                    }
-                )
+                showHistoryDetailsCard(item, fileState)
             }
         }
     }
@@ -6761,14 +6811,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         return location[1]
     }
 
-    override fun onButtonClick(itemID: Long, filePresent: Boolean) {
-        if (filePresent) {
+    override fun onButtonClick(itemID: Long, fileState: FileAccessState) {
+        if (fileState == FileAccessState.EXISTS) {
             lifecycleScope.launch {
                 val item = withContext(Dispatchers.IO) {
                     runCatching { historyViewModel.getByID(itemID) }.getOrNull()
                 } ?: return@launch
                 FileUtil.shareFileIntent(requireContext(), item.downloadPath)
             }
+        } else {
+            onCardClick(itemID, fileState)
         }
     }
 

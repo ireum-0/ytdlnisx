@@ -30,12 +30,12 @@ class MigrationSmokeTest {
     }
 
     @Test
-    fun migrateFromVersion49To50AddsObservedLinks() {
+    fun migrateFromVersion49To51AddsObservedLinks() {
         helper.createDatabase(TEST_DB, 49).close()
 
         val db = helper.runMigrationsAndValidate(
             TEST_DB,
-            50,
+            51,
             true,
             *Migrations.migrationList
         )
@@ -49,7 +49,7 @@ class MigrationSmokeTest {
     }
 
     @Test
-    fun migrateFromVersion49To50PreservesPopulatedSourceRows() {
+    fun migrateFromVersion49To51PreservesPopulatedSourceRows() {
         helper.createDatabase(TEST_DB, 49).apply {
             execSQL(
                 """
@@ -68,7 +68,7 @@ class MigrationSmokeTest {
 
         val db = helper.runMigrationsAndValidate(
             TEST_DB,
-            50,
+            51,
             true,
             *Migrations.migrationList
         )
@@ -86,12 +86,12 @@ class MigrationSmokeTest {
     }
 
     @Test
-    fun migrateFromVersion30To50ValidatesCurrentManualMigrationChain() {
+    fun migrateFromVersion30To51ValidatesCurrentManualMigrationChain() {
         helper.createDatabase(TEST_DB, 30).close()
 
         val db = helper.runMigrationsAndValidate(
             TEST_DB,
-            50,
+            51,
             true,
             *Migrations.migrationList
         )
@@ -109,6 +109,119 @@ class MigrationSmokeTest {
         }
     }
 
+    @Test
+    fun migrateFromVersion37To51PreservesPopulatedHistoryPlaybackFields() {
+        helper.createDatabase(TEST_DB, 37).apply {
+            execSQL(
+                """
+                INSERT INTO history (
+                    id, url, title, author, artist, duration, durationSeconds, thumb,
+                    type, time, downloadPath, website, format, filesize, downloadId,
+                    command, playbackPositionMs, localTreeUri, localTreePath, keywords,
+                    customThumb
+                ) VALUES (
+                    11, 'https://example.com/video', 'Saved title', 'Creator', 'Artist',
+                    '00:02:03', 123, 'https://example.com/thumb.jpg', 'video', 1000,
+                    '["/storage/emulated/0/Download/video.mp4"]', 'example.com', '{}',
+                    4567, 99, '--format 137+140', 42000,
+                    'content://example/tree/downloads', '/storage/emulated/0/Download',
+                    'one,two', '/storage/emulated/0/Download/custom.jpg'
+                )
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(
+            TEST_DB,
+            51,
+            true,
+            *Migrations.migrationList
+        )
+
+        db.use {
+            it.query(
+                """
+                SELECT title, artist, durationSeconds, playbackPositionMs, lastWatched,
+                       hardSubScanRemoved, hardSubDone
+                FROM history WHERE id = 11
+                """.trimIndent()
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("Saved title", cursor.getString(0))
+                assertEquals("Artist", cursor.getString(1))
+                assertEquals(123L, cursor.getLong(2))
+                assertEquals(42000L, cursor.getLong(3))
+                assertEquals(0L, cursor.getLong(4))
+                assertEquals(0, cursor.getInt(5))
+                assertEquals(0, cursor.getInt(6))
+            }
+
+            assertEquals(
+                setOf(
+                    "index_history_time",
+                    "index_history_author",
+                    "index_history_title",
+                    "index_history_type",
+                    "index_history_website",
+                    "index_history_filesize",
+                    "index_history_url"
+                ),
+                tableIndices(it, "history")
+            )
+        }
+    }
+
+    @Test
+    fun migrateFromVersion50To51PreservesDownloadAndAddsRetryMetadata() {
+        helper.createDatabase(TEST_DB, 50).apply {
+            execSQL(
+                """
+                INSERT INTO downloads (
+                    id, url, title, author, thumb, duration, type, format, container,
+                    downloadSections, allFormats, downloadPath, website, downloadSize,
+                    playlistTitle, audioPreferences, videoPreferences, extraCommands,
+                    customFileNameTemplate, SaveThumb, status, downloadStartTime, logID,
+                    playlistURL, playlistIndex, incognito, availableSubtitles, rowNumber,
+                    observeSourceId
+                ) VALUES (
+                    21, 'https://example.com/video', 'Retry me', 'Creator', '', '10',
+                    'video', '{}', 'mp4', '', '[]', '/downloads', 'example.com', '', '',
+                    '{}', '{}', '', '%(title)s', 0, 'Error', 0, 5, '', NULL, 0, '[]', 0, 7
+                )
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(
+            TEST_DB,
+            51,
+            true,
+            *Migrations.migrationList
+        )
+
+        db.use {
+            it.query(
+                """
+                SELECT title, status, observeSourceId, operationId, retryAttempt,
+                       retryStrategy, lastIssueCode, lastIssueStage
+                FROM downloads WHERE id = 21
+                """.trimIndent()
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("Retry me", cursor.getString(0))
+                assertEquals("Error", cursor.getString(1))
+                assertEquals(7L, cursor.getLong(2))
+                assertEquals("", cursor.getString(3))
+                assertEquals(0, cursor.getInt(4))
+                assertEquals("ORIGINAL", cursor.getString(5))
+                assertEquals("", cursor.getString(6))
+                assertEquals("", cursor.getString(7))
+            }
+        }
+    }
+
     private fun tableColumnDefaults(
         db: SupportSQLiteDatabase,
         tableName: String
@@ -122,6 +235,20 @@ class MigrationSmokeTest {
             }
         }
         return columns
+    }
+
+    private fun tableIndices(
+        db: SupportSQLiteDatabase,
+        tableName: String
+    ): Set<String> {
+        val indices = linkedSetOf<String>()
+        db.query("PRAGMA index_list(`$tableName`)").use { cursor ->
+            val nameIndex = cursor.getColumnIndexOrThrow("name")
+            while (cursor.moveToNext()) {
+                indices += cursor.getString(nameIndex)
+            }
+        }
+        return indices
     }
 
     private companion object {

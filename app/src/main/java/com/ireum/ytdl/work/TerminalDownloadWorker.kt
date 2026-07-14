@@ -25,8 +25,8 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
 import com.yausername.youtubedl_android.YoutubeDL
-import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -78,11 +78,18 @@ class TerminalDownloadWorker(
         if (itemId == 0) return Result.failure()
         if (command.isNullOrBlank()) return Result.failure()
 
+        val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val terminalPlan = TerminalCommandPlanFactory.create(
+            context = context,
+            preferences = sharedPreferences,
+            command = command,
+            taskId = itemId.toString()
+        )
         val dbManager = DBManager.getInstance(context)
         val logRepo = LogRepository(dbManager.logDao)
         val notificationUtil = NotificationUtil(context)
         val handler = Handler(Looper.getMainLooper())
-        val redactedCommand = SensitiveTextRedactor.redactCommand(command)
+        val redactedCommand = SensitiveTextRedactor.redactCommand(terminalPlan.sanitizedConfig)
         val notificationTitle = SensitiveTextRedactor.safeNotificationTitle(redactedCommand)
 
         val intent = Intent(context, TerminalActivity::class.java)
@@ -101,50 +108,18 @@ class TerminalDownloadWorker(
             return Result.retry()
         }
 
-        val request = YoutubeDLRequest(emptyList())
-        val sharedPreferences =  PreferenceManager.getDefaultSharedPreferences(context)
-
-        val downloadLocation = sharedPreferences.getString("command_path", FileUtil.getDefaultCommandPath())
-        val sanitizedCommand = YoutubeDLCompat.stripExternalFfmpegLocationOptionsWithReport(command)
-        val removedOptionWarning = if (sanitizedCommand.removedOptions.isNotEmpty()) {
+        val downloadLocation = terminalPlan.downloadLocation
+        val removedOptionWarning = if (terminalPlan.removedOptions.isNotEmpty()) {
             "Warning: Removed unsafe or unsupported yt-dlp option(s): " +
-                    sanitizedCommand.removedOptions.joinToString(", ") + "\n\n"
+                    terminalPlan.removedOptions.joinToString(", ") + "\n\n"
         } else {
             ""
         }
         val configFile = File(context.cacheDir.absolutePath + "/config-TERMINAL[${System.currentTimeMillis()}].txt").apply {
-            writeText(sanitizedCommand.commandString)
+            writeText(terminalPlan.sanitizedConfig)
         }
-        YoutubeDLCompat.allowAppGeneratedConfigFile(request, configFile)
-        request.addOption(
-            "--config-locations",
-            configFile.absolutePath
-        )
-
-        if (sharedPreferences.getBoolean("use_cookies", false)){
-            FileUtil.getCookieFile(context){
-                request.addOption("--cookies", it)
-            }
-
-            val useHeader = sharedPreferences.getBoolean("use_header", false)
-            val header = sharedPreferences.getString("useragent_header", "")
-            if (useHeader && !header.isNullOrBlank()){
-                request.addOption("--add-header","User-Agent:${header}")
-            }
-        }
-
-        val commandPath = sharedPreferences.getString("command_path", FileUtil.getDefaultCommandPath()) ?: FileUtil.getDefaultCommandPath()
-        var noCache = !sharedPreferences.getBoolean("cache_downloads", true) && FileUtil.canWriteToDestination(commandPath, context)
-
-        if (command.contains("-P ")) {
-            noCache = true
-        }else {
-            if (!noCache){
-                request.addOption("-P", FileUtil.getCachePath(context) + "TERMINAL/" + itemId)
-            }else if (!request.hasOption("-P")){
-                request.addOption("-P", FileUtil.formatPath(commandPath))
-            }
-        }
+        val request = terminalPlan.createRequest(configFile)
+        val noCache = !terminalPlan.usesAppCache
         shouldCleanupTerminalCache = !noCache
 
 
@@ -200,7 +175,7 @@ class TerminalDownloadWorker(
                     FileUtil.moveFile(
                         File(FileUtil.getCachePath(context) + "/TERMINAL/" + itemId),
                         context,
-                        downloadLocation ?: FileUtil.getDefaultCommandPath(),
+                        downloadLocation,
                         false
                     ){ p ->
                         eventBus.post(DownloadWorker.WorkerProgress(p, "", itemId.toLong(), logItem.id))

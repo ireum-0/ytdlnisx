@@ -39,9 +39,23 @@ import com.ireum.ytdl.util.Extensions.toDurationSeconds
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.PendingDuplicateDownloadStore
+import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.SubtitleFileValidator
 import com.ireum.ytdl.util.SubtitleFormatConverter
 import com.ireum.ytdl.util.SubtitleSelection
+import com.ireum.ytdl.util.download.DownloadIssue
+import com.ireum.ytdl.util.download.DownloadIssueClassifier
+import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.util.download.DownloadIssueSeverity
+import com.ireum.ytdl.util.download.DownloadIssueSource
+import com.ireum.ytdl.util.download.DownloadIssueStage
+import com.ireum.ytdl.util.download.DownloadIssueStageTracker
+import com.ireum.ytdl.util.download.DownloadIssueText
+import com.ireum.ytdl.util.download.DownloadOutcome
+import com.ireum.ytdl.util.download.DownloadRetryMetadata
+import com.ireum.ytdl.util.download.DownloadRetryPolicy
+import com.ireum.ytdl.util.download.DownloadRetryStrategy
+import com.ireum.ytdl.util.download.DownloadSuggestedAction
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.yausername.youtubedl_android.YoutubeDL
@@ -268,10 +282,21 @@ class DownloadWorker(
                     var effectiveCommandString = ""
                     val recentYtdlpOutput = ArrayDeque<String>()
                     var logDownloads = false
-                    var logItem: LogItem? = null
                     var initialLogDetails = ""
                     var retryLogDetails = ""
                     var hardSubPostProcessLockHeld = false
+                    var currentIssueStage = DownloadIssueStage.PREFLIGHT
+                    var createdOutputPaths: List<String> = emptyList()
+                    var preserveQueueRecord = false
+                    var downloadOutcome: DownloadOutcome? = null
+                    fun recordCreatedOutputs(paths: List<String>) {
+                        createdOutputPaths = (createdOutputPaths + paths)
+                            .distinct()
+                            .filter { path ->
+                                val file = File(path)
+                                file.exists() && file.isFile
+                            }
+                    }
                     fun shouldStopForUserRequest(): Boolean {
                         val latestStatus = runCatching { dao.checkStatus(downloadItem.id) }.getOrNull()
                         return this@DownloadWorker.isStopped ||
@@ -283,7 +308,10 @@ class DownloadWorker(
                         registerHardSubTarget(downloadItem.id)
                         updateHardSubWorkerNotification(notificationUtil)
                     }
-                    val notification = notificationUtil.createDownloadServiceNotification(openDownloadQueue, downloadItem.title.ifEmpty { downloadItem.url })
+                    val notificationTitle = SensitiveTextRedactor.redactOutput(
+                        downloadItem.title.ifEmpty { downloadItem.url }
+                    )
+                    val notification = notificationUtil.createDownloadServiceNotification(openDownloadQueue, notificationTitle)
                     notificationUtil.notify(downloadItem.id.toInt(), notification)
 
                     val writtenPath = downloadItem.format.format_note.contains("-P ")
@@ -300,6 +328,9 @@ class DownloadWorker(
 //                    }
 
                     downloadItem.status = DownloadRepository.Status.Active.toString()
+                    if (downloadItem.operationId.isBlank()) {
+                        downloadItem.operationId = "download-${downloadItem.id}"
+                    }
                     launch {
                         delay(1500)
                         //update item if its incomplete
@@ -322,22 +353,21 @@ class DownloadWorker(
                     val commandString = ytdlpUtil.parseYTDLRequestString(request)
                     effectiveCommandString = commandString
                     val requestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, commandString)
-                    initialLogDetails = "Downloading:\n" +
+                    initialLogDetails = SensitiveTextRedactor.redactOutput("Downloading:\n" +
                             "Title: ${downloadItem.title}\n" +
                             "URL: ${downloadItem.url}\n" +
                             "Type: ${downloadItem.type}\n" +
-                            "Command:\n$commandString \n" +
-                            "$requestDiagnostics\n"
+                            "Command:\n${SensitiveTextRedactor.redactCommand(commandString)} \n" +
+                            "$requestDiagnostics\n")
                     val logString = StringBuilder(initialLogDetails)
                     val currentLogItem = LogItem(
                         0,
-                        downloadItem.title.ifBlank { downloadItem.url },
+                        SensitiveTextRedactor.redactOutput(downloadItem.title.ifBlank { downloadItem.url }),
                         logString.toString(),
                         downloadItem.format,
                         downloadItem.type,
                         System.currentTimeMillis(),
                     )
-                    logItem = currentLogItem
 
 
                     if (logDownloads) {
@@ -369,9 +399,12 @@ class DownloadWorker(
                         }
 
                         fun executeYtdlpRequest(requestToRun: YoutubeDLRequest): YoutubeDLResponse {
+                            currentIssueStage = DownloadIssueStage.EXTRACT
                             YoutubeDL.getInstance().destroyProcessById(downloadItem.id.toString())
                             YoutubeDLCompat.destroyProcessById(downloadItem.id.toString())
                             return YoutubeDLCompat.execute(applicationContext, requestToRun, downloadItem.id.toString(), true){ progress, _, line ->
+                                currentIssueStage = DownloadIssueStageTracker.update(currentIssueStage, line)
+                                val redactedLine = SensitiveTextRedactor.redactOutput(line)
                                 if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
                                     val lowerLine = line.lowercase(Locale.US)
                                     if (
@@ -380,18 +413,20 @@ class DownloadWorker(
                                         lowerLine.contains("subtitle") ||
                                         lowerLine.contains("subtitlesconvertor")
                                     ) {
-                                        Log.i(TAG, "HardSub sub log id=${downloadItem.id}: $line")
+                                        Log.i(TAG, "HardSub sub log id=${downloadItem.id}: $redactedLine")
                                     }
                                 }
-                                eventBus.post(WorkerProgress(progress.toInt(), line, downloadItem.id, downloadItem.logID))
-                                val title: String = downloadItem.title.ifEmpty { downloadItem.url }
+                                eventBus.post(WorkerProgress(progress.toInt(), redactedLine, downloadItem.id, downloadItem.logID))
+                                val title = SensitiveTextRedactor.redactOutput(
+                                    downloadItem.title.ifEmpty { downloadItem.url }
+                                )
                                 val now = System.currentTimeMillis()
                                 val intProgress = progress.toInt()
                                 val progressAdvancedEnough = lastNotificationProgress < 0 || (intProgress - lastNotificationProgress) >= 2
                                 if (now - lastNotificationUpdateAt >= 800L || progressAdvancedEnough || intProgress >= 100) {
                                     notificationUtil.updateDownloadNotification(
                                         downloadItem.id.toInt(),
-                                        line, intProgress, 0, title,
+                                        redactedLine, intProgress, 0, title,
                                         NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
                                         getHardSubStatusText(resources)
                                     )
@@ -400,10 +435,10 @@ class DownloadWorker(
                                 }
                                 runBlocking(Dispatchers.IO) {
                                     if (logDownloads) {
-                                        logRepo.update(line, currentLogItem.id)
+                                        logRepo.update(redactedLine, currentLogItem.id)
                                     }
-                                    logString.append("$line\n")
-                                    recentYtdlpOutput.addLast(line)
+                                    logString.append("$redactedLine\n")
+                                    recentYtdlpOutput.addLast(redactedLine)
                                     while (recentYtdlpOutput.size > FAILURE_YTDLP_TAIL_LINES) {
                                         recentYtdlpOutput.removeFirst()
                                     }
@@ -461,7 +496,7 @@ class DownloadWorker(
                             notificationUtil.updateDownloadNotification(
                                 downloadItem.id.toInt(),
                                 retryNotice, 0, 0,
-                                downloadItem.title.ifEmpty { downloadItem.url },
+                                notificationTitle,
                                 NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
                                 getHardSubStatusText(resources)
                             )
@@ -478,11 +513,11 @@ class DownloadWorker(
                             val retryCommandString = ytdlpUtil.parseYTDLRequestString(request)
                             effectiveCommandString = retryCommandString
                             val retryRequestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, retryCommandString)
-                            retryLogDetails = "\nRetry:\n" +
+                            retryLogDetails = SensitiveTextRedactor.redactOutput("\nRetry:\n" +
                                 "Reason: $retryNotice\n" +
                                 "First error:\n${firstError.message.orEmpty().takeLast(4000)}\n" +
-                                "Command:\n$retryCommandString \n" +
-                                "$retryRequestDiagnostics\n"
+                                "Command:\n${SensitiveTextRedactor.redactCommand(retryCommandString)} \n" +
+                                "$retryRequestDiagnostics\n")
                             if (logDownloads) {
                                 logRepo.update(retryLogDetails, currentLogItem.id)
                             }
@@ -501,7 +536,7 @@ class DownloadWorker(
                                 notificationUtil.updateDownloadNotification(
                                     downloadItem.id.toInt(),
                                     publicRetryNotice, 0, 0,
-                                    downloadItem.title.ifEmpty { downloadItem.url },
+                                    notificationTitle,
                                     NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
                                     getHardSubStatusText(resources)
                                 )
@@ -518,11 +553,11 @@ class DownloadWorker(
                                 val publicRetryCommandString = ytdlpUtil.parseYTDLRequestString(request)
                                 effectiveCommandString = publicRetryCommandString
                                 val publicRetryRequestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, publicRetryCommandString)
-                                val publicRetryLogDetails = "\nRetry:\n" +
+                                val publicRetryLogDetails = SensitiveTextRedactor.redactOutput("\nRetry:\n" +
                                     "Reason: $publicRetryNotice\n" +
                                     "Previous retry error:\n${retryError.message.orEmpty().takeLast(4000)}\n" +
-                                    "Command:\n$publicRetryCommandString \n" +
-                                    "$publicRetryRequestDiagnostics\n"
+                                    "Command:\n${SensitiveTextRedactor.redactCommand(publicRetryCommandString)} \n" +
+                                    "$publicRetryRequestDiagnostics\n")
                                 if (logDownloads) {
                                     logRepo.update(publicRetryLogDetails, currentLogItem.id)
                                 }
@@ -559,7 +594,7 @@ class DownloadWorker(
                                 postProcessingMessage,
                                 100,
                                 0,
-                                downloadItem.title.ifEmpty { downloadItem.url },
+                                notificationTitle,
                                 NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
                                 getHardSubStatusText(resources)
                             )
@@ -679,6 +714,7 @@ class DownloadWorker(
                                     if (shouldStopForUserRequest()) return@launch
                                     Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${preMoveBurnPaths.size} mode=pre-move")
                                     eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                    currentIssueStage = DownloadIssueStage.HARD_SUB
                                     val burned = burnSubtitlesInPlace(preMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
                                     hardSubBurned = hardSubBurned || burned
                                     if (burned) {
@@ -716,6 +752,7 @@ class DownloadWorker(
                                 if (shouldStopForUserRequest()) return@launch
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${latePreMoveBurnPaths.size} mode=pre-move-late")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                currentIssueStage = DownloadIssueStage.HARD_SUB
                                 val burned = burnSubtitlesInPlace(latePreMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
                                 hardSubBurned = hardSubBurned || burned
                                 if (burned) {
@@ -754,6 +791,7 @@ class DownloadWorker(
                             FileUtil.scanMedia(finalPaths, context)
                         }else{
                             //move file from internal to set download directory
+                            currentIssueStage = DownloadIssueStage.MOVE
                             eventBus.post(WorkerProgress(100, "Moving file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
                             Log.i(
                                 TAG,
@@ -879,6 +917,8 @@ class DownloadWorker(
                             }
                         }
 
+                        recordCreatedOutputs(finalPaths)
+
                         if (shouldBurnHardSub && !noCache && deferBurnUntilPostMove) {
                             var postMoveBurnPaths = finalPaths.toMutableList()
                             if (postMoveBurnPaths.isEmpty()) {
@@ -962,6 +1002,7 @@ class DownloadWorker(
                                 if (shouldStopForUserRequest()) return@launch
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${postMoveBurnPaths.size} mode=post-move")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                currentIssueStage = DownloadIssueStage.HARD_SUB
                                 val burned = burnSubtitlesInPlace(postMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
                                 hardSubBurned = hardSubBurned || burned
                                 if (!burned && isHardSubRedownload(downloadItem)) {
@@ -1017,6 +1058,7 @@ class DownloadWorker(
                             if (shouldStopForUserRequest()) return@launch
                             Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${finalPaths.size}")
                             eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                            currentIssueStage = DownloadIssueStage.HARD_SUB
                             val burned = burnSubtitlesInPlace(finalPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
                             hardSubBurned = hardSubBurned || burned
                             if (!burned && isHardSubRedownload(downloadItem)) {
@@ -1092,16 +1134,24 @@ class DownloadWorker(
                             }
                             Log.i(TAG, "HardSub final paths id=${downloadItem.id} count=${finalPaths.size} sample=$summary")
                         }
-                        requestsToCleanup.forEach { FileUtil.deleteConfigFiles(it) }
+                        requestsToCleanup.forEach { requestToCleanup ->
+                            runCatching { FileUtil.deleteConfigFiles(requestToCleanup) }
+                                .onFailure { cleanupError ->
+                                    Log.w(TAG, "Config cleanup failed id=${downloadItem.id}", cleanupError)
+                                }
+                        }
+                        recordCreatedOutputs(finalPaths)
+                        val completionIssues = mutableListOf<DownloadIssue>()
 
                         //put download in history
-                        if (!downloadItem.incognito) {
-                            if (request.hasOption("--download-archive") && finalPaths.isEmpty()) {
-                                handler.postDelayed({
-                                    Toast.makeText(context, resources.getString(R.string.download_already_exists), Toast.LENGTH_LONG).show()
-                                }, 100)
-                            }else{
-                                if (finalPaths.isNotEmpty()) {
+                        currentIssueStage = DownloadIssueStage.HISTORY
+                        try {
+                            if (!downloadItem.incognito) {
+                                if (request.hasOption("--download-archive") && finalPaths.isEmpty()) {
+                                    handler.postDelayed({
+                                        Toast.makeText(context, resources.getString(R.string.download_already_exists), Toast.LENGTH_LONG).show()
+                                    }, 100)
+                                } else if (finalPaths.isNotEmpty()) {
                                     val unixTime = System.currentTimeMillis() / 1000
                                     finalPaths.first().apply {
                                         val file = File(this)
@@ -1184,16 +1234,78 @@ class DownloadWorker(
                                     }
                                 }
                             }
+                        } catch (historyError: Exception) {
+                            preserveQueueRecord = true
+                            downloadItem.status = DownloadRepository.Status.Error.toString()
+                            downloadItem.lastIssueCode = DownloadIssueCode.HISTORY_WRITE_FAILED.name
+                            downloadItem.lastIssueStage = DownloadIssueStage.HISTORY.name
+                            runCatching { dao.update(downloadItem) }
+                                .onFailure { queueError ->
+                                    Log.e(
+                                        TAG,
+                                        "Failed to mark history recovery record id=${downloadItem.id}",
+                                        queueError
+                                    )
+                                }
+                            val historyIssue = DownloadIssue.create(
+                                stage = DownloadIssueStage.HISTORY,
+                                code = DownloadIssueCode.HISTORY_WRITE_FAILED,
+                                severity = DownloadIssueSeverity.WARNING,
+                                suggestedActions = setOf(
+                                    DownloadSuggestedAction.VIEW_LOG,
+                                    DownloadSuggestedAction.COPY_SUMMARY
+                                ),
+                                details = historyError.message.orEmpty(),
+                                source = DownloadIssueSource.TYPED_EXCEPTION
+                            )
+                            completionIssues += historyIssue
+                            Log.e(TAG, "History update failed after file creation id=${downloadItem.id}", historyError)
                         }
 
-                        withContext(Dispatchers.Main) {
-                            if (isHardSubRedownload(downloadItem)) {
-                                markHardSubProcessed(downloadItem.id)
-                                updateHardSubWorkerNotification(notificationUtil)
+                        if (isHardSubRedownload(downloadItem)) {
+                            markHardSubProcessed(downloadItem.id)
+                            updateHardSubWorkerNotification(notificationUtil)
+                        }
+                        currentIssueStage = DownloadIssueStage.NOTIFICATION
+                        val warningBeforeNotification = completionIssues.firstOrNull()?.let { issue ->
+                            DownloadIssueText.formatted(resources, issue)
+                        }
+                        try {
+                            withContext(Dispatchers.Main) {
+                                notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
+                                notificationUtil.createDownloadFinished(
+                                    downloadItem.id,
+                                    notificationTitle,
+                                    downloadItem.type,
+                                    if (finalPaths.isEmpty()) null else finalPaths,
+                                    resources,
+                                    warningBeforeNotification
+                                )
                             }
-                            notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
-                            notificationUtil.createDownloadFinished(
-                                downloadItem.id, downloadItem.title, downloadItem.type,  if (finalPaths.isEmpty()) null else finalPaths, resources
+                        } catch (notificationError: Exception) {
+                            completionIssues += DownloadIssue.create(
+                                stage = DownloadIssueStage.NOTIFICATION,
+                                code = DownloadIssueCode.NOTIFICATION_FAILED,
+                                severity = DownloadIssueSeverity.WARNING,
+                                suggestedActions = setOf(DownloadSuggestedAction.VIEW_LOG),
+                                details = notificationError.message.orEmpty(),
+                                source = DownloadIssueSource.TYPED_EXCEPTION
+                            )
+                            Log.e(TAG, "Finished notification failed after file creation id=${downloadItem.id}", notificationError)
+                        }
+                        val completedOutcome = DownloadOutcome.completed(
+                            createdFileCount = createdOutputPaths.size,
+                            issues = completionIssues
+                        )
+                        downloadOutcome = completedOutcome
+                        val outcomeSummary = completedOutcome.issues
+                            .joinToString(separator = "\n") { issue ->
+                                DownloadIssueText.formatted(resources, issue)
+                            }
+                            .takeIf { it.isNotBlank() }
+                        outcomeSummary?.let { summary ->
+                            eventBus.post(
+                                WorkerProgress(100, summary, downloadItem.id, downloadItem.logID)
                             )
                         }
 
@@ -1210,10 +1322,20 @@ class DownloadWorker(
 //                            }
 //                        }
 
-                        dao.delete(downloadItem.id)
+                        if (!preserveQueueRecord) {
+                            dao.delete(downloadItem.id)
+                        }
 
                         if (logDownloads){
-                            logRepo.update(initialLogDetails + retryLogDetails + response.out, currentLogItem.id, true)
+                            val structuredOutcomeLog = outcomeSummary?.let {
+                                "\nStructured outcome: ${completedOutcome.status}\n$it\n"
+                            }.orEmpty()
+                            logRepo.update(
+                                initialLogDetails + retryLogDetails +
+                                    SensitiveTextRedactor.redactOutput(response.out) + structuredOutcomeLog,
+                                currentLogItem.id,
+                                true
+                            )
                         }
 
                     } catch (it: Exception) {
@@ -1221,7 +1343,10 @@ class DownloadWorker(
                             Log.e(TAG, "HardSub failed id=${downloadItem.id} type=${it.javaClass.simpleName}")
                         }
                         requestsToCleanup.forEach { requestToCleanup ->
-                            FileUtil.deleteConfigFiles(requestToCleanup)
+                            runCatching { FileUtil.deleteConfigFiles(requestToCleanup) }
+                                .onFailure { cleanupError ->
+                                    Log.w(TAG, "Failure cleanup failed id=${downloadItem.id}", cleanupError)
+                                }
                         }
                         withContext(Dispatchers.Main){
                             notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
@@ -1233,8 +1358,95 @@ class DownloadWorker(
                             latestStatus == DownloadRepository.Status.Paused ||
                             latestStatus == DownloadRepository.Status.Cancelled
                         ) {
+                            downloadOutcome = DownloadOutcome.canceled()
                             return@launch
                         }
+                        val destinationWritable = if (
+                            currentIssueStage == DownloadIssueStage.PREFLIGHT ||
+                            currentIssueStage == DownloadIssueStage.MOVE
+                        ) {
+                            runCatching {
+                                FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
+                            }.getOrNull()
+                        } else {
+                            null
+                        }
+                        val classifiedIssues = DownloadIssueClassifier.classify(
+                            DownloadIssueClassifier.Input(
+                                stage = currentIssueStage,
+                                exceptionClassName = it.javaClass.name,
+                                message = it.message.orEmpty(),
+                                output = recentYtdlpOutput.joinToString("\n"),
+                                destinationWritable = destinationWritable
+                            )
+                        )
+                        val primaryIssue = classifiedIssues.first()
+                        val structuredFailureSummary = classifiedIssues.joinToString("\n") { issue ->
+                            DownloadIssueText.formatted(resources, issue)
+                        }
+
+                        createdOutputPaths = createdOutputPaths.filter { path ->
+                            val file = File(path)
+                            file.exists() && file.isFile
+                        }
+                        if (createdOutputPaths.isNotEmpty()) {
+                            val warningIssue = DownloadIssue.create(
+                                stage = primaryIssue.stage,
+                                code = primaryIssue.code,
+                                severity = DownloadIssueSeverity.WARNING,
+                                suggestedActions = setOf(
+                                    DownloadSuggestedAction.VIEW_LOG,
+                                    DownloadSuggestedAction.COPY_SUMMARY
+                                ),
+                                details = primaryIssue.redactedDetails,
+                                source = primaryIssue.source
+                            )
+                            val partialOutcome = DownloadOutcome.completed(
+                                createdFileCount = createdOutputPaths.size,
+                                issues = listOf(warningIssue)
+                            )
+                            downloadOutcome = partialOutcome
+                            val warningSummary = DownloadIssueText.formatted(resources, warningIssue)
+                            if (logDownloads) {
+                                logRepo.update(
+                                    "\nStructured outcome: ${partialOutcome.status}\n$warningSummary\n",
+                                    currentLogItem.id
+                                )
+                            }
+                            if (!preserveQueueRecord) {
+                                runCatching { dao.delete(downloadItem.id) }
+                                    .onFailure { deleteError ->
+                                        preserveQueueRecord = true
+                                        downloadItem.status = DownloadRepository.Status.Error.toString()
+                                        downloadItem.lastIssueCode = primaryIssue.code.name
+                                        downloadItem.lastIssueStage = primaryIssue.stage.name
+                                        runCatching { dao.update(downloadItem) }
+                                        Log.e(
+                                            TAG,
+                                            "Failed to delete completed queue record id=${downloadItem.id}",
+                                            deleteError
+                                        )
+                                    }
+                            }
+                            runCatching {
+                                withContext(Dispatchers.Main) {
+                                    notificationUtil.createDownloadFinished(
+                                        downloadItem.id,
+                                        notificationTitle,
+                                        downloadItem.type,
+                                        createdOutputPaths,
+                                        resources,
+                                        warningSummary
+                                    )
+                                }
+                            }
+                            eventBus.post(
+                                WorkerProgress(100, warningSummary, downloadItem.id, downloadItem.logID)
+                            )
+                            return@launch
+                        }
+                        val failedOutcome = DownloadOutcome.failed(primaryIssue)
+                        downloadOutcome = failedOutcome
                         if (it.message?.contains("JSONDecodeError") == true) {
                             val cachePath = "${FileUtil.getCachePath(context)}infojsons"
                             val infoJsonName = MessageDigest.getInstance("MD5").digest(downloadItem.url.toByteArray()).toHexString()
@@ -1247,10 +1459,9 @@ class DownloadWorker(
                             requestCommand = effectiveCommandString,
                             tempDir = validatedTempFileDir ?: tempFileDir,
                             recentOutput = recentYtdlpOutput.toList()
-                        )
-                        val failedLogItem = logItem
-                        if (logDownloads && failedLogItem != null){
-                            logRepo.update(failureDiagnostics, failedLogItem.id)
+                        ) + "\nStructured failure:\n$structuredFailureSummary\n"
+                        if (logDownloads){
+                            logRepo.update(failureDiagnostics, currentLogItem.id)
                         }
 
 
@@ -1264,23 +1475,57 @@ class DownloadWorker(
                         notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
 
                         downloadItem.status = DownloadRepository.Status.Error.toString()
+                        downloadItem.lastIssueCode = primaryIssue.code.name
+                        downloadItem.lastIssueStage = primaryIssue.stage.name
                         dao.update(downloadItem)
                         if (isHardSubRedownload(downloadItem)) {
                             markHardSubProcessed(downloadItem.id)
                             updateHardSubWorkerNotification(notificationUtil)
                         }
 
-                        notificationUtil.createDownloadErrored(
-                            downloadItem.id,
-                            downloadItem.title.ifEmpty { downloadItem.url },
-                            it.message,
-                            downloadItem.logID,
-                            resources
+                        val retryMetadata = DownloadRetryMetadata(
+                            operationId = downloadItem.operationId,
+                            attempt = downloadItem.retryAttempt,
+                            strategy = runCatching {
+                                DownloadRetryStrategy.valueOf(downloadItem.retryStrategy)
+                            }.getOrDefault(DownloadRetryStrategy.ORIGINAL)
                         )
 
-                        eventBus.post(WorkerProgress(100, it.toString(), downloadItem.id, downloadItem.logID))
+                        notificationUtil.createDownloadErrored(
+                            downloadItem.id,
+                            notificationTitle,
+                            structuredFailureSummary,
+                            downloadItem.logID,
+                            resources,
+                            retryable = DownloadRetryPolicy.canOffer(
+                                retryMetadata,
+                                DownloadRetryStrategy.SAME_SETTINGS,
+                                primaryIssue.retryable
+                            ),
+                            allowReconfigure =
+                                DownloadSuggestedAction.RECONFIGURE in primaryIssue.suggestedActions &&
+                                    DownloadRetryPolicy.canOffer(
+                                        retryMetadata,
+                                        DownloadRetryStrategy.RECONFIGURED
+                                    )
+                        )
+
+                        eventBus.post(
+                            WorkerProgress(
+                                100,
+                                structuredFailureSummary,
+                                downloadItem.id,
+                                downloadItem.logID
+                            )
+                        )
                     }
                     } finally {
+                        downloadOutcome?.let { outcome ->
+                            Log.i(
+                                TAG,
+                                "Download outcome id=${downloadItem.id} status=${outcome.status} issues=${outcome.issues.map { it.code }}"
+                            )
+                        }
                         if (hardSubPostProcessLockHeld) {
                             hardSubPostProcessMutex.unlock()
                         }
@@ -1392,7 +1637,7 @@ class DownloadWorker(
     }
 
     private fun redactFailureDiagnosticValue(value: String): String {
-        return value
+        return SensitiveTextRedactor.redactOutput(value)
             .replace(Regex("""po_token=[^;"\s]+"""), "po_token=<redacted>")
             .replace(Regex("""pot=[^&;"\s]+"""), "pot=<redacted>")
             .replace(Regex("""visitor_data=[^;"\s]+"""), "visitor_data=<redacted>")
