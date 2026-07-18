@@ -130,6 +130,14 @@
     <string name="you_are_going_to_delete_multiple_items">Deleting multiple items</string>
     <string name="delete_file_too">Delete the file from the device</string>
     <string name="delete_files_too">Delete the files from the device</string>
+    <string name="delete_associated_files">Delete associated files</string>
+    <string name="delete_associated_files_warning">Associated file deletion may not be reversible. Only the specific files linked to the selected History items will be deleted.</string>
+    <string name="delete_history_item_title">Delete “%1$s”?</string>
+    <string name="delete_history_items_title">Delete %1$d History items?</string>
+    <string name="history_deletion_result">History records removed: %1$d; files deleted: %2$d; already absent: %3$d; skipped: %4$d; failed: %5$d</string>
+    <string name="history_files_not_deleted">Files not deleted: %1$s</string>
+    <string name="delete_validated_files_title">Delete %1$d associated files?</string>
+    <string name="delete_validated_files_warning">Only validated file targets will be deleted. Parent folders are not included, and file deletion may not be reversible.</string>
     <string name="request_permission_desc">This app needs file permissions to save downloads on the device</string>
     <string name="exit_app">Exit app</string>
     <string name="warning">Warning</string>
@@ -636,6 +644,7 @@
     <string name="duplicate_download_connected">Connected to existing download card</string>
     <string name="reconnect_download_file">Reconnect download file</string>
     <string name="reconnect_download_file_desc">%1$s is marked as deleted because its file is missing. Choose the downloaded file to reconnect it to this card.</string>
+    <string name="reconnect_after_playback_failure_desc">Playback could not access %1$s. Choose its current downloaded file to reconnect this History item.</string>
     <string name="choose_file">Choose file</string>
     <string name="details">Details</string>
     <string name="download_history_reconnected">Download file reconnected</string>
@@ -782,18 +791,17 @@
     <string name="canceled_download_not_retried">Canceled downloads are not retried automatically</string>
     <string name="download_retry_not_available">Retry is not available for this download</string>
     <string name="error_opening_file">No app could open this file</string>
+    <string name="requested_file_not_found">The requested file was not found</string>
+    <string name="invalid_file_location">The saved file location is invalid or unsupported</string>
+    <string name="file_operation_unsupported">This file cannot be opened or shared by the app</string>
+    <string name="file_access_failed">The file could not be accessed. Its availability or permission could not be determined.</string>
+    <string name="no_compatible_share_app">No compatible app could share these files</string>
+    <string name="share_files_partial">Sharing %1$d files; %2$d files could not be accessed</string>
+    <string name="playback_failed">Playback failed because the file could not be opened</string>
     <string name="uri">URI</string>
     <string name="path">Path</string>
     <string name="locations">Locations</string>
-    <string name="file_available">Available</string>
-    <string name="file_missing">File missing</string>
     <string name="file_permission_required">Permission required</string>
-    <string name="file_permission_required_desc">Access to this file is no longer available. Reconnect it or grant access again.</string>
-    <string name="file_status_unknown">File status unknown</string>
-    <string name="file_status_unknown_desc">The app could not determine whether this file exists. Refresh the status or inspect its saved location.</string>
-    <string name="checking_files">Checking files</string>
-    <string name="refresh_file_status">Refresh file status</string>
-    <string name="refreshing_visible_file_status">Refreshing visible file states</string>
     <string name="copy_file_path">Copy file path</string>
     <string name="copy_file_uri">Copy file URI</string>
     <string name="copy_parent_location">Copy parent location</string>
@@ -878,5 +886,5 @@
     <string name="name">Name</string>
     <string name="rename">Rename</string>
     <string name="delete">Delete</string>
+    <string name="history_metadata_update_failed">Could not update History. No files were deleted.</string>
 </resources>
-

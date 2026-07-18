@@ -8,5 +8,6 @@ data class KeywordInfo(
     val firstTime: Long,
     val uniqueCreator: String?,
     val parentKeywords: List<String>,
-    val childKeywords: List<String>
+    val childKeywords: List<String>,
+    val fallbackThumbnail: String? = null
 )

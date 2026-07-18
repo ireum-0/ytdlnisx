@@ -20,6 +20,7 @@ import androidx.work.WorkerParameters
 import com.ireum.ytdl.App
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.DownloadRepository
@@ -32,6 +33,11 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
+import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.HistoryDeletionRecord
+import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
+import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.referencesSameFile
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -55,6 +61,31 @@ class ObserveSourceWorker(
 
     private fun canonicalUrl(url: String): String {
         return LinkUtil.canonicalYoutubeVideoUrlOrSelf(url)
+    }
+
+    private fun deletionTargets(
+        item: HistoryItem,
+        gateway: HistoryFileDeletionGateway
+    ): List<String> {
+        return (item.downloadPath + trustedResolvedTreeTargets(item, gateway))
+            .filter(String::isNotBlank)
+            .distinct()
+    }
+
+    private fun trustedResolvedTreeTargets(
+        item: HistoryItem,
+        gateway: HistoryFileDeletionGateway
+    ): List<String> {
+        val resolvedTreeTarget = if (item.localTreeUri.isNotBlank() && item.localTreePath.isNotBlank()) {
+            FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath)?.toString()
+        } else {
+            null
+        }
+        return listOfNotNull(resolvedTreeTarget).filter { treeTarget ->
+            item.downloadPath.any { storedTarget ->
+                gateway.referencesSameFile(treeTarget, storedTarget)
+            }
+        }
     }
 
     private fun areSameSourceUrl(a: String, b: String): Boolean {
@@ -251,15 +282,47 @@ class ObserveSourceWorker(
             )
 
             val linksNotPresentAnymore = processedLinks.filter { !incomingLinks.contains(canonicalUrl(it)) }
-            linksNotPresentAnymore.forEach {
-                val historyItems = getHistoryByEquivalentUrl(historyRepo, it)
+            val historyItemsToRemove = linksNotPresentAnymore.flatMap { missingLink ->
+                val historyItems = getHistoryByEquivalentUrl(historyRepo, missingLink)
                 Log.d(
                     OBS_DUP_LOG_TAG,
-                    "sync remove check sourceId=$sourceID url=$it canonical=${canonicalUrl(it)} historyMatches=${historyItems.size} type=${item.downloadItemTemplate.type}"
+                    "sync remove check sourceId=$sourceID historyMatches=${historyItems.size} type=${item.downloadItemTemplate.type}"
                 )
-                historyItems.filter { h -> h.type == item.downloadItemTemplate.type }.forEach { h ->
-                    historyRepo.delete(h, true)
+                historyItems.filter { history -> history.type == item.downloadItemTemplate.type }
+            }.distinctBy { history -> history.id }
+
+            if (historyItemsToRemove.isNotEmpty()) {
+                val deletionGateway = AndroidHistoryFileDeletionGateway(context)
+                val selectedIds = historyItemsToRemove.mapTo(hashSetOf()) { history -> history.id }
+                val retainedTargets = historyRepo.getAll()
+                    .asSequence()
+                    .filterNot { history -> history.id in selectedIds }
+                    .flatMap { history -> deletionTargets(history, deletionGateway).asSequence() }
+                val deletionRecords = historyItemsToRemove.map { history ->
+                    val trustedDocumentTargets = trustedResolvedTreeTargets(history, deletionGateway)
+                    HistoryDeletionRecord(
+                        id = history.id,
+                        storedTargets = (history.downloadPath + trustedDocumentTargets).distinct(),
+                        trustedDocumentTargets = trustedDocumentTargets.toSet()
+                    )
                 }
+                val deletionResult = HistoryFileDeletionEngine(
+                    deletionGateway
+                ).let { engine ->
+                    val validation = engine.excludeTargetsReferencedBy(
+                        validation = engine.validate(deletionRecords),
+                        retainedStoredTargets = retainedTargets
+                    )
+                    engine.execute(validation)
+                }
+                val removableIds = deletionResult.removableRecordIds
+                historyRepo.deleteRecords(removableIds.toList())
+                Log.d(
+                    OBS_DUP_LOG_TAG,
+                    "sync remove result sourceId=$sourceID records=${removableIds.size} " +
+                        "deleted=${deletionResult.filesDeleted} absent=${deletionResult.filesAlreadyAbsent} " +
+                        "skipped=${deletionResult.filesSkipped} failed=${deletionResult.filesPermissionDenied + deletionResult.filesFailed}"
+                )
             }
         }
 

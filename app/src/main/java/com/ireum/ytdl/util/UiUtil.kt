@@ -72,14 +72,13 @@ import com.ireum.ytdl.database.viewmodel.YTDLPViewModel
 import com.ireum.ytdl.ui.downloadcard.VideoCutListener
 import com.ireum.ytdl.util.Extensions.createBadge
 import com.ireum.ytdl.util.Extensions.enableTextHighlight
-import com.ireum.ytdl.util.Extensions.getMediaDuration
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueText
 import com.ireum.ytdl.util.download.DownloadSuggestedAction
-import com.ireum.ytdl.util.storage.FileAccessState
 import com.ireum.ytdl.util.storage.OpenStoredLocationResult
+import com.ireum.ytdl.util.storage.HistoryDeletionDialogState
 import com.ireum.ytdl.util.storage.StoredLocationKind
 import com.google.android.material.badge.BadgeDrawable
 import com.google.android.material.badge.BadgeUtils
@@ -817,13 +816,12 @@ object UiUtil {
     fun showHistoryItemDetailsCard(
         item: HistoryItem?,
         context: Activity,
-        isPresent: Boolean,
         preferences: SharedPreferences,
         removeItem: (item:HistoryItem, removeFiles: Boolean) -> Unit,
         redownloadItem: (HistoryItem) -> Unit,
         redownloadShowDownloadCard: (HistoryItem) -> Unit,
-        fileAccessState: FileAccessState = if (isPresent) FileAccessState.EXISTS else FileAccessState.MISSING,
-        refreshFileAccessState: (() -> Unit)? = null,
+        showRedownload: Boolean = true,
+        operationPaths: List<String> = item?.downloadPath.orEmpty()
     ){
         val bottomSheet = BottomSheetDialog(context)
         bottomSheet.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -849,42 +847,30 @@ object UiUtil {
 
         val typeImageResource: Int =
         if (item!!.type == DownloadType.audio) {
-            if (isPresent) {
-                R.drawable.ic_music_downloaded
-            } else {
-                R.drawable.ic_music
-            }
+            R.drawable.ic_music_downloaded
         } else if (item.type == DownloadType.video) {
-            if (isPresent) {
-                R.drawable.ic_video_downloaded
-            } else {
-                R.drawable.ic_video
-            }
+            R.drawable.ic_video_downloaded
         }else{
             R.drawable.ic_terminal
         }
         btn?.setImageResource(typeImageResource)
 
-        if (isPresent){
-            btn?.apply {
-                if (item.downloadPath.size > 1){
-                    viewTreeObserver.addOnGlobalLayoutListener(object :
-                        ViewTreeObserver.OnGlobalLayoutListener {
-                        @OptIn(ExperimentalBadgeUtils::class) override fun onGlobalLayout() {
-                            val badgeDrawable = BadgeDrawable.create(context)
-                            badgeDrawable.number = item.downloadPath.size
-                            //Important to change the position of the Badge
-                            badgeDrawable.horizontalOffset = 25
-                            badgeDrawable.verticalOffset = 25
-                            BadgeUtils.attachBadgeDrawable(badgeDrawable, btn, null)
-                            btn.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                        }
-                    })
-                }
-
-                setOnClickListener {
-                    FileUtil.shareFileIntent(context, item.downloadPath)
-                }
+        btn?.apply {
+            if (item.downloadPath.size > 1){
+                viewTreeObserver.addOnGlobalLayoutListener(object :
+                    ViewTreeObserver.OnGlobalLayoutListener {
+                    @OptIn(ExperimentalBadgeUtils::class) override fun onGlobalLayout() {
+                        val badgeDrawable = BadgeDrawable.create(context)
+                        badgeDrawable.number = item.downloadPath.size
+                        badgeDrawable.horizontalOffset = 25
+                        badgeDrawable.verticalOffset = 25
+                        BadgeUtils.attachBadgeDrawable(badgeDrawable, btn, null)
+                        btn.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                    }
+                })
+            }
+            setOnClickListener {
+                FileUtil.shareFileIntent(context, operationPaths)
             }
         }
 
@@ -896,16 +882,8 @@ object UiUtil {
         val fileSize = bottomSheet.findViewById<TextView>(R.id.file_size)
         val command = bottomSheet.findViewById<Chip>(R.id.command)
         val location = bottomSheet.findViewById<Chip>(R.id.location)
-        val bestPath = item.downloadPath.firstOrNull()
-        val file = bestPath?.let { path ->
-            when {
-                path.startsWith("content://", ignoreCase = true) -> null
-                path.startsWith("file://", ignoreCase = true) -> {
-                    Uri.parse(path).path?.takeIf(String::isNotBlank)?.let(::File)
-                }
-                else -> File(path)
-            }
-        }
+        val storedPaths = operationPaths.map(String::trim).filter(String::isNotBlank)
+        val bestPath = storedPaths.firstOrNull()
 
         val calendar = Calendar.getInstance()
         calendar.timeInMillis = item.time * 1000L
@@ -929,11 +907,7 @@ object UiUtil {
         }
 
         if (item.format.container != "" && item.downloadPath.size == 1) {
-            val actualExtension = file
-                ?.takeIf { it.exists() && it.isFile }
-                ?.extension
-                ?.takeIf(String::isNotBlank)
-            container!!.text = (actualExtension ?: item.format.container).uppercase()
+            container!!.text = item.format.container.uppercase()
             container.setChipIconResource(typeImageResource)
         }else {
             container!!.visibility = View.GONE
@@ -954,10 +928,9 @@ object UiUtil {
             codec.text = codecText
         }
 
-        val actualFileSize = file
-            ?.takeIf { fileAccessState == FileAccessState.EXISTS && it.isFile }
-            ?.length()
-        val fileSizeReadable = FileUtil.convertFileSize(actualFileSize ?: item.format.filesize)
+        val fileSizeReadable = FileUtil.convertFileSize(
+            item.filesize.takeIf { it > 0L } ?: item.format.filesize
+        )
         if (fileSizeReadable == "?" || item.downloadPath.size > 1) fileSize!!.visibility = View.GONE
         else fileSize!!.text = fileSizeReadable
 
@@ -973,20 +946,12 @@ object UiUtil {
             StoredLocationKind.FILE_URI -> context.getString(R.string.path)
             null -> context.getString(R.string.locations)
         }
-        val stateLabel = when (fileAccessState) {
-            FileAccessState.EXISTS -> context.getString(R.string.file_available)
-            FileAccessState.MISSING -> context.getString(R.string.file_missing)
-            FileAccessState.PERMISSION_REQUIRED -> context.getString(R.string.file_permission_required)
-            FileAccessState.UNKNOWN -> context.getString(R.string.file_status_unknown)
-            FileAccessState.CHECKING -> context.getString(R.string.checking_files)
-        }
-        location?.text = "$locationLabel - $stateLabel"
+        location?.text = locationLabel
         location?.isVisible = storedLocations.isNotEmpty()
         location?.setOnClickListener {
             showStoredLocationActions(
                 context = context,
-                storedPaths = item.downloadPath,
-                refreshFileAccessState = refreshFileAccessState
+                storedPaths = item.downloadPath
             )
         }
 
@@ -1012,36 +977,28 @@ object UiUtil {
         }
         val openFile = bottomSheet.findViewById<Button>(R.id.bottomsheet_open_file_button)
         openFile!!.tag = item.id
+        openFile.isVisible = storedPaths.isNotEmpty()
         openFile.setOnClickListener{
-            if (item.downloadPath.size == 1) {
-                val path = bestPath ?: item.downloadPath.first()
-                FileUtil.openFileIntent(context, path)
-            }else{
-                openMultipleFilesIntent(context, item.downloadPath)
+            if (storedPaths.size == 1) {
+                bestPath?.let { path -> FileUtil.openFileIntent(context, path) }
+            } else if (storedPaths.isNotEmpty()) {
+                openMultipleFilesIntent(context, storedPaths)
             }
         }
 
         val redownload = bottomSheet.findViewById<Button>(R.id.bottomsheet_redownload_button)
         redownload!!.tag = item.id
-        redownload.setOnClickListener{
-            redownloadItem(item)
-            bottomSheet.cancel()
-        }
+        redownload.isVisible = showRedownload
+        if (showRedownload) {
+            redownload.setOnClickListener{
+                redownloadItem(item)
+                bottomSheet.cancel()
+            }
 
-        redownload.setOnLongClickListener {
-            redownloadShowDownloadCard(item)
-            bottomSheet.cancel()
-            true
-        }
-
-        when (fileAccessState) {
-            FileAccessState.EXISTS -> redownload.visibility = View.GONE
-            FileAccessState.MISSING -> openFile.visibility = View.GONE
-            FileAccessState.PERMISSION_REQUIRED,
-            FileAccessState.UNKNOWN,
-            FileAccessState.CHECKING -> {
-                openFile.visibility = View.GONE
-                redownload.visibility = View.GONE
+            redownload.setOnLongClickListener {
+                redownloadShowDownloadCard(item)
+                bottomSheet.cancel()
+                true
             }
         }
 
@@ -1057,8 +1014,7 @@ object UiUtil {
 
     private fun showStoredLocationActions(
         context: Activity,
-        storedPaths: List<String>,
-        refreshFileAccessState: (() -> Unit)?
+        storedPaths: List<String>
     ) {
         val locations = storedPaths.mapNotNull { FileUtil.describeStoredLocation(context, it) }
         if (locations.isEmpty()) return
@@ -1100,10 +1056,6 @@ object UiUtil {
                 }
             }
         }
-        refreshFileAccessState?.let { refresh ->
-            actions += context.getString(R.string.refresh_file_status) to refresh
-        }
-
         MaterialAlertDialogBuilder(context)
             .setTitle(context.getString(R.string.location))
             .setItems(actions.map { it.first }.toTypedArray()) { _, which ->
@@ -2248,19 +2200,17 @@ object UiUtil {
     }
 
     fun showRemoveHistoryItemDialog(item: HistoryItem, context: Activity, delete: (item: HistoryItem, deleteFile: Boolean) -> Unit){
-        val deleteFile = booleanArrayOf(false)
+        val options = HistoryDeletionDialogState()
         val deleteDialog = MaterialAlertDialogBuilder(context)
-        deleteDialog.setTitle(context.getString(R.string.you_are_going_to_delete) + " \"" + item.title + "\"!")
-        val path = item.downloadPath
-        if (path.any { File(it).exists() && it.isNotEmpty() }) {
-            deleteDialog.setMultiChoiceItems(
-                arrayOf(context.getString(R.string.delete_file_too)),
-                booleanArrayOf(false)
-            ) { _: DialogInterface?, _: Int, b: Boolean -> deleteFile[0] = b }
-        }
+        deleteDialog.setTitle(context.getString(R.string.delete_history_item_title, item.title.ifBlank { item.url }))
+        deleteDialog.setMessage(context.getString(R.string.delete_associated_files_warning))
+        deleteDialog.setMultiChoiceItems(
+            arrayOf(context.getString(R.string.delete_associated_files)),
+            booleanArrayOf(true)
+        ) { _: DialogInterface?, _: Int, b: Boolean -> options.deleteAssociatedFiles = b }
         deleteDialog.setNegativeButton(context.getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
-        deleteDialog.setPositiveButton(context.getString(R.string.ok)) { _: DialogInterface?, _: Int ->
-            delete(item, deleteFile[0])
+        deleteDialog.setPositiveButton(context.getString(R.string.delete)) { _: DialogInterface?, _: Int ->
+            delete(item, options.deleteAssociatedFiles)
         }
         deleteDialog.show()
     }
@@ -2643,25 +2593,22 @@ object UiUtil {
 
         list?.apply {
             path.forEach {path ->
-                val file = File(path)
+                val storedName = path.substringBefore('?')
+                    .trimEnd('/', '\\')
+                    .substringAfterLast('/')
+                    .substringAfterLast(':')
+                val extension = storedName.substringAfterLast('.', "")
                 val item = context.layoutInflater.inflate(R.layout.filepath_card, list, false)
                 item.apply {
-                    findViewById<TextView>(R.id.file_name).text = file.nameWithoutExtension
+                    findViewById<TextView>(R.id.file_name).text = storedName.substringBeforeLast('.', storedName)
 
                     findViewById<TextView>(R.id.duration).apply {
-                        val duration = file.getMediaDuration(context)
-                        isVisible = duration > 0
-                        text = duration.toStringDuration(Locale.US)
+                        isVisible = false
                     }
 
-
-                    findViewById<TextView>(R.id.filesize).text = FileUtil.convertFileSize(file.length())
-                    findViewById<TextView>(R.id.extension).text = file.extension.uppercase()
-                    if (!file.exists()){
-                        isEnabled = false
-                        alpha = 0.7f
-                    }
-                    isEnabled = file.exists()
+                    findViewById<TextView>(R.id.filesize).isVisible = false
+                    findViewById<TextView>(R.id.extension).text = extension.uppercase()
+                    isEnabled = true
                     setOnClickListener {
                         FileUtil.openFileIntent(context, path)
                         bottomSheet.dismiss()

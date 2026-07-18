@@ -198,7 +198,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             val importedHistoryIdMap = linkedMapOf<Long, Long>()
             data.downloads?.apply {
                 withContext(Dispatchers.IO){
-                    if (resetData) historyRepository.deleteAll(false)
+                    if (resetData) historyRepository.deleteAllRecords()
                     data.downloads!!.forEach { historyItem ->
                         val oldHistoryId = historyItem.id
                         val newHistoryId = historyRepository.insertAndGetId(

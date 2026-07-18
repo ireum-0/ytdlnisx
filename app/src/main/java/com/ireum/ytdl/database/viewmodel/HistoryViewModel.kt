@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -24,11 +25,15 @@ import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.HistoryRepository.HistorySortType
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
-import com.ireum.ytdl.util.storage.FileAccessChecker
-import com.ireum.ytdl.util.storage.FileAccessState
-import com.ireum.ytdl.util.storage.FileAccessStateResolver
+import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.HistoryDeletionRecord
+import com.ireum.ytdl.util.storage.HistoryDeletionPolicy
+import com.ireum.ytdl.util.storage.HistoryDeletionSummary
+import com.ireum.ytdl.util.storage.HistoryDeletionValidation
+import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
+import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.referencesSameFile
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
@@ -56,7 +61,6 @@ import java.util.Locale
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.ConcurrentHashMap
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class HistoryViewModel(application: Application) : AndroidViewModel(application) {
@@ -102,14 +106,6 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     val typeFilterFlow = typeFilter.asStateFlow()
     private var cachedIdsKey: HistoryScope? = null
     private var cachedIds: List<Long>? = null
-    private var loggedTreePermissions = false
-    private val pathAccessCache = ConcurrentHashMap<String, Pair<FileAccessState, Long>>()
-    private val fileCheckJobs = ConcurrentHashMap<Long, Job>()
-    private val fileCheckGenerations = ConcurrentHashMap<Long, Long>()
-    private val fileStateCheckedAt = ConcurrentHashMap<Long, Long>()
-    private val fileStatePaths = ConcurrentHashMap<Long, List<String>>()
-    private val _fileAccessStates = MutableStateFlow<Map<Long, FileAccessState>>(emptyMap())
-    val fileAccessStates = _fileAccessStates.asStateFlow()
     private val pendingYoutuberMeta = Collections.synchronizedSet(mutableSetOf<String>())
     private val youtuberMetaQueue = Collections.synchronizedSet(mutableSetOf<String>())
     private var youtuberMetaJob: Job? = null
@@ -247,7 +243,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             infos.map { info ->
                 val iconUrl = metaMap[info.author]?.iconUrl.orEmpty()
                 if (iconUrl.isNotBlank()) {
-                    info.copy(thumbnail = iconUrl)
+                    info.copy(thumbnail = iconUrl).also {
+                        it.fallbackThumbnail = info.fallbackThumbnail
+                    }
                 } else {
                     info
                 }
@@ -455,13 +453,14 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                                 .mapNotNull { keywordByName[it] }
                                 .toList()
                             val totalVideos = memberInfos.sumOf { it.videoCount }
-                            val thumb = memberInfos.firstOrNull { !it.thumbnail.isNullOrBlank() }?.thumbnail
+                            val thumbnailInfo = memberInfos.firstOrNull { !it.thumbnail.isNullOrBlank() }
                             com.ireum.ytdl.database.models.KeywordGroupInfo(
                                 id = group.id,
                                 name = group.name,
                                 memberCount = memberKeywords.size,
                                 videoCount = totalVideos,
-                                thumbnail = thumb
+                                thumbnail = thumbnailInfo?.thumbnail,
+                                fallbackThumbnail = thumbnailInfo?.fallbackThumbnail
                             )
                         }.filter { it.memberCount > 0 && it.videoCount > 0 }.let { infos ->
                             when (filters.sortType) {
@@ -553,7 +552,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                             val itemsById = items.associateBy { it.id }
                             val ordered = ids.mapNotNull { id ->
                                 val item = itemsById[id] ?: return@mapNotNull null
-                                UiModel.HistoryItemModel(resolveLocalTreePath(item)) as UiModel
+                                UiModel.HistoryItemModel(sanitizeStoredDownloadPaths(item)) as UiModel
                             }
                             PagingData.from(ordered)
                         }
@@ -581,7 +580,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                         val metaMap = metas.associateBy { it.author }
                         val enriched = youtubers.map { info ->
                             val iconUrl = metaMap[info.author]?.iconUrl.orEmpty()
-                            if (iconUrl.isNotBlank()) info.copy(thumbnail = iconUrl) else info
+                            if (iconUrl.isNotBlank()) {
+                                info.copy(thumbnail = iconUrl).also {
+                                    it.fallbackThumbnail = info.fallbackThumbnail
+                                }
+                            } else {
+                                info
+                            }
                         }
                         fun descendantGroups(startGroupId: Long): Set<Long> {
                             descendantCache[startGroupId]?.let { cached -> return cached }
@@ -617,12 +622,14 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                                     .filter { isYoutuberVisible(it) }
                                     .toSet()
                                 val memberInfos = enriched.filter { memberAuthors.contains(it.author) }
+                                val thumbnailInfo = memberInfos.firstOrNull { !it.thumbnail.isNullOrBlank() }
                                 com.ireum.ytdl.database.models.YoutuberGroupInfo(
                                     id = group.id,
                                     name = group.name,
                                     memberCount = memberAuthors.size,
                                     videoCount = memberInfos.sumOf { it.videoCount },
-                                    thumbnail = memberInfos.firstOrNull { !it.thumbnail.isNullOrBlank() }?.thumbnail
+                                    thumbnail = thumbnailInfo?.thumbnail,
+                                    fallbackThumbnail = thumbnailInfo?.fallbackThumbnail
                                 )
                             }
                             .filter { showHiddenOnly || (it.memberCount > 0 && it.videoCount > 0) }
@@ -641,7 +648,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                         }
                         val enriched = youtubers.map { info ->
                             val iconUrl = metaMap[info.author]?.iconUrl.orEmpty()
-                            if (iconUrl.isNotBlank()) info.copy(thumbnail = iconUrl) else info
+                            if (iconUrl.isNotBlank()) {
+                                info.copy(thumbnail = iconUrl).also {
+                                    it.fallbackThumbnail = info.fallbackThumbnail
+                                }
+                            } else {
+                                info
+                            }
                         }
                         val groupedAuthors = members.map { it.author }.toSet()
                         val ungrouped = enriched.filter {
@@ -695,13 +708,14 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                                 .toSet()
                             val memberInfos = enriched.filter { memberAuthors.contains(it.author) }
                             val totalVideos = memberInfos.sumOf { it.videoCount }
-                            val thumb = memberInfos.firstOrNull { !it.thumbnail.isNullOrBlank() }?.thumbnail
+                            val thumbnailInfo = memberInfos.firstOrNull { !it.thumbnail.isNullOrBlank() }
                             com.ireum.ytdl.database.models.YoutuberGroupInfo(
                                 id = group.id,
                                 name = group.name,
                                 memberCount = memberAuthors.size,
                                 videoCount = totalVideos,
-                                thumbnail = thumb
+                                thumbnail = thumbnailInfo?.thumbnail,
+                                fallbackThumbnail = thumbnailInfo?.fallbackThumbnail
                             )
                         }.filter { showHiddenOnly || (it.memberCount > 0 && it.videoCount > 0) }.let { infos ->
                             val sortedGroups = when (filters.sortType) {
@@ -924,8 +938,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setStatusFilter(status: HistoryStatus) {
-        if (statusFilter.value == status) return
-        statusFilter.value = status
+        val metadataOnlyStatus = when (status) {
+            HistoryStatus.DELETED,
+            HistoryStatus.NOT_DELETED -> HistoryStatus.ALL
+            else -> status
+        }
+        if (statusFilter.value == metadataOnlyStatus) return
+        statusFilter.value = metadataOnlyStatus
     }
 
     private fun historyListFlowFor(filters: HistoryFilters, excludedChildKeywords: Set<String>): Flow<PagingData<UiModel>> {
@@ -954,21 +973,12 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
 
         val baseFlow = pager.flow.map { pagingData: PagingData<HistoryItem> ->
             val filteredPagingData: PagingData<HistoryItem> = when (filters.status) {
-                HistoryStatus.DELETED -> {
-                    pagingData.filter { item: HistoryItem ->
-                        withContext(Dispatchers.IO) { hasMissingMediaPath(item) }
-                    }
-                }
-                HistoryStatus.NOT_DELETED -> {
-                    pagingData.filter { item: HistoryItem ->
-                        withContext(Dispatchers.IO) { hasExistingMediaPath(item) }
-                    }
-                }
+                HistoryStatus.DELETED,
+                HistoryStatus.NOT_DELETED -> pagingData
                 HistoryStatus.MISSING_THUMBNAIL -> {
                     pagingData.filter { item: HistoryItem ->
                         withContext(Dispatchers.IO) {
-                            val hasCustomThumb = item.customThumb.isNotBlank() &&
-                                cachedFileAccessState(item.customThumb) == FileAccessState.EXISTS
+                            val hasCustomThumb = item.customThumb.isNotBlank()
                             val hasThumb = item.thumb.isNotBlank()
                             !hasCustomThumb && !hasThumb
                         }
@@ -977,8 +987,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 HistoryStatus.CUSTOM_THUMBNAIL -> {
                     pagingData.filter { item: HistoryItem ->
                         withContext(Dispatchers.IO) {
-                            item.customThumb.isNotBlank() &&
-                                cachedFileAccessState(item.customThumb) == FileAccessState.EXISTS
+                            item.customThumb.isNotBlank()
                         }
                     }
                 }
@@ -992,7 +1001,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             }
 
             filteredPagingData.map { historyItem: HistoryItem ->
-                UiModel.HistoryItemModel(resolveLocalTreePath(historyItem)) as UiModel
+                UiModel.HistoryItemModel(sanitizeStoredDownloadPaths(historyItem)) as UiModel
             }
         }
 
@@ -1274,16 +1283,14 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
 
     private fun passesStatusFilter(item: HistoryItem, status: HistoryStatus): Boolean {
         return when (status) {
-            HistoryStatus.DELETED -> hasMissingMediaPath(item)
-            HistoryStatus.NOT_DELETED -> hasExistingMediaPath(item)
+            HistoryStatus.DELETED,
+            HistoryStatus.NOT_DELETED -> true
             HistoryStatus.MISSING_THUMBNAIL -> {
-                val hasCustomThumb = item.customThumb.isNotBlank() &&
-                    cachedFileAccessState(item.customThumb) == FileAccessState.EXISTS
+                val hasCustomThumb = item.customThumb.isNotBlank()
                 val hasThumb = item.thumb.isNotBlank()
                 !hasCustomThumb && !hasThumb
             }
-            HistoryStatus.CUSTOM_THUMBNAIL -> item.customThumb.isNotBlank() &&
-                cachedFileAccessState(item.customThumb) == FileAccessState.EXISTS
+            HistoryStatus.CUSTOM_THUMBNAIL -> item.customThumb.isNotBlank()
             HistoryStatus.HARDSUB_DONE -> item.hardSubDone
             HistoryStatus.HARDSUB_SCAN_TARGET ->
                 item.type == com.ireum.ytdl.database.enums.DownloadType.video &&
@@ -1499,7 +1506,19 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun getByID(id: Long): HistoryItem {
-        return resolveLocalTreePath(repository.getItem(id))
+        return sanitizeStoredDownloadPaths(repository.getItem(id))
+    }
+
+    fun getOperationPaths(item: HistoryItem): List<String> {
+        return sharePathsForOperation(item)
+    }
+
+    fun getPlaybackPaths(item: HistoryItem): List<String> {
+        val sanitizedItem = sanitizeStoredDownloadPaths(item)
+        val resolvedTreeUri = resolvedTreeUri(sanitizedItem)?.toString()
+        return (sanitizedItem.downloadPath + listOfNotNull(resolvedTreeUri))
+            .filter(String::isNotBlank)
+            .distinct()
     }
 
     fun insert(item: HistoryItem) = viewModelScope.launch(Dispatchers.IO) {
@@ -1507,28 +1526,158 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         invalidateCachedIds(triggerRefresh = true)
     }
 
-    fun delete(item: HistoryItem, deleteFile: Boolean) = viewModelScope.launch(Dispatchers.IO) {
-        repository.delete(item, deleteFile)
-        invalidateCachedIds(triggerRefresh = true)
+    suspend fun deleteHistoryItems(ids: List<Long>, deleteAssociatedFiles: Boolean): HistoryDeletionSummary {
+        return withContext(Dispatchers.IO) {
+            val uniqueIds = ids.distinct()
+            val items = repository.getItemsFromIDs(uniqueIds)
+            val deletionRecords = items.map { item -> HistoryDeletionRecord(item.id, item.downloadPath) }
+            if (!deleteAssociatedFiles) {
+                repository.deleteRecords(items.map(HistoryItem::id))
+                invalidateCachedIds(triggerRefresh = true)
+                return@withContext HistoryDeletionPolicy.recordOnly(deletionRecords)
+            }
+            executePreparedHistoryFileDeletion(prepareHistoryFileDeletion(uniqueIds))
+        }
     }
 
-    fun deleteAllWithIDs(ids: List<Long>, deleteFile: Boolean = false) = viewModelScope.launch(Dispatchers.IO) {
-        repository.deleteAllWithIDs(ids, deleteFile)
-        invalidateCachedIds(triggerRefresh = true)
+    suspend fun prepareHistoryFileDeletion(ids: List<Long>): HistoryDeletionValidation {
+        return withContext(Dispatchers.IO) {
+            val items = repository.getItemsFromIDs(ids.distinct())
+            val selectedIds = items.mapTo(hashSetOf(), HistoryItem::id)
+            val engine = historyFileDeletionEngine()
+            engine.excludeTargetsReferencedBy(
+                validation = engine.validate(deletionRecords(items)),
+                retainedStoredTargets = retainedStoredTargets(selectedIds)
+            )
+        }
     }
 
-    fun deleteAllWithIDsCheckFiles(ids: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
-        repository.deleteAllWithIDsCheckFiles(ids)
-        invalidateCachedIds(triggerRefresh = true)
+    suspend fun prepareHistoryFileDeletionTargets(
+        recordId: Long,
+        storedTargets: List<String>,
+        recordStoredTargetSnapshot: List<String>
+    ): HistoryDeletionValidation {
+        return withContext(Dispatchers.IO) {
+            val item = repository.getItem(recordId)
+            val requestedTargets = storedTargets.toSet()
+            val recordTargets = if (item.downloadPath == recordStoredTargetSnapshot) {
+                item.downloadPath.filter(requestedTargets::contains)
+            } else {
+                emptyList()
+            }
+            val engine = historyFileDeletionEngine()
+            engine.excludeTargetsReferencedBy(
+                validation = engine.validate(
+                    listOf(
+                        HistoryDeletionRecord(
+                            id = item.id,
+                            storedTargets = recordTargets,
+                            recordStoredTargetSnapshot = recordStoredTargetSnapshot
+                        )
+                    )
+                ),
+                retainedStoredTargets = retainedStoredTargets(setOf(item.id))
+            )
+        }
+    }
+
+    suspend fun prepareAllHistoryFileDeletion(): HistoryDeletionValidation {
+        val ids = withContext(Dispatchers.IO) { repository.getAll().map(HistoryItem::id) }
+        return prepareHistoryFileDeletion(ids)
+    }
+
+    suspend fun getAllHistoryCount(): Int = withContext(Dispatchers.IO) {
+        repository.getAll().size
+    }
+
+    suspend fun executePreparedHistoryFileDeletion(
+        validation: HistoryDeletionValidation
+    ): HistoryDeletionSummary {
+        return withContext(Dispatchers.IO) {
+            fun currentStoredTargets(): Map<Long, List<String>> {
+                return repository.getItemsFromIDs(validation.records.map(HistoryDeletionRecord::id))
+                    .associate { item -> item.id to item.downloadPath }
+            }
+
+            val selectedIds = validation.records.mapTo(hashSetOf(), HistoryDeletionRecord::id)
+            val engine = historyFileDeletionEngine()
+            val currentValidation = engine.excludeTargetsReferencedBy(
+                validation = validation.revalidateRecordSnapshots(currentStoredTargets()),
+                retainedStoredTargets = retainedStoredTargets(selectedIds)
+            )
+            val result = engine.execute(currentValidation)
+            val unchangedAfterDeletion = currentValidation
+                .revalidateRecordSnapshots(currentStoredTargets())
+                .recordTargetKeys
+                .keys
+            val removableRecordIds = result.removableRecordIds.intersect(unchangedAfterDeletion)
+            repository.deleteRecords(removableRecordIds.toList())
+            invalidateCachedIds(triggerRefresh = true)
+            result.copy(
+                recordsRemoved = removableRecordIds.size,
+                removableRecordIds = removableRecordIds
+            )
+        }
+    }
+
+    private fun historyFileDeletionEngine(): HistoryFileDeletionEngine {
+        return HistoryFileDeletionEngine(AndroidHistoryFileDeletionGateway(getApplication()))
+    }
+
+    private fun deletionRecords(items: List<HistoryItem>): List<HistoryDeletionRecord> {
+        val gateway = AndroidHistoryFileDeletionGateway(getApplication())
+        return items.map { item ->
+            val trustedDocumentTargets = trustedResolvedTreeTargets(item, gateway)
+            HistoryDeletionRecord(
+                id = item.id,
+                storedTargets = (item.downloadPath + trustedDocumentTargets).distinct(),
+                recordStoredTargetSnapshot = item.downloadPath,
+                trustedDocumentTargets = trustedDocumentTargets.toSet()
+            )
+        }
+    }
+
+    private fun retainedStoredTargets(excludedRecordIds: Set<Long>): Sequence<String> {
+        val gateway = AndroidHistoryFileDeletionGateway(getApplication())
+        return repository.getAll()
+            .asSequence()
+            .filterNot { item -> item.id in excludedRecordIds }
+            .flatMap { item -> deletionTargets(item, gateway).asSequence() }
+    }
+
+    private fun deletionTargets(
+        item: HistoryItem,
+        gateway: HistoryFileDeletionGateway
+    ): List<String> {
+        return (item.downloadPath + trustedResolvedTreeTargets(item, gateway))
+            .filter(String::isNotBlank)
+            .distinct()
+    }
+
+    private fun trustedResolvedTreeTargets(
+        item: HistoryItem,
+        gateway: HistoryFileDeletionGateway
+    ): List<String> {
+        val resolvedTreeTarget = if (item.localTreeUri.isNotBlank() && item.localTreePath.isNotBlank()) {
+            FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath)?.toString()
+        } else {
+            null
+        }
+        return listOfNotNull(resolvedTreeTarget).filter { treeTarget ->
+            item.downloadPath.any { storedTarget ->
+                gateway.referencesSameFile(treeTarget, storedTarget)
+            }
+        }
     }
 
     fun getDownloadPathsFromIDs(ids: List<Long>): List<List<String>> {
-        return repository.getDownloadPathsFromIDs(ids)
+        return repository.getItemsFromIDs(ids)
+            .map(::sharePathsForOperation)
     }
 
-    fun deleteAll(deleteFile: Boolean = false) = viewModelScope.launch(Dispatchers.IO) {
-        repository.deleteAll(deleteFile)
-        invalidateCachedIds(triggerRefresh = true)
+    suspend fun deleteAllHistory(deleteAssociatedFiles: Boolean): HistoryDeletionSummary {
+        val ids = withContext(Dispatchers.IO) { repository.getAll().map(HistoryItem::id) }
+        return deleteHistoryItems(ids, deleteAssociatedFiles)
     }
 
     fun deleteDuplicates() = viewModelScope.launch(Dispatchers.IO) {
@@ -1539,11 +1688,6 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     fun update(item: HistoryItem) = viewModelScope.launch(Dispatchers.IO) {
         Log.d("HistoryPagingVM", "update id=${item.id} author='${item.author}' title='${item.title}'")
         repository.update(item)
-        invalidateCachedIds(triggerRefresh = true)
-    }
-
-    fun clearDeleted() = viewModelScope.launch(Dispatchers.IO) {
-        repository.clearDeletedHistory()
         invalidateCachedIds(triggerRefresh = true)
     }
 
@@ -1755,55 +1899,6 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
-    private fun resolveLocalTreePath(item: HistoryItem): HistoryItem {
-        val sanitizedItem = sanitizeStoredDownloadPaths(item)
-        if (sanitizedItem.localTreeUri.isBlank() || sanitizedItem.localTreePath.isBlank()) return sanitizedItem
-        if (hasExistingMediaPath(sanitizedItem)) return sanitizedItem
-        if (!loggedTreePermissions) {
-            loggedTreePermissions = true
-            val perms = getApplication<Application>().contentResolver.persistedUriPermissions
-            Log.d(
-                "LocalTreeRestore",
-                "persistedUriPermissions=${perms.joinToString { p -> "${p.uri} r=${p.isReadPermission} w=${p.isWritePermission}" }}"
-            )
-        }
-        Log.d(
-            "LocalTreeRestore",
-            "missing local path id=${sanitizedItem.id} title=${sanitizedItem.title} treeUri=${sanitizedItem.localTreeUri} treePath=${sanitizedItem.localTreePath} downloadPath=${sanitizedItem.downloadPath}"
-        )
-        val resolvedUri = FileUtil.resolveTreeDocumentUri(sanitizedItem.localTreeUri, sanitizedItem.localTreePath) ?: return sanitizedItem
-        val resolvedPath = resolvedUri.toString()
-        Log.d(
-            "LocalTreeRestore",
-            "resolved uri=$resolvedPath exists=${FileUtil.exists(resolvedPath)}"
-        )
-        if (!FileUtil.exists(resolvedPath)) return sanitizedItem
-        val updated = sanitizedItem.copy(downloadPath = listOf(resolvedPath))
-        viewModelScope.launch(Dispatchers.IO) {
-            repository.update(updated)
-        }
-        return updated
-    }
-
-    private fun hasMissingMediaPath(item: HistoryItem): Boolean {
-        return fileAccessPaths(item)
-            .any { path -> cachedFileAccessState(path) == FileAccessState.MISSING }
-    }
-
-    private fun hasExistingMediaPath(item: HistoryItem): Boolean {
-        return fileAccessPaths(item)
-            .any { path -> cachedFileAccessState(path) == FileAccessState.EXISTS }
-    }
-
-    private fun fileAccessPaths(item: HistoryItem): List<String> {
-        return mediaPaths(item).ifEmpty {
-            item.downloadPath
-                .map(String::trim)
-                .filter(String::isNotBlank)
-                .distinct()
-        }
-    }
-
     private fun mediaPaths(item: HistoryItem): List<String> {
         return item.downloadPath
             .asSequence()
@@ -1824,6 +1919,21 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         return updated
     }
 
+    private fun sharePathsForOperation(item: HistoryItem): List<String> {
+        val sanitizedItem = sanitizeStoredDownloadPaths(item)
+        val resolvedTreePath = resolvedTreeUri(sanitizedItem)?.toString()
+            ?: return sanitizedItem.downloadPath
+        val gateway = AndroidHistoryFileDeletionGateway(getApplication())
+        return sanitizedItem.downloadPath.map { storedPath ->
+            if (gateway.referencesSameFile(storedPath, resolvedTreePath)) resolvedTreePath else storedPath
+        }.distinct()
+    }
+
+    private fun resolvedTreeUri(item: HistoryItem): Uri? {
+        if (item.localTreeUri.isBlank() || item.localTreePath.isBlank()) return null
+        return FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath)
+    }
+
     private fun isNonMediaSidecarPath(path: String): Boolean {
         val cleanPath = path.substringBefore('?')
         val name = cleanPath.substringAfterLast('/')
@@ -1831,56 +1941,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         return ext in setOf("srt", "vtt", "ass", "lrc", "srv3", "json3", "ttml", "description", "txt")
     }
 
-    private fun cachedFileAccessState(path: String): FileAccessState {
-        val normalized = path.trim()
-        if (normalized.isBlank()) return FileAccessState.UNKNOWN
-        val now = System.currentTimeMillis()
-        pathAccessCache[normalized]?.let { (state, checkedAt) ->
-            if (now - checkedAt <= FILE_EXISTS_CACHE_TTL_MS) {
-                return state
-            }
-        }
-        val state = FileAccessChecker.check(getApplication(), normalized)
-        pathAccessCache[normalized] = state to now
-        return state
-    }
-
-    fun requestFileAccessState(item: HistoryItem, force: Boolean = false) {
-        val now = System.currentTimeMillis()
-        val paths = fileAccessPaths(item)
-        val lastCheckedAt = fileStateCheckedAt[item.id] ?: 0L
-        val pathsChanged = fileStatePaths[item.id] != paths
-        if (!force && !pathsChanged && now - lastCheckedAt <= FILE_STATE_CACHE_TTL_MS) return
-        if (force || pathsChanged) fileCheckJobs.remove(item.id)?.cancel()
-        if (fileCheckJobs.containsKey(item.id)) return
-        val generation = fileCheckGenerations.merge(item.id, 1L, Long::plus) ?: 1L
-
-        _fileAccessStates.update { states -> states + (item.id to FileAccessState.CHECKING) }
-        val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
-            val pathStates = paths.associateWith { path ->
-                FileAccessChecker.check(getApplication(), path)
-            }
-            val state = FileAccessStateResolver.combine(pathStates.values.toList())
-            if (fileCheckGenerations[item.id] != generation) return@launch
-            val checkedAt = System.currentTimeMillis()
-            pathStates.forEach { (path, pathState) -> pathAccessCache[path] = pathState to checkedAt }
-            fileStatePaths[item.id] = paths
-            fileStateCheckedAt[item.id] = checkedAt
-            _fileAccessStates.update { states -> states + (item.id to state) }
-        }
-        fileCheckJobs[item.id] = job
-        job.invokeOnCompletion { fileCheckJobs.remove(item.id, job) }
-        job.start()
-    }
-
-    fun refreshVisibleFileAccessStates(items: List<HistoryItem>) {
-        items.distinctBy(HistoryItem::id).forEach { requestFileAccessState(it, force = true) }
-    }
-
     companion object {
         val DEFAULT_TYPE_FILTER = "${DownloadType.audio.name},${DownloadType.video.name}"
-        private const val FILE_EXISTS_CACHE_TTL_MS = 12_000L
-        private const val FILE_STATE_CACHE_TTL_MS = 60_000L
     }
 
 }

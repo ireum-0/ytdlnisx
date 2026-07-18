@@ -5,7 +5,6 @@ import com.ireum.ytdl.database.dao.HistoryDao
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.KeywordInfo
 import com.ireum.ytdl.database.models.YoutuberInfo
-import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.WebsiteUtil
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -48,9 +47,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             items.forEach { item ->
                 val authors = (splitAuthors(item.author) + splitAuthors(item.artist)).distinct()
                 if (authors.isEmpty()) return@forEach
-                val itemThumb = item.customThumb
-                    .takeIf { it.isNotBlank() && FileUtil.exists(it) }
-                    ?: item.thumb
+                val itemThumb = item.customThumb.ifBlank { item.thumb }
+                val fallbackThumb = item.thumb.takeIf { item.customThumb.isNotBlank() }
                 val itemSize = if (item.filesize > 0) item.filesize else item.format.filesize
                 authors.forEach { author ->
                     val acc = map.getOrPut(author) { YoutuberInfoAccumulator(author) }
@@ -58,7 +56,10 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                     acc.totalSize += itemSize
                     if (item.time > acc.lastTime) {
                         acc.lastTime = item.time
-                        acc.thumbnail = itemThumb.ifBlank { acc.thumbnail }
+                        if (itemThumb.isNotBlank()) {
+                            acc.thumbnail = itemThumb
+                            acc.fallbackThumbnail = fallbackThumb
+                        }
                     }
                     if (acc.firstTime == 0L || item.time < acc.firstTime) {
                         acc.firstTime = item.time
@@ -202,9 +203,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         getItemsFromIDs(ids).forEach { item ->
             val authors = (splitAuthors(item.author) + splitAuthors(item.artist)).distinct()
             if (authors.isEmpty()) return@forEach
-            val itemThumb = item.customThumb
-                .takeIf { it.isNotBlank() && FileUtil.exists(it) }
-                ?: item.thumb
+            val itemThumb = item.customThumb.ifBlank { item.thumb }
+            val fallbackThumb = item.thumb.takeIf { item.customThumb.isNotBlank() }
             val itemSize = if (item.filesize > 0) item.filesize else item.format.filesize
             authors.forEach { author ->
                 val acc = map.getOrPut(author) { YoutuberInfoAccumulator(author) }
@@ -212,7 +212,10 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 acc.totalSize += itemSize
                 if (item.time > acc.lastTime) {
                     acc.lastTime = item.time
-                    acc.thumbnail = itemThumb.ifBlank { acc.thumbnail }
+                    if (itemThumb.isNotBlank()) {
+                        acc.thumbnail = itemThumb
+                        acc.fallbackThumbnail = fallbackThumb
+                    }
                 }
                 if (acc.firstTime == 0L || item.time < acc.firstTime) {
                     acc.firstTime = item.time
@@ -234,9 +237,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             } else {
                 splitAuthors(item.author)
             }
-            val itemThumb = item.customThumb
-                .takeIf { it.isNotBlank() && FileUtil.exists(it) }
-                ?: item.thumb
+            val itemThumb = item.customThumb.ifBlank { item.thumb }
+            val fallbackThumb = item.thumb.takeIf { item.customThumb.isNotBlank() }
             keywords.forEach { keyword ->
                 val acc = map.getOrPut(keyword) { KeywordInfoAccumulator(keyword) }
                 acc.videoCount += 1
@@ -248,7 +250,10 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 }
                 if (item.time > acc.lastTime) {
                     acc.lastTime = item.time
-                    acc.thumbnail = itemThumb.ifBlank { acc.thumbnail }
+                    if (itemThumb.isNotBlank()) {
+                        acc.thumbnail = itemThumb
+                        acc.fallbackThumbnail = fallbackThumb
+                    }
                 }
                 if (acc.firstTime == 0L || item.time < acc.firstTime) {
                     acc.firstTime = item.time
@@ -328,52 +333,15 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         return historyDao.insertAndGetId(item)
     }
 
-    suspend fun delete(item: HistoryItem, deleteFile: Boolean) {
-        if (deleteFile) {
-            FileUtil.deleteFilesWithZeroByteSiblings(item.downloadPath)
-        }
-        playlistDao.deletePlaylistItemsByHistoryIds(listOf(item.id))
-        historyDao.delete(item)
-    }
-
-    suspend fun deleteAllWithIDs(ids: List<Long>, deleteFile: Boolean) {
+    suspend fun deleteRecords(ids: List<Long>) {
         if (ids.isEmpty()) return
-        if (deleteFile) {
-            ids.chunked(ID_BATCH_SIZE).forEach { batch ->
-                val items = historyDao.getItemsFromIDs(batch)
-                items.forEach { item ->
-                    FileUtil.deleteFilesWithZeroByteSiblings(item.downloadPath)
-                }
-            }
-        }
         ids.chunked(ID_BATCH_SIZE).forEach { batch ->
             playlistDao.deletePlaylistItemsByHistoryIds(batch)
             historyDao.deleteWithIds(batch)
         }
     }
 
-    suspend fun deleteAllWithIDsCheckFiles(ids: List<Long>) {
-        if (ids.isEmpty()) return
-        ids.chunked(ID_BATCH_SIZE).forEach { batch ->
-            val items = historyDao.getItemsFromIDs(batch)
-            items.forEach { item ->
-                val filesPresent = item.downloadPath.all { FileUtil.exists(it) }
-                if (filesPresent) {
-                    FileUtil.deleteFilesWithZeroByteSiblings(item.downloadPath)
-                }
-            }
-            playlistDao.deletePlaylistItemsByHistoryIds(batch)
-            historyDao.deleteWithIds(batch)
-        }
-    }
-
-    suspend fun deleteAll(deleteFile: Boolean) {
-        if (deleteFile) {
-            val items = historyDao.getAll()
-            items.forEach { item ->
-                FileUtil.deleteFilesWithZeroByteSiblings(item.downloadPath)
-            }
-        }
+    suspend fun deleteAllRecords() {
         playlistDao.clearPlaylistItems()
         historyDao.nuke()
     }
@@ -390,7 +358,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 group.sortedWith(compareBy<HistoryItem> { it.time }.thenBy { it.id }).drop(1)
             }
         if (duplicates.isEmpty()) return
-        deleteAllWithIDs(duplicates.map { it.id }, deleteFile = false)
+        deleteRecords(duplicates.map { it.id })
     }
 
     fun update(item: HistoryItem) {
@@ -411,16 +379,6 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         }
     }
 
-    suspend fun clearDeletedHistory() {
-        val items = historyDao.getAll()
-        items.forEach { item ->
-            if (item.downloadPath.all { !FileUtil.exists(it) }) {
-                playlistDao.deletePlaylistItemsByHistoryIds(listOf(item.id))
-                historyDao.delete(item)
-            }
-        }
-    }
-
     enum class HistorySortType {
         DATE, TITLE, AUTHOR, DURATION
     }
@@ -429,6 +387,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         val author: String,
         var videoCount: Int = 0,
         var thumbnail: String? = null,
+        var fallbackThumbnail: String? = null,
         var lastTime: Long = 0L,
         var totalSize: Long = 0L,
         var firstTime: Long = 0L
@@ -440,13 +399,14 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             lastTime = lastTime,
             totalSize = totalSize,
             firstTime = firstTime
-        )
+        ).also { it.fallbackThumbnail = fallbackThumbnail }
     }
 
     private data class KeywordInfoAccumulator(
         val keyword: String,
         var videoCount: Int = 0,
         var thumbnail: String? = null,
+        var fallbackThumbnail: String? = null,
         var lastTime: Long = 0L,
         var firstTime: Long = 0L,
         val videoIds: MutableSet<Long> = linkedSetOf(),
@@ -470,7 +430,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                     .sortedBy { it.lowercase(Locale.getDefault()) },
                 childKeywords = childKeywords
                     .distinctBy { it.lowercase(Locale.getDefault()) }
-                    .sortedBy { it.lowercase(Locale.getDefault()) }
+                    .sortedBy { it.lowercase(Locale.getDefault()) },
+                fallbackThumbnail = fallbackThumbnail
             )
         }
     }

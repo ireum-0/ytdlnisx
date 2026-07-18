@@ -29,6 +29,7 @@ import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.elevation.SurfaceColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -172,17 +173,61 @@ class DownloadsAlreadyExistDialog : BottomSheetDialogFragment(), AlreadyExistsAd
 
     override fun onShowHistoryItem(historyItemID: Long) {
         lifecycleScope.launch {
-            val historyItem = withContext(Dispatchers.IO){
-                downloadViewModel.getHistoryItemById(historyItemID)
-            }
-            UiUtil.showHistoryItemDetailsCard(historyItem, requireActivity(), isPresent = true, preferences,
+            val itemAndPaths = withContext(Dispatchers.IO) {
+                val item = downloadViewModel.getHistoryItemById(historyItemID)
+                    ?: return@withContext null
+                item to historyViewModel.getOperationPaths(item)
+            } ?: return@launch
+            val (historyItem, operationPaths) = itemAndPaths
+            UiUtil.showHistoryItemDetailsCard(historyItem, requireActivity(), preferences,
                 removeItem = { item, deleteFile ->
-                    historyViewModel.delete(item, deleteFile)
+                    lifecycleScope.launch {
+                        if (!deleteFile) {
+                            showHistoryDeletionResult(
+                                historyViewModel.deleteHistoryItems(listOf(item.id), deleteAssociatedFiles = false)
+                            )
+                        } else {
+                            val validation = historyViewModel.prepareHistoryFileDeletion(listOf(item.id))
+                            MaterialAlertDialogBuilder(requireContext())
+                                .setTitle(getString(R.string.delete_validated_files_title, validation.filesReady))
+                                .setMessage(getString(R.string.delete_validated_files_warning))
+                                .setNegativeButton(R.string.cancel, null)
+                                .setPositiveButton(R.string.delete) { _, _ ->
+                                    lifecycleScope.launch {
+                                        showHistoryDeletionResult(
+                                            historyViewModel.executePreparedHistoryFileDeletion(validation)
+                                        )
+                                    }
+                                }
+                                .show()
+                        }
+                    }
                 },
                 redownloadItem = { },
-                redownloadShowDownloadCard = {}
+                redownloadShowDownloadCard = {},
+                showRedownload = false,
+                operationPaths = operationPaths
             )
         }
+    }
+
+    private fun showHistoryDeletionResult(result: com.ireum.ytdl.util.storage.HistoryDeletionSummary) {
+        val summary = getString(
+                R.string.history_deletion_result,
+                result.recordsRemoved,
+                result.filesDeleted,
+                result.filesAlreadyAbsent,
+                result.filesSkipped,
+                result.filesPermissionDenied + result.filesFailed
+            )
+        val message = result.problemDisplayNames.takeIf { it.isNotEmpty() }?.let { names ->
+            "$summary\n${getString(R.string.history_files_not_deleted, names.take(3).joinToString(", "))}"
+        } ?: summary
+        Toast.makeText(
+            requireContext(),
+            message,
+            Toast.LENGTH_LONG
+        ).show()
     }
 }
 

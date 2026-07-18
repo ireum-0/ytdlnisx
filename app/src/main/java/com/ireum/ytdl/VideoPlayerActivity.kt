@@ -76,6 +76,7 @@ import com.ireum.ytdl.database.viewmodel.HistoryViewModel
 import com.ireum.ytdl.ui.adapter.VideoQueueAdapter
 import com.ireum.ytdl.ui.downloads.HistoryFragment
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.Extensions.loadThumbnail
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.player.PlaybackQueuePreparedData
 import com.ireum.ytdl.util.player.PlaybackQueueState
@@ -104,6 +105,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import org.json.JSONObject
 
@@ -203,6 +205,8 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var isEditVideoInfoDialogVisible: Boolean = false
     private var launchHistoryId: Long? = null
     private var launchPlaybackPositionMs: Long? = null
+    private var launchFallbackPlaybackPaths: List<String> = emptyList()
+    private val attemptedPlaybackUrisByHistoryId = mutableMapOf<Long, MutableSet<String>>()
     private var skipNextPlaybackRestoreHistoryId: Long? = null
     private var playbackStartedAtMs: Long = 0L
     private var currentChapters: List<VideoChapter> = emptyList()
@@ -471,8 +475,31 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                logPlaybackTiming("onPlayerError code=${error.errorCodeName} message=${error.message}")
-                maybeOfferCompatibleRedownload(error)
+                logPlaybackTiming("onPlayerError code=${error.errorCodeName}")
+                if (isLikelyUnsupportedVideoPlayback(error)) {
+                    maybeOfferCompatibleRedownload(error)
+                } else {
+                    val isPersistentAccessFailure =
+                        error.errorCodeName.contains("FILE_NOT_FOUND") ||
+                            error.errorCodeName.contains("NO_PERMISSION")
+                    val message = when {
+                        error.errorCodeName.contains("FILE_NOT_FOUND") -> R.string.requested_file_not_found
+                        error.errorCodeName.contains("NO_PERMISSION") -> R.string.file_permission_required
+                        error.errorCodeName.contains("IO_") -> R.string.file_access_failed
+                        else -> R.string.playback_failed
+                    }
+                    if (isPersistentAccessFailure) {
+                        if (tryNextPlaybackLocation()) return
+                        val failedHistoryId = currentHistoryItem()?.id ?: launchHistoryId
+                        if (
+                            failedHistoryId != null &&
+                            intent.getStringExtra(EXTRA_RETURN_DESTINATION) == "Downloads"
+                        ) {
+                            pendingPlaybackAccessFailureId.set(failedHistoryId)
+                        }
+                    }
+                    Toast.makeText(this@VideoPlayerActivity, message, Toast.LENGTH_LONG).show()
+                }
             }
         })
         updateSubtitlesButtonState()
@@ -582,21 +609,18 @@ class VideoPlayerActivity : AppCompatActivity() {
         val isResumePlaybackUiIntent = playbackIntent.action == ACTION_RESUME_PLAYBACK_UI
 
         launchHistoryId = playbackIntent.getLongExtra("history_id", -1L).takeIf { it > 0L }
+        launchFallbackPlaybackPaths = playbackIntent
+            .getStringArrayListExtra(EXTRA_PLAYBACK_FALLBACK_PATHS)
+            .orEmpty()
+            .filter(String::isNotBlank)
+        launchHistoryId?.let(attemptedPlaybackUrisByHistoryId::remove)
         val requestedPlaybackPositionMs =
             playbackIntent.getLongExtra("playback_position_ms", 0L).takeIf { it >= 5_000L }
 
         val uri = when {
             videoPath.startsWith("content://") -> Uri.parse(videoPath)
             videoPath.startsWith("file://") -> Uri.parse(videoPath)
-            else -> {
-                val file = File(videoPath)
-                val documentUri = buildDocumentUriForPath(videoPath)
-                if ((!file.exists() || !file.isFile) && documentUri == null) {
-                    Toast.makeText(this, "Invalid video path: $videoPath", Toast.LENGTH_SHORT).show()
-                    return
-                }
-                documentUri ?: Uri.fromFile(file)
-            }
+            else -> buildDocumentUriForPath(videoPath) ?: Uri.fromFile(File(videoPath))
         }
 
         val playlistPaths = playbackIntent.getStringArrayListExtra("video_paths")
@@ -617,7 +641,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         logPlaybackPosition(
             "handlePlaybackIntent replaceCurrent=$replaceCurrent same=$isSameAsCurrentPlayback " +
                 "requested=$requestedPlaybackPositionMs launch=$launchPlaybackPositionMs " +
-                "current=${player?.currentPosition ?: -1L} historyId=$launchHistoryId uri=$requestedUriString"
+                "current=${player?.currentPosition ?: -1L} historyId=$launchHistoryId uriScheme=${uri.scheme.orEmpty()}"
         )
 
         if (replaceCurrent && isResumePlaybackUiIntent && (player?.mediaItemCount ?: 0) > 0) {
@@ -1518,18 +1542,38 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     private fun resolvePreferredThumbSource(item: HistoryItem): String? {
-        val preferred = if (item.customThumb.isNotBlank() && FileUtil.exists(item.customThumb)) {
-            item.customThumb
-        } else {
-            item.thumb
-        }
-        if (preferred.isBlank()) return null
+        val preferred = item.customThumb.ifBlank { item.thumb }
+        return resolveThumbSource(preferred)
+    }
+
+    private fun resolveThumbSource(source: String): String? {
+        if (source.isBlank()) return null
         return when {
-            preferred.startsWith("content://") || preferred.startsWith("file://") -> preferred
-            preferred.startsWith("http://") || preferred.startsWith("https://") -> preferred
-            FileUtil.exists(preferred) -> File(preferred).toURI().toString()
-            else -> preferred
+            source.startsWith("content://") || source.startsWith("file://") -> source
+            source.startsWith("http://") || source.startsWith("https://") -> source
+            File(source).isAbsolute -> File(source).toURI().toString()
+            else -> source
         }
+    }
+
+    private suspend fun loadPlaybackThumbnail(
+        item: HistoryItem,
+        width: Int,
+        height: Int = 0,
+        centerCrop: Boolean = false
+    ): Bitmap? {
+        return listOf(item.customThumb, item.thumb)
+            .filter { it.isNotBlank() }
+            .distinct()
+            .firstNotNullOfOrNull { candidate ->
+                val source = resolveThumbSource(candidate) ?: return@firstNotNullOfOrNull null
+                val resolvedSource = ensureLocalThumbForPlayback(item, source)
+                runCatching {
+                    Picasso.get().load(resolvedSource).apply {
+                        if (centerCrop) resize(width, height).centerCrop() else resize(width, 0).onlyScaleDown()
+                    }.get()
+                }.getOrNull()
+            }
     }
 
     private fun isRemoteThumbSource(source: String): Boolean {
@@ -1613,11 +1657,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         var editedCustomThumb = item.customThumb
 
         fun updatePreview() {
-            val preview = if (editedCustomThumb.isNotBlank() && FileUtil.exists(editedCustomThumb)) {
-                editedCustomThumb
-            } else {
-                item.thumb
-            }
+            val preview = editedCustomThumb.ifBlank { item.thumb }
             if (preview.isBlank()) {
                 thumbPreview.setImageDrawable(null)
                 return
@@ -1630,7 +1670,11 @@ class VideoPlayerActivity : AppCompatActivity() {
                 File(preview).toURI().toString()
             }
             Picasso.get().invalidate(resolved)
-            Picasso.get().load(resolved).resize(1280, 0).onlyScaleDown().into(thumbPreview)
+            thumbPreview.loadThumbnail(
+                hideThumb = false,
+                imageURL = resolved,
+                fallbackImageURL = item.thumb.takeIf { editedCustomThumb.isNotBlank() }.orEmpty()
+            )
         }
 
         updatePreview()
@@ -1716,12 +1760,9 @@ class VideoPlayerActivity : AppCompatActivity() {
         item: HistoryItem,
         onSaved: (String?) -> Unit
     ) {
-        val path = item.downloadPath.firstOrNull { FileUtil.exists(it) }
-            ?: item.downloadPath.firstOrNull()
-            ?: return onSaved(null)
-        if (!canReadPath(path)) {
-            (this as? com.ireum.ytdl.ui.BaseActivity)?.askPermissions()
-            Toast.makeText(this, R.string.request_permission_desc, Toast.LENGTH_SHORT).show()
+        val path = firstReadableMediaPath(item)
+        if (path == null) {
+            Toast.makeText(this, R.string.file_access_failed, Toast.LENGTH_SHORT).show()
             return onSaved(null)
         }
         val durationMs = getDurationMs(path)
@@ -1800,7 +1841,11 @@ class VideoPlayerActivity : AppCompatActivity() {
             dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val bitmap = lastBitmap
                 lifecycleScope.launch(Dispatchers.IO) {
-                    val saved = if (bitmap != null) saveCustomThumbFromBitmap(item, bitmap) else null
+                    val saved = if (bitmap != null) {
+                        saveCustomThumbFromBitmap(item, bitmap, path)
+                    } else {
+                        null
+                    }
                     withContext(Dispatchers.Main) {
                         onSaved(saved)
                         dialog.dismiss()
@@ -1819,18 +1864,19 @@ class VideoPlayerActivity : AppCompatActivity() {
         item: HistoryItem,
         onSaved: (String?) -> Unit
     ) {
-        val path = item.downloadPath.firstOrNull { FileUtil.exists(it) }
-            ?: item.downloadPath.firstOrNull()
-            ?: return onSaved(null)
-        if (!canReadPath(path)) {
-            (this as? com.ireum.ytdl.ui.BaseActivity)?.askPermissions()
-            Toast.makeText(this, R.string.request_permission_desc, Toast.LENGTH_SHORT).show()
+        val path = firstReadableMediaPath(item)
+        if (path == null) {
+            Toast.makeText(this, R.string.file_access_failed, Toast.LENGTH_SHORT).show()
             return onSaved(null)
         }
         val positionMs = player?.currentPosition ?: 0L
         lifecycleScope.launch(Dispatchers.IO) {
             val bitmap = captureFrameBitmapAt(path, positionMs)
-            val saved = if (bitmap != null) saveCustomThumbFromBitmap(item, bitmap) else null
+            val saved = if (bitmap != null) {
+                saveCustomThumbFromBitmap(item, bitmap, path)
+            } else {
+                null
+            }
             withContext(Dispatchers.Main) {
                 onSaved(saved)
             }
@@ -1863,6 +1909,20 @@ class VideoPlayerActivity : AppCompatActivity() {
                 File(path).canRead()
             }
         }.getOrDefault(false)
+    }
+
+    private fun firstReadableMediaPath(item: HistoryItem): String? {
+        val resolvedTreePath = if (item.localTreeUri.isNotBlank() && item.localTreePath.isNotBlank()) {
+            FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath)?.toString()
+        } else {
+            null
+        }
+        return (item.downloadPath + listOfNotNull(resolvedTreePath))
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .firstOrNull(::canReadPath)
     }
 
     private fun captureFrameBitmapAt(path: String, timeMs: Long): Bitmap? {
@@ -1901,13 +1961,18 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun saveCustomThumbFromUri(item: HistoryItem, uri: Uri): String? {
         val stream = contentResolver.openInputStream(uri) ?: return null
         val bitmap = stream.use { BitmapFactory.decodeStream(it) } ?: return null
-        return saveCustomThumbFromBitmap(item, bitmap)
+        val mediaPath = firstReadableMediaPath(item) ?: item.downloadPath.firstOrNull()
+        return saveCustomThumbFromBitmap(item, bitmap, mediaPath)
     }
 
-    private fun saveCustomThumbFromBitmap(item: HistoryItem, bitmap: Bitmap): String? {
-        val dir = resolveCustomThumbDirectory(item) ?: return null
+    private fun saveCustomThumbFromBitmap(
+        item: HistoryItem,
+        bitmap: Bitmap,
+        mediaPath: String? = null
+    ): String? {
+        val dir = resolveCustomThumbDirectory(item, mediaPath) ?: return null
         if (!dir.exists()) dir.mkdirs()
-        val baseName = resolveCustomThumbBaseName(item)
+        val baseName = resolveCustomThumbBaseName(item, mediaPath)
         val file = File(dir, "${baseName}_custom_thumb.jpg")
         var out: OutputStream? = null
         return runCatching {
@@ -1922,9 +1987,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun resolveCustomThumbDirectory(item: HistoryItem): File? {
-        val path = item.downloadPath.firstOrNull { FileUtil.exists(it) }
-            ?: item.downloadPath.firstOrNull()
+    private fun resolveCustomThumbDirectory(item: HistoryItem, mediaPath: String? = null): File? {
+        val path = mediaPath ?: item.downloadPath.firstOrNull()
             ?: return null
         return when {
             path.startsWith("file://") -> {
@@ -1939,9 +2003,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun resolveCustomThumbBaseName(item: HistoryItem): String {
-        val path = item.downloadPath.firstOrNull { FileUtil.exists(it) }
-            ?: item.downloadPath.firstOrNull()
+    private fun resolveCustomThumbBaseName(item: HistoryItem, mediaPath: String? = null): String {
+        val path = mediaPath ?: item.downloadPath.firstOrNull()
             ?: return sanitizeLocalFileName(item.title.ifBlank { "video" })
         return when {
             path.startsWith("file://") -> {
@@ -2528,11 +2591,12 @@ class VideoPlayerActivity : AppCompatActivity() {
             val source = item?.let { resolvePreferredThumbSource(it) } ?: currentThumbUrl()
             if (source.isNullOrBlank()) return null
             lifecycleScope.launch {
-                val resolvedSource = withContext(Dispatchers.IO) {
-                    if (item != null) ensureLocalThumbForPlayback(item, source) else source
-                }
                 val bmp = withContext(Dispatchers.IO) {
-                    runCatching { Picasso.get().load(resolvedSource).resize(512, 0).onlyScaleDown().get() }.getOrNull()
+                    if (item != null) {
+                        loadPlaybackThumbnail(item, width = 512)
+                    } else {
+                        runCatching { Picasso.get().load(source).resize(512, 0).onlyScaleDown().get() }.getOrNull()
+                    }
                 }
                 if (bmp != null) {
                     callback.onBitmap(bmp)
@@ -3021,13 +3085,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (currentArtworkKey == key) return
         currentArtworkKey = key
         lifecycleScope.launch {
-            val resolvedSource = withContext(Dispatchers.IO) {
-                ensureLocalThumbForPlayback(item, source)
-            }
             val bitmap = withContext(Dispatchers.IO) {
-                runCatching {
-                    Picasso.get().load(resolvedSource).resize(1280, 720).centerCrop().get()
-                }.getOrNull()
+                loadPlaybackThumbnail(item, width = 1280, height = 720, centerCrop = true)
             }
             if (currentArtworkKey == key) {
                 playerView?.defaultArtwork = bitmap?.let { BitmapDrawable(resources, it) }
@@ -3100,9 +3159,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                         .mapNotNull { id -> itemsById[id] }
                         .filter { it.isPlayableInQueue() }
                         .filter { passesStatusFilter(it, statusFilter) }
-                        .map { resolveLocalTreePath(db, it) }
                         .mapNotNull { item ->
-                            val playablePath = item.downloadPath.firstOrNull { it.isNotBlank() } ?: return@mapNotNull null
+                            val playablePath = operationPlaybackPath(item) ?: return@mapNotNull null
                             item to playablePath
                         }
                         .toList()
@@ -3194,9 +3252,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                 historyRepo.getItemsFromIDs(filteredIds).asSequence()
                     .filter { it.isPlayableInQueue() }
                     .filter { passesStatusFilter(it, statusFilter) }
-                    .map { resolveLocalTreePath(db, it) }
                     .mapNotNull { item ->
-                        val playablePath = item.downloadPath.firstOrNull { it.isNotBlank() } ?: return@mapNotNull null
+                        val playablePath = operationPlaybackPath(item) ?: return@mapNotNull null
                         item to playablePath
                     }
                     .toList()
@@ -3415,15 +3472,15 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun passesStatusFilter(item: HistoryItem, status: HistoryViewModel.HistoryStatus): Boolean {
         return when (status) {
-            HistoryViewModel.HistoryStatus.DELETED -> item.downloadPath.any { path -> !FileUtil.exists(path) }
-            HistoryViewModel.HistoryStatus.NOT_DELETED -> item.downloadPath.any { path -> FileUtil.exists(path) }
+            HistoryViewModel.HistoryStatus.DELETED,
+            HistoryViewModel.HistoryStatus.NOT_DELETED -> true
             HistoryViewModel.HistoryStatus.MISSING_THUMBNAIL -> {
-                val hasCustomThumb = item.customThumb.isNotBlank() && FileUtil.exists(item.customThumb)
+                val hasCustomThumb = item.customThumb.isNotBlank()
                 val hasThumb = item.thumb.isNotBlank()
                 !hasCustomThumb && !hasThumb
             }
             HistoryViewModel.HistoryStatus.CUSTOM_THUMBNAIL -> {
-                item.customThumb.isNotBlank() && FileUtil.exists(item.customThumb)
+                item.customThumb.isNotBlank()
             }
             HistoryViewModel.HistoryStatus.HARDSUB_DONE -> item.hardSubDone
             else -> true
@@ -3639,7 +3696,8 @@ class VideoPlayerActivity : AppCompatActivity() {
             .setMediaId(historyId?.toString() ?: "")
             .build()
         logPlaybackPosition(
-            "playSinglePath historyId=$historyId start=$startPositionMs current=${player?.currentPosition ?: -1L} path=$path"
+            "playSinglePath historyId=$historyId start=$startPositionMs current=${player?.currentPosition ?: -1L} " +
+                "pathKind=${if (path.startsWith("content://")) "content" else "file"}"
         )
         if (historyId != null && startPositionMs > 0L) {
             skipNextPlaybackRestoreHistoryId = historyId
@@ -3661,17 +3719,6 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun buildDocumentUriForPath(path: String): Uri? {
         return FileUtil.buildDocumentUriForPath(path)
-    }
-
-    private fun resolveLocalTreePath(db: DBManager, item: HistoryItem): HistoryItem {
-        if (item.localTreeUri.isBlank() || item.localTreePath.isBlank()) return item
-        if (item.downloadPath.any { FileUtil.exists(it) }) return item
-        val resolvedUri = FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath) ?: return item
-        val resolvedPath = resolvedUri.toString()
-        if (!FileUtil.exists(resolvedPath)) return item
-        val updated = item.copy(downloadPath = listOf(resolvedPath))
-        runCatching { db.historyDao.update(updated) }
-        return updated
     }
 
     private fun showSeekOverlay(targetMs: Long, deltaMs: Long) {
@@ -4062,7 +4109,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         currentPos: Long,
         playWhenReady: Boolean,
         preparedQueueData: PlaybackQueuePreparedData? = null,
-        forceScrollCurrentToTop: Boolean = false
+        forceScrollCurrentToTop: Boolean = false,
+        forcePlayerTimelineReset: Boolean = false
     ) {
         logPlaybackTiming("applyQueueOrder start size=${items.size} currentId=$currentItemId pos=$currentPos playWhenReady=$playWhenReady")
         val queueData = preparedQueueData ?: prepareQueueData(
@@ -4086,7 +4134,8 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
         }
         if (mediaItems.isNotEmpty()) {
-            val syncedInPlace = timelineWindow.isFullQueue && syncExistingTimelineIfPossible(
+            val syncedInPlace = !forcePlayerTimelineReset &&
+                timelineWindow.isFullQueue && syncExistingTimelineIfPossible(
                 items = items,
                 currentItemId = currentItemId,
                 currentPos = currentPos,
@@ -4156,8 +4205,7 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun playQueueItem(item: HistoryItem, startPositionMs: Long) {
         val path = playbackQueueState.playablePath(item.id)
-            ?: item.downloadPath.firstOrNull { FileUtil.exists(it) }
-            ?: item.downloadPath.firstOrNull()
+            ?: operationPlaybackPath(item)
             ?: return
         autoScrollQueueToCurrent = true
         queueAdapter?.setCurrentItemId(item.id)
@@ -4167,6 +4215,62 @@ class VideoPlayerActivity : AppCompatActivity() {
             playSinglePath(path, item.id, startPositionMs)
         }
         scrollCurrentToTopIfAllowed(item.id)
+    }
+
+    private fun operationPlaybackPath(item: HistoryItem): String? {
+        item.downloadPath.firstOrNull { it.isNotBlank() }?.let { return it }
+        if (item.localTreeUri.isNotBlank() && item.localTreePath.isNotBlank()) {
+            FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath)
+                ?.toString()
+                ?.let { return it }
+        }
+        return null
+    }
+
+    private fun tryNextPlaybackLocation(): Boolean {
+        val item = currentHistoryItem()
+        val historyId = item?.id?.takeIf { it > 0L } ?: launchHistoryId ?: return false
+        val currentUri = player?.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+        val attemptedUris = attemptedPlaybackUrisByHistoryId.getOrPut(historyId) { linkedSetOf() }
+        if (currentUri.isNotBlank()) attemptedUris += currentUri
+        val candidates = buildList {
+            if (historyId == launchHistoryId) addAll(launchFallbackPlaybackPaths)
+            item?.downloadPath?.let(::addAll)
+            if (item != null && item.localTreeUri.isNotBlank() && item.localTreePath.isNotBlank()) {
+                FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath)
+                    ?.toString()
+                    ?.let(::add)
+            }
+        }.asSequence()
+            .filter(String::isNotBlank)
+            .map { path -> path to uriFromPath(path).toString() }
+            .distinctBy { (_, uri) -> uri }
+            .firstOrNull { (_, uri) -> uri !in attemptedUris }
+            ?: return false
+        val (path, uri) = candidates
+        attemptedUris += uri
+        val queueItem = queueItems.firstOrNull { it.id == historyId }
+        if (queueItem == null || queueItems.isEmpty()) {
+            playSinglePath(path, historyId, player?.currentPosition ?: 0L)
+            return true
+        }
+        val preferredPaths = playbackQueueState.playablePathsSnapshot().toMutableMap().apply {
+            put(historyId, path)
+        }
+        val preparedData = prepareQueueData(
+            items = queueItems,
+            preferredPlayablePaths = preferredPaths
+        )
+        applyQueueOrder(
+            items = queueItems,
+            currentItemId = historyId,
+            currentPos = player?.currentPosition ?: 0L,
+            preparedQueueData = preparedData,
+            playWhenReady = true,
+            forceScrollCurrentToTop = false,
+            forcePlayerTimelineReset = true
+        )
+        return true
     }
 
     private fun skipQueueBy(offset: Int): Boolean {
@@ -4650,6 +4754,7 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_RETURN_DESTINATION = "player_return_destination"
+        const val EXTRA_PLAYBACK_FALLBACK_PATHS = "playback_fallback_paths"
         private const val ENABLE_HISTORY_RETURN_LOGS = false
         private const val HISTORY_RETURN_TAG = "HistoryReturn"
         private const val PLAYBACK_TIMING_TAG = "PlaybackTiming"
@@ -4679,6 +4784,10 @@ class VideoPlayerActivity : AppCompatActivity() {
         private const val PREF_SPEED_PRESET_4 = "speed_preset_4"
         private const val PREF_SPEED_PRESET_5 = "speed_preset_5"
         private var activeInstance: WeakReference<VideoPlayerActivity>? = null
+        private val pendingPlaybackAccessFailureId = AtomicLong(-1L)
+
+        fun consumePlaybackAccessFailureId(): Long? =
+            pendingPlaybackAccessFailureId.getAndSet(-1L).takeIf { it > 0L }
 
         fun handlePipAction(action: String?) {
             activeInstance?.get()?.handlePipAction(action)
