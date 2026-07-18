@@ -373,6 +373,7 @@
     <string name="observe_log_waiting_retry_confirmation">확인 대기 중: %1$s</string>
     <string name="observe_log_retry_confirmation_unavailable">확인 알림을 표시할 수 없음: %1$s</string>
     <string name="observe_log_source_fetch_failed">소스를 확인하지 못함</string>
+    <string name="observe_log_run_failed">자동 다운로드에서 영상을 대기열에 추가하지 못함</string>
     <string name="bitrate">비트레이트</string>
     <string name="save_auto_subs">자동 자막 저장</string>
     <string name="not_deleted">삭제되지 않음</string>

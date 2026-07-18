@@ -19,6 +19,9 @@ interface ObserveSourcesDao {
     @Query("SELECT * FROM sources WHERE id = :id LIMIT 1")
     fun getByID(id: Long) : ObserveSourcesItem
 
+    @Query("SELECT * FROM sources WHERE id = :id LIMIT 1")
+    fun getByIDOrNull(id: Long): ObserveSourcesItem?
+
     @Query("SELECT * FROM sources ORDER BY id DESC")
     fun getAllSourcesFlow() : Flow<List<ObserveSourcesItem>>
 

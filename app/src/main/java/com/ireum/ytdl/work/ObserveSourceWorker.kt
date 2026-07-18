@@ -18,6 +18,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.App
+import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
@@ -38,7 +39,7 @@ import com.ireum.ytdl.util.storage.HistoryDeletionRecord
 import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
 import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.referencesSameFile
-import com.google.gson.Gson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -204,6 +205,47 @@ class ObserveSourceWorker(
     }
 
     override suspend fun doWork(): Result {
+        return try {
+            runSourceWork()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Log.e("ObserveSourceWorker", "Auto Download run failed", error)
+            recoverFailedRun(error)
+        }
+    }
+
+    private suspend fun recoverFailedRun(error: Exception): Result {
+        val sourceID = inputData.getLong(INPUT_SOURCE_ID, 0L)
+        if (sourceID == 0L) return Result.failure()
+        return try {
+            val dbManager = DBManager.getInstance(context)
+            val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
+            val repo = ObserveSourcesRepository(
+                dbManager.observeSourcesDao,
+                WorkManager.getInstance(context),
+                sharedPreferences
+            )
+            val item = withContext(Dispatchers.IO) {
+                dbManager.observeSourcesDao.getByIDOrNull(sourceID)
+            } ?: return Result.success()
+            finishRunAndSchedule(
+                repo = repo,
+                sharedPreferences = sharedPreferences,
+                sourceID = sourceID,
+                item = item,
+                message = context.getString(com.ireum.ytdl.R.string.observe_log_run_failed),
+                detail = error.javaClass.simpleName,
+                countRun = false
+            )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            Result.retry()
+        }
+    }
+
+    private suspend fun runSourceWork(): Result {
         val sourceID = inputData.getLong(INPUT_SOURCE_ID, 0)
         if (sourceID == 0L) return Result.success()
         val confirmedCanonicalUrl = inputData.getString(INPUT_CONFIRMED_URL)?.let(::canonicalUrl)
@@ -523,10 +565,11 @@ class ObserveSourceWorker(
             runDetail = candidate.url
         }
         val downloadItems = mutableListOf<DownloadItem>()
+        val converter = Converters()
         var confirmedRetryHandled = false
         toProcess.forEach {
-            val string = Gson().toJson(item.downloadItemTemplate, DownloadItem::class.java)
-            val downloadItem = Gson().fromJson(string, DownloadItem::class.java)
+            val string = converter.downloadItemToString(item.downloadItemTemplate)
+            val downloadItem = converter.stringToDownloadItem(string)
             downloadItem.title = it.title
 //            downloadItem.author = it.author DONT ADD IT, can conflict with playlist uploader album artist etc etc
             downloadItem.duration = it.duration

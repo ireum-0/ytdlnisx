@@ -419,6 +419,7 @@
     <string name="observe_log_waiting_retry_confirmation">Waiting for confirmation: %1$s</string>
     <string name="observe_log_retry_confirmation_unavailable">Confirmation notification unavailable: %1$s</string>
     <string name="observe_log_source_fetch_failed">Could not check the source</string>
+    <string name="observe_log_run_failed">Auto Download could not add videos to the queue</string>
     <string name="bitrate">Bitrate</string>
     <string name="save_auto_subs">Save automatic subtitles</string>
     <string name="not_deleted">Not deleted</string>
