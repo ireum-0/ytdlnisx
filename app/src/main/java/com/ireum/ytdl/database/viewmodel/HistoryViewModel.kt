@@ -19,9 +19,13 @@ import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.DBManager.SORTING
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.UiModel
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.database.repository.HistoryRepository
+import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
+import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
+import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.database.repository.HistoryRepository.HistorySortType
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
@@ -66,6 +70,9 @@ import java.net.URL
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class HistoryViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: HistoryRepository
+    private val database: DBManager
+    private val keywordAssignments: HistoryKeywordAssignmentRepository
+    private val automaticKeywordRuleEngine: AutomaticKeywordRuleEngine
     val sortOrder = MutableStateFlow(SORTING.DESC)
     val sortType = MutableStateFlow(HistorySortType.DATE)
     val authorFilter = MutableStateFlow("")
@@ -229,6 +236,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
 
     init {
         val db = DBManager.getInstance(application)
+        database = db
+        keywordAssignments = HistoryKeywordAssignmentRepository(db)
+        automaticKeywordRuleEngine = AutomaticKeywordRuleEngine(db)
         val dao = db.historyDao
         val playlistDao = db.playlistDao
         val keywordGroupDao = db.keywordGroupDao
@@ -1522,8 +1532,15 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             .distinct()
     }
 
-    fun insert(item: HistoryItem) = viewModelScope.launch(Dispatchers.IO) {
-        repository.insert(item)
+    suspend fun getKeywordAssignmentSnapshot(historyItemId: Long) = withContext(Dispatchers.IO) {
+        keywordAssignments.snapshotAssignments(historyItemId)
+    }
+
+    fun restoreHistory(
+        item: HistoryItem,
+        assignmentSnapshot: List<HistoryKeywordAssignment>
+    ) = viewModelScope.launch(Dispatchers.IO) {
+        keywordAssignments.restoreHistory(item, assignmentSnapshot)
         invalidateCachedIds(triggerRefresh = true)
     }
 
@@ -1701,18 +1718,64 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun deleteDuplicates() = viewModelScope.launch(Dispatchers.IO) {
-        repository.deleteDuplicates()
+        val duplicateGroups = repository.getDuplicateGroups()
+        duplicateGroups.forEach { group ->
+            val retained = group.first()
+            group.drop(1).forEach { duplicate ->
+                keywordAssignments.mergeHistoryAssignments(duplicate.id, retained.id)
+            }
+        }
+        repository.deleteRecords(duplicateGroups.flatMap { it.drop(1) }.map { it.id })
         invalidateCachedIds(triggerRefresh = true)
     }
 
     fun update(item: HistoryItem) = viewModelScope.launch(Dispatchers.IO) {
         Log.d("HistoryPagingVM", "update id=${item.id} author='${item.author}' title='${item.title}'")
+        val currentItem = runCatching { database.historyDao.getItem(item.id) }
+            .getOrDefault(item)
         repository.update(item)
+        if (currentItem.keywords != item.keywords) {
+            keywordAssignments.updateManualFromMaterializedEditor(
+                item.id,
+                AutomaticKeywordNormalizer.parseKeywords(item.keywords)
+            )
+        }
+        automaticKeywordRuleEngine.reconcileHistoryUrlChange(
+            item.id,
+            currentItem.url,
+            item.url
+        )
         invalidateCachedIds(triggerRefresh = true)
     }
 
+    suspend fun updateWithKeywordNotice(item: HistoryItem): Int = withContext(Dispatchers.IO) {
+        val currentItem = runCatching { database.historyDao.getItem(item.id) }
+            .getOrDefault(item)
+        repository.update(item)
+        val protectedCount = if (currentItem.keywords != item.keywords) {
+            keywordAssignments.updateManualFromMaterializedEditor(
+                item.id,
+                AutomaticKeywordNormalizer.parseKeywords(item.keywords)
+            )
+        } else {
+            0
+        }
+        automaticKeywordRuleEngine.reconcileHistoryUrlChange(
+            item.id,
+            currentItem.url,
+            item.url
+        )
+        invalidateCachedIds(triggerRefresh = true)
+        protectedCount
+    }
+
     fun removeKeywordsFromAllHistory(targetKeywords: List<String>) = viewModelScope.launch(Dispatchers.IO) {
-        repository.removeKeywordsFromAllHistory(targetKeywords)
+        val normalized = targetKeywords.map(AutomaticKeywordNormalizer::normalizeKeyword)
+            .filter(String::isNotBlank)
+            .toSet()
+        database.historyDao.getAllIds().forEach {
+            keywordAssignments.removeEditableKeywords(it, normalized)
+        }
         invalidateCachedIds(triggerRefresh = true)
     }
 

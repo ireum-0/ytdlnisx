@@ -11,10 +11,13 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ObserveSourcesDao {
-    @Query("SELECT * FROM sources ORDER BY id DESC")
+    @Query("SELECT * FROM sources WHERE observationPurpose = 'USER' ORDER BY id DESC")
     fun getAllSources() : List<ObserveSourcesItem>
 
-    @Query("SELECT * FROM sources WHERE url = :url LIMIT 1")
+    @Query("SELECT * FROM sources ORDER BY id DESC")
+    fun getAllSourcesIncludingManaged(): List<ObserveSourcesItem>
+
+    @Query("SELECT * FROM sources WHERE observationPurpose = 'USER' AND url = :url LIMIT 1")
     fun getByURL(url: String) : ObserveSourcesItem
 
     @Query("SELECT * FROM sources WHERE id = :id LIMIT 1")
@@ -23,10 +26,13 @@ interface ObserveSourcesDao {
     @Query("SELECT * FROM sources WHERE id = :id LIMIT 1")
     fun getByIDOrNull(id: Long): ObserveSourcesItem?
 
-    @Query("SELECT * FROM sources ORDER BY id DESC")
+    @Query("SELECT * FROM sources WHERE observationPurpose = 'USER' ORDER BY id DESC")
     fun getAllSourcesFlow() : Flow<List<ObserveSourcesItem>>
 
-    @Query("SELECT EXISTS(SELECT * FROM sources WHERE url=:url LIMIT 1)")
+    @Query("SELECT * FROM sources WHERE observationPurpose = 'KEYWORD_DISCOVERY' AND managedConditionKey = :conditionKey LIMIT 1")
+    fun getManagedKeywordSource(conditionKey: String): ObserveSourcesItem?
+
+    @Query("SELECT EXISTS(SELECT * FROM sources WHERE observationPurpose = 'USER' AND url=:url LIMIT 1)")
     fun checkIfExistsWithSameURL(url: String) : Boolean
 
     @Query("""
@@ -50,7 +56,7 @@ interface ObserveSourcesDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(item: ObserveSourcesItem) : Long
 
-    @Query("DELETE FROM sources")
+    @Query("DELETE FROM sources WHERE observationPurpose = 'USER'")
     suspend fun deleteAllRecords()
 
     @Query("DELETE FROM sources WHERE id=:itemId")

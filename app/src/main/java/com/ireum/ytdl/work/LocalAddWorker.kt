@@ -19,6 +19,7 @@ import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.repository.ResultRepository
+import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.util.Extensions.toDurationSeconds
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.LocalAddCandidateDto
@@ -140,7 +141,7 @@ class LocalAddWorker(
                         localTreeUri = treeMeta.first,
                         localTreePath = treeMeta.second
                     )
-                    db.historyDao.insert(item)
+                    HistoryKeywordAssignmentRepository(db).insertHistory(item)
                     if (baseName.isNotBlank()) {
                         existingBaseNames.add(baseKey)
                     }

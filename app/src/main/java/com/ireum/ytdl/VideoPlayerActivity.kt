@@ -1740,7 +1740,28 @@ class VideoPlayerActivity : AppCompatActivity() {
                     customThumb = editedCustomThumb
                 )
                 lifecycleScope.launch(Dispatchers.IO) {
-                    DBManager.getInstance(this@VideoPlayerActivity).historyDao.update(updated)
+                    val db = DBManager.getInstance(this@VideoPlayerActivity)
+                    val currentItem = runCatching { db.historyDao.getItem(item.id) }
+                        .getOrDefault(item)
+                    db.historyDao.update(updated.copy(keywords = currentItem.keywords))
+                    val protectedCount = if (keywords != currentItem.keywords) {
+                        com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                            .updateManualFromMaterializedEditor(
+                                item.id,
+                                com.ireum.ytdl.util.AutomaticKeywordNormalizer.parseKeywords(keywords)
+                            )
+                    } else 0
+                    com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(db)
+                        .reconcileHistoryUrlChange(item.id, currentItem.url, updated.url)
+                    if (protectedCount > 0) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                this@VideoPlayerActivity,
+                                R.string.automatic_keyword_automatic_preserved,
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
                 }
                 updateTitleViews(updated.title, updated.author)
             }

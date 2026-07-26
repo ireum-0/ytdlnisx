@@ -33,10 +33,14 @@ import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.models.BackupSettingsItem
 import com.ireum.ytdl.database.models.BackupCustomThumbItem
+import com.ireum.ytdl.database.models.AutomaticKeywordRule
+import com.ireum.ytdl.database.models.AutomaticKeywordRuleKeyword
+import com.ireum.ytdl.database.models.AutomaticKeywordRuleVideoMatch
 import com.ireum.ytdl.database.models.CommandTemplate
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.KeywordGroup
 import com.ireum.ytdl.database.models.KeywordGroupMember
 import com.ireum.ytdl.database.models.RestoreAppDataItem
@@ -300,10 +304,6 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     val json = gson.fromJson(total.toString(), JsonObject::class.java)
                     val restoreData = RestoreAppDataItem()
                     val parsedDataMessage = StringBuilder()
-                    val backupFormatVersion = runCatching {
-                        if (json.has("backup_format_version")) json.get("backup_format_version").asInt else 1
-                    }.getOrDefault(1)
-                    parsedDataMessage.appendLine("Backup format version: $backupFormatVersion")
 
                     if (json.has("settings")) {
                         restoreData.settings = json.getAsJsonArray("settings").map {
@@ -511,6 +511,10 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                                     sourceJson.addProperty(key, "")
                                 }
                             }
+                            // Backups contain user-managed sources only. Never trust imported
+                            // internal-purpose metadata that could hide a scheduled source.
+                            sourceJson.addProperty("observationPurpose", "USER")
+                            sourceJson.addProperty("managedConditionKey", "")
                             val item = gson.fromJson(
                                 sourceJson,
                                 ObserveSourcesItem::class.java
@@ -519,6 +523,38 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                         }
 
                         parsedDataMessage.appendLine("${getString(R.string.observe_sources)}: ${restoreData.observeSources!!.size}")
+                    }
+
+                    if (json.has("automatic_keyword_rules")) {
+                        restoreData.automaticKeywordRules =
+                            json.getAsJsonArray("automatic_keyword_rules").map {
+                                gson.fromJson(it, AutomaticKeywordRule::class.java)
+                        }
+                        parsedDataMessage.appendLine(
+                            "${getString(R.string.automatic_keyword_rules)}: " +
+                                restoreData.automaticKeywordRules!!.size
+                        )
+                    }
+
+                    if (json.has("automatic_keyword_rule_keywords")) {
+                        restoreData.automaticKeywordRuleKeywords =
+                            json.getAsJsonArray("automatic_keyword_rule_keywords").map {
+                                gson.fromJson(it, AutomaticKeywordRuleKeyword::class.java)
+                            }
+                    }
+
+                    if (json.has("automatic_keyword_rule_video_matches")) {
+                        restoreData.automaticKeywordRuleVideoMatches =
+                            json.getAsJsonArray("automatic_keyword_rule_video_matches").map {
+                                gson.fromJson(it, AutomaticKeywordRuleVideoMatch::class.java)
+                            }
+                    }
+
+                    if (json.has("history_keyword_assignments")) {
+                        restoreData.historyKeywordAssignments =
+                            json.getAsJsonArray("history_keyword_assignments").map {
+                                gson.fromJson(it, HistoryKeywordAssignment::class.java)
+                            }
                     }
 
                     showAppRestoreInfoDialog(

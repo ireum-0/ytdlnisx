@@ -1554,7 +1554,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 localTreeUri = updatedTreeMeta.first,
                                 localTreePath = updatedTreeMeta.second
                             )
-                            db.historyDao.insert(item)
+                            com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                                .insertHistory(item)
                             remaining.removeAll { it.uri == candidate.uri.toString() }
                             return@forEach
                         }
@@ -1589,7 +1590,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             localTreeUri = candidate.treeUri?.toString().orEmpty(),
                             localTreePath = buildTreeMeta(candidate.treeUri, candidate.uri).second
                         )
-                        db.historyDao.insert(item)
+                        com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                            .insertHistory(item)
                     }
                     LocalMatchChoice.MANUAL -> {
                         val manual = selection.manualMetadata ?: withContext(Dispatchers.Main) {
@@ -1640,7 +1642,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             localTreeUri = updatedTreeMeta.first,
                             localTreePath = updatedTreeMeta.second
                         )
-                        db.historyDao.insert(item)
+                        com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                            .insertHistory(item)
                         val baseName = candidate.title.ifBlank { candidate.uri.lastPathSegment ?: "" }
                         val baseKey = baseName.lowercase(Locale.getDefault())
                         if (baseName.isNotBlank()) {
@@ -2656,7 +2659,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 localTreeUri = updatedTreeMeta.first,
                 localTreePath = updatedTreeMeta.second
             )
-            db.historyDao.insert(item)
+            com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                .insertHistory(item)
             val baseName = candidate.title.ifBlank { candidate.uri.lastPathSegment ?: "" }
             val baseKey = baseName.lowercase(Locale.getDefault())
             if (baseName.isNotBlank()) {
@@ -2734,7 +2738,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 localTreeUri = updatedTreeMeta.first,
                                 localTreePath = updatedTreeMeta.second
                             )
-                            db.historyDao.insert(item)
+                            com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                                .insertHistory(item)
                             if (baseName.isNotBlank()) {
                                 existingBaseNames.add(baseKey)
                             }
@@ -4227,9 +4232,15 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     customThumb = editedCustomThumb,
                     website = editedWebsite
                 )
-                val updateJob = historyViewModel.update(updated)
                 lifecycleScope.launch {
-                    updateJob.join()
+                    val protectedCount = historyViewModel.updateWithKeywordNotice(updated)
+                    if (protectedCount > 0) {
+                        Toast.makeText(
+                            requireContext(),
+                            R.string.automatic_keyword_automatic_preserved,
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                     historyAdapter.refresh()
                 }
                 dialog.dismiss()
@@ -6307,10 +6318,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             runCatching {
                 val db = DBManager.getInstance(requireContext())
                 val currentExistingItem = db.historyDao.getItem(existingItem.id)
-                val mergedKeywords = mergeHistoryKeywords(currentExistingItem.keywords, newItem.keywords)
-                if (mergedKeywords != currentExistingItem.keywords) {
-                    db.historyDao.update(currentExistingItem.copy(keywords = mergedKeywords))
-                }
+                com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                    .mergeHistoryAssignments(newItem.id, currentExistingItem.id)
                 true
             }.getOrDefault(false)
         }
@@ -6402,21 +6411,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 localTreePath = ""
             )
         )
-    }
-
-    private fun mergeHistoryKeywords(existing: String, appended: String): String {
-        if (appended.isBlank()) return existing.trim()
-        val merged = linkedSetOf<String>()
-        val seen = hashSetOf<String>()
-        fun add(raw: String) {
-            val token = raw.trim()
-            if (token.isBlank()) return
-            val key = token.lowercase(Locale.getDefault())
-            if (seen.add(key)) merged.add(token)
-        }
-        existing.split(',').forEach { add(it) }
-        appended.split(',').forEach { add(it) }
-        return merged.joinToString(", ")
     }
 
     override fun onCardClick(itemID: Long) {
@@ -7469,10 +7463,17 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                     performHistoryDeletion(listOf(item.id), deleteAssociatedFiles = true)
                                 } else {
                                     lifecycleScope.launch {
+                                        val assignmentSnapshot =
+                                            historyViewModel.getKeywordAssignmentSnapshot(item.id)
                                         val result = historyViewModel.deleteHistoryItems(listOf(item.id), deleteAssociatedFiles = false)
                                         showHistoryDeletionResult(result)
                                         Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
-                                            .setAction(getString(R.string.undo)) { historyViewModel.insert(deletedItem) }
+                                            .setAction(getString(R.string.undo)) {
+                                                historyViewModel.restoreHistory(
+                                                    deletedItem,
+                                                    assignmentSnapshot
+                                                )
+                                            }
                                             .show()
                                     }
                                 }

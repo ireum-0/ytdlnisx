@@ -1214,17 +1214,25 @@ class DownloadWorker(
                                         playbackPositionMs = restoredPlaybackPositionMs,
                                         localTreeUri = if (isHistoryRedownload) "" else (previousHistoryItem?.localTreeUri ?: ""),
                                         localTreePath = if (isHistoryRedownload) "" else (previousHistoryItem?.localTreePath ?: ""),
-                                        keywords = mergeKeywords(previousHistoryItem?.keywords.orEmpty(), observeKeyword),
+                                        keywords = previousHistoryItem?.keywords.orEmpty(),
                                         customThumb = previousHistoryItem?.customThumb ?: "",
                                         hardSubScanRemoved = if (completedHardSub) true else previousHistoryItem?.hardSubScanRemoved ?: false,
                                         hardSubDone = if (completedHardSub) true else previousHistoryItem?.hardSubDone ?: false
                                     )
+                                    val keywordAssignments =
+                                        com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(dbManager)
                                     val insertedHistoryId = if (replacedHistoryId > 0L) {
-                                        historyDao.insert(historyItem)
-                                        replacedHistoryId
+                                        keywordAssignments.replaceHistoryPreservingAssignments(historyItem)
                                     } else {
-                                        historyDao.insertAndGetId(historyItem)
+                                        keywordAssignments.insertHistory(historyItem)
                                     }
+                                    com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(dbManager)
+                                        .applyToHistory(
+                                            insertedHistoryId,
+                                            downloadItem.url,
+                                            downloadItem.observeSourceId,
+                                            observeKeyword
+                                        )
                                     if (replacedHistoryId > 0L) {
                                         deleteReplacedHistoryMedia(previousHistoryItem, finalPaths)
                                     } else if (existingDuplicateHistoryItem != null) {
@@ -3725,25 +3733,6 @@ class DownloadWorker(
                 "$filterName='$escaped'"
             )
         }
-    }
-
-    private fun mergeKeywords(existing: String, appended: String): String {
-        if (appended.isBlank()) return existing.trim()
-
-        val merged = linkedSetOf<String>()
-        val seen = hashSetOf<String>()
-
-        fun addRaw(raw: String) {
-            val token = raw.trim()
-            if (token.isBlank()) return
-            val key = token.lowercase(Locale.getDefault())
-            if (seen.add(key)) merged.add(token)
-        }
-
-        existing.split(',').forEach { addRaw(it) }
-        appended.split(',').forEach { addRaw(it) }
-
-        return merged.joinToString(", ")
     }
 
     class WorkerProgress(

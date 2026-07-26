@@ -22,13 +22,21 @@ import com.ireum.ytdl.database.dao.YoutuberGroupDao
 import com.ireum.ytdl.database.dao.YoutuberMetaDao
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.models.BackupCustomThumbItem
+import com.ireum.ytdl.database.models.AutomaticKeywordRuleTypes
+import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
+import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
+import com.ireum.ytdl.database.models.observeSources.ObservationPurposes
+import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
+import com.ireum.ytdl.database.repository.AutomaticKeywordRuleScheduler
 import com.ireum.ytdl.database.repository.CommandTemplateRepository
 import com.ireum.ytdl.database.repository.CookieRepository
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
+import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.SearchHistoryRepository
 import com.ireum.ytdl.util.BackupSettingsUtil
+import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.google.gson.Gson
@@ -50,8 +58,10 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     private val workManager : WorkManager = WorkManager.getInstance(application)
     private val preferences : SharedPreferences = PreferenceManager.getDefaultSharedPreferences(application)
     private val notificationUtil = NotificationUtil(application)
+    private val dbManager = DBManager.getInstance(application)
 
     private val historyRepository : HistoryRepository
+    private val historyKeywordAssignments: HistoryKeywordAssignmentRepository
     private val downloadRepository : DownloadRepository
     private val cookieRepository : CookieRepository
     private val commandTemplateRepository : CommandTemplateRepository
@@ -62,8 +72,8 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     private val youtuberMetaDao: YoutuberMetaDao
 
     init {
-        val dbManager = DBManager.getInstance(application)
         historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao)
+        historyKeywordAssignments = HistoryKeywordAssignmentRepository(dbManager)
         downloadRepository = DownloadRepository(dbManager.downloadDao)
         cookieRepository = CookieRepository(dbManager.cookieDao)
         commandTemplateRepository = CommandTemplateRepository(dbManager.commandTemplateDao)
@@ -82,7 +92,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
         val json = JsonObject()
         json.addProperty("app", "YTDLnisX_backup")
-        json.addProperty("backup_format_version", 2)
+        json.addProperty("backup_format_version", 3)
         list.forEach {
             runCatching {
                 when(it){
@@ -129,6 +139,23 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             if (customThumbItems.isNotEmpty()) {
                 json.add("custom_thumbnails", Gson().toJsonTree(customThumbItems).asJsonArray)
             }
+            val automaticKeywordDao = dbManager.automaticKeywordRuleDao
+            json.add(
+                "automatic_keyword_rules",
+                Gson().toJsonTree(automaticKeywordDao.getAllRules()).asJsonArray
+            )
+            json.add(
+                "automatic_keyword_rule_keywords",
+                Gson().toJsonTree(automaticKeywordDao.getAllRuleKeywords()).asJsonArray
+            )
+            json.add(
+                "automatic_keyword_rule_video_matches",
+                Gson().toJsonTree(automaticKeywordDao.getAllVideoMatches()).asJsonArray
+            )
+            json.add(
+                "history_keyword_assignments",
+                Gson().toJsonTree(automaticKeywordDao.getAllAssignmentsRaw()).asJsonArray
+            )
         }
 
         val currentTime = Calendar.getInstance()
@@ -155,6 +182,16 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     suspend fun restoreData(data: RestoreAppDataItem, context: Context, resetData: Boolean = false) : Boolean {
         val result = kotlin.runCatching {
             val restoredCustomThumbByOldHistoryId = restoreCustomThumbnails(data.customThumbnails)
+            val resetAutomaticRules =
+                resetData && (data.downloads != null || data.automaticKeywordRules != null)
+            if (resetAutomaticRules) {
+                withContext(Dispatchers.IO) {
+                    dbManager.automaticKeywordRuleDao.getAllRules().forEach {
+                        AutomaticKeywordRuleScheduler.cancel(context, it.id)
+                        historyKeywordAssignments.deleteRuleAndAssignments(it.id)
+                    }
+                }
+            }
 
             data.settings?.apply {
                 val prefs = this
@@ -203,7 +240,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     if (resetData) historyRepository.deleteAllRecords()
                     data.downloads!!.forEach { historyItem ->
                         val oldHistoryId = historyItem.id
-                        val newHistoryId = historyRepository.insertAndGetId(
+                        val newHistoryId = historyKeywordAssignments.insertHistory(
                             historyItem.copy(
                                 id = 0L,
                                 customThumb = restoredCustomThumbByOldHistoryId[oldHistoryId]
@@ -352,9 +389,14 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     }
                     sources.forEach { source ->
                         val oldSourceId = source.id
-                        val insertedId = observeSourcesRepository.insert(source.copy(id = 0L))
+                        val restoredUserSource = source.copy(
+                            id = 0L,
+                            observationPurpose = ObservationPurposes.USER,
+                            managedConditionKey = ""
+                        )
+                        val insertedId = observeSourcesRepository.insert(restoredUserSource)
                         val restoredSource = if (insertedId > 0L) {
-                            source.copy(id = insertedId)
+                            restoredUserSource.copy(id = insertedId)
                         } else {
                             observeSourcesRepository.getByURL(source.url)
                         }
@@ -368,6 +410,123 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         ) {
                             observeSourcesRepository.observeTask(restoredSource)
                         }
+                    }
+                }
+            }
+
+            val restoredAutomaticRuleIdMap = linkedMapOf<Long, Long>()
+            data.automaticKeywordRules?.let { rules ->
+                withContext(Dispatchers.IO) {
+                    rules.forEach { rule ->
+                        val hasValidKeyword = data.automaticKeywordRuleKeywords.orEmpty().any {
+                            it.ruleId == rule.id &&
+                                AutomaticKeywordNormalizer.normalizeKeyword(it.keyword).isNotBlank()
+                        }
+                        if (!hasValidKeyword) return@forEach
+                        val conditionValue =
+                            AutomaticKeywordNormalizer.canonicalPlaylistUrl(rule.conditionValue)
+                                ?: return@forEach
+                        val conditionKey =
+                            AutomaticKeywordNormalizer.playlistConditionKey(conditionValue)
+                                ?: return@forEach
+                        val restoredRule = rule.copy(
+                            id = 0L,
+                            conditionType = AutomaticKeywordRuleTypes.PLAYLIST,
+                            conditionValue = conditionValue,
+                            conditionKey = conditionKey,
+                            revision = 1L,
+                            manualSyncStatus = rule.manualSyncStatus.normalizedRestoredSyncStatus(),
+                            discoveryStatus = rule.discoveryStatus.normalizedRestoredSyncStatus()
+                        )
+                        val restoredId = dbManager.automaticKeywordRuleDao.insertRule(restoredRule)
+                        restoredAutomaticRuleIdMap[rule.id] = restoredId
+                    }
+                    val restoredRuleKeywords = data.automaticKeywordRuleKeywords.orEmpty()
+                        .mapNotNull { keyword ->
+                            restoredAutomaticRuleIdMap[keyword.ruleId]?.let { restoredRuleId ->
+                                val display = keyword.keyword.trim().replace(Regex("\\s+"), " ")
+                                val normalized =
+                                    AutomaticKeywordNormalizer.normalizeKeyword(display)
+                                if (normalized.isBlank()) null else keyword.copy(
+                                    ruleId = restoredRuleId,
+                                    normalizedKeyword = normalized,
+                                    keyword = display
+                                )
+                            }
+                        }
+                        .distinctBy { it.ruleId to it.normalizedKeyword }
+                    if (restoredRuleKeywords.isNotEmpty()) {
+                        dbManager.automaticKeywordRuleDao.insertRuleKeywords(restoredRuleKeywords)
+                    }
+                    data.automaticKeywordRuleVideoMatches.orEmpty().forEach { match ->
+                        restoredAutomaticRuleIdMap[match.ruleId]?.let { restoredRuleId ->
+                            val videoKey = AutomaticKeywordNormalizer.videoKey(match.videoUrl)
+                            if (videoKey.isBlank()) return@let
+                            dbManager.automaticKeywordRuleDao.insertVideoMatch(
+                                match.copy(ruleId = restoredRuleId, videoKey = videoKey)
+                            )
+                        }
+                    }
+                }
+            }
+
+            data.historyKeywordAssignments
+                ?.groupBy { it.historyItemId }
+                ?.forEach { (oldHistoryId, assignments) ->
+                    val restoredHistoryId = importedHistoryIdMap[oldHistoryId]
+                        ?: return@forEach
+                    val restoredAssignments = assignments.mapNotNull { assignment ->
+                        val restoredSourceId = when (assignment.sourceType) {
+                            HistoryKeywordAssignmentSources.MANUAL ->
+                                HistoryKeywordAssignmentSources.MANUAL_SOURCE_ID
+                            HistoryKeywordAssignmentSources.RULE ->
+                                restoredAutomaticRuleIdMap[assignment.sourceId]
+                                    ?: return@mapNotNull null
+                            HistoryKeywordAssignmentSources.LEGACY_OBSERVE_SOURCE ->
+                                restoredObserveSourceIdMap[assignment.sourceId]
+                                    ?: assignment.sourceId
+                            else -> return@mapNotNull null
+                        }
+                        val display = assignment.keyword.trim().replace(Regex("\\s+"), " ")
+                        val normalized = AutomaticKeywordNormalizer.normalizeKeyword(display)
+                        if (normalized.isBlank()) return@mapNotNull null
+                        assignment.copy(
+                            historyItemId = restoredHistoryId,
+                            normalizedKeyword = normalized,
+                            keyword = display,
+                            sourceId = restoredSourceId
+                        )
+                    }.distinctBy {
+                        listOf(it.historyItemId, it.normalizedKeyword, it.sourceType, it.sourceId)
+                    }
+                    historyKeywordAssignments.restoreAssignments(
+                        restoredHistoryId,
+                        restoredAssignments,
+                        preserveExistingRuleAssignments = !resetData
+                    )
+                }
+
+            if (
+                data.automaticKeywordRules != null ||
+                data.observeSources != null ||
+                resetAutomaticRules
+            ) {
+                AutomaticKeywordObservationCoverage(context, dbManager).reconcile()
+            }
+            if (data.automaticKeywordRules != null) {
+                restoredAutomaticRuleIdMap.values.forEach { restoredRuleId ->
+                    val rule = dbManager.automaticKeywordRuleDao.getRule(restoredRuleId)
+                        ?: return@forEach
+                    if (rule.enabled && (!rule.baselineComplete || rule.pendingApplyToExisting)) {
+                        AutomaticKeywordRuleScheduler.enqueue(
+                            context,
+                            restoredRuleId,
+                            if (rule.pendingApplyToExisting) {
+                                AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING
+                            } else {
+                                AutomaticKeywordRuleScheduler.Mode.BASELINE_ONLY
+                            }
+                        )
                     }
                 }
             }
@@ -495,6 +654,15 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
         return result.isSuccess
     }
+
+    private fun String.normalizedRestoredSyncStatus(): String =
+        if (this == AutomaticKeywordSyncStatus.QUEUED ||
+            this == AutomaticKeywordSyncStatus.RUNNING
+        ) {
+            AutomaticKeywordSyncStatus.NEVER
+        } else {
+            this
+        }
 
     private suspend fun backupCustomThumbnails(): List<BackupCustomThumbItem> {
         return withContext(Dispatchers.IO) {

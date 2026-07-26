@@ -35,6 +35,7 @@ class MoreFragment : Fragment() {
     private lateinit var downloads: TextView
     private lateinit var cookies: TextView
     private lateinit var observeSources: TextView
+    private lateinit var automaticKeywordRules: TextView
     private lateinit var terminateApp: TextView
     private lateinit var settings: TextView
     private lateinit var mainActivity: MainActivity
@@ -60,6 +61,7 @@ class MoreFragment : Fragment() {
         downloadQueue = view.findViewById(R.id.download_queue)
         cookies = view.findViewById(R.id.cookies)
         observeSources = view.findViewById(R.id.observe_sources)
+        automaticKeywordRules = view.findViewById(R.id.automatic_keyword_rules)
         terminateApp = view.findViewById(R.id.terminate)
         settings = view.findViewById(R.id.settings)
 
@@ -104,6 +106,9 @@ class MoreFragment : Fragment() {
 
         observeSources.setOnClickListener {
             findNavController().navigate(R.id.observeSourcesFragment)
+        }
+        automaticKeywordRules.setOnClickListener {
+            findNavController().navigate(R.id.automaticKeywordRulesFragment)
         }
 
         terminateApp.setOnClickListener {

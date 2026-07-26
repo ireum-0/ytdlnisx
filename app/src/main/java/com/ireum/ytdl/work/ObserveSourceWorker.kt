@@ -24,6 +24,11 @@ import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
+import com.ireum.ytdl.database.models.AutomaticKeywordSyncError
+import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
+import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
+import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
+import com.ireum.ytdl.database.repository.AutomaticKeywordCoveragePolicy
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
@@ -32,6 +37,7 @@ import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
 import com.ireum.ytdl.util.Extensions.calculateNextTimeForObserving
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.LinkUtil
+import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
@@ -170,7 +176,9 @@ class ObserveSourceWorker(
         if (isFinished) {
             item.status = ObserveSourcesRepository.SourceStatus.STOPPED
             withContext(Dispatchers.IO) {
-                repo.update(item)
+                val cancelledIds = repo.update(item)
+                AutomaticKeywordObservationCoverage(context).reconcile()
+                cancelledIds
             }.forEach {
                 NotificationUtil(context).cancelMembershipWaitingNotification(it)
             }
@@ -329,12 +337,30 @@ class ObserveSourceWorker(
         )
 
         val sourceResult = kotlin.runCatching {
-            resultRepository.getResultsFromSource(item.url, resetResults = false, addToResults = false, singleItem = false)
+            resultRepository.getResultsFromSource(
+                AutomaticKeywordNormalizer.canonicalPlaylistUrl(item.url) ?: item.url,
+                resetResults = false,
+                addToResults = false,
+                singleItem = false
+            )
         }.onFailure {
             Log.e("observe", it.toString())
         }
         if (sourceResult.isFailure) {
             val error = sourceResult.exceptionOrNull()
+            val conditionKey = item.managedConditionKey.ifBlank {
+                AutomaticKeywordNormalizer.playlistConditionKey(item.url).orEmpty()
+            }
+            if (conditionKey.isNotBlank()) {
+                dbManager.automaticKeywordRuleDao.getEnabledRulesForConditionKey(conditionKey).forEach { rule ->
+                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatus(
+                        rule.id,
+                        AutomaticKeywordSyncStatus.FAILED,
+                        System.currentTimeMillis(),
+                        automaticKeywordError(error)
+                    )
+                }
+            }
             return finishRunAndSchedule(
                 repo = repo,
                 sharedPreferences = sharedPreferences,
@@ -346,6 +372,41 @@ class ObserveSourceWorker(
             )
         }
         val list = sourceResult.getOrThrow()
+        val sourceDiscoveryKeys = buildSet {
+            item.managedConditionKey.takeIf(String::isNotBlank)?.let(::add)
+            AutomaticKeywordNormalizer.playlistConditionKey(item.url)?.let(::add)
+        }
+        val discoveriesByKey = mutableMapOf<String, MutableList<ResultItem>>()
+        sourceDiscoveryKeys.forEach { key ->
+            discoveriesByKey.getOrPut(key, ::mutableListOf).addAll(list)
+        }
+        list.forEach { video ->
+            AutomaticKeywordNormalizer.playlistConditionKey(video.playlistURL.orEmpty())?.let { key ->
+                discoveriesByKey.getOrPut(key, ::mutableListOf).add(video)
+            }
+        }
+        if (discoveriesByKey.isNotEmpty()) {
+            val discoveryResult =
+                AutomaticKeywordRuleEngine(dbManager).recordDiscovery(discoveriesByKey)
+            dbManager.automaticKeywordRuleDao
+                .getEnabledRulesForConditionKeys(discoveriesByKey.keys.toList())
+                .forEach { rule ->
+                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatus(
+                        rule.id,
+                        if (discoveryResult.failed == 0) {
+                            AutomaticKeywordSyncStatus.SUCCESS
+                        } else {
+                            AutomaticKeywordSyncStatus.PARTIAL
+                        },
+                        System.currentTimeMillis(),
+                        if (discoveryResult.failed == 0) {
+                            AutomaticKeywordSyncError.NONE
+                        } else {
+                            AutomaticKeywordSyncError.DATABASE_PARTIAL
+                        }
+                    )
+                }
+        }
         val previouslyObservedCanonicalUrls = item.observedLinks
             .asSequence()
             .map(::canonicalUrl)
@@ -356,6 +417,17 @@ class ObserveSourceWorker(
             .map { canonicalUrl(it.url) }
             .filter { observedCanonicalUrls.add(it) }
             .forEach { item.observedLinks.add(it) }
+
+        if (!AutomaticKeywordCoveragePolicy.mayQueueDownloads(item.observationPurpose)) {
+            return finishRunAndSchedule(
+                repo = repo,
+                sharedPreferences = sharedPreferences,
+                sourceID = sourceID,
+                item = item,
+                message = context.getString(com.ireum.ytdl.R.string.automatic_keyword_discovery_complete),
+                countRun = true
+            )
+        }
 
         //delete downloaded items not present in source if sync is enabled
         if (item.syncWithSource && item.alreadyProcessedLinks.isNotEmpty()){
@@ -827,6 +899,22 @@ class ObserveSourceWorker(
         }
 
         return result
+    }
+
+    private fun automaticKeywordError(error: Throwable?): String {
+        val message = error?.message.orEmpty().lowercase()
+        return when {
+            "login" in message || "sign in" in message || "authentication" in message ->
+                AutomaticKeywordSyncError.AUTH_REQUIRED
+            "private" in message -> AutomaticKeywordSyncError.PRIVATE_PLAYLIST
+            "unavailable" in message || "not available" in message ->
+                AutomaticKeywordSyncError.UNAVAILABLE
+            "network" in message || "timeout" in message || "connection" in message ->
+                AutomaticKeywordSyncError.NETWORK
+            "extract" in message || "yt-dlp" in message ->
+                AutomaticKeywordSyncError.EXTRACTION
+            else -> AutomaticKeywordSyncError.UNKNOWN
+        }
     }
 
 }

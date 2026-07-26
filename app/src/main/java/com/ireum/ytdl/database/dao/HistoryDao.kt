@@ -8,6 +8,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RawQuery
 import androidx.room.Update
+import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.YoutuberInfo
@@ -66,6 +67,9 @@ interface HistoryDao {
     @Query("SELECT * FROM history WHERE url = :url")
     fun getItemsByUrl(url: String): List<HistoryItem>
 
+    @Query("SELECT * FROM history WHERE url IN (:urls)")
+    fun getItemsByUrls(urls: List<String>): List<HistoryItem>
+
     @Query("SELECT * FROM history WHERE customThumb = '' AND (thumb LIKE 'http://%' OR thumb LIKE 'https://%') ORDER BY time DESC LIMIT :limit")
     fun getItemsWithRemoteThumb(limit: Int): List<HistoryItem>
 
@@ -109,19 +113,32 @@ interface HistoryDao {
     fun getVideosByAuthor(author: String): List<HistoryItem>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    fun insert(item: HistoryItem)
+    fun insertRaw(item: HistoryItem)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    fun insertAndGetId(item: HistoryItem): Long
+    fun insertAndGetIdRaw(item: HistoryItem): Long
+
+    /**
+     * Compatibility writes cannot change the materialized keyword projection.
+     * Keyword changes must go through HistoryKeywordAssignmentRepository.
+     */
+    @Transaction
+    fun update(item: HistoryItem) {
+        val materialized = getItem(item.id).keywords
+        updateRaw(item.copy(keywords = materialized))
+    }
 
     @Update
-    fun update(item: HistoryItem)
+    fun updateRaw(item: HistoryItem)
 
     @Query("UPDATE history SET playbackPositionMs = :positionMs WHERE id = :id")
     fun updatePlaybackPosition(id: Long, positionMs: Long)
 
     @Query("UPDATE history SET lastWatched = :time WHERE id = :id")
     fun updateLastWatched(id: Long, time: Long)
+
+    @Query("UPDATE history SET keywords = :keywords WHERE id = :id")
+    suspend fun updateKeywordsMaterialized(id: Long, keywords: String)
 
     @Query("UPDATE history SET hardSubScanRemoved = :removed, hardSubDone = :done WHERE id = :id")
     fun updateHardSubScanState(id: Long, removed: Boolean, done: Boolean)

@@ -8,6 +8,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import com.ireum.ytdl.database.dao.CommandTemplateDao
+import com.ireum.ytdl.database.dao.AutomaticKeywordRuleDao
 import com.ireum.ytdl.database.dao.CookieDao
 import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.dao.HistoryDao
@@ -22,6 +23,10 @@ import com.ireum.ytdl.database.dao.TerminalDao
 import com.ireum.ytdl.database.dao.YoutuberGroupDao
 import com.ireum.ytdl.database.dao.YoutuberMetaDao
 import com.ireum.ytdl.database.models.CommandTemplate
+import com.ireum.ytdl.database.models.AutomaticKeywordRule
+import com.ireum.ytdl.database.models.AutomaticKeywordRuleKeyword
+import com.ireum.ytdl.database.models.AutomaticKeywordRuleVideoMatch
+import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
@@ -64,9 +69,13 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         YoutuberGroup::class,
         YoutuberGroupMember::class,
         YoutuberGroupRelation::class,
-        YoutuberMeta::class
+        YoutuberMeta::class,
+        AutomaticKeywordRule::class,
+        AutomaticKeywordRuleKeyword::class,
+        AutomaticKeywordRuleVideoMatch::class,
+        HistoryKeywordAssignment::class
     ],
-    version = 51,
+    version = 52,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),
@@ -113,6 +122,7 @@ abstract class DBManager : RoomDatabase(){
     abstract val keywordGroupDao: KeywordGroupDao
     abstract val youtuberGroupDao: YoutuberGroupDao
     abstract val youtuberMetaDao: YoutuberMetaDao
+    abstract val automaticKeywordRuleDao: AutomaticKeywordRuleDao
 
     enum class SORTING{
         DESC, ASC

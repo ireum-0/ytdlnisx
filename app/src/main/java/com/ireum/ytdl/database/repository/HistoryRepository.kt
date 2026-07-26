@@ -336,32 +336,6 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             .sortedBy { it.keyword.lowercase(Locale.getDefault()) }
     }
 
-    suspend fun removeKeywordsFromAllHistory(targetKeywords: List<String>) {
-        if (targetKeywords.isEmpty()) return
-        val normalizedTargets = targetKeywords
-            .map { normalizeKeyword(it) }
-            .filter { it.isNotBlank() }
-            .toSet()
-        if (normalizedTargets.isEmpty()) return
-
-        historyDao.getAll().forEach { item ->
-            val existing = splitKeywords(item.keywords)
-            if (existing.isEmpty()) return@forEach
-            val remaining = existing.filterNot { normalizedTargets.contains(normalizeKeyword(it)) }
-            if (remaining.size == existing.size) return@forEach
-            historyDao.update(item.copy(keywords = remaining.joinToString(", ")))
-        }
-    }
-
-
-    fun insert(item: HistoryItem) {
-        historyDao.insert(item)
-    }
-
-    fun insertAndGetId(item: HistoryItem): Long {
-        return historyDao.insertAndGetId(item)
-    }
-
     suspend fun deleteRecords(ids: List<Long>) {
         if (ids.isEmpty()) return
         ids.chunked(ID_BATCH_SIZE).forEach { batch ->
@@ -375,20 +349,15 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         historyDao.nuke()
     }
 
-    suspend fun deleteDuplicates() {
-        val items = historyDao.getAllDownloaded()
-        val duplicates = items
+    fun getDuplicateGroups(): List<List<HistoryItem>> =
+        historyDao.getAllDownloaded()
             .filter { it.title.isNotBlank() }
             .groupBy { it.title.trim() }
             .values
             .filter { it.size > 1 }
-            .flatMap { group ->
-                // Keep the earliest-added item and remove later duplicates.
-                group.sortedWith(compareBy<HistoryItem> { it.time }.thenBy { it.id }).drop(1)
+            .map { group ->
+                group.sortedWith(compareBy<HistoryItem> { it.time }.thenBy { it.id })
             }
-        if (duplicates.isEmpty()) return
-        deleteRecords(duplicates.map { it.id })
-    }
 
     fun update(item: HistoryItem) {
         historyDao.update(item)
