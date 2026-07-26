@@ -30,6 +30,7 @@ import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.SearchHistoryRepository
 import com.ireum.ytdl.util.BackupSettingsUtil
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.NotificationUtil
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
@@ -48,6 +49,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
     private val workManager : WorkManager = WorkManager.getInstance(application)
     private val preferences : SharedPreferences = PreferenceManager.getDefaultSharedPreferences(application)
+    private val notificationUtil = NotificationUtil(application)
 
     private val historyRepository : HistoryRepository
     private val downloadRepository : DownloadRepository
@@ -330,11 +332,84 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 }
             }
 
-            data.queued?.apply {
+            val queuedResetHandled = resetData && data.queued != null
+            if (queuedResetHandled) {
                 withContext(Dispatchers.IO){
-                    if (resetData) downloadRepository.deleteQueued()
-                    data.queued!!.forEach {
-                        downloadRepository.insert(it)
+                    downloadRepository.getMembershipWaitingDownloads().forEach {
+                        notificationUtil.cancelMembershipWaitingNotification(it.id)
+                    }
+                    downloadRepository.deleteQueued()
+                }
+            }
+
+            val restoredObserveSourceIdMap = linkedMapOf<Long, Long>()
+            data.observeSources?.let { sources ->
+                withContext(Dispatchers.IO) {
+                    if (resetData) {
+                        observeSourcesRepository.deleteAll().forEach {
+                            notificationUtil.cancelMembershipWaitingNotification(it)
+                        }
+                    }
+                    sources.forEach { source ->
+                        val oldSourceId = source.id
+                        val insertedId = observeSourcesRepository.insert(source.copy(id = 0L))
+                        val restoredSource = if (insertedId > 0L) {
+                            source.copy(id = insertedId)
+                        } else {
+                            observeSourcesRepository.getByURL(source.url)
+                        }
+                        val restoredId = restoredSource.id
+                        if (oldSourceId > 0L && restoredId > 0L) {
+                            restoredObserveSourceIdMap[oldSourceId] = restoredId
+                        }
+                        if (
+                            restoredSource.status ==
+                            ObserveSourcesRepository.SourceStatus.ACTIVE
+                        ) {
+                            observeSourcesRepository.observeTask(restoredSource)
+                        }
+                    }
+                }
+            }
+
+            val liveObserveSourceIdCache = mutableMapOf<Long, Long?>()
+            fun remapRestoredDownload(item: com.ireum.ytdl.database.models.DownloadItem) :
+                com.ireum.ytdl.database.models.DownloadItem {
+                val oldSourceId = item.observeSourceId
+                if (oldSourceId <= 0L) return item.copy(id = 0L)
+
+                val restoredSourceId = restoredObserveSourceIdMap[oldSourceId]
+                    ?: if (data.observeSources == null) {
+                        if (liveObserveSourceIdCache.containsKey(oldSourceId)) {
+                            liveObserveSourceIdCache[oldSourceId]
+                        } else {
+                            observeSourcesRepository.getByIDOrNull(oldSourceId)?.id.also {
+                                liveObserveSourceIdCache[oldSourceId] = it
+                            }
+                        }
+                    } else {
+                        null
+                    }
+                val restoredStatus =
+                    if (
+                        restoredSourceId == null &&
+                        item.status == DownloadRepository.Status.WaitingForMembership.toString()
+                    ) {
+                        DownloadRepository.Status.Error.toString()
+                    } else {
+                        item.status
+                    }
+                return item.copy(
+                    id = 0L,
+                    observeSourceId = restoredSourceId ?: 0L,
+                    status = restoredStatus
+                )
+            }
+
+            data.queued?.let { queued ->
+                withContext(Dispatchers.IO){
+                    queued.forEach { item ->
+                        downloadRepository.insert(remapRestoredDownload(item))
                     }
                     downloadRepository.startDownloadWorker(listOf(), application)
                 }
@@ -343,10 +418,13 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             data.scheduled?.apply {
                 withContext(Dispatchers.IO) {
                     if (resetData) downloadRepository.deleteScheduled()
+                    val restoredScheduled = mutableListOf<com.ireum.ytdl.database.models.DownloadItem>()
                     data.scheduled!!.forEach {
-                        downloadRepository.insert(it)
+                        val restoredItem = remapRestoredDownload(it)
+                        restoredItem.id = downloadRepository.insert(restoredItem)
+                        restoredScheduled.add(restoredItem)
                     }
-                    downloadRepository.startDownloadWorker(data.scheduled!!, application)
+                    downloadRepository.startDownloadWorker(restoredScheduled, application)
                 }
             }
 
@@ -354,7 +432,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 withContext(Dispatchers.IO){
                     if (resetData) downloadRepository.deleteCancelled()
                     data.cancelled!!.forEach {
-                        downloadRepository.insert(it)
+                        downloadRepository.insert(remapRestoredDownload(it))
                     }
                 }
             }
@@ -363,7 +441,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 withContext(Dispatchers.IO){
                     if (resetData) downloadRepository.deleteErrored()
                     data.errored!!.forEach {
-                        downloadRepository.insert(it)
+                        downloadRepository.insert(remapRestoredDownload(it))
                     }
                 }
             }
@@ -372,7 +450,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 withContext(Dispatchers.IO){
                     if (resetData) downloadRepository.deleteSaved()
                     data.saved!!.forEach {
-                        downloadRepository.insert(it)
+                        downloadRepository.insert(remapRestoredDownload(it))
                     }
                 }
             }
@@ -409,15 +487,6 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     if (resetData) searchHistoryRepository.deleteAll()
                     data.searchHistory!!.forEach {
                         searchHistoryRepository.insert(it.query)
-                    }
-                }
-            }
-
-            data.observeSources?.apply {
-                withContext(Dispatchers.IO){
-                    if (resetData) observeSourcesRepository.deleteAll()
-                    data.observeSources!!.forEach {
-                        observeSourcesRepository.insert(it)
                     }
                 }
             }

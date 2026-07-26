@@ -764,6 +764,9 @@ object UiUtil {
                     true
                 }
             }
+            DownloadRepository.Status.WaitingForMembership -> {
+                download?.isVisible = false
+            }
             DownloadRepository.Status.Scheduled -> {
                 download!!.setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_downloads, 0, 0, 0);
                 download.text = context.getString(R.string.download_now)
@@ -796,7 +799,11 @@ object UiUtil {
             }
         }
 
-        if (status != DownloadRepository.Status.Queued && status != DownloadRepository.Status.Error){
+        if (
+            status != DownloadRepository.Status.Queued &&
+            status != DownloadRepository.Status.WaitingForMembership &&
+            status != DownloadRepository.Status.Error
+        ){
             download?.setOnClickListener {
                 bottomSheet.dismiss()
                 downloadItem(item)

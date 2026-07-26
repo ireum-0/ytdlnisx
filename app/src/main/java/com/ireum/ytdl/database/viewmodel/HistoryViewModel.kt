@@ -27,6 +27,7 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
+import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionPolicy
 import com.ireum.ytdl.util.storage.HistoryDeletionSummary
 import com.ireum.ytdl.util.storage.HistoryDeletionValidation
@@ -1529,10 +1530,10 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     suspend fun deleteHistoryItems(ids: List<Long>, deleteAssociatedFiles: Boolean): HistoryDeletionSummary {
         return withContext(Dispatchers.IO) {
             val uniqueIds = ids.distinct()
-            val items = repository.getItemsFromIDs(uniqueIds)
-            val deletionRecords = items.map { item -> HistoryDeletionRecord(item.id, item.downloadPath) }
             if (!deleteAssociatedFiles) {
-                repository.deleteRecords(items.map(HistoryItem::id))
+                val existingIds = repository.getExistingIds(uniqueIds)
+                val deletionRecords = existingIds.map { id -> HistoryDeletionRecord(id, emptyList()) }
+                repository.deleteRecords(existingIds)
                 invalidateCachedIds(triggerRefresh = true)
                 return@withContext HistoryDeletionPolicy.recordOnly(deletionRecords)
             }
@@ -1542,13 +1543,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
 
     suspend fun prepareHistoryFileDeletion(ids: List<Long>): HistoryDeletionValidation {
         return withContext(Dispatchers.IO) {
-            val items = repository.getItemsFromIDs(ids.distinct())
-            val selectedIds = items.mapTo(hashSetOf(), HistoryItem::id)
-            val engine = historyFileDeletionEngine()
-            engine.excludeTargetsReferencedBy(
-                validation = engine.validate(deletionRecords(items)),
-                retainedStoredTargets = retainedStoredTargets(selectedIds)
-            )
+            val items = repository.getDeletionCandidateRecordsByIds(ids.distinct())
+            prepareHistoryFileDeletion(items)
         }
     }
 
@@ -1582,12 +1578,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     suspend fun prepareAllHistoryFileDeletion(): HistoryDeletionValidation {
-        val ids = withContext(Dispatchers.IO) { repository.getAll().map(HistoryItem::id) }
-        return prepareHistoryFileDeletion(ids)
+        return withContext(Dispatchers.IO) {
+            prepareHistoryFileDeletion(repository.getDeletionCandidateRecords())
+        }
     }
 
     suspend fun getAllHistoryCount(): Int = withContext(Dispatchers.IO) {
-        repository.getAll().size
+        repository.getCount()
     }
 
     suspend fun executePreparedHistoryFileDeletion(
@@ -1595,8 +1592,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     ): HistoryDeletionSummary {
         return withContext(Dispatchers.IO) {
             fun currentStoredTargets(): Map<Long, List<String>> {
-                return repository.getItemsFromIDs(validation.records.map(HistoryDeletionRecord::id))
-                    .associate { item -> item.id to item.downloadPath }
+                return repository.getDeletionReferenceRecordsByIds(
+                    validation.records.map(HistoryDeletionRecord::id)
+                ).associate { item -> item.id to item.downloadPath }
             }
 
             val selectedIds = validation.records.mapTo(hashSetOf(), HistoryDeletionRecord::id)
@@ -1624,10 +1622,28 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         return HistoryFileDeletionEngine(AndroidHistoryFileDeletionGateway(getApplication()))
     }
 
-    private fun deletionRecords(items: List<HistoryItem>): List<HistoryDeletionRecord> {
+    private fun prepareHistoryFileDeletion(
+        items: List<HistoryDeletionCandidateRecord>
+    ): HistoryDeletionValidation {
+        val selectedIds = items.mapTo(hashSetOf(), HistoryDeletionCandidateRecord::id)
+        val engine = historyFileDeletionEngine()
+        return engine.excludeTargetsReferencedBy(
+            validation = engine.validate(deletionRecords(items)),
+            retainedStoredTargets = retainedStoredTargets(selectedIds)
+        )
+    }
+
+    private fun deletionRecords(
+        items: List<HistoryDeletionCandidateRecord>
+    ): List<HistoryDeletionRecord> {
         val gateway = AndroidHistoryFileDeletionGateway(getApplication())
         return items.map { item ->
-            val trustedDocumentTargets = trustedResolvedTreeTargets(item, gateway)
+            val trustedDocumentTargets = trustedResolvedTreeTargets(
+                downloadPaths = item.downloadPath,
+                localTreeUri = item.localTreeUri,
+                localTreePath = item.localTreePath,
+                gateway = gateway
+            )
             HistoryDeletionRecord(
                 id = item.id,
                 storedTargets = (item.downloadPath + trustedDocumentTargets).distinct(),
@@ -1638,33 +1654,25 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun retainedStoredTargets(excludedRecordIds: Set<Long>): Sequence<String> {
-        val gateway = AndroidHistoryFileDeletionGateway(getApplication())
-        return repository.getAll()
+        return repository.getDeletionReferenceRecords()
             .asSequence()
             .filterNot { item -> item.id in excludedRecordIds }
-            .flatMap { item -> deletionTargets(item, gateway).asSequence() }
-    }
-
-    private fun deletionTargets(
-        item: HistoryItem,
-        gateway: HistoryFileDeletionGateway
-    ): List<String> {
-        return (item.downloadPath + trustedResolvedTreeTargets(item, gateway))
-            .filter(String::isNotBlank)
-            .distinct()
+            .flatMap { item -> item.downloadPath.asSequence() }
     }
 
     private fun trustedResolvedTreeTargets(
-        item: HistoryItem,
+        downloadPaths: List<String>,
+        localTreeUri: String,
+        localTreePath: String,
         gateway: HistoryFileDeletionGateway
     ): List<String> {
-        val resolvedTreeTarget = if (item.localTreeUri.isNotBlank() && item.localTreePath.isNotBlank()) {
-            FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath)?.toString()
+        val resolvedTreeTarget = if (localTreeUri.isNotBlank() && localTreePath.isNotBlank()) {
+            FileUtil.resolveTreeDocumentUri(localTreeUri, localTreePath)?.toString()
         } else {
             null
         }
         return listOfNotNull(resolvedTreeTarget).filter { treeTarget ->
-            item.downloadPath.any { storedTarget ->
+            downloadPaths.any { storedTarget ->
                 gateway.referencesSameFile(treeTarget, storedTarget)
             }
         }
@@ -1676,8 +1684,20 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     suspend fun deleteAllHistory(deleteAssociatedFiles: Boolean): HistoryDeletionSummary {
-        val ids = withContext(Dispatchers.IO) { repository.getAll().map(HistoryItem::id) }
-        return deleteHistoryItems(ids, deleteAssociatedFiles)
+        if (deleteAssociatedFiles) {
+            return executePreparedHistoryFileDeletion(prepareAllHistoryFileDeletion())
+        }
+        return withContext(Dispatchers.IO) {
+            val snapshotIds = repository.getAllIds()
+            repository.deleteRecords(snapshotIds)
+            invalidateCachedIds(triggerRefresh = true)
+            HistoryDeletionSummary(
+                recordsRequested = snapshotIds.size,
+                recordsRemoved = snapshotIds.size,
+                removableRecordIds = emptySet(),
+                outcomes = emptyList()
+            )
+        }
     }
 
     fun deleteDuplicates() = viewModelScope.launch(Dispatchers.IO) {

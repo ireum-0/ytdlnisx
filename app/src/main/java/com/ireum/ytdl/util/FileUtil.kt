@@ -114,10 +114,36 @@ object FileUtil {
     }
 
     fun cleanupDeletedRawFileArtifacts(path: String) {
-        val normalizedPath = path.trim()
-        if (normalizedPath.isBlank()) return
-        deleteFileFromMediaStore(normalizedPath)
-        deleteZeroByteSiblingMedia(normalizedPath)
+        cleanupDeletedRawFileArtifacts(listOf(path))
+    }
+
+    fun cleanupDeletedRawFileArtifacts(paths: Collection<String>) {
+        val normalizedPaths = paths.map(String::trim).filter(String::isNotBlank).distinct()
+        if (normalizedPaths.isEmpty()) return
+        normalizedPaths.forEach(::deleteFileFromMediaStore)
+
+        normalizedPaths
+            .map(::File)
+            .groupBy { file -> file.parentFile?.absolutePath.orEmpty() }
+            .filterKeys(String::isNotBlank)
+            .forEach { (parentPath, targets) ->
+                val parent = File(parentPath)
+                if (!parent.exists() || !parent.isDirectory) return@forEach
+                val targetPaths = targets.mapTo(hashSetOf()) { it.absolutePath.lowercase(Locale.US) }
+                val stems = targets.mapTo(hashSetOf()) { it.nameWithoutExtension }
+                parent.listFiles()
+                    ?.asSequence()
+                    ?.filter { candidate ->
+                        candidate.isFile &&
+                            candidate.length() == 0L &&
+                            candidate.nameWithoutExtension in stems &&
+                            candidate.extension.lowercase(Locale.US) in zeroByteSiblingMediaExtensions &&
+                            candidate.absolutePath.lowercase(Locale.US) !in targetPaths
+                    }
+                    ?.forEach { candidate ->
+                        if (candidate.delete()) deleteFileFromMediaStore(candidate.absolutePath)
+                    }
+            }
     }
 
     private fun deleteRawFilePath(path: String): Boolean {

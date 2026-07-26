@@ -26,6 +26,18 @@ data class HistoryDeletionRecord(
     val trustedDocumentTargets: Set<String> = emptySet()
 )
 
+data class HistoryDeletionReferenceRecord(
+    val id: Long,
+    val downloadPath: List<String>
+)
+
+data class HistoryDeletionCandidateRecord(
+    val id: Long,
+    val downloadPath: List<String>,
+    val localTreeUri: String,
+    val localTreePath: String
+)
+
 class HistoryDeletionDialogState {
     var deleteAssociatedFiles: Boolean = true
 }
@@ -243,6 +255,7 @@ interface HistoryFileDeletionGateway {
     fun validate(target: HistoryDeletionTarget): HistoryFileDeletionOutcome
     fun delete(target: HistoryDeletionTarget): HistoryFileDeletionOutcome
     fun referenceKeys(target: HistoryDeletionTarget): Set<String> = naturalReferenceKeys(target)
+    fun completeBatch() = Unit
 }
 
 internal fun naturalReferenceKeys(target: HistoryDeletionTarget): Set<String> {
@@ -353,7 +366,14 @@ class HistoryFileDeletionEngine(
             .mapNotNull { storedTarget ->
                 (HistoryDeletionTargetParser.parse(storedTarget) as? HistoryDeletionTargetParseResult.Valid)?.target
             }
-            .flatMap { target -> gateway.referenceKeys(target).asSequence() }
+            .flatMap { target ->
+                when (target) {
+                    is HistoryDeletionTarget.ContentDocument ->
+                        gateway.referenceKeys(target).asSequence()
+                    is HistoryDeletionTarget.RawFile ->
+                        naturalReferenceKeys(target).asSequence()
+                }
+            }
             .toSet()
         if (retainedReferenceKeys.isEmpty()) return validation
 
@@ -459,16 +479,20 @@ class HistoryFileDeletionEngine(
 
     fun execute(validation: HistoryDeletionValidation): HistoryDeletionSummary {
         val outcomes = validation.outcomes.toMutableMap()
-        validation.targets.forEach { (key, target) ->
-            if (outcomes[key]?.status == HistoryFileDeletionStatus.READY) {
-                val validatedDisplayName = outcomes[key]?.displayName
-                val deletionOutcome = gateway.delete(target)
-                outcomes[key] = if (validatedDisplayName.isNullOrBlank()) {
-                    deletionOutcome
-                } else {
-                    deletionOutcome.copy(displayName = validatedDisplayName)
+        try {
+            validation.targets.forEach { (key, target) ->
+                if (outcomes[key]?.status == HistoryFileDeletionStatus.READY) {
+                    val validatedDisplayName = outcomes[key]?.displayName
+                    val deletionOutcome = gateway.delete(target)
+                    outcomes[key] = if (validatedDisplayName.isNullOrBlank()) {
+                        deletionOutcome
+                    } else {
+                        deletionOutcome.copy(displayName = validatedDisplayName)
+                    }
                 }
             }
+        } finally {
+            gateway.completeBatch()
         }
         val removableIds = validation.recordTargetKeys
             .filterValues { keys -> keys.all { outcomes[it]?.allowsRecordRemoval == true } }
@@ -541,6 +565,19 @@ class AndroidHistoryFileDeletionGateway(
     private val appContext = context.applicationContext
     private val resolver = appContext.contentResolver
     private val rawGateway = RawHistoryFileDeletionGateway()
+    private val rawAlternativeUris = mutableMapOf<String, List<Uri>>()
+    private val contentRawPaths = mutableMapOf<String, String?>()
+    private val deletedRawPaths = linkedSetOf<String>()
+    private val persistedPermissions by lazy { resolver.persistedUriPermissions.toList() }
+    private val configuredRawRoots by lazy {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
+        listOf(
+            FileUtil.getDefaultApplicationPath(),
+            preferences.getString("music_path", FileUtil.getDefaultAudioPath()).orEmpty(),
+            preferences.getString("video_path", FileUtil.getDefaultVideoPath()).orEmpty(),
+            preferences.getString("command_path", FileUtil.getDefaultCommandPath()).orEmpty()
+        ).mapNotNull(::rawRootFile)
+    }
 
     override fun validate(target: HistoryDeletionTarget): HistoryFileDeletionOutcome {
         return when (target) {
@@ -559,12 +596,25 @@ class AndroidHistoryFileDeletionGateway(
     override fun referenceKeys(target: HistoryDeletionTarget): Set<String> {
         return buildSet {
             addAll(naturalReferenceKeys(target))
-            if (target is HistoryDeletionTarget.ContentDocument) {
-                contentRawPath(target)?.let { rawPath ->
-                    HistoryDeletionTargetParser.deduplicationKey(rawPath)?.let(::add)
+            when (target) {
+                is HistoryDeletionTarget.ContentDocument -> {
+                    contentRawPath(target)?.let { rawPath ->
+                        HistoryDeletionTargetParser.deduplicationKey(rawPath)?.let(::add)
+                    }
+                }
+                is HistoryDeletionTarget.RawFile -> {
+                    rawContentAlternatives(target).forEach { alternative ->
+                        addAll(naturalReferenceKeys(alternative))
+                    }
                 }
             }
         }
+    }
+
+    override fun completeBatch() {
+        if (deletedRawPaths.isEmpty()) return
+        FileUtil.cleanupDeletedRawFileArtifacts(deletedRawPaths.toList())
+        deletedRawPaths.clear()
     }
 
     private fun validateRawFile(target: HistoryDeletionTarget.RawFile): HistoryFileDeletionOutcome {
@@ -701,7 +751,7 @@ class AndroidHistoryFileDeletionGateway(
         }
         if (trustedRawTarget) {
             if (direct.status == HistoryFileDeletionStatus.DELETED) {
-                FileUtil.cleanupDeletedRawFileArtifacts(target.file.absolutePath)
+                deletedRawPaths += target.file.absolutePath
                 return direct
             }
             if (direct.status == HistoryFileDeletionStatus.ALREADY_ABSENT ||
@@ -727,12 +777,15 @@ class AndroidHistoryFileDeletionGateway(
     private fun rawContentAlternatives(
         target: HistoryDeletionTarget.RawFile
     ): List<HistoryDeletionTarget.ContentDocument> {
-        val safUri = runCatching {
-            FileUtil.buildDocumentUriForPath(target.file.absolutePath)
-        }.getOrNull()
-        val mediaUri = runCatching { findMediaStoreUri(target.file) }.getOrNull()
-        return listOfNotNull(safUri, mediaUri)
-            .distinctBy(Uri::toString)
+        val path = runCatching { target.file.canonicalPath }.getOrDefault(target.file.absolutePath)
+        val alternatives = rawAlternativeUris.getOrPut(path) {
+            val safUri = runCatching {
+                FileUtil.buildDocumentUriForPath(target.file.absolutePath)
+            }.getOrNull()
+            val mediaUri = runCatching { findMediaStoreUri(target.file) }.getOrNull()
+            listOfNotNull(safUri, mediaUri).distinctBy(Uri::toString)
+        }
+        return alternatives
             .map { uri ->
                 HistoryDeletionTarget.ContentDocument(
                     value = uri.toString(),
@@ -755,7 +808,7 @@ class AndroidHistoryFileDeletionGateway(
                 resolver.delete(uri, null, null) > 0
             }
             if (deleted) {
-                target.expectedRawPath?.let(FileUtil::cleanupDeletedRawFileArtifacts)
+                target.expectedRawPath?.let(deletedRawPaths::add)
                 outcome(target, HistoryFileDeletionStatus.DELETED)
             } else {
                 val revalidated = validateContentDocument(target)
@@ -787,7 +840,7 @@ class AndroidHistoryFileDeletionGateway(
             android.os.Process.myUid(),
             Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         ) == PackageManager.PERMISSION_GRANTED
-        return directGrant || resolver.persistedUriPermissions.any { permission ->
+        return directGrant || persistedPermissions.any { permission ->
             permission.isWritePermission && persistedGrantContains(permission.uri, uri)
         }
     }
@@ -799,7 +852,7 @@ class AndroidHistoryFileDeletionGateway(
             android.os.Process.myUid(),
             Intent.FLAG_GRANT_READ_URI_PERMISSION
         ) == PackageManager.PERMISSION_GRANTED
-        return directGrant || resolver.persistedUriPermissions.any { permission ->
+        return directGrant || persistedPermissions.any { permission ->
             permission.isReadPermission && persistedGrantContains(permission.uri, uri)
         }
     }
@@ -834,21 +887,26 @@ class AndroidHistoryFileDeletionGateway(
 
     private fun contentRawPath(target: HistoryDeletionTarget.ContentDocument): String? {
         target.expectedRawPath?.takeIf(String::isNotBlank)?.let { return it }
+        if (contentRawPaths.containsKey(target.value)) return contentRawPaths[target.value]
         val uri = runCatching { Uri.parse(target.value) }.getOrNull() ?: return null
-        rawPathFromDocumentUri(uri)?.let { return it }
-        if (uri.authority != MediaStore.AUTHORITY) return null
-        return runCatching {
-            resolver.query(
-                uri,
-                arrayOf(MediaStore.MediaColumns.DATA),
-                null,
-                null,
-                null
-            )?.use { cursor ->
-                if (!cursor.moveToFirst()) null
-                else cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA))
-            }
-        }.getOrNull()?.takeIf(String::isNotBlank)
+        val rawPath = rawPathFromDocumentUri(uri) ?: if (uri.authority == MediaStore.AUTHORITY) {
+            runCatching {
+                resolver.query(
+                    uri,
+                    arrayOf(MediaStore.MediaColumns.DATA),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (!cursor.moveToFirst()) null
+                    else cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA))
+                }
+            }.getOrNull()?.takeIf(String::isNotBlank)
+        } else {
+            null
+        }
+        contentRawPaths[target.value] = rawPath
+        return rawPath
     }
 
     private fun rawPathFromDocumentUri(uri: Uri): String? {
@@ -882,14 +940,7 @@ class AndroidHistoryFileDeletionGateway(
     }
 
     private fun trustedRawRoot(file: File): File? {
-        val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
-        val configuredRoots = listOf(
-            FileUtil.getDefaultApplicationPath(),
-            preferences.getString("music_path", FileUtil.getDefaultAudioPath()).orEmpty(),
-            preferences.getString("video_path", FileUtil.getDefaultVideoPath()).orEmpty(),
-            preferences.getString("command_path", FileUtil.getDefaultCommandPath()).orEmpty()
-        ).mapNotNull(::rawRootFile)
-        return configuredRoots.firstOrNull { root -> HistoryDeletionScope.isWithin(file, root) }
+        return configuredRawRoots.firstOrNull { root -> HistoryDeletionScope.isWithin(file, root) }
     }
 
     private fun rawRootFile(value: String): File? {
@@ -934,7 +985,7 @@ class AndroidHistoryFileDeletionGateway(
     }
 
     private fun hasExactPersistedWriteGrant(uri: Uri): Boolean {
-        return resolver.persistedUriPermissions.any { permission ->
+        return persistedPermissions.any { permission ->
             permission.isWritePermission && permission.uri == uri
         }
     }
@@ -948,7 +999,7 @@ class AndroidHistoryFileDeletionGateway(
         return configuredTreeUris.any { configuredUri ->
             DocumentsContract.isTreeUri(configuredUri) &&
                 persistedGrantContains(configuredUri, targetUri) &&
-                resolver.persistedUriPermissions.any { permission ->
+                persistedPermissions.any { permission ->
                     permission.isWritePermission && permission.uri == configuredUri
                 }
         }

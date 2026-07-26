@@ -41,6 +41,7 @@ import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.referencesSameFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -170,6 +171,8 @@ class ObserveSourceWorker(
             item.status = ObserveSourcesRepository.SourceStatus.STOPPED
             withContext(Dispatchers.IO) {
                 repo.update(item)
+            }.forEach {
+                NotificationUtil(context).cancelMembershipWaitingNotification(it)
             }
             return Result.success()
         }
@@ -268,6 +271,46 @@ class ObserveSourceWorker(
             return Result.success()
         }
 
+        if (confirmedCanonicalUrl == null && confirmationDecision.isBlank()) {
+            val requeuedIds = withContext(Dispatchers.IO) {
+                dbManager.observeSourcesDao.requeueMembershipWaiting(sourceID)
+            }
+            if (requeuedIds.isNotEmpty()) {
+                try {
+                    val requeuedItems = withContext(Dispatchers.IO) {
+                        downloadRepo.getAllItemsByIDs(requeuedIds)
+                            .filter {
+                                it.status == DownloadRepository.Status.Queued.toString()
+                            }
+                    }
+                    if (requeuedItems.isNotEmpty()) {
+                        val alarmScheduler = AlarmScheduler(context)
+                        val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
+                        if (
+                            useScheduler &&
+                            !alarmScheduler.isDuringTheScheduledTime() &&
+                            alarmScheduler.canSchedule()
+                        ) {
+                            alarmScheduler.schedule()
+                        } else {
+                            downloadRepo.startDownloadWorker(requeuedItems, context)
+                        }
+                    }
+                } catch (error: Exception) {
+                    withContext(Dispatchers.IO + NonCancellable) {
+                        dbManager.observeSourcesDao.restoreMembershipWaitingIds(
+                            sourceID,
+                            requeuedIds
+                        )
+                    }
+                    throw error
+                }
+                requeuedIds.forEach {
+                    notificationUtil.cancelMembershipWaitingNotification(it)
+                }
+            }
+        }
+
         val workerID = System.currentTimeMillis().toInt()
         val notification = notificationUtil.createObserveSourcesNotification(item.name)
         if (Build.VERSION.SDK_INT >= 33) {
@@ -336,10 +379,10 @@ class ObserveSourceWorker(
             if (historyItemsToRemove.isNotEmpty()) {
                 val deletionGateway = AndroidHistoryFileDeletionGateway(context)
                 val selectedIds = historyItemsToRemove.mapTo(hashSetOf()) { history -> history.id }
-                val retainedTargets = historyRepo.getAll()
+                val retainedTargets = historyRepo.getDeletionReferenceRecords()
                     .asSequence()
                     .filterNot { history -> history.id in selectedIds }
-                    .flatMap { history -> deletionTargets(history, deletionGateway).asSequence() }
+                    .flatMap { history -> history.downloadPath.asSequence() }
                 val deletionRecords = historyItemsToRemove.map { history ->
                     val trustedDocumentTargets = trustedResolvedTreeTargets(history, deletionGateway)
                     HistoryDeletionRecord(

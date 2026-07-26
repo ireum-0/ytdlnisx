@@ -6,6 +6,8 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.KeywordInfo
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.WebsiteUtil
+import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
+import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import androidx.sqlite.db.SimpleSQLiteQuery
@@ -172,6 +174,33 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
 
     fun getAll(): List<HistoryItem> {
         return historyDao.getAll()
+    }
+
+    fun getCount(): Int = historyDao.getCount()
+
+    fun getAllIds(): List<Long> = historyDao.getAllIds()
+
+    fun getDeletionReferenceRecords(): List<HistoryDeletionReferenceRecord> {
+        return historyDao.getDeletionReferenceRecords()
+    }
+
+    fun getDeletionReferenceRecordsByIds(ids: List<Long>): List<HistoryDeletionReferenceRecord> {
+        if (ids.isEmpty()) return emptyList()
+        return ids.chunked(ID_BATCH_SIZE).flatMap(historyDao::getDeletionReferenceRecordsByIds)
+    }
+
+    fun getDeletionCandidateRecords(): List<HistoryDeletionCandidateRecord> {
+        return historyDao.getDeletionCandidateRecords()
+    }
+
+    fun getDeletionCandidateRecordsByIds(ids: List<Long>): List<HistoryDeletionCandidateRecord> {
+        if (ids.isEmpty()) return emptyList()
+        return ids.chunked(ID_BATCH_SIZE).flatMap(historyDao::getDeletionCandidateRecordsByIds)
+    }
+
+    fun getExistingIds(ids: List<Long>): List<Long> {
+        if (ids.isEmpty()) return emptyList()
+        return ids.chunked(ID_BATCH_SIZE).flatMap(historyDao::getExistingIds)
     }
 
     fun getItem(id: Long): HistoryItem {

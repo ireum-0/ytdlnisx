@@ -512,10 +512,10 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (!promptedCompatibleRedownloadIds.add(historyId)) return
 
         MaterialAlertDialogBuilder(this)
-            .setTitle("Unsupported video format")
-            .setMessage("This video exceeds this device's playback support. Re-download a compatible version while keeping the same resolution when possible?")
+            .setTitle(R.string.unsupported_video_format)
+            .setMessage(R.string.unsupported_video_redownload_prompt)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Re-download") { _, _ ->
+            .setPositiveButton(R.string.compatible_redownload) { _, _ ->
                 queueCompatibleRedownload(historyId)
             }
             .show()
@@ -527,7 +527,11 @@ class VideoPlayerActivity : AppCompatActivity() {
                 runCatching { DBManager.getInstance(this@VideoPlayerActivity).historyDao.getItem(historyId) }.getOrNull()
             }
             if (historyItem == null) {
-                Toast.makeText(this@VideoPlayerActivity, "Unable to find the original download.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this@VideoPlayerActivity,
+                    R.string.original_download_not_found,
+                    Toast.LENGTH_SHORT
+                ).show()
                 return@launch
             }
 
@@ -544,17 +548,14 @@ class VideoPlayerActivity : AppCompatActivity() {
             }.onSuccess {
                 Toast.makeText(
                     this@VideoPlayerActivity,
-                    "Queued a compatible re-download for this video.",
+                    getString(R.string.compatible_redownload_queued),
                     Toast.LENGTH_SHORT
                 ).show()
             }.onFailure { error ->
                 Log.e("VideoPlayerActivity", "Failed to queue compatible redownload historyId=$historyId", error)
-                val message = error.localizedMessage
-                    ?.takeIf { it.isNotBlank() }
-                    ?: "Failed to queue a compatible re-download."
                 Toast.makeText(
                     this@VideoPlayerActivity,
-                    message,
+                    getString(R.string.compatible_redownload_failed),
                     Toast.LENGTH_SHORT
                 ).show()
             }
@@ -1406,7 +1407,7 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun enterPipIfSupported(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            Toast.makeText(this, "PiP not supported", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.pip_not_supported, Toast.LENGTH_SHORT).show()
             return false
         }
         if (isFinishing || isDestroyed || isInPictureInPictureMode) {

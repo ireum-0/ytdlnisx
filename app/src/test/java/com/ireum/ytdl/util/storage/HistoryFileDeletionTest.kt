@@ -209,6 +209,124 @@ class HistoryFileDeletionTest {
     }
 
     @Test
+    fun retainedHistoryReferenceChecksDoNotInvokeGatewayPerRetainedItem() {
+        var referenceLookups = 0
+        val gateway = object : HistoryFileDeletionGateway {
+            override fun validate(target: HistoryDeletionTarget) =
+                HistoryFileDeletionOutcome(
+                    target.key,
+                    target.displayName,
+                    HistoryFileDeletionStatus.READY
+                )
+
+            override fun delete(target: HistoryDeletionTarget) =
+                HistoryFileDeletionOutcome(
+                    target.key,
+                    target.displayName,
+                    HistoryFileDeletionStatus.DELETED
+                )
+
+            override fun referenceKeys(target: HistoryDeletionTarget): Set<String> {
+                referenceLookups += 1
+                return naturalReferenceKeys(target)
+            }
+        }
+        val engine = HistoryFileDeletionEngine(gateway)
+        val selected = File("selected.mp4").absolutePath
+        val validation = engine.validate(
+            listOf(HistoryDeletionRecord(1L, listOf(selected)))
+        )
+        val lookupsAfterValidation = referenceLookups
+
+        engine.excludeTargetsReferencedBy(
+            validation,
+            (1..10_000).asSequence().map { index -> File("retained-$index.mp4").absolutePath }
+        )
+
+        assertEquals(lookupsAfterValidation + 1, referenceLookups)
+    }
+
+    @Test
+    fun equivalentRetainedContentUriProtectsSelectedContentUri() {
+        val selectedUri = "content://media/external/video/media/42"
+        val retainedUri =
+            "content://com.android.externalstorage.documents/document/primary%3AVideos%2Fsame.mp4"
+        val sharedRawKey =
+            HistoryDeletionTargetParser.deduplicationKey(File("Videos/same.mp4").absolutePath)!!
+        var deletions = 0
+        val gateway = object : HistoryFileDeletionGateway {
+            override fun validate(target: HistoryDeletionTarget) =
+                HistoryFileDeletionOutcome(
+                    target.key,
+                    target.displayName,
+                    HistoryFileDeletionStatus.READY
+                )
+
+            override fun delete(target: HistoryDeletionTarget): HistoryFileDeletionOutcome {
+                deletions += 1
+                return HistoryFileDeletionOutcome(
+                    target.key,
+                    target.displayName,
+                    HistoryFileDeletionStatus.DELETED
+                )
+            }
+
+            override fun referenceKeys(target: HistoryDeletionTarget): Set<String> {
+                return naturalReferenceKeys(target) + sharedRawKey
+            }
+        }
+        val engine = HistoryFileDeletionEngine(gateway)
+        val validation = engine.validate(
+            listOf(HistoryDeletionRecord(1L, listOf(selectedUri)))
+        )
+
+        val result = engine.execute(
+            engine.excludeTargetsReferencedBy(validation, sequenceOf(retainedUri))
+        )
+
+        assertEquals(0, deletions)
+        assertEquals(setOf(1L), result.removableRecordIds)
+    }
+
+    @Test
+    fun deletionCompletesGatewayBatchOnce() {
+        var completedBatches = 0
+        val gateway = object : HistoryFileDeletionGateway {
+            override fun validate(target: HistoryDeletionTarget) =
+                HistoryFileDeletionOutcome(
+                    target.key,
+                    target.displayName,
+                    HistoryFileDeletionStatus.READY
+                )
+
+            override fun delete(target: HistoryDeletionTarget) =
+                HistoryFileDeletionOutcome(
+                    target.key,
+                    target.displayName,
+                    HistoryFileDeletionStatus.DELETED
+                )
+
+            override fun completeBatch() {
+                completedBatches += 1
+            }
+        }
+        val engine = HistoryFileDeletionEngine(gateway)
+
+        engine.execute(
+            engine.validate(
+                listOf(
+                    HistoryDeletionRecord(
+                        1L,
+                        listOf(File("one.mp4").absolutePath, File("two.mp4").absolutePath)
+                    )
+                )
+            )
+        )
+
+        assertEquals(1, completedBatches)
+    }
+
+    @Test
     fun canonicalTargetReplacementKeepsNaturalReferenceKeys() {
         val rawPath = File("shared.mp4").absolutePath
         val rawKey = HistoryDeletionTargetParser.deduplicationKey(rawPath)!!

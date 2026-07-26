@@ -11,6 +11,8 @@ import androidx.room.Update
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.YoutuberInfo
+import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
+import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -18,6 +20,27 @@ interface HistoryDao {
 
     @Query("SELECT * FROM history ORDER BY time DESC")
     fun getAll(): List<HistoryItem>
+
+    @Query("SELECT COUNT(*) FROM history")
+    fun getCount(): Int
+
+    @Query("SELECT id FROM history")
+    fun getAllIds(): List<Long>
+
+    @Query("SELECT id, downloadPath FROM history")
+    fun getDeletionReferenceRecords(): List<HistoryDeletionReferenceRecord>
+
+    @Query("SELECT id, downloadPath FROM history WHERE id IN (:ids)")
+    fun getDeletionReferenceRecordsByIds(ids: List<Long>): List<HistoryDeletionReferenceRecord>
+
+    @Query("SELECT id, downloadPath, localTreeUri, localTreePath FROM history")
+    fun getDeletionCandidateRecords(): List<HistoryDeletionCandidateRecord>
+
+    @Query("SELECT id, downloadPath, localTreeUri, localTreePath FROM history WHERE id IN (:ids)")
+    fun getDeletionCandidateRecordsByIds(ids: List<Long>): List<HistoryDeletionCandidateRecord>
+
+    @Query("SELECT id FROM history WHERE id IN (:ids)")
+    fun getExistingIds(ids: List<Long>): List<Long>
 
     @Query("SELECT * FROM history")
     fun observeAll(): Flow<List<HistoryItem>>

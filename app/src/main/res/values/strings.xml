@@ -765,6 +765,7 @@
     <string name="playback_background_notification">Playing in background</string>
     <string name="download_issue_summary">%1$s: %2$s</string>
     <string name="download_issue_network_timeout">The network request timed out</string>
+    <string name="download_issue_membership_required">This video requires channel membership access</string>
     <string name="download_issue_auth_required">Authentication is required</string>
     <string name="download_issue_format_unavailable">The selected format is unavailable</string>
     <string name="download_issue_storage_full">Storage is full</string>
@@ -888,4 +889,27 @@
     <string name="rename">Rename</string>
     <string name="delete">Delete</string>
     <string name="history_metadata_update_failed">Could not update History. No files were deleted.</string>
+    <string name="membership_required_title">Membership access required</string>
+    <string name="membership_waiting_auto">Waiting for membership access. Automatic downloads will check again at the next interval.</string>
+    <string name="membership_waiting_queue">Waiting for membership access</string>
+    <string name="could_not_read_shared_file">Could not read the shared file</string>
+    <string name="runtime_initialization_failed">Could not initialize the download runtime</string>
+    <string name="unsupported_video_format">Unsupported video format</string>
+    <string name="unsupported_video_redownload_prompt">This video exceeds this device\'s playback support. Re-download a compatible version while keeping the same resolution when possible?</string>
+    <string name="compatible_redownload">Re-download</string>
+    <string name="original_download_not_found">Unable to find the original download</string>
+    <string name="compatible_redownload_queued">Queued a compatible re-download for this video</string>
+    <string name="compatible_redownload_failed">Failed to queue a compatible re-download</string>
+    <string name="pip_not_supported">Picture-in-Picture is not supported on this device</string>
+    <string name="updating_ytdlp">Updating yt-dlp…</string>
+    <string name="retry_cached_auth_keep_token">Cached authenticated YouTube media request returned 403; retrying without cached metadata or cookies while keeping PO tokens</string>
+    <string name="retry_cached_auth_public">Cached authenticated YouTube media request returned 403; retrying without cached metadata or authentication</string>
+    <string name="retry_cached_info">Cached info JSON media URL returned 403; retrying without --load-info-json</string>
+    <string name="retry_auth_keep_token">Authenticated YouTube media request returned 403; retrying without cookies while keeping PO tokens</string>
+    <string name="retry_auth_public">Authenticated YouTube media request returned 403; retrying once with public player clients</string>
+    <string name="retry_token_public">PO-token YouTube media retry failed; retrying once with public player clients</string>
+    <string name="post_processing_hard_subtitles">Post-processing hard subtitles</string>
+    <string name="filters">Filters</string>
+    <string name="local_info">Local info</string>
+    <string name="match">Match</string>
 </resources>

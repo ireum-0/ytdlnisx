@@ -102,13 +102,19 @@ interface DownloadDao {
     @Query("DELETE from downloads where status = 'Processing' AND url=:url")
     suspend fun deleteProcessingByUrl(url: String)
 
-    @Query("SELECT * FROM downloads WHERE status in('Active','PostProcessing','Queued', 'Scheduled')")
+    @Query("SELECT * FROM downloads WHERE status in('Active','PostProcessing','Queued','WaitingForMembership','Scheduled')")
     fun getActiveAndQueuedDownloadsList() : List<DownloadItem>
 
-    @Query("SELECT * FROM downloads WHERE status in('Active','PostProcessing','Queued','Scheduled','Paused','Processing')")
+    @Query("SELECT * FROM downloads WHERE status in('Active','PostProcessing','Queued','WaitingForMembership','Scheduled','Paused','Processing')")
     fun getPendingObservationDownloadsList() : List<DownloadItem>
 
-    @Query("SELECT COUNT(*) FROM downloads WHERE playlistURL = :marker AND status IN ('Processing','Queued','Active','PostProcessing','Paused','Scheduled','Saved')")
+    @Query("SELECT * FROM downloads WHERE observeSourceId=:sourceId AND status='WaitingForMembership' ORDER BY id")
+    fun getMembershipWaitingDownloads(sourceId: Long): List<DownloadItem>
+
+    @Query("SELECT * FROM downloads WHERE status='WaitingForMembership' ORDER BY id")
+    fun getMembershipWaitingDownloads(): List<DownloadItem>
+
+    @Query("SELECT COUNT(*) FROM downloads WHERE playlistURL = :marker AND status IN ('Processing','Queued','WaitingForMembership','Active','PostProcessing','Paused','Scheduled','Saved')")
     fun countPendingByPlaylistMarker(marker: String): Int
 
     @Query("UPDATE downloads SET status='Queued', downloadStartTime = -1 where status in ('Paused')")
@@ -121,10 +127,10 @@ interface DownloadDao {
     fun getActiveAndQueuedDownloads() : Flow<List<DownloadItem>>
 
     @RewriteQueriesToDropUnusedColumns
-    @Query("SELECT * FROM downloads WHERE status='Queued' ORDER BY id")
+    @Query("SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') ORDER BY id")
     fun getQueuedDownloads() : PagingSource<Int, DownloadItemSimple>
 
-    @Query("SELECT format FROM downloads WHERE status='Queued'")
+    @Query("SELECT format FROM downloads WHERE status IN ('Queued','WaitingForMembership')")
     fun getSelectedFormatFromQueued() : List<Format>
 
     @Query("""
@@ -148,7 +154,7 @@ interface DownloadDao {
     """)
     fun getQueuedScheduledDownloadsUntilWithPriority(currentTime: Long, priorityItems: List<Long>) : Flow<List<DownloadItem>>
 
-    @Query("SELECT * FROM downloads WHERE status='Queued' ORDER BY downloadStartTime, id")
+    @Query("SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') ORDER BY downloadStartTime, id")
     fun getQueuedDownloadsList() : List<DownloadItem>
 
     @Query("SELECT * FROM downloads WHERE status='Scheduled' ORDER BY downloadStartTime, id")
@@ -222,7 +228,7 @@ interface DownloadDao {
     @Query("DELETE FROM downloads WHERE status='Error'")
     suspend fun deleteErrored()
 
-    @Query("DELETE FROM downloads WHERE status='Queued'")
+    @Query("DELETE FROM downloads WHERE status in ('Queued','WaitingForMembership')")
     suspend fun deleteQueued()
 
     @Query("DELETE FROM downloads WHERE status='Saved'")
@@ -240,7 +246,7 @@ interface DownloadDao {
     @Query("DELETE FROM downloads WHERE id in (:list)")
     suspend fun deleteAllWithIDs(list: List<Long>)
 
-    @Query("UPDATE downloads SET status='Cancelled' WHERE status in('Queued','Active','PostProcessing', 'Scheduled', 'Paused')")
+    @Query("UPDATE downloads SET status='Cancelled' WHERE status in('Queued','WaitingForMembership','Active','PostProcessing', 'Scheduled', 'Paused')")
     suspend fun cancelActiveQueued()
 
     @Query("DELETE FROM downloads WHERE status='Processing' AND id=:id")

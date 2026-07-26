@@ -515,7 +515,6 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                                 sourceJson,
                                 ObserveSourcesItem::class.java
                             )
-                            item.id = 0L
                             item
                         }
 

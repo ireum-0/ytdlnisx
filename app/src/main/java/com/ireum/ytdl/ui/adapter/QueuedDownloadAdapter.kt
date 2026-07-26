@@ -23,6 +23,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItemSimple
+import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.util.Extensions.loadThumbnail
 import com.ireum.ytdl.util.Extensions.popup
@@ -72,13 +73,15 @@ class QueuedDownloadAdapter(onItemClickListener: OnItemClickListener, activity: 
         card.tag = item.id.toString()
 
         val thumbnail = card.findViewById<ImageView>(R.id.downloads_image_view)
+        val waitingForMembership =
+            item.status == DownloadRepository.Status.WaitingForMembership.toString()
 
         //DRAG HANDLE
         val dragView = card.findViewById<View>(R.id.drag_view)
-        dragView.isVisible = showDragHandle
+        dragView.isVisible = showDragHandle && !waitingForMembership
         card.findViewById<View>(R.id.drag_view).setOnTouchListener { view, motionEvent ->
             view.performClick()
-            if (motionEvent.actionMasked == MotionEvent.ACTION_DOWN){
+            if (!waitingForMembership && motionEvent.actionMasked == MotionEvent.ACTION_DOWN){
                 itemTouchHelper.startDrag(holder)
             }
             true
@@ -100,6 +103,11 @@ class QueuedDownloadAdapter(onItemClickListener: OnItemClickListener, activity: 
             title = title.substring(0, 40) + "..."
         }
         itemTitle.text = title
+
+        card.findViewById<TextView>(R.id.waiting_status).apply {
+            isVisible = waitingForMembership
+            text = activity.getString(R.string.membership_waiting_queue)
+        }
 
         //DOWNLOAD TYPE -----------------------------
         val type = card.findViewById<TextView>(R.id.download_type)
@@ -146,6 +154,8 @@ class QueuedDownloadAdapter(onItemClickListener: OnItemClickListener, activity: 
             val popup = PopupMenu(activity, it)
             popup.menuInflater.inflate(R.menu.queued_download_menu, popup.menu)
             if (Build.VERSION.SDK_INT > 27) popup.menu.setGroupDividerEnabled(true)
+            popup.menu.findItem(R.id.move_top)?.isVisible = !waitingForMembership
+            popup.menu.findItem(R.id.move_bottom)?.isVisible = !waitingForMembership
 
             popup.setOnMenuItemClickListener { m ->
                 when(m.itemId){
@@ -251,6 +261,11 @@ class QueuedDownloadAdapter(onItemClickListener: OnItemClickListener, activity: 
         notifyItemRangeChanged(0, itemCount, dragPayload)
     }
 
+    fun isWaitingForMembership(position: Int): Boolean {
+        return peek(position)?.status ==
+            DownloadRepository.Status.WaitingForMembership.toString()
+    }
+
 
 
     private fun checkCard(card: MaterialCardView, itemID: Long, position: Int) {
@@ -284,7 +299,11 @@ class QueuedDownloadAdapter(onItemClickListener: OnItemClickListener, activity: 
             }
 
             override fun areContentsTheSame(oldItem: DownloadItemSimple, newItem: DownloadItemSimple): Boolean {
-                return oldItem.id == newItem.id && oldItem.title == newItem.title && oldItem.author == newItem.author && oldItem.thumb == newItem.thumb
+                return oldItem.id == newItem.id &&
+                    oldItem.title == newItem.title &&
+                    oldItem.author == newItem.author &&
+                    oldItem.thumb == newItem.thumb &&
+                    oldItem.status == newItem.status
             }
         }
     }

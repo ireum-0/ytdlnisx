@@ -5,6 +5,7 @@ import com.ireum.ytdl.util.SensitiveTextRedactor
 enum class DownloadOutcomeStatus {
     SUCCESS,
     SUCCESS_WITH_WARNINGS,
+    WAITING_FOR_ACCESS,
     RETRYABLE_FAILURE,
     FINAL_FAILURE,
     CANCELED
@@ -25,6 +26,7 @@ enum class DownloadIssueStage {
 
 enum class DownloadIssueCode {
     NETWORK_TIMEOUT,
+    MEMBERSHIP_REQUIRED,
     AUTH_REQUIRED,
     FORMAT_UNAVAILABLE,
     STORAGE_FULL,

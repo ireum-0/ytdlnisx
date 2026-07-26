@@ -56,6 +56,8 @@ import com.ireum.ytdl.util.download.DownloadRetryMetadata
 import com.ireum.ytdl.util.download.DownloadRetryPolicy
 import com.ireum.ytdl.util.download.DownloadRetryStrategy
 import com.ireum.ytdl.util.download.DownloadSuggestedAction
+import com.ireum.ytdl.util.download.MembershipAccessDetector
+import com.ireum.ytdl.util.download.MembershipAccessPolicy
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.yausername.youtubedl_android.YoutubeDL
@@ -457,6 +459,9 @@ class DownloadWorker(
                             executeYtdlpRequest(request)
                         } catch (firstError: Exception) {
                             val retryProbeText = buildYtdlpRetryProbeText(firstError, recentYtdlpOutput)
+                            if (MembershipAccessDetector.isMembershipRequired(retryProbeText)) {
+                                throw firstError
+                            }
                             val retryWithoutCachedInfoJson = shouldRetryWithoutCachedInfoJson(retryProbeText, commandString)
                             val retryWithoutYoutubeAuthentication = shouldRetryYoutube403WithoutAuthentication(
                                 retryProbeText = retryProbeText,
@@ -475,20 +480,20 @@ class DownloadWorker(
                                 retryWithoutCachedInfoJson && retryWithoutYoutubeAuthentication -> {
                                     deleteLoadedAppInfoJson(commandString)
                                     if (retryKeepingYoutubePoTokens) {
-                                        "Cached authenticated YouTube media request returned 403; retrying without cached metadata or cookies while keeping PO tokens"
+                                        resources.getString(R.string.retry_cached_auth_keep_token)
                                     } else {
-                                        "Cached authenticated YouTube media request returned 403; retrying without cached metadata or authentication"
+                                        resources.getString(R.string.retry_cached_auth_public)
                                     }
                                 }
                                 retryWithoutCachedInfoJson -> {
                                     deleteLoadedAppInfoJson(commandString)
-                                    "Cached info JSON media URL returned 403; retrying without --load-info-json"
+                                    resources.getString(R.string.retry_cached_info)
                                 }
                                 retryKeepingYoutubePoTokens -> {
-                                    "Authenticated YouTube media request returned 403; retrying without cookies while keeping PO tokens"
+                                    resources.getString(R.string.retry_auth_keep_token)
                                 }
                                 else -> {
-                                    "Authenticated YouTube media request returned 403; retrying once with public player clients"
+                                    resources.getString(R.string.retry_auth_public)
                                 }
                             }
                             Log.w(TAG, "$retryNotice id=${downloadItem.id}", firstError)
@@ -530,7 +535,7 @@ class DownloadWorker(
                                     throw retryError
                                 }
 
-                                val publicRetryNotice = "PO-token YouTube media retry failed; retrying once with public player clients"
+                                val publicRetryNotice = resources.getString(R.string.retry_token_public)
                                 Log.w(TAG, "$publicRetryNotice id=${downloadItem.id}", retryError)
                                 eventBus.post(WorkerProgress(0, publicRetryNotice, downloadItem.id, downloadItem.logID))
                                 notificationUtil.updateDownloadNotification(
@@ -587,7 +592,8 @@ class DownloadWorker(
                             downloadItem.status = DownloadRepository.Status.PostProcessing.toString()
                             dao.update(downloadItem)
                             runningYTDLInstances.remove(downloadItem.id)
-                            val postProcessingMessage = "Post-processing hard subtitles"
+                            val postProcessingMessage =
+                                resources.getString(R.string.post_processing_hard_subtitles)
                             eventBus.post(WorkerProgress(100, postProcessingMessage, downloadItem.id, downloadItem.logID))
                             notificationUtil.updateDownloadNotification(
                                 downloadItem.id.toInt(),
@@ -1473,6 +1479,48 @@ class DownloadWorker(
                             it
                         )
                         notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
+
+                        val membershipDecision = MembershipAccessPolicy.decide(
+                            observeSourceId = downloadItem.observeSourceId,
+                            previousIssueCode = downloadItem.lastIssueCode
+                        )
+                        if (
+                            primaryIssue.code == DownloadIssueCode.MEMBERSHIP_REQUIRED &&
+                            membershipDecision.waitForAutomaticRetry
+                        ) {
+                            val parked = observeSourcesDao.parkDownloadForMembership(
+                                downloadId = downloadItem.id,
+                                sourceId = downloadItem.observeSourceId,
+                                issueCode = primaryIssue.code.name,
+                                issueStage = primaryIssue.stage.name
+                            ) > 0
+                            if (parked) {
+                                downloadOutcome = DownloadOutcome(
+                                    status = com.ireum.ytdl.util.download.DownloadOutcomeStatus.WAITING_FOR_ACCESS,
+                                    issues = listOf(primaryIssue)
+                                )
+                                downloadItem.status =
+                                    DownloadRepository.Status.WaitingForMembership.toString()
+                                downloadItem.lastIssueCode = primaryIssue.code.name
+                                downloadItem.lastIssueStage = primaryIssue.stage.name
+                                if (membershipDecision.showFirstWaitingNotification) {
+                                    notificationUtil.createMembershipWaiting(
+                                        downloadItem.id,
+                                        notificationTitle,
+                                        resources
+                                    )
+                                }
+                                eventBus.post(
+                                    WorkerProgress(
+                                        100,
+                                        resources.getString(R.string.membership_waiting_auto),
+                                        downloadItem.id,
+                                        downloadItem.logID
+                                    )
+                                )
+                                return@launch
+                            }
+                        }
 
                         downloadItem.status = DownloadRepository.Status.Error.toString()
                         downloadItem.lastIssueCode = primaryIssue.code.name

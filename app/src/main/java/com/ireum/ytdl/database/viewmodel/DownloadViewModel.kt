@@ -185,7 +185,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             }
         }
 
-        pausedAllDownloadsFlow = combine(activeDownloadsCount, queuedDownloadsCount, pausedDownloadsCount) { active, queued, paused ->
+        pausedAllDownloadsFlow = combine(
+            activeDownloadsCount,
+            repository.runnableQueuedDownloadsCount,
+            pausedDownloadsCount
+        ) { active, queued, paused ->
             if (isPausingResuming) {
                 return@combine PausedAllDownloadsState.PROCESSING
             }
@@ -968,7 +972,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         repository.deleteAllWithIDs(ids)
     }
 
-    private fun cancelActiveQueued() = viewModelScope.launch(Dispatchers.IO) {
+    private suspend fun cancelActiveQueued() = withContext(Dispatchers.IO) {
         processingItemsJob?.apply { cancel(CancellationException()) }
         repository.cancelActiveQueued()
     }
@@ -1028,13 +1032,15 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     suspend fun putAtTopOfQueue(ids: List<Long>) = CoroutineScope(Dispatchers.IO).launch{
         val downloads = dao.getQueuedDownloadsListIDs()
-        val lastID = ids.maxOf { it }
-        val tempIds = ids.associateWith { dao.moveToTemporaryId(it) }
-        val newIDs = downloads.take(ids.size)
+        val queuedIds = ids.filter(downloads::contains)
+        if (queuedIds.isEmpty()) return@launch
+        val lastID = queuedIds.maxOf { it }
+        val tempIds = queuedIds.associateWith { dao.moveToTemporaryId(it) }
+        val newIDs = downloads.take(queuedIds.size)
 
         //other ids that need to move around
         val takenPositions = mutableListOf<Long>()
-        downloads.filter { !ids.contains(it) && it < lastID }.toMutableList().apply {
+        downloads.filter { !queuedIds.contains(it) && it < lastID }.toMutableList().apply {
             this.reverse()
             this.forEach { dID ->
                 val newID = downloads.last { !newIDs.contains(it) && !takenPositions.contains(it) && it <= lastID }
@@ -1042,7 +1048,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 dao.updateDownloadID(dID, newID)
             }
         }
-        ids.forEachIndexed { idx, it ->
+        queuedIds.forEachIndexed { idx, it ->
             dao.updateDownloadID(tempIds[it] ?: it, newIDs[idx])
         }
     }
@@ -1050,18 +1056,20 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     suspend fun putAtBottomOfQueue(ids: List<Long>) = CoroutineScope(Dispatchers.IO).launch{
         val downloads = dao.getQueuedDownloadsListIDs()
-        val tempIds = ids.associateWith { dao.moveToTemporaryId(it) }
-        val newIDs = downloads.takeLast(ids.size)
+        val queuedIds = ids.filter(downloads::contains)
+        if (queuedIds.isEmpty()) return@launch
+        val tempIds = queuedIds.associateWith { dao.moveToTemporaryId(it) }
+        val newIDs = downloads.takeLast(queuedIds.size)
 
         //other ids that need to move around
         val takenPositions = mutableListOf<Long>()
-        for (dID in downloads.filter { !ids.contains(it) }){
+        for (dID in downloads.filter { !queuedIds.contains(it) }){
             val newID = downloads.first { !newIDs.contains(it) && !takenPositions.contains(it) }
             takenPositions.add(newID)
             dao.updateDownloadID(dID, newID)
         }
 
-        ids.toMutableList().apply {
+        queuedIds.toMutableList().apply {
             this.reverse()
             this.forEachIndexed { idx, it ->
                 dao.updateDownloadID(tempIds[it] ?: it, newIDs[idx])
@@ -1791,6 +1799,23 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         repository.setDownloadStatus(id, status)
     }
 
+    suspend fun restoreMembershipWaiting(item: DownloadItem) {
+        val restored = dbManager.observeSourcesDao.parkDownloadForMembership(
+            downloadId = item.id,
+            sourceId = item.observeSourceId,
+            issueCode = DownloadIssueCode.MEMBERSHIP_REQUIRED.name,
+            issueStage = item.lastIssueStage
+        ) > 0
+        if (restored) {
+            item.status = DownloadRepository.Status.WaitingForMembership.toString()
+            notificationUtil.createMembershipWaiting(
+                item.id,
+                item.title.ifEmpty { item.url },
+                resources
+            )
+        }
+    }
+
     fun getURLsByStatus(list: List<DownloadRepository.Status>) : List<String> {
         return dao.getURLsByStatus(list.map { it.toString() })
     }
@@ -1832,6 +1857,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         YoutubeDLCompat.destroyProcessById(id.toString())
         com.ireum.ytdl.work.DownloadWorker.cancelPostProcessingById(id)
         notificationUtil.cancelDownloadNotification(id.toInt())
+        notificationUtil.cancelMembershipWaitingNotification(id)
     }
 
     suspend fun cancelDownload(id: Long) {
@@ -1892,10 +1918,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     private suspend fun cancelAllDownloadsImpl() {
         WorkManager.getInstance(application).cancelAllWorkByTag("download")
-        val activeDownloadsList = withContext(Dispatchers.IO){
-            getActiveAndPostProcessingDownloads()
+        val downloadsToCancel = withContext(Dispatchers.IO){
+            getActiveAndPostProcessingDownloads() +
+                dao.getMembershipWaitingDownloads()
         }
-        activeDownloadsList.forEach {
+        downloadsToCancel.distinctBy(DownloadItem::id).forEach {
             cancelDownloadOnly(it.id)
         }
         cancelActiveQueued()

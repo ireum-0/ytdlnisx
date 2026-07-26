@@ -65,7 +65,11 @@ class DownloadRepository(private val downloadDao: DownloadDao) {
 
     val activeDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Active, Status.PostProcessing).toListString())
     val activePausedDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Active, Status.PostProcessing, Status.Paused).toListString())
-    val queuedDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Queued).toListString())
+    val queuedDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(
+        listOf(Status.Queued, Status.WaitingForMembership).toListString()
+    )
+    val runnableQueuedDownloadsCount : Flow<Int> =
+        downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Queued).toListString())
     val pausedDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Paused).toListString())
     val cancelledDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Cancelled).toListString())
     val erroredDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Error).toListString())
@@ -73,7 +77,7 @@ class DownloadRepository(private val downloadDao: DownloadDao) {
     val scheduledDownloadsCount : Flow<Int> = downloadDao.getDownloadsCountByStatusFlow(listOf(Status.Scheduled).toListString())
 
     enum class Status {
-        Active, PostProcessing, Paused, Queued, Error, Cancelled, Saved, Processing, Scheduled, Duplicate
+        Active, PostProcessing, Paused, Queued, WaitingForMembership, Error, Cancelled, Saved, Processing, Scheduled, Duplicate
     }
 
     suspend fun insert(item: DownloadItem) : Long {
@@ -156,6 +160,14 @@ class DownloadRepository(private val downloadDao: DownloadDao) {
 
     fun getPendingObservationDownloads() : List<DownloadItem> {
         return downloadDao.getPendingObservationDownloadsList()
+    }
+
+    fun getMembershipWaitingDownloads(sourceId: Long): List<DownloadItem> {
+        return downloadDao.getMembershipWaitingDownloads(sourceId)
+    }
+
+    fun getMembershipWaitingDownloads(): List<DownloadItem> {
+        return downloadDao.getMembershipWaitingDownloads()
     }
 
     fun getActiveAndQueuedDownloadIDs() : List<Long> {

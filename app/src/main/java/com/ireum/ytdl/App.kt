@@ -46,7 +46,11 @@ class App : Application() {
                 }
             }catch (e: Exception){
                 Looper.prepare().runCatching {
-                    Toast.makeText(this@App, e.message, Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@App,
+                        R.string.runtime_initialization_failed,
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
                 e.printStackTrace()
             }

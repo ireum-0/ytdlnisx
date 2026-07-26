@@ -468,7 +468,7 @@ class MainActivity : BaseActivity() {
                     bundle
                 )
             } catch (e: Exception) {
-                Toast.makeText(context, "Couldn't read file", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, R.string.could_not_read_shared_file, Toast.LENGTH_LONG).show()
                 e.printStackTrace()
             }
         }else if (action == Intent.ACTION_VIEW){
