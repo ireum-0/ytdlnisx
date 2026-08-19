@@ -1,286 +1,80 @@
-# Execution Rules
+# Durable Engineering Rules
 
-## Scope control
+These rules describe correctness constraints for current source. They apply even when a task document is older than the implementation.
 
-- Implement only the selected task and its strictly required support code.
-- Preserve unrelated user changes.
-- Do not perform broad cleanup while touching a hotspot.
-- Do not add dependencies, build tools, network services, telemetry, or remote configuration without explicit approval.
-- Prefer a sequence of small changes over one cross-cutting rewrite.
-- Use current project patterns unless they are the direct cause of the selected problem.
+## 1. Preserve observable behavior unless the task changes it
 
-## Shared result model
+Do not alter queue ordering, retry semantics, download quality, storage destination, History deduplication, incognito behavior, or playback state as a side effect of an unrelated change.
 
-Do not model every non-ideal result as `DownloadFailure`.
+## 2. Current download result model
 
-Use these conceptual outcomes:
+The current structured outcome model is:
 
 ```text
-SUCCESS
-SUCCESS_WITH_WARNINGS
-RETRYABLE_FAILURE
-FINAL_FAILURE
-CANCELED
+DownloadOutcomeStatus
+- SUCCESS
+- SUCCESS_WITH_WARNINGS
+- WAITING_FOR_ACCESS
+- RETRYABLE_FAILURE
+- FINAL_FAILURE
+- CANCELED
 ```
 
-Attach zero or more structured issues:
+A `DownloadIssue` carries stage, code, severity, retryability, suggested actions, source, and bounded redacted detail. Valid media creation followed by a History/notification/post-processing problem must not be represented as if no usable output exists.
 
-```text
-DownloadIssue
-- stage
-- code
-- severity
-- retryable
-- suggestedActions
-- redactedDetails
-- source
-```
+## 3. Redaction is a boundary requirement
 
-Recommended issue stages:
+Commands, URLs, headers, cookies, tokens, credentials, proxy values, private paths, and extractor output can be sensitive. Apply the shared redaction path before persistence, notification, clipboard/export, or diagnostic presentation. Do not add a second weaker sanitizer for a new feature.
 
-```text
-PREFLIGHT
-EXTRACT
-DOWNLOAD
-MERGE
-SUBTITLE
-HARD_SUB
-MOVE
-HISTORY
-NOTIFICATION
-CLEANUP
-```
+## 4. Persistent references must survive ID remapping
 
-Recommended severity:
+Backup/import and merge-restore code must treat database primary keys as local identifiers, not durable identities. Any persisted value that embeds or references another row ID must be remapped in the same restore operation.
 
-```text
-INFO
-WARNING
-ERROR
-```
+Never execute a destructive History replacement from a restored numeric marker without verifying that:
 
-Do not add a confidence enum until classification rules are measurable. Prefer:
+- the marker was successfully remapped;
+- the target row still represents the intended source/media;
+- deletion is limited to the verified previous target.
 
-- confirmed cause,
-- possible causes,
-- unknown cause.
+## 5. Derived automatic-keyword state is revision-sensitive
 
-A first implementation may keep this model in memory and avoid a Room migration. Persist it only when a user-visible requirement needs persistence.
+RULE assignments are derived state. Their validity depends on the current rule revision/condition and current video membership. Do not restore an old RULE assignment merely because the same numeric rule ID still exists.
 
-## Error classification
+Manual/user-owned keyword state may be restored from a snapshot; derived RULE state should be recomputed or validated against a durable revision.
 
-Classification priority:
+## 6. Empty extractor output is not completeness proof
 
-1. Typed application exception or explicit state.
-2. Known process exit code.
-3. Known execution stage.
-4. High-confidence output pattern.
-5. Runtime, permission, storage, and destination checks.
-6. Unknown.
+A successful API return containing zero items can still represent an incomplete extractor response. Baselines, membership removal, or other irreversible semantic conclusions require an explicit trustworthy completeness signal. Distinguish:
 
-Rules:
+- authoritative complete snapshot;
+- authoritative empty snapshot;
+- partial/incomplete result;
+- failed lookup.
 
-- Keep the first classifier small.
-- Prefer high precision over high recall.
-- Preserve the original redacted diagnostic output.
-- Never hide the raw failure behind a guessed message.
-- A pattern match may return multiple possible causes.
-- Tests must cover positive and negative examples.
-- Do not couple user-facing strings directly to raw English yt-dlp messages.
+## 7. Background metadata workers own only their fields
 
-## Retry policy
+A worker that enriches metadata must not write back a stale full database row after a network/native call. Patch only fields owned by that operation, or use a revision/compare-and-set contract that detects concurrent edits.
 
-Automatic retry is allowed only when the requested result does not change.
+## 8. “No data” and “lookup failed” are different states
 
-Examples allowed for limited automatic retry:
+Do not convert an exception into an empty collection when the caller will treat empty as a durable negative result. This applies to subtitle scans, source discovery, metadata backfills, and membership/availability checks. Preserve coroutine cancellation separately from ordinary failure.
 
-- transient network timeout,
-- foreground initialization failure,
-- same request after a short backoff,
-- transient destination access failure.
+## 9. Retry must be bounded and identity-preserving
 
-Require user confirmation before changing:
+Do not retry user-canceled work. Preserve one logical operation identity across retries when persistence requires it. Enforce attempt limits and require confirmation when a retry changes output settings or quality.
 
-- format,
-- quality,
-- container,
-- subtitle inclusion,
-- hard-sub behavior,
-- downloader,
-- authentication mode,
-- output path,
-- filename.
+## 10. File deletion requires ownership and revalidation
 
-Never:
+Never delete a directory/tree root as though it were a media item. Revalidate target identity and permission immediately before deletion, deduplicate aliases, and never broaden a failed exact-target operation into recursive deletion.
 
-- retry a user-canceled task,
-- retry indefinitely,
-- repeat the same failed strategy without a limit,
-- overwrite an existing valid output without an explicit policy,
-- delete the original diagnostic record,
-- create duplicate History entries for one logical retry chain.
+## 11. App-owned cache cleanup must remain app-owned
 
-Every retry chain must have:
+Cache deletion may touch only verified app-owned roots/categories. Active work must be gated out, protected persistent entries must remain excluded, and partial deletion must be reported accurately.
 
-- a stable logical operation identifier,
-- an attempt number,
-- a strategy identifier,
-- a maximum attempt count,
-- an explicit final state.
+## 12. Preview and execution share one command plan
 
-## Privacy and diagnostics
+Terminal dry-run and execution must be generated from the same sanitized representation. A preview-only parser is not an execution security boundary.
 
-The required processing order is:
+## 13. Tests do not substitute for device evidence
 
-```text
-raw process output
--> local classification
--> redaction
--> persistence
--> UI, notification, clipboard, export
-```
-
-Raw secrets must not be persisted or shown.
-
-Redact at least:
-
-- Authorization headers,
-- Cookie and Set-Cookie headers,
-- bearer tokens,
-- access and refresh tokens,
-- API keys,
-- usernames and passwords,
-- proxies,
-- cookie file paths,
-- terminal config paths,
-- sensitive URL query values,
-- private local paths where the full path is unnecessary.
-
-Rules:
-
-- Use one shared redaction path for normal downloads and Terminal.
-- Generate command preview and actual sanitized arguments from the same source representation.
-- Diagnostic bundles exclude cookies, command originals, full URL queries, account data, and full History by default.
-- Notifications must use the least sensitive useful title.
-- Incognito behavior must be preserved.
-
-## File and storage rules
-
-Preferred URI order:
-
-1. Existing `content://` URI.
-2. MediaStore URI.
-3. Persisted SAF document or tree access.
-4. Restricted FileProvider URI.
-5. Raw-path fallback only where valid.
-
-Rules:
-
-- Never recursively delete a user-selected directory root.
-- Automatic cleanup is limited to verified app-owned paths.
-- Do not copy large files into cache just to obtain a share URI.
-- Keep file-missing, permission-denied, and unknown states distinct.
-- Do not run whole-library file scans during application startup.
-- File scans must run off the main thread and be cancellable.
-- Active download temporary files must not be removed by storage cleanup.
-- Folder opening is best-effort and must provide a path-copy fallback.
-
-## Performance rules
-
-- No blocking file or process I/O on the main thread.
-- No unbounded in-memory process logs.
-- No full History scan for a single visible-page update.
-- No runtime health probe during normal startup unless required for a pending operation.
-- On-demand diagnostics must have per-probe timeouts.
-- Long scans must expose progress or an observable running state.
-- Measure before adding new database indexes.
-
-Suggested performance targets are task-specific. Do not invent a target after implementation to make a task pass.
-
-## Room rules
-
-For any schema change:
-
-- update the entity,
-- update DAO and repository call paths,
-- increment the database version,
-- add a migration,
-- export the schema,
-- add a migration test with populated representative data,
-- verify defaults and indexes,
-- consider downgrade and restore behavior.
-
-Avoid a schema change when an in-memory or existing-column implementation satisfies the requirement.
-
-## WorkManager and process rules
-
-When changing workers, inspect:
-
-- unique-work naming and policy,
-- duplicate execution,
-- stop and cancellation paths,
-- native process ownership,
-- foreground setup,
-- notification cleanup,
-- DB state transitions,
-- retry/backoff behavior,
-- application process death,
-- partial files and cache reuse.
-
-WorkManager constraint loss is not equivalent to an in-process pause. Define whether the operation is canceled, requeued, resumed, or restarted.
-
-## Media3 rules
-
-When changing playback or queue behavior, inspect:
-
-- actual player timeline,
-- displayed queue,
-- current media item,
-- saved playback position,
-- URI type,
-- PiP entry and exit,
-- background playback service,
-- subtitle attachment,
-- automatic transitions,
-- process recreation.
-
-Do not add queue features until current queue state has a single authoritative owner.
-
-## CI security rules
-
-- Use minimal permissions per job.
-- Do not expose signing secrets to pull-request jobs.
-- Separate verification jobs from signing and release jobs.
-- Pin third-party actions to immutable versions or commit SHAs.
-- Treat forked pull requests as untrusted.
-- Do not print secret-derived files or values.
-- Clean up temporary signing material.
-- A notification failure must not make a valid build result ambiguous.
-
-## Feature rollout
-
-Use an existing setting or a narrowly scoped feature flag when a new behavior is high risk or changes user-visible results.
-
-A flag must have:
-
-- a default,
-- migration or fallback behavior,
-- a removal condition,
-- no secret or remote dependency.
-
-Do not leave permanent dead flags without a removal task.
-
-## Final response requirements
-
-Report:
-
-- selected task ID,
-- starting commit,
-- changed files,
-- behavior change,
-- verification commands and results,
-- skipped verification and reason,
-- remaining risks,
-- required manual checks.
-
-Do not include full logs, secrets, large diffs, or unrelated findings.
+JVM policy tests are valuable, but storage providers, WorkManager, foreground services, notifications, Media3, Room migrations, native binaries, and ABI behavior require emulator/device validation for release confidence.

@@ -1,121 +1,91 @@
-# Project State
+# Current Project State
+
+Snapshot basis: `main@41d0acf89735c28a07f34cb565bd54e66cd9b6d0`, reviewed 2026-08-19.
 
 ## Repository profile
 
-- Android application written primarily in Kotlin.
-- Single Gradle module: `:app`.
-- Main source root: `app/src/main/java`.
-- Primary UI style: XML, ViewBinding, Fragments, and Activities.
-- Room is used for persistent data.
-- WorkManager is used for background and foreground download work.
-- Media3/ExoPlayer is used for playback and PiP.
-- yt-dlp, aria2c, Python/runtime payloads, QuickJS, ffmpeg, and ffprobe are release-critical.
-- Storage code uses raw paths, MediaStore, SAF, DocumentFile, and FileProvider.
+- Android/Kotlin/Gradle single-module application.
+- Source version: `1.8.9`.
+- minSdk 24; targetSdk/compileSdk 36.
+- Room database version: **52** with exported `52.json` committed.
+- WorkManager drives download and maintenance background work.
+- Media3/ExoPlayer powers playback.
+- yt-dlp/native runtime integration remains device/ABI sensitive.
 
-## Existing product capabilities
+## Implemented capabilities relevant to current engineering work
 
-Do not recreate these as new features without checking the current implementation:
+### Download reliability and diagnostics
 
-- URL and search input.
-- Android share intents and quick-download entry points.
-- Video, audio, and command downloads.
-- Format and subtitle selection.
-- Queued, active, scheduled, and observed downloads.
-- yt-dlp, aria2c, ffmpeg, and runtime initialization.
-- Cookies and YouTube PoToken support.
-- Terminal-style command downloads and command templates.
-- Download history and local-library management.
-- Search, sorting, and filtering in History.
-- File open, share, and delete actions.
-- Saved playback position and resume playback.
-- Media3 playback, PiP, and queue behavior.
-- Subtitle selection, conversion, sidecar handling, and hard-sub processing.
-- Observe Sources and retry-related source state.
-- Settings backup and Room migrations.
+Normal downloads use shared redaction before persisted/user-visible diagnostics, structured `DownloadOutcome`/`DownloadIssue` values, high-confidence issue classification, safe suggested actions, and bounded user-initiated retry metadata. Membership/access failures have dedicated handling rather than being collapsed into generic failures.
 
-## Existing safety and recovery work
+### CI and migration coverage
 
-Revalidate these before changing adjacent code:
+`.github/workflows/android-pr.yml` runs whitespace checks, debug Kotlin compilation, and debug unit tests for pull requests with read-only repository permission and no signing step. `.github/workflows/android.yml` separates verification, signing/release build, artifact upload, cleanup, and notification responsibilities.
 
-- Dangerous yt-dlp options are filtered through an argument policy.
-- Unit tests exist for important argument-policy cases.
-- Terminal command and output redaction exists.
-- FileProvider exposure is restricted compared with older versions.
-- Share URI preparation is centralized.
-- Large files are not blindly copied into the share cache.
-- Known sensitive filenames and database/config files are blocked from sharing.
-- DownloadWorker contains stopped-worker cleanup and requeue behavior.
-- Migration smoke tests cover representative recent migration paths.
-- Duplicate-related state exists and must be inspected before adding a second duplicate system.
-- Observe Sources stores retry and observed-link state.
+Representative Android migration tests cover populated upgrade paths through Room 52, including retry metadata and automatic keyword rule/assignment state. These tests existing in source does not prove that connected instrumentation has been executed for the current commit.
 
-## High-risk hotspots
+### Automatic keyword rules
 
-Treat changes in these areas as high risk:
+Playlist-based automatic keyword rules, source-aware keyword assignments, managed observation coverage, backup/restore support, and scheduled/manual sync are implemented. `history_keyword_assignments` is authoritative; `HistoryItem.keywords` is materialized compatibility state.
 
-- `HistoryFragment.kt`
-- `VideoPlayerActivity.kt`
-- `DownloadWorker.kt`
-- `YTDLPUtil.kt`
-- `UiUtil.kt`
-- `FileUtil.kt`
-- `NotificationUtil.kt`
-- `DBManager.kt`
-- `Migrations.kt`
-- `AndroidManifest.xml`
-- `app/build.gradle`
-- `.github/workflows/*`
+### Storage and History
 
-Large files are not, by themselves, permission for broad refactoring. Extract only the responsibility required by the selected task.
+History deletion has a dedicated validation/revalidation engine for raw paths, SAF, and MediaStore-like targets. File-location actions can copy file/URI values, copy a common parent, attempt to open the location, and fall back to safe parent text. App-owned cache categories can be scanned and cleared from folder settings while active-download UI gating is applied.
 
-## Known planning constraints
+The planned explicit History file-state model is not implemented yet.
 
-### Tests
+### Presets, runtime diagnostics, Terminal, playback
 
-Automated coverage is limited relative to the feature surface. Do not claim broad regression safety from a compile-only check.
+Download presets are stored as versioned/sanitized SharedPreferences JSON, can be created/renamed/applied/deleted, and can supply the Quick Download preset. Runtime diagnostics are user-triggered, bounded, cancellable, and redacted. Terminal preview and execution share a sanitized command plan. Playback queue data is owned by `PlaybackQueueState`, while lifecycle/PiP/subtitles/UI remain in `VideoPlayerActivity`.
 
-### Native and runtime support
+## Known correctness findings
 
-Gradle creates multiple ABI outputs, but actual runtime support must be demonstrated. Do not claim that every generated ABI is fully supported until runtime probes and download smoke tests pass.
+These findings were revalidated against the reviewed source snapshot and should be treated as active engineering work, not archived audit claims.
 
-An explicit ABI support policy is still required:
+### [Blocker] Backup restore does not remap History replacement markers
 
-- fully supported production ABI,
-- best-effort ABI,
-- emulator-only ABI,
-- or unsupported ABI that should not be published.
+`HardSubScanWorker` stores `history-redownload:<historyId>` in the queued `DownloadItem.playlistURL`. Backup serializes queued/scheduled download rows, while restore inserts History rows with newly generated IDs and builds `oldHistoryId -> newHistoryId`. `remapRestoredDownload()` remaps Observe Source IDs but leaves the History marker unchanged.
 
-### Partial success
+`DownloadWorker` later parses the marker as the History primary key, replaces that row, and deletes replaced media. After merge/reset restore, an old numeric ID can therefore refer to a different History row or to no restored target at all.
 
-A media file may be created successfully while a later step fails, such as:
+Required direction: remap every History replacement marker using `importedHistoryIdMap`; reject/neutralize an unmappable marker; and revalidate source identity before replacing a History row or deleting its previous media.
 
-- subtitle embedding,
-- thumbnail handling,
-- History insertion,
-- final notification,
-- final file move.
+### [High] Automatic-keyword baseline can complete from an empty/incomplete fetch
 
-Do not reduce every post-download issue to a full download failure.
+`AutomaticKeywordRuleSyncWorker` receives only a `List<ResultItem>`. `AutomaticKeywordRuleEngine.recordBaseline()` treats an empty list as zero failures and completes the baseline. A later non-empty discovery can then classify all returned existing playlist members as newly eligible even when `apply to existing videos` was false.
 
-### Fork maintenance
+Required direction: carry an authoritative fetch-completeness result and complete a baseline only from a trustworthy complete snapshot; add an empty/incomplete-then-nonempty regression test.
 
-YTDLnisX is a fork. Before implementing a large feature that may exist upstream:
+### [Medium] History Undo can restore stale derived RULE assignments
 
-1. Check current local code first.
-2. Check upstream only when network access is allowed and the task benefits from it.
-3. Do not block a local correctness or security fix on upstream analysis.
-4. Keep fork-specific behavior isolated where practical.
-5. Report likely merge-conflict areas for large changes.
+Record-only History deletion snapshots keyword assignments. Undo restores RULE rows when the numeric rule ID still exists. Editing a rule condition removes its old assignments/video matches but reuses the same rule ID with a new revision. If that edit occurs during the Undo window, the old assignment snapshot can be restored under the new rule meaning.
 
-## Unverified assumptions
+Required direction: restore user-owned/manual state, then recompute derived RULE assignments from current rule revision and current video-match state, or persist and validate the source revision in the snapshot.
 
-The following require verification and must not be treated as facts:
+### [Medium] Metadata refresh can overwrite concurrent download-row edits
 
-- All ABI artifacts contain working yt-dlp, aria2c, ffmpeg, and subtitle runtimes.
-- Every file manager supports opening an exact folder location.
-- yt-dlp error strings are stable across versions and extractors.
-- File size can always be predicted before download.
-- Cookie expiration fields prove that a login session is valid.
-- WorkManager constraints behave as an in-process pause mechanism.
-- Existing duplicate handling covers every duplicate scenario.
-- Existing resume-playback behavior covers every URI type.
+`UpdateMultipleDownloadsDataWorker` reads a whole `DownloadItem`, performs a potentially slow metadata lookup, then re-reads only `status` before writing the old object back. Concurrent changes to scheduling/configuration/path or other row fields can be reverted.
+
+Required direction: update only metadata columns owned by the worker, or perform a revision/compare-and-set update against the current row.
+
+### [Medium] Hard-sub scan treats lookup failure as verified absence
+
+`HardSubScanWorker` converts any subtitle metadata lookup exception to `emptyList()`. It then treats the empty list as “requested subtitle not present” and marks the History row removed from the scan. A transient network/extractor failure can therefore permanently skip a valid candidate until a separate reset occurs.
+
+Required direction: distinguish lookup failure from successful empty metadata, leave failed candidates retryable, preserve coroutine cancellation, and bound retries.
+
+## Verification and release confidence
+
+The reviewed source contains many focused unit and instrumentation tests, but this documentation review did not execute Gradle or device tests. The PR workflow currently executes compile + JVM unit tests; it does not make Android instrumentation/migration execution a required PR check.
+
+The `main` branch is not protected in repository settings at this snapshot, so workflows are present but not enforced as required merge checks.
+
+## High-risk areas for future changes
+
+- Room entities/DAOs/migrations/exported schemas and backup/restore ID mapping.
+- WorkManager retries, cancellation, foreground execution, and process ownership.
+- `DownloadWorker`, yt-dlp/ffmpeg/aria2c integration, cache movement, and partial-success persistence.
+- automatic keyword baseline/discovery/revision semantics.
+- History deletion and SAF/MediaStore permission boundaries.
+- Media3 playback lifecycle, PiP, subtitles, queue transitions, and saved positions.
+- diagnostics/redaction paths containing URLs, commands, cookies, tokens, or private paths.

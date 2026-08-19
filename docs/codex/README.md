@@ -1,102 +1,56 @@
-# Codex Improvement Plan
+# Current Working Guide
 
-## Purpose
+Use this directory for planned engineering work. Revalidate every selected task against the current branch before editing.
 
-This directory is the operational improvement plan for YTDLnisX.
+## Reviewed baseline
 
-It is written for coding agents. It is intentionally terse, explicit, and task-oriented. It is not a product brochure and it is not authorization to implement every item at once.
+- review date: 2026-08-19
+- branch: `main`
+- reviewed code commit: `41d0acf89735c28a07f34cb565bd54e66cd9b6d0`
+- source app version: `1.8.9`
+- Room database version: `52`
 
-## Authority order
+This replaces the previous 2026-07-13 / `1a0a7fd` / Room 50 planning baseline.
 
-When instructions conflict, use this order:
+## Read order
 
-1. The user's latest explicit request.
-2. The nearest applicable `AGENTS.md`.
-3. The current source code and reproducible behavior.
-4. This directory.
-5. Older audit or planning documents.
+1. repository `AGENTS.md`;
+2. [`PROJECT_STATE.md`](PROJECT_STATE.md) for current implementation and known correctness findings;
+3. one selected entry in [`TASKS.md`](TASKS.md);
+4. [`RULES.md`](RULES.md) for durable correctness constraints;
+5. [`CHECKS.md`](CHECKS.md) for verification required by the selected change.
 
-Never treat a task in this plan as permission to expand the requested scope.
+Do not treat archived audits or old release notes as current implementation truth.
 
-## Baseline
+## Current implementation milestones
 
-- Repository: `ireum-0/ytdlnisx`
-- Baseline date: 2026-07-13
-- Baseline branch: `main`
-- Baseline commit used for this plan: `1a0a7fdbe419047262a1a552be927b5af9799bd0`
-- Application version at baseline: `1.8.9`
-- Room database version at baseline: `50`
+The following work that used to be listed as future work is present in current source and is marked DONE in the task registry after source revalidation:
 
-The repository changes quickly. Before implementing a task:
+- normal-download diagnostic redaction;
+- pull-request compile/unit-test workflow and hardened main workflow;
+- representative Room migration tests through version 52;
+- structured download outcomes, issue classification, failure UI, and bounded retry;
+- file-location copy/open fallback and app-owned cache management;
+- user-triggered runtime diagnostics;
+- download preset ADR and MVP implementation;
+- playback queue state extraction;
+- Terminal dry-run/preview based on the same sanitized command plan used for execution.
 
-1. Inspect the current branch and current code.
-2. Revalidate every "existing" or "missing" claim in this plan.
-3. Record the actual starting commit in the final response.
-4. Prefer current behavior over stale documentation.
+`FILE-02` remains unfinished: History does not yet have the planned explicit lazy file-state model (`EXISTS`, `MISSING`, `PERMISSION_REQUIRED`, `UNKNOWN`, `CHECKING`).
 
-## Required reading order
+## Active correctness order
 
-For planned improvement work, read:
+Unless a user request requires a different scope, address correctness findings before expanding features:
 
-1. `AGENTS.md`
-2. `docs/codex/README.md`
-3. `docs/codex/PROJECT_STATE.md`
-4. `docs/codex/RULES.md`
-5. The selected task in `docs/codex/TASKS.md`
-6. `docs/codex/CHECKS.md`
+1. `BUG-BACKUP-01` — remap History replacement markers during backup restore and verify the target before destructive replacement.
+2. `BUG-KEYWORD-01` — do not complete an automatic-keyword baseline from a merely empty/incomplete extraction result.
+3. `BUG-KEYWORD-02` — do not restore stale derived RULE assignments after a rule revision/condition change.
+4. `BUG-METADATA-01` — prevent metadata refresh from overwriting concurrent download-row edits.
+5. `BUG-HARDSUB-01` — distinguish subtitle lookup failure from a verified no-subtitle result.
+6. `FILE-02` and measured backlog work.
 
-Read `docs/testing/release-checklist.md` only for release-candidate work.
+Do not batch unrelated fixes into one branch merely because they are listed here.
 
-## Task selection
+## CI reality
 
-- Implement one task ID per change unless the user explicitly requests a batch.
-- Prefer the first `READY` task that matches the user's request.
-- Do not start a `BLOCKED` task.
-- Do not silently implement dependencies outside the requested scope.
-- A task may be split into smaller changes when risk is high.
-- Do not combine Room, WorkManager, Media3, and native-runtime changes in one change unless unavoidable.
-- Documentation-only tasks do not authorize code changes.
-
-## Active execution order
-
-The recommended order is:
-
-1. `PRIV-01` — redact normal download diagnostics
-2. `QG-01` — add pull-request compile and unit-test checks
-3. `QG-02` — harden the existing release workflow
-4. `DB-01` — expand representative migration tests
-5. `FAIL-01` — introduce outcome and issue types
-6. `FAIL-02` — classify a small set of high-confidence failures
-7. `FAIL-03` — show structured failure information and safe actions
-8. `RETRY-01` — add user-initiated safe retry
-9. `FILE-01` — copy paths and open locations with fallbacks
-10. `FILE-02` — represent missing and inaccessible files
-11. `FILE-03` — add app-owned cache management
-12. `RUNTIME-01` — add on-demand runtime diagnostics
-13. `PRESET-01` — audit and unify existing configuration models
-14. `PRESET-02` — implement a minimal preset feature
-
-Player, advanced History, Observe Sources, and Terminal expansion remain later work.
-
-## Definition of done
-
-A task is complete only when:
-
-- Scope and non-goals were respected.
-- Current code paths were inspected, not guessed.
-- Required tests were added or updated.
-- The smallest relevant verification passed.
-- Skipped verification is explicitly reported.
-- No secrets or sensitive values are exposed.
-- No unrelated files were changed.
-- Remaining risks and manual checks are stated.
-
-## File map
-
-- `PROJECT_STATE.md`: current capabilities, known risks, and unverified assumptions.
-- `RULES.md`: implementation constraints and shared design rules.
-- `TASKS.md`: ordered task registry with acceptance criteria.
-- `CHECKS.md`: verification commands and change-specific test matrices.
-- `../architecture/`: accepted architecture decisions; read the relevant ADR when a task depends on one.
-- `../testing/release-checklist.md`: release-candidate checks, outside the normal task reading path.
-- `../archive/`: historical audits, reviews, and prompts; never treat them as current guidance.
+The repository contains PR and main-branch GitHub Actions workflows. As of the reviewed snapshot, the `main` branch itself is **not protected** and does not have required status checks configured at the repository-settings level. Workflow presence is therefore not the same as merge enforcement.

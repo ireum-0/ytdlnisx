@@ -1,268 +1,84 @@
-# Verification Strategy
+# Verification Checks
 
-## General rule
+Choose the smallest verification tier that can falsify the change. Escalate for persistence, background execution, storage, playback, native runtime, or release work.
 
-Run the smallest verification that directly tests the selected change.
+## Current automated workflows
 
-Do not claim that compile success proves runtime correctness.
+### Pull requests
 
-Do not run heavy, connected, release, or network-dependent verification without approval when `AGENTS.md` requires approval.
-
-## Basic commands
-
-### Markdown-only change
-
-```bash
-git diff --check
-```
-
-### Kotlin or resource change
+`.github/workflows/android-pr.yml` currently runs:
 
 ```bash
 git diff --check
 ./gradlew :app:compileDebugKotlin -x lint
-```
-
-### Unit-testable logic
-
-```bash
-git diff --check
 ./gradlew :app:testDebugUnitTest
-./gradlew :app:compileDebugKotlin -x lint
 ```
 
-### Room migration change
+The job uses read-only repository permission, does not create signing material, and pins third-party actions by commit SHA.
+
+### Pushes to main
+
+`.github/workflows/android.yml` runs debug Kotlin compilation and JVM unit tests before the release-build job. Signing material is created only in the release job and cleaned with an always-run cleanup step. Artifact upload and external notification are separate concerns.
+
+### Enforcement caveat
+
+At the 2026-08-19 reviewed snapshot, the GitHub `main` branch is not protected and no required status checks are configured in branch protection. The workflows exist, but repository settings do not force every merge/direct push through them.
+
+## Local verification tiers
+
+### Documentation only
 
 ```bash
 git diff --check
-./gradlew :app:compileDebugKotlin -x lint
 ```
 
-Connected execution, when approved:
+Also verify links and that current-state claims match source. Do not rewrite historical archive/release files to look current.
+
+### Focused Kotlin/policy change
 
 ```bash
-./gradlew :app:connectedDebugAndroidTest
+./gradlew :app:compileDebugKotlin -x lint
+./gradlew :app:testDebugUnitTest
 ```
 
-### Workflow change
+### Room/persistence change
 
-- Validate YAML syntax.
-- Review permissions.
-- Review event triggers.
-- Confirm secret availability by event type.
-- Confirm third-party actions are pinned.
-- Run equivalent local Gradle commands when possible.
+In addition to compilation/unit tests:
 
-## Pull-request verification tier
+- update `DBManager` version only when the schema changes;
+- add the migration to `Migrations.migrationList`;
+- export and commit the new Room schema;
+- add populated migration coverage;
+- run connected instrumentation when available/approved.
 
-Run on every pull request:
+The current reviewed Room version is 52.
 
-- whitespace and patch check,
-- debug Kotlin compile,
-- JVM unit tests,
-- no signing material,
-- minimal permissions.
+### WorkManager/background change
 
-An emulator test may be added later after reliability and cost are known. Do not block initial PR checks on a complete device matrix.
+Check constraints, unique-work policy, process death/reconnect, cancellation, retry limits, foreground service type, notifications, and persisted terminal state. Device validation is required for release confidence.
 
-## Main-branch verification tier
+### Storage/History deletion change
 
-After merge or on scheduled CI:
+Exercise raw paths, SAF documents, tree roots, revoked grants, MediaStore-like targets, duplicate aliases, missing files, and revalidation immediately before deletion. Never infer ownership from a display path alone.
 
-- debug build,
-- unit tests,
-- selected instrumentation tests,
-- artifact existence,
-- basic arm64 runtime smoke when infrastructure exists.
+### Playback change
 
-Keep signing and external notifications separate from correctness checks.
+Check History/local/SAF playback, resume position, queue transitions, shuffle/current-item retention, PiP, background playback, subtitles, and lifecycle recreation.
 
-## Release-candidate verification tier
+### Native/download change
 
-Use risk-based representative coverage.
+Check yt-dlp request construction, cancellation/process ownership, ffmpeg/ffprobe, aria2c where enabled, temporary files, final-file movement, History persistence, redacted diagnostics, and ABI/device behavior.
 
-### Required Android coverage
+## Required regressions for current open correctness findings
 
-- one minimum-API representative,
-- one modern Android representative,
-- one current target-SDK representative,
-- one physical arm64 device.
+Before closing the corresponding task, add or execute a regression for each:
 
-Do not test every feature on every version. Assign each high-risk behavior to at least one relevant device.
+1. **Backup restore marker remap** — restore into a DB where History IDs change/collide; a queued hard-sub replacement must target only the mapped History row and must not delete unrelated media.
+2. **Automatic-keyword empty baseline** — an incomplete/failed empty fetch must not complete baseline; a later non-empty fetch must not become eligible merely because of that empty run.
+3. **Rule edit during History Undo** — deleting record-only, changing rule condition/revision, then Undo must not resurrect the old derived RULE assignment.
+4. **Concurrent metadata refresh** — changing scheduling/configuration while enrichment is in flight must preserve the concurrent edit.
+5. **Hard-sub lookup failure** — transient subtitle lookup failure must remain retryable and must not mark the History item permanently ineligible.
 
-### ABI policy gate
+## Release candidate
 
-Before publishing a generated ABI artifact, classify it as:
-
-- production supported,
-- best effort,
-- emulator only,
-- unsupported.
-
-A production-supported ABI must pass:
-
-- installation,
-- application startup,
-- yt-dlp probe,
-- aria2c probe if used,
-- ffmpeg and ffprobe probe,
-- normal download,
-- merged video/audio download,
-- cancellation,
-- subtitle path used by the product.
-
-Do not infer support from successful APK assembly.
-
-## Change-specific checks
-
-### Sensitive diagnostics
-
-Test:
-
-- `--cookies value`,
-- `--cookies=value`,
-- short username/password options,
-- quoted values,
-- values beginning with `-`,
-- multiline Authorization and Cookie headers,
-- bearer tokens,
-- URL token queries,
-- cookie and terminal config paths,
-- multiple secrets in one string,
-- non-sensitive URLs and errors that must remain readable.
-
-### Download outcome and classification
-
-Test:
-
-- full success,
-- success with History warning,
-- success with notification warning,
-- retryable network failure,
-- final format failure,
-- user cancellation,
-- unknown output,
-- multiple possible causes,
-- bounded diagnostic input.
-
-### Retry
-
-Test:
-
-- stable operation ID,
-- attempt increment,
-- attempt limit,
-- repeated strategy prevention,
-- process recreation,
-- user cancellation,
-- existing output conflict,
-- History deduplication,
-- notification cleanup,
-- active-to-final DB transition.
-
-### File access
-
-Test:
-
-- default raw path,
-- custom raw path,
-- `file://`,
-- MediaStore URI,
-- SAF document URI,
-- SAF tree permission,
-- missing file,
-- revoked permission,
-- blocked share file,
-- large file outside provider roots,
-- no file manager capable of opening a location.
-
-### Storage cleanup
-
-Test:
-
-- app cache root,
-- app external cache,
-- app external files temp directory,
-- symlink or canonical-path escape where applicable,
-- active-download exclusion,
-- partial deletion,
-- permission failure,
-- non-app-owned configured path refusal.
-
-### Room
-
-Test representative populated rows for:
-
-- current recent migration,
-- one longer migration chain,
-- History playback state,
-- Observe Sources retry state,
-- new defaults,
-- indexes,
-- enum or serialized-list compatibility.
-
-### WorkManager and native processes
-
-Manually or with instrumentation verify:
-
-- start,
-- foreground setup,
-- cancel from UI,
-- cancel from notification,
-- WorkManager stop,
-- process death,
-- network constraint loss,
-- requeue,
-- no stale Active rows,
-- no orphan notification,
-- no orphan yt-dlp/aria2c/ffmpeg process.
-
-### Media3
-
-Verify:
-
-- History playback,
-- local folder playback,
-- SAF playback,
-- queue transition,
-- PiP enter and exit,
-- background playback,
-- saved position,
-- near-end completion behavior,
-- sidecar subtitle,
-- missing subtitle,
-- process recreation.
-
-## Performance verification
-
-Performance-sensitive changes require a predeclared target.
-
-Examples:
-
-- visible History page must not perform a full-table file scan,
-- application startup must not run all runtime probes,
-- file scans must be cancellable,
-- process logs must have a fixed retention bound,
-- database indexes require query-plan evidence.
-
-Record:
-
-- dataset size,
-- device or emulator,
-- operation,
-- measured time,
-- pass target.
-
-Do not use an unspecified "acceptable performance" criterion.
-
-## Reporting
-
-For every verification command, report:
-
-- exact command,
-- passed or failed,
-- relevant final error only,
-- reason for any skip,
-- manual checks still required.
-
-Never paste secrets, complete build logs, or large stack traces.
+Use [`../testing/release-checklist.md`](../testing/release-checklist.md). Release evidence should correspond to the exact reviewed commit and supported ABI/device matrix.
