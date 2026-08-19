@@ -11,10 +11,17 @@ quality-gate/process configuration, and documentation-only drift.
 
 ## Defect priority
 
-- **P1:** correctness or data-integrity risk that should be fixed before relying
-  on the affected workflow or merging it as production-ready behavior.
-- **P2:** significant correctness/reliability defect with narrower impact or a
-  less destructive failure mode; fix after P1 items.
+- **P0 — Critical:** destructive data-integrity or safety failure that can
+  target the wrong persistent record, delete/replace unrelated user data, or
+  otherwise make the affected workflow unsafe to use.
+- **P1 — High:** serious correctness or data-integrity defect with broad or
+  silent user-visible impact; should be fixed before relying on the affected
+  workflow as production-ready behavior.
+- **P2 — Medium:** significant correctness/reliability defect with narrower
+  impact or a less destructive failure mode; fix after P0/P1 items.
+- **P3 — Low:** limited-impact correctness defect or edge-case inconsistency
+  that does not materially threaten persistent user data or core workflow
+  integrity.
 
 ## Status values
 
@@ -29,7 +36,7 @@ priority, and complexity.
 
 ## Active correctness defects
 
-### P1 — BUG-BACKUP-01 — Remap History replacement markers during restore
+### P0 — BUG-BACKUP-01 — Remap History replacement markers during restore
 
 **State:** Open
 
@@ -92,7 +99,7 @@ Required result:
 - add Undo coverage where a rule is edited or replaced while the History row is
   deleted.
 
-### P2 — BUG-METADATA-01 — Prevent stale full-row metadata writes
+### P1 — BUG-METADATA-01 — Prevent stale full-row metadata writes
 
 **State:** Open
 
