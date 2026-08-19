@@ -438,6 +438,32 @@ Required result:
   as size/duration/hash and surface ambiguous cases for user choice;
 - add same-name/different-directory and same-name/same-batch regressions.
 
+### P2 — BUG-HISTORY-01 — Preserve playlist membership across History delete and Undo
+
+**State:** Open
+
+`HistoryRepository.deleteRecords()` deletes `PlaylistItemCrossRef` rows for the
+selected History IDs before deleting the History rows themselves. The single-item
+record-only delete flow offers Undo, but its snapshot contains only the
+`HistoryItem` and keyword assignments; `restoreHistory()` reinserts only that
+History row and those keyword assignments. Any playlist memberships that existed
+before deletion are therefore permanently lost even when the user immediately
+chooses Undo. The relationship delete and History delete are also separate DAO
+calls rather than one Room transaction, so an exception after the cross-reference
+delete but before the History delete can leave the History record present while
+silently stripping its playlist memberships.
+
+Required result:
+
+- snapshot all `PlaylistItemCrossRef` rows for a History item before offering
+  record-only delete Undo and restore those memberships with the History row;
+- perform playlist-membership deletion and History deletion in one database
+  transaction so either both commit or neither does;
+- make bulk/file-backed deletion paths use the same atomic relationship-removal
+  primitive;
+- add regressions for a History item in multiple playlists, Undo, deletion
+  failure between relationship and History mutation, and repeated delete/restore.
+
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
 **State:** Open
