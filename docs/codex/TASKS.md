@@ -519,6 +519,34 @@ Required result:
 - add regressions for a History item in multiple playlists, Undo, deletion
   failure between relationship and History mutation, and repeated delete/restore.
 
+### P2 — BUG-PLAYER-01 — Serialize playback-position persistence by History item
+
+**State:** Open
+
+`VideoPlayerActivity` saves playback position from several independent paths,
+including lifecycle callbacks, media-item transitions, explicit close, and
+playback completion. `savePlaybackPositionForHistoryId()` immediately updates
+in-memory/cache state but launches each Room `updatePlaybackPosition()` as a
+separate `lifecycleScope.launch(Dispatchers.IO)` coroutine. There is no per-item
+serialization, sequence number, or compare-and-set guard on the DAO update.
+Those database writes can therefore commit out of call order. In particular, a
+newer terminal save of `0` ms after playback completion can be overwritten by an
+older nonzero save that finishes later, causing a completed item to resume from
+a stale position on a later launch; rapid seeks/lifecycle transitions can
+similarly persist an older position than the latest observed state.
+
+Required result:
+
+- serialize playback-position database writes per History ID or attach a
+  monotonically increasing revision/timestamp and reject stale writes;
+- ensure the completion reset to `0` cannot be superseded by a previously
+  launched nonzero write;
+- keep SharedPreferences cache and Room state under the same ordering contract
+  instead of allowing the durable stores to disagree;
+- add deterministic concurrency tests that delay an earlier write past a later
+  write, including completion reset, rapid seek, pause/stop/destroy, and queue
+  transition cases.
+
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
 **State:** Open
