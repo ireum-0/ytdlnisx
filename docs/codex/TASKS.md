@@ -423,6 +423,36 @@ Required result:
 - add round-trip tests covering String, Boolean, Int, Long, Float, StringSet,
   reset restore, merge restore, and malformed/unknown type names.
 
+### P2 — BUG-BACKUP-09 — Allocate fresh primary keys for merge-restored standalone rows
+
+**State:** Open
+
+Merge restore passes backed-up `CookieItem`, `CommandTemplate`, and
+`TemplateShortcut` rows directly back to their repositories without clearing
+their auto-generated primary keys. Those numeric IDs are database-local and are
+not stable identities across installations or independent backups. The DAO
+conflict behavior makes collisions silently destructive or lossy: cookies and
+command templates use `INSERT ... IGNORE`, so an imported row whose old ID is
+already occupied is silently dropped even when its content is unrelated;
+template shortcuts use `INSERT ... REPLACE`, so the imported shortcut can
+silently overwrite an unrelated live shortcut that merely has the same numeric
+ID. Reset restore avoids the live-row collision only because those tables are
+cleared first, but merge restore has no content/stable-identity check before the
+primary-key conflict policy is applied.
+
+Required result:
+
+- treat backup primary keys for standalone auto-generated rows as source-local
+  identifiers and allocate fresh destination IDs during merge restore;
+- define explicit semantic deduplication keys where desired (for example cookie
+  URL/description or exact shortcut content) instead of relying on numeric ID
+  equality;
+- never use `REPLACE` on a destination row solely because an imported backup
+  happens to carry the same old primary key;
+- add merge-restore regressions with deliberately colliding cookie, command
+  template, and shortcut IDs and verify that unrelated live rows are preserved
+  and intended imported rows are either inserted or explicitly deduplicated.
+
 ### P2 — BUG-DUPLICATE-01 — Canonicalize media identity for config duplicate checks
 
 **State:** Open
