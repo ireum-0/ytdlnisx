@@ -23,7 +23,7 @@ class LogViewModel(private val application: Application) : AndroidViewModel(appl
 
     init {
         repository = LogRepository(DBManager.getInstance(application).logDao)
-        downloadRepository = DownloadRepository(DBManager.getInstance(application).downloadDao)
+        downloadRepository = DownloadRepository(DBManager.getInstance(application))
         items = repository.items.asLiveData()
     }
 

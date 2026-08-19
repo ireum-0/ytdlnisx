@@ -472,6 +472,12 @@
             android:name=".receiver.CancelDownloadNotificationReceiver"
             android:exported="false" />
         <receiver
+            android:name=".receiver.CancelLowQualityRedownloadReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".receiver.CancelHistoryDateFetchReceiver"
+            android:exported="false" />
+        <receiver
             android:name=".receiver.CancelWorkReceiver"
             android:exported="false" />
         <receiver

@@ -54,3 +54,5 @@
 - Summarize meaningful changes, verification status, and remaining risks.
 - Mention changed files with concise paths.
 - Do not include secrets, large logs, or unrelated implementation details.
+
+@RTK.md

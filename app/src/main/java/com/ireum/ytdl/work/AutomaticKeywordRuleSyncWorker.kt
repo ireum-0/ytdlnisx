@@ -32,20 +32,34 @@ class AutomaticKeywordRuleSyncWorker(
         val dao = db.automaticKeywordRuleDao
         val rule = dao.getRule(ruleId) ?: return Result.success()
         if (!rule.enabled) return Result.success()
-        val notification = NotificationUtil(applicationContext).createObserveSourcesNotification(
-            rule.playlistName,
-            applicationContext.getString(R.string.automatic_keyword_status_running)
-        )
-        val foreground = if (Build.VERSION.SDK_INT >= 29) {
-            ForegroundInfo(
-                System.currentTimeMillis().toInt(),
-                notification,
-                FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        try {
+            val notification = NotificationUtil(applicationContext).createObserveSourcesNotification(
+                rule.playlistName,
+                applicationContext.getString(R.string.automatic_keyword_status_running)
             )
-        } else {
-            ForegroundInfo(System.currentTimeMillis().toInt(), notification)
+            val foreground = if (Build.VERSION.SDK_INT >= 29) {
+                ForegroundInfo(
+                    System.currentTimeMillis().toInt(),
+                    notification,
+                    FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                ForegroundInfo(System.currentTimeMillis().toInt(), notification)
+            }
+            setForeground(foreground)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (runAttemptCount + 1 < MAX_ATTEMPTS) return Result.retry()
+            dao.updateManualSyncStatusIfRevision(
+                ruleId,
+                rule.revision,
+                AutomaticKeywordSyncStatus.FAILED,
+                System.currentTimeMillis(),
+                AutomaticKeywordSyncError.UNKNOWN
+            )
+            return Result.failure()
         }
-        setForeground(foreground)
         val started = dao.updateManualSyncStatusIfRevision(
             ruleId,
             rule.revision,

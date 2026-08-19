@@ -59,6 +59,7 @@ import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.elevation.SurfaceColors
 import com.google.android.material.progressindicator.LinearProgressIndicator
+import com.google.android.material.snackbar.BaseTransientBottomBar
 import com.google.android.material.snackbar.Snackbar
 import it.xabaras.android.recyclerview.swipedecorator.RecyclerViewSwipeDecorator
 import kotlinx.coroutines.Dispatchers
@@ -355,18 +356,32 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
             deleteDialog.setTitle(getString(R.string.you_are_going_to_delete) + " \"" + item.title + "\"!")
             deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
             deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
-                item.status = DownloadRepository.Status.Cancelled.toString()
-                lifecycleScope.launch(Dispatchers.IO){
-                    downloadViewModel.updateDownload(item)
-                }
-
-                Snackbar.make(requireView().rootView, getString(R.string.cancelled) + ": " + item.title, Snackbar.LENGTH_LONG)
-                    .setAction(getString(R.string.undo)) {
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            downloadViewModel.deleteDownload(item.id)
-                            downloadViewModel.queueDownloads(listOf(item))
+                lifecycleScope.launch {
+                    val pendingToken = withContext(Dispatchers.IO) {
+                        downloadViewModel.beginUndoableCancellation(item.id)
+                    }
+                    val snackbar = Snackbar.make(requireView().rootView, getString(R.string.cancelled) + ": " + item.title, Snackbar.LENGTH_LONG)
+                        .setAction(getString(R.string.undo)) {
+                            if (pendingToken != null) {
+                                downloadViewModel.undoPendingCancellation(item, pendingToken)
+                            } else {
+                                lifecycleScope.launch(Dispatchers.IO) {
+                                    downloadViewModel.deleteDownload(item.id)
+                                    downloadViewModel.queueDownloads(listOf(item))
+                                }
+                            }
                         }
-                    }.show()
+                    if (pendingToken != null) {
+                        snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
+                            override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
+                                if (event != DISMISS_EVENT_ACTION) {
+                                    downloadViewModel.commitPendingCancellation(item.id, pendingToken)
+                                }
+                            }
+                        })
+                    }
+                    snackbar.show()
+                }
             }
             deleteDialog.show()
         }

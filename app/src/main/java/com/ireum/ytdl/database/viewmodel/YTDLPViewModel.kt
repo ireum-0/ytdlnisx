@@ -20,7 +20,10 @@ class YTDLPViewModel(private val application: Application) : AndroidViewModel(ap
     }
 
     fun parseYTDLRequestString(item: DownloadItem) : String {
-        val req = ytdlpUtil.buildYoutubeDLRequest(item)
+        val req = ytdlpUtil.buildYoutubeDLRequest(
+            item,
+            ytdlpUtil.resolveInitialYoutubeMediaAccessProfile(item),
+        )
         return ytdlpUtil.parseYTDLRequestString(req)
     }
 

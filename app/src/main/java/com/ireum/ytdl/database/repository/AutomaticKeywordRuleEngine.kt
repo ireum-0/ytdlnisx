@@ -14,7 +14,18 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
     private val dao = db.automaticKeywordRuleDao
     private val assignmentRepository = HistoryKeywordAssignmentRepository(db)
 
-    data class ApplyResult(val matched: Int, val failed: Int)
+    data class RuleApplyResult(
+        val ruleId: Long,
+        val revision: Long,
+        val matched: Int,
+        val failed: Int
+    )
+
+    data class ApplyResult(
+        val matched: Int,
+        val failed: Int,
+        val ruleResults: List<RuleApplyResult> = emptyList()
+    )
 
     suspend fun recordDiscovery(
         videosByConditionKey: Map<String, List<ResultItem>>
@@ -25,11 +36,15 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
         val historyByVideoKey by lazy(::buildHistoryIndex)
         var matched = 0
         var failed = 0
+        val ruleResults = mutableListOf<RuleApplyResult>()
         rules.forEach { ruleSnapshot ->
             val baselineWasComplete = ruleSnapshot.baselineComplete
             var baselineCanComplete = true
+            var ruleMatched = 0
+            var ruleFailed = 0
             val ruleVideos = videosByConditionKey[ruleSnapshot.conditionKey]
                 .orEmpty()
+                .filter { AutomaticKeywordNormalizer.videoKey(it.url).isNotBlank() }
                 .distinctBy { AutomaticKeywordNormalizer.videoKey(it.url) }
             for (video in ruleVideos) {
                 try {
@@ -67,10 +82,12 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
                         break
                     }
                     matched++
+                    ruleMatched++
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
                     failed++
+                    ruleFailed++
                     baselineCanComplete = false
                 }
             }
@@ -81,8 +98,14 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
                     ruleSnapshot.conditionKey
                 )
             }
+            ruleResults += RuleApplyResult(
+                ruleId = ruleSnapshot.id,
+                revision = ruleSnapshot.revision,
+                matched = ruleMatched,
+                failed = ruleFailed
+            )
         }
-        return ApplyResult(matched, failed)
+        return ApplyResult(matched, failed, ruleResults)
     }
 
     suspend fun recordDiscovery(conditionKey: String, videos: List<ResultItem>): ApplyResult =
@@ -98,7 +121,7 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
         var failed = 0
         var syncCanComplete = true
         val historyByVideoKey = buildHistoryIndex()
-        for (video in videos) {
+        for (video in videos.filter { AutomaticKeywordNormalizer.videoKey(it.url).isNotBlank() }) {
             try {
                 val processed = db.withTransaction {
                     if (!dao.getRule(ruleId).matchesSnapshot(rule)) {
@@ -147,7 +170,7 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
         var matched = 0
         var failed = 0
         var baselineCanComplete = true
-        for (video in videos) {
+        for (video in videos.filter { AutomaticKeywordNormalizer.videoKey(it.url).isNotBlank() }) {
             try {
                 val processed = db.withTransaction {
                     if (!dao.getRule(ruleId).matchesSnapshot(rule)) {
@@ -196,7 +219,9 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
                 AutomaticKeywordNormalizer.parseKeywords(observeSourceKeyword)
             )
         }
-        val rules = dao.getEnabledRulesForVideoKey(AutomaticKeywordNormalizer.videoKey(videoUrl))
+        val videoKey = AutomaticKeywordNormalizer.videoKey(videoUrl)
+        if (videoKey.isBlank()) return
+        val rules = dao.getEnabledRulesForVideoKey(videoKey)
         rules.forEach { applyRuleToHistory(it.id, it.revision, historyItemId) }
     }
 
@@ -205,17 +230,18 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
         previousUrl: String,
         currentUrl: String
     ) {
-        if (AutomaticKeywordNormalizer.videoKey(previousUrl) ==
-            AutomaticKeywordNormalizer.videoKey(currentUrl)
-        ) {
+        val previousVideoKey = AutomaticKeywordNormalizer.videoKey(previousUrl)
+        val currentVideoKey = AutomaticKeywordNormalizer.videoKey(currentUrl)
+        if (previousVideoKey == currentVideoKey) {
             return
         }
         db.withTransaction {
             assignmentRepository.removeRuleAssignmentsForHistory(historyItemId)
-            dao.getEnabledRulesForVideoKey(AutomaticKeywordNormalizer.videoKey(currentUrl))
-                .forEach { rule ->
+            if (currentVideoKey.isNotBlank()) {
+                dao.getEnabledRulesForVideoKey(currentVideoKey).forEach { rule ->
                     applyRuleToHistory(rule.id, rule.revision, historyItemId)
                 }
+            }
         }
     }
 
@@ -231,7 +257,13 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
     }
 
     private fun buildHistoryIndex(): Map<String, List<HistoryItem>> =
-        db.historyDao.getAll().groupBy { AutomaticKeywordNormalizer.videoKey(it.url) }
+        db.historyDao.getAll()
+            .mapNotNull { item ->
+                AutomaticKeywordNormalizer.videoKey(item.url)
+                    .takeIf(String::isNotBlank)
+                    ?.let { it to item }
+            }
+            .groupBy({ it.first }, { it.second })
 
     private suspend fun applyRuleToHistory(
         ruleId: Long,

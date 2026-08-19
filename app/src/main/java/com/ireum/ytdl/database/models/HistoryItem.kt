@@ -56,5 +56,7 @@ data class HistoryItem(
     @ColumnInfo(defaultValue = "0")
     val hardSubScanRemoved: Boolean = false,
     @ColumnInfo(defaultValue = "0")
-    val hardSubDone: Boolean = false
+    val hardSubDone: Boolean = false,
+    @ColumnInfo(defaultValue = "0")
+    val mediaPublishedAt: Long = 0
 )

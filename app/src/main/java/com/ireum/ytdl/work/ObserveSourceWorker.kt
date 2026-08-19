@@ -36,9 +36,11 @@ import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
 import com.ireum.ytdl.util.Extensions.calculateNextTimeForObserving
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.DownloadConfigurationDuplicatePolicy
 import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
@@ -69,15 +71,6 @@ class ObserveSourceWorker(
 
     private fun canonicalUrl(url: String): String {
         return LinkUtil.canonicalYoutubeVideoUrlOrSelf(url)
-    }
-
-    private fun deletionTargets(
-        item: HistoryItem,
-        gateway: HistoryFileDeletionGateway
-    ): List<String> {
-        return (item.downloadPath + trustedResolvedTreeTargets(item, gateway))
-            .filter(String::isNotBlank)
-            .distinct()
     }
 
     private fun trustedResolvedTreeTargets(
@@ -268,7 +261,7 @@ class ObserveSourceWorker(
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val repo = ObserveSourcesRepository(dbManager.observeSourcesDao, workManager, sharedPreferences)
         val historyRepo = HistoryRepository(dbManager.historyDao, dbManager.playlistDao)
-        val downloadRepo = DownloadRepository(dbManager.downloadDao)
+        val downloadRepo = DownloadRepository(dbManager)
         val commandTemplateDao = dbManager.commandTemplateDao
         val resultRepository = ResultRepository(dbManager.resultDao, commandTemplateDao, context)
 
@@ -320,13 +313,6 @@ class ObserveSourceWorker(
         }
 
         val workerID = System.currentTimeMillis().toInt()
-        val notification = notificationUtil.createObserveSourcesNotification(item.name)
-        if (Build.VERSION.SDK_INT >= 33) {
-            setForegroundAsync(ForegroundInfo(workerID, notification, FOREGROUND_SERVICE_TYPE_DATA_SYNC))
-        }else{
-            setForegroundAsync(ForegroundInfo(workerID, notification))
-        }
-
         updateRunStatus(
             repo,
             item,
@@ -336,6 +322,14 @@ class ObserveSourceWorker(
             notificationUtil
         )
 
+        val sourceConditionKey = item.managedConditionKey.ifBlank {
+            AutomaticKeywordNormalizer.playlistConditionKey(item.url).orEmpty()
+        }
+        val discoveryRuleSnapshots = if (sourceConditionKey.isBlank()) {
+            emptyList()
+        } else {
+            dbManager.automaticKeywordRuleDao.getEnabledRulesForConditionKey(sourceConditionKey)
+        }
         val sourceResult = kotlin.runCatching {
             resultRepository.getResultsFromSource(
                 AutomaticKeywordNormalizer.canonicalPlaylistUrl(item.url) ?: item.url,
@@ -344,19 +338,19 @@ class ObserveSourceWorker(
                 singleItem = false
             )
         }.onFailure {
-            Log.e("observe", it.toString())
+            if (it is CancellationException) throw it
+            Log.e("observe", "Source fetch failed type=${it.javaClass.simpleName}")
         }
         if (sourceResult.isFailure) {
             val error = sourceResult.exceptionOrNull()
-            val conditionKey = item.managedConditionKey.ifBlank {
-                AutomaticKeywordNormalizer.playlistConditionKey(item.url).orEmpty()
-            }
-            if (conditionKey.isNotBlank()) {
-                dbManager.automaticKeywordRuleDao.getEnabledRulesForConditionKey(conditionKey).forEach { rule ->
-                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatus(
+            if (discoveryRuleSnapshots.isNotEmpty()) {
+                val discoveryAt = System.currentTimeMillis()
+                discoveryRuleSnapshots.forEach { rule ->
+                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
                         rule.id,
+                        rule.revision,
                         AutomaticKeywordSyncStatus.FAILED,
-                        System.currentTimeMillis(),
+                        discoveryAt,
                         automaticKeywordError(error)
                     )
                 }
@@ -367,7 +361,7 @@ class ObserveSourceWorker(
                 sourceID = sourceID,
                 item = item,
                 message = context.getString(com.ireum.ytdl.R.string.observe_log_source_fetch_failed),
-                detail = error?.message.orEmpty(),
+                detail = SensitiveTextRedactor.redactOutput(error?.message.orEmpty()),
                 countRun = false
             )
         }
@@ -388,24 +382,24 @@ class ObserveSourceWorker(
         if (discoveriesByKey.isNotEmpty()) {
             val discoveryResult =
                 AutomaticKeywordRuleEngine(dbManager).recordDiscovery(discoveriesByKey)
-            dbManager.automaticKeywordRuleDao
-                .getEnabledRulesForConditionKeys(discoveriesByKey.keys.toList())
-                .forEach { rule ->
-                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatus(
-                        rule.id,
-                        if (discoveryResult.failed == 0) {
-                            AutomaticKeywordSyncStatus.SUCCESS
-                        } else {
-                            AutomaticKeywordSyncStatus.PARTIAL
-                        },
-                        System.currentTimeMillis(),
-                        if (discoveryResult.failed == 0) {
-                            AutomaticKeywordSyncError.NONE
-                        } else {
-                            AutomaticKeywordSyncError.DATABASE_PARTIAL
-                        }
-                    )
-                }
+            val discoveryAt = System.currentTimeMillis()
+            discoveryResult.ruleResults.forEach { result ->
+                dbManager.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
+                    result.ruleId,
+                    result.revision,
+                    if (result.failed == 0) {
+                        AutomaticKeywordSyncStatus.SUCCESS
+                    } else {
+                        AutomaticKeywordSyncStatus.PARTIAL
+                    },
+                    discoveryAt,
+                    if (result.failed == 0) {
+                        AutomaticKeywordSyncError.NONE
+                    } else {
+                        AutomaticKeywordSyncError.DATABASE_PARTIAL
+                    }
+                )
+            }
         }
         val previouslyObservedCanonicalUrls = item.observedLinks
             .asSequence()
@@ -451,26 +445,41 @@ class ObserveSourceWorker(
             if (historyItemsToRemove.isNotEmpty()) {
                 val deletionGateway = AndroidHistoryFileDeletionGateway(context)
                 val selectedIds = historyItemsToRemove.mapTo(hashSetOf()) { history -> history.id }
-                val retainedTargets = historyRepo.getDeletionReferenceRecords()
-                    .asSequence()
-                    .filterNot { history -> history.id in selectedIds }
-                    .flatMap { history -> history.downloadPath.asSequence() }
                 val deletionRecords = historyItemsToRemove.map { history ->
                     val trustedDocumentTargets = trustedResolvedTreeTargets(history, deletionGateway)
                     HistoryDeletionRecord(
                         id = history.id,
                         storedTargets = (history.downloadPath + trustedDocumentTargets).distinct(),
+                        recordStoredTargetSnapshot = history.downloadPath,
                         trustedDocumentTargets = trustedDocumentTargets.toSet()
                     )
                 }
                 val deletionResult = HistoryFileDeletionEngine(
                     deletionGateway
                 ).let { engine ->
+                    fun currentStoredTargets(): Map<Long, List<String>> =
+                        historyRepo.getDeletionReferenceRecordsByIds(selectedIds.toList())
+                            .associate { history -> history.id to history.downloadPath }
+
+                    val retainedTargets = historyRepo.getDeletionReferenceRecords()
+                        .asSequence()
+                        .filterNot { history -> history.id in selectedIds }
+                        .flatMap { history -> history.downloadPath.asSequence() }
                     val validation = engine.excludeTargetsReferencedBy(
-                        validation = engine.validate(deletionRecords),
+                        validation = engine.validate(deletionRecords)
+                            .revalidateRecordSnapshots(currentStoredTargets()),
                         retainedStoredTargets = retainedTargets
                     )
-                    engine.execute(validation)
+                    val result = engine.execute(validation)
+                    val unchangedAfterDeletion = validation
+                        .revalidateRecordSnapshots(currentStoredTargets())
+                        .recordTargetKeys
+                        .keys
+                    val removableRecordIds = result.removableRecordIds.intersect(unchangedAfterDeletion)
+                    result.copy(
+                        recordsRemoved = removableRecordIds.size,
+                        removableRecordIds = removableRecordIds
+                    )
                 }
                 val removableIds = deletionResult.removableRecordIds
                 historyRepo.deleteRecords(removableIds.toList())
@@ -695,6 +704,7 @@ class ObserveSourceWorker(
             downloadItem.playlistTitle = it.playlistTitle
             downloadItem.playlistURL = it.playlistURL
             downloadItem.playlistIndex = it.playlistIndex
+            downloadItem.mediaPublishedAt = it.mediaPublishedAt
             downloadItem.observeSourceId = item.id
             downloadItem.id = 0L
             downloadItems.add(downloadItem)
@@ -735,7 +745,10 @@ class ObserveSourceWorker(
                 val isConfirmedRetry =
                     confirmationDecision == ObserveRetryDecisionReceiver.ACTION_DOWNLOAD &&
                         confirmedCanonicalUrl == currentCanonicalUrl
-                val currentCommand = ytdlpUtil.buildYoutubeDLRequest(it)
+                val currentCommand = ytdlpUtil.buildYoutubeDLRequest(
+                    it,
+                    ytdlpUtil.resolveInitialYoutubeMediaAccessProfile(it),
+                )
                 val parsedCurrentCommand = ytdlpUtil.parseYTDLRequestString(currentCommand)
                 var isDuplicate = false
 
@@ -778,15 +791,10 @@ class ObserveSourceWorker(
                         }
 
                         "config" -> {
-                            val existingDownload = activeAndQueuedDownloads.firstOrNull { d ->
-                                val normalized = d.copy(
-                                    id = 0,
-                                    logID = null,
-                                    customFileNameTemplate = it.customFileNameTemplate,
-                                    status = DownloadRepository.Status.Queued.toString()
-                                )
-                                normalized.toString() == it.toString()
-                            }
+                            val existingDownload = DownloadConfigurationDuplicatePolicy.findMatch(
+                                activeAndQueuedDownloads,
+                                it,
+                            )
                             if (existingDownload != null) {
                                 isDuplicate = true
                                 Log.d(

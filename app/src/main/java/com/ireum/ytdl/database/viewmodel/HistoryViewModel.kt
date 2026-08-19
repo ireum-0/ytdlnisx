@@ -15,6 +15,7 @@ import androidx.paging.filter
 import androidx.paging.cachedIn
 import androidx.paging.insertHeaderItem
 import androidx.paging.map
+import androidx.room.withTransaction
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.DBManager.SORTING
 import com.ireum.ytdl.database.enums.DownloadType
@@ -28,6 +29,11 @@ import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.database.repository.HistoryRepository.HistorySortType
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.EffectiveHistorySort
+import com.ireum.ytdl.util.HistorySortPolicy
+import com.ireum.ytdl.util.MediaPublishedDate
+import com.ireum.ytdl.util.MediaPublishedDateSource
+import com.ireum.ytdl.util.MissingSourceDatePolicy
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
@@ -42,6 +48,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -52,6 +59,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.update
@@ -69,12 +77,23 @@ import java.net.URL
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class HistoryViewModel(application: Application) : AndroidViewModel(application) {
+    private val preferences = PreferenceManager.getDefaultSharedPreferences(application)
     private val repository: HistoryRepository
     private val database: DBManager
     private val keywordAssignments: HistoryKeywordAssignmentRepository
     private val automaticKeywordRuleEngine: AutomaticKeywordRuleEngine
     val sortOrder = MutableStateFlow(SORTING.DESC)
     val sortType = MutableStateFlow(HistorySortType.DATE)
+    val missingSourceDatePolicy = MutableStateFlow(
+        runCatching {
+            MissingSourceDatePolicy.valueOf(
+                preferences.getString(
+                    PREF_MISSING_SOURCE_DATE_POLICY,
+                    MissingSourceDatePolicy.USE_DOWNLOAD_DATE.name
+                ).orEmpty()
+            )
+        }.getOrDefault(MissingSourceDatePolicy.USE_DOWNLOAD_DATE)
+    )
     val authorFilter = MutableStateFlow("")
     val keywordFilter = MutableStateFlow("")
     val websiteFilter = MutableStateFlow("")
@@ -105,6 +124,30 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     val visibleChildYoutuberGroupsFilter = MutableStateFlow(setOf<Long>())
     val visibleChildYoutubersFilter = MutableStateFlow(setOf<String>())
     val visibleChildKeywordsFilter = MutableStateFlow(setOf<String>())
+    val effectiveSort = combine(
+        sortType,
+        sortOrder,
+        isRecentMode,
+        isYoutuberSelectionMode,
+        isKeywordSelectionMode,
+    ) { selectedType, selectedOrder, isRecent, isYoutuber, isKeyword ->
+        HistorySortPolicy.resolve(
+            selectedType = selectedType,
+            selectedOrder = selectedOrder,
+            isRecentMode = isRecent,
+            isYoutuberMode = isYoutuber,
+            isKeywordMode = isKeyword,
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = EffectiveHistorySort(
+            type = HistorySortType.DATE,
+            order = SORTING.DESC,
+            dateDisplayMode = com.ireum.ytdl.util.HistoryDateDisplayMode.DOWNLOAD_DATE,
+            controlsVisible = true,
+        ),
+    )
     private val refreshTrigger = MutableStateFlow(0L)
     private val typeFilter = MutableStateFlow(DEFAULT_TYPE_FILTER)
     val queryFilterFlow = queryFilter.asStateFlow()
@@ -164,7 +207,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         var isYoutuberMode: Boolean = false,
         var youtuberGroupId: Long = -1L,
         var hiddenYoutubers: Set<String> = emptySet(),
-        var showHiddenOnly: Boolean = false
+        var showHiddenOnly: Boolean = false,
+        var missingSourceDatePolicy: MissingSourceDatePolicy = MissingSourceDatePolicy.USE_DOWNLOAD_DATE
+    )
+
+    data class MetadataUpdateResult(
+        val item: HistoryItem,
+        val protectedAutomaticKeywordCount: Int
     )
     private data class HistoryScope(
         val filters: HistoryFilters,
@@ -185,7 +234,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         val author: String,
         val keyword: String,
         val website: String,
-        val playlistId: Long
+        val playlistId: Long,
+        val missingSourceDatePolicy: MissingSourceDatePolicy
     )
 
     data class Quintuple<A, B, C, D, E>(val first: A, val second: B, val third: C, val fourth: D, val fifth: E)
@@ -280,8 +330,22 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         }
 
         val filtersFlow: Flow<HistoryFilters> = combine(
-            combine(sortOrder, sortType, authorFilter, statusFilter, websiteFilter) { s: SORTING, st: HistorySortType, a: String, status: HistoryStatus, w: String ->
-                Quintuple(s, st, a, status, w)
+            combine(
+                combine(effectiveSort, missingSourceDatePolicy) { effective, missingPolicy ->
+                    Triple(effective.order, effective.type, missingPolicy)
+                },
+                combine(authorFilter, statusFilter, websiteFilter) { author, status, website ->
+                    Triple(author, status, website)
+                }
+            ) { sorting, filters ->
+                Sextuple(
+                    sorting.first,
+                    sorting.second,
+                    sorting.third,
+                    filters.first,
+                    filters.second,
+                    filters.third
+                )
             },
             combine(
                 combine(queryFilter, typeFilter, playlistFilter, searchFieldsFilter) { q: String, t: String, p: Long, sf: Set<HistoryRepository.SearchField> ->
@@ -294,23 +358,24 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             ) { base, search, includeChild ->
                 Octuple(base.first, base.second, base.third, base.fourth, search.first, search.second, search.third, search.fourth) to includeChild
             }
-        ) { quint: Quintuple<SORTING, HistorySortType, String, HistoryStatus, String>, pair: Pair<Octuple<String, String, Long, Set<HistoryRepository.SearchField>, String, String, String, String>, Boolean> ->
+        ) { sorting: Sextuple<SORTING, HistorySortType, MissingSourceDatePolicy, String, HistoryStatus, String>, pair: Pair<Octuple<String, String, Long, Set<HistoryRepository.SearchField>, String, String, String, String>, Boolean> ->
             val oct = pair.first
             HistoryFilters(
                 type = oct.second,
-                sortType = quint.second,
-                sortOrder = quint.first,
+                sortType = sorting.second,
+                sortOrder = sorting.first,
                 query = oct.first,
                 titleQuery = oct.sixth,
                 keywordQuery = oct.seventh,
                 creatorQuery = oct.eighth,
                 includeChildCategoryVideos = pair.second,
                 searchFields = oct.fourth,
-                status = quint.fourth,
-                author = quint.third,
+                status = sorting.fifth,
+                author = sorting.fourth,
                 keyword = oct.fifth,
-                website = quint.fifth,
-                playlistId = oct.third
+                website = sorting.sixth,
+                playlistId = oct.third,
+                missingSourceDatePolicy = sorting.third
             )
         }.distinctUntilChanged()
 
@@ -398,7 +463,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                             filters.status,
                             filters.website,
                             filters.playlistId,
-                            filters.searchFields
+                            filters.searchFields,
+                            filters.missingSourceDatePolicy
                         )
                     }
                     val keywords = withContext(Dispatchers.IO) {
@@ -411,7 +477,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                         val memberSet = members.filter { it.groupId == keywordGroup }.map { it.keyword }.toSet()
                         val filtered = keywords.filter { memberSet.contains(it.keyword) }
                         val sorted = when (filters.sortType) {
-                            HistorySortType.DATE -> {
+                            HistorySortType.DATE,
+                            HistorySortType.MEDIA_PUBLISHED_DATE -> {
                                 if (filters.sortOrder == SORTING.DESC) {
                                     filtered.sortedBy { it.lastTime }
                                 } else {
@@ -444,7 +511,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                                 (visibleKeywordNames.contains(it.keyword) || visibleChildKeywords.contains(it.keyword))
                         }
                         val sortedUngrouped = when (filters.sortType) {
-                            HistorySortType.DATE -> {
+                            HistorySortType.DATE,
+                            HistorySortType.MEDIA_PUBLISHED_DATE -> {
                                 if (filters.sortOrder == SORTING.DESC) {
                                     ungrouped.sortedBy { it.lastTime }
                                 } else {
@@ -478,7 +546,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                                 HistorySortType.DURATION -> infos.sortedBy { it.videoCount }
                                 HistorySortType.TITLE -> infos.sortedBy { it.name.lowercase() }
                                 HistorySortType.AUTHOR -> infos.sortedBy { it.name.lowercase() }
-                                HistorySortType.DATE -> infos.sortedBy { it.name.lowercase() }
+                                HistorySortType.DATE,
+                                HistorySortType.MEDIA_PUBLISHED_DATE -> infos.sortedBy { it.name.lowercase() }
                             }.run {
                                 if (filters.sortOrder == SORTING.DESC) this.asReversed() else this
                             }
@@ -520,7 +589,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                             filters.status,
                             filters.website,
                             filters.playlistId,
-                            filters.searchFields
+                            filters.searchFields,
+                            filters.missingSourceDatePolicy
                         )
                     }
                     val youtubers = withContext(Dispatchers.IO) {
@@ -617,7 +687,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                         val directMemberSet = membersByGroup[youtuberGroup].orEmpty()
                         val filtered = enriched.filter { directMemberSet.contains(it.author) && isYoutuberVisible(it.author) }
                         val sorted = when (filters.sortType) {
-                            HistorySortType.DATE -> {
+                            HistorySortType.DATE,
+                            HistorySortType.MEDIA_PUBLISHED_DATE -> {
                                 if (filters.sortOrder == SORTING.DESC) filtered.sortedBy { it.lastTime } else filtered.sortedBy { it.firstTime }
                             }
                             HistorySortType.TITLE -> filtered.sortedBy { it.author.lowercase() }
@@ -673,7 +744,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                                 isYoutuberVisible(it.author)
                         }
                         val sortedUngrouped = when (filters.sortType) {
-                            HistorySortType.DATE -> {
+                            HistorySortType.DATE,
+                            HistorySortType.MEDIA_PUBLISHED_DATE -> {
                                 if (filters.sortOrder == SORTING.DESC) {
                                     ungrouped.sortedBy { it.lastTime }
                                 } else {
@@ -733,7 +805,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                                 HistorySortType.DURATION -> infos.sortedBy { it.videoCount }
                                 HistorySortType.TITLE -> infos.sortedBy { it.name.lowercase() }
                                 HistorySortType.AUTHOR -> infos.sortedBy { it.name.lowercase() }
-                                HistorySortType.DATE -> infos.sortedBy { it.name.lowercase() }
+                                HistorySortType.DATE,
+                                HistorySortType.MEDIA_PUBLISHED_DATE -> infos.sortedBy { it.name.lowercase() }
                             }.run {
                                 if (filters.sortOrder == SORTING.DESC) this.asReversed() else this
                             }
@@ -760,6 +833,14 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setSorting(sort: HistorySortType) {
+        if (
+            !HistorySortPolicy.isSelectable(
+                type = sort,
+                isRecentMode = isRecentMode.value,
+                isYoutuberMode = isYoutuberSelectionMode.value,
+                isKeywordMode = isKeywordSelectionMode.value,
+            )
+        ) return
         if (sortType.value != sort) {
             sortOrder.value = SORTING.DESC
         } else {
@@ -770,6 +851,25 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         sortType.value = sort
+    }
+
+    fun currentEffectiveSort(): EffectiveHistorySort {
+        return HistorySortPolicy.resolve(
+            selectedType = sortType.value,
+            selectedOrder = sortOrder.value,
+            isRecentMode = isRecentMode.value,
+            isYoutuberMode = isYoutuberSelectionMode.value,
+            isKeywordMode = isKeywordSelectionMode.value,
+        )
+    }
+
+    fun setMissingSourceDatePolicy(policy: MissingSourceDatePolicy) {
+        if (missingSourceDatePolicy.value == policy) return
+        preferences.edit()
+            .putString(PREF_MISSING_SOURCE_DATE_POLICY, policy.name)
+            .apply()
+        missingSourceDatePolicy.value = policy
+        invalidateCachedIds(triggerRefresh = true)
     }
 
     fun setAuthorFilter(filter: String) {
@@ -977,7 +1077,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                     filters.website,
                     filters.playlistId,
                     filters.searchFields,
-                    filters.status
+                    filters.status,
+                    filters.missingSourceDatePolicy
                 )
             }
         )
@@ -1035,7 +1136,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                     filters.status,
                     filters.website,
                     filters.playlistId,
-                    filters.searchFields
+                    filters.searchFields,
+                    filters.missingSourceDatePolicy
                 )
             }
             val allKeywords = withContext(Dispatchers.IO) {
@@ -1192,11 +1294,12 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun currentHistoryScope(): HistoryScope {
+        val currentSort = currentEffectiveSort()
         return historyScopeFor(
             filters = HistoryFilters(
                 typeFilter.value,
-                sortType.value,
-                sortOrder.value,
+                currentSort.type,
+                currentSort.order,
                 queryFilter.value,
                 titleQueryFilter.value,
                 keywordQueryFilter.value,
@@ -1211,7 +1314,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 isYoutuberSelectionMode.value,
                 youtuberGroupFilter.value,
                 hiddenYoutubersFilter.value,
-                showHiddenOnlyFilter.value
+                showHiddenOnlyFilter.value,
+                missingSourceDatePolicy.value
             ),
             excludedChildKeywords = excludedChildKeywordsFilter.value
         )
@@ -1268,7 +1372,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             filters.status,
             filters.website,
             filters.playlistId,
-            filters.searchFields
+            filters.searchFields,
+            filters.missingSourceDatePolicy
         )
         val statusFilteredIds = applyStatusFilterToIds(ids, filters.status)
         val childFilteredIds = applyChildKeywordFilterToIds(
@@ -1475,6 +1580,37 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         return repository.getAll()
     }
 
+    suspend fun getItemsMissingMediaPublishedAt(): List<HistoryItem> = withContext(Dispatchers.IO) {
+        repository.getItemsMissingMediaPublishedAt()
+    }
+
+    suspend fun getVideoQualityScanCandidates(): List<HistoryItem> = withContext(Dispatchers.IO) {
+        repository.getVideoQualityScanCandidates()
+    }
+
+    suspend fun updateMediaPublishedAtIfMissing(
+        id: Long,
+        normalizedUrl: String,
+        mediaPublishedAt: Long
+    ): Boolean {
+        if (
+            id <= 0L ||
+            normalizedUrl.isBlank() ||
+            !MediaPublishedDate.isPresent(mediaPublishedAt)
+        ) return false
+        return withContext(Dispatchers.IO) {
+            repository.updateMediaPublishedAtIfMissing(
+                id = id,
+                normalizedUrl = normalizedUrl,
+                mediaPublishedAt = mediaPublishedAt
+            )
+        }
+    }
+
+    fun invalidateAfterMediaPublishedDateBackfill() {
+        invalidateCachedIds(triggerRefresh = true)
+    }
+
     suspend fun getKeywordInfoByNameForCurrentFilters(keyword: String): com.ireum.ytdl.database.models.KeywordInfo? {
         val infos = getKeywordInfosForCurrentFilters()
         return infos.firstOrNull { it.keyword.equals(keyword, ignoreCase = true) }
@@ -1494,6 +1630,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun getKeywordInfosForCurrentFilters(): List<com.ireum.ytdl.database.models.KeywordInfo> {
+        val currentSort = currentEffectiveSort()
         val ids = withContext(Dispatchers.IO) {
             repository.getFilteredIDs(
                 queryFilter.value,
@@ -1503,12 +1640,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 titleQueryFilter.value,
                 keywordQueryFilter.value,
                 creatorQueryFilter.value,
-                sortType.value,
-                sortOrder.value,
+                currentSort.type,
+                currentSort.order,
                 statusFilter.value,
                 websiteFilter.value,
                 playlistFilter.value,
-                searchFieldsFilter.value
+                searchFieldsFilter.value,
+                missingSourceDatePolicy.value
             )
         }
         return withContext(Dispatchers.IO) {
@@ -1748,25 +1886,47 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         invalidateCachedIds(triggerRefresh = true)
     }
 
-    suspend fun updateWithKeywordNotice(item: HistoryItem): Int = withContext(Dispatchers.IO) {
-        val currentItem = runCatching { database.historyDao.getItem(item.id) }
-            .getOrDefault(item)
-        repository.update(item)
-        val protectedCount = if (currentItem.keywords != item.keywords) {
-            keywordAssignments.updateManualFromMaterializedEditor(
-                item.id,
-                AutomaticKeywordNormalizer.parseKeywords(item.keywords)
+    suspend fun updateWithKeywordNotice(item: HistoryItem): MetadataUpdateResult = withContext(Dispatchers.IO) {
+        val result = database.withTransaction {
+            val currentItem = database.historyDao.getItem(item.id)
+            val updatedItem = currentItem.copy(
+                url = item.url,
+                title = item.title,
+                author = item.author,
+                artist = item.artist,
+                duration = item.duration,
+                durationSeconds = item.durationSeconds,
+                thumb = item.thumb,
+                website = item.website,
+                customThumb = item.customThumb,
+                mediaPublishedAt = item.mediaPublishedAt
+                    .takeIf(MediaPublishedDate::isPresent)
+                    ?: currentItem.mediaPublishedAt.takeIf {
+                        MediaPublishedDateSource.matches(currentItem.url, item.url)
+                    }
+                    ?: MediaPublishedDate.MISSING
             )
-        } else {
-            0
+            repository.update(updatedItem)
+            val protectedCount = if (currentItem.keywords != item.keywords) {
+                keywordAssignments.updateManualFromMaterializedEditor(
+                    item.id,
+                    AutomaticKeywordNormalizer.parseKeywords(item.keywords)
+                )
+            } else {
+                0
+            }
+            automaticKeywordRuleEngine.reconcileHistoryUrlChange(
+                item.id,
+                currentItem.url,
+                item.url
+            )
+            MetadataUpdateResult(
+                item = database.historyDao.getItem(item.id),
+                protectedAutomaticKeywordCount = protectedCount
+            )
         }
-        automaticKeywordRuleEngine.reconcileHistoryUrlChange(
-            item.id,
-            currentItem.url,
-            item.url
-        )
         invalidateCachedIds(triggerRefresh = true)
-        protectedCount
+        result
     }
 
     fun removeKeywordsFromAllHistory(targetKeywords: List<String>) = viewModelScope.launch(Dispatchers.IO) {
@@ -2026,6 +2186,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
 
     companion object {
         val DEFAULT_TYPE_FILTER = "${DownloadType.audio.name},${DownloadType.video.name}"
+        private const val PREF_MISSING_SOURCE_DATE_POLICY = "history_missing_source_date_policy"
     }
 
 }

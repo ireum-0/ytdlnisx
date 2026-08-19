@@ -3,6 +3,7 @@ package com.ireum.ytdl.work
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.content.Context
+import android.util.Log
 import androidx.work.ForegroundInfo
 import androidx.preference.PreferenceManager
 import androidx.work.Constraints
@@ -22,8 +23,12 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.util.Locale
 
@@ -37,25 +42,48 @@ class HardSubScanWorker(
         val historyDao = dbManager.historyDao
         val downloadDao = dbManager.downloadDao
         val resultRepository = ResultRepository(dbManager.resultDao, dbManager.commandTemplateDao, context)
-        val downloadRepository = DownloadRepository(downloadDao)
+        val downloadRepository = DownloadRepository(dbManager)
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val subsLanguages = sharedPreferences.getString("subs_lang", "en.*,.*-orig").orEmpty()
         val notificationUtil = NotificationUtil(context)
         val queuedItems = mutableListOf<DownloadItem>()
 
-        if (sharedPreferences.getBoolean(PREF_HARD_SUB_RESCAN_DONE_ONCE, true)) {
+        val resetForRescan = sharedPreferences.getBoolean(PREF_HARD_SUB_RESCAN_DONE_ONCE, true)
+        if (resetForRescan) {
             historyDao.resetHardSubDoneForRescan()
-            sharedPreferences.edit().putBoolean(PREF_HARD_SUB_RESCAN_DONE_ONCE, false).apply()
         }
 
         val candidates = historyDao.getHardSubScanCandidates()
-        if (candidates.isEmpty()) return Result.success()
+        if (candidates.isEmpty()) {
+            if (resetForRescan) {
+                sharedPreferences.edit().putBoolean(PREF_HARD_SUB_RESCAN_DONE_ONCE, false).apply()
+            }
+            return Result.success()
+        }
 
         var processed = 0
-        setForeground(createForegroundInfo(notificationUtil, processed, candidates.size))
+        var failedLookups = 0
+        val foregroundOutcome = try {
+            setForeground(createForegroundInfo(notificationUtil, processed, candidates.size))
+            hardSubForegroundAttemptOutcome(runAttemptCount, foregroundStarted = true)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w(TAG, "Unable to start hard-sub scan in the foreground", error)
+            hardSubForegroundAttemptOutcome(runAttemptCount, foregroundStarted = false)
+        }
+        when (foregroundOutcome) {
+            HardSubForegroundAttemptOutcome.PROCEED -> Unit
+            HardSubForegroundAttemptOutcome.RETRY -> return Result.retry()
+            HardSubForegroundAttemptOutcome.FAILURE -> return Result.failure()
+        }
+        if (resetForRescan) {
+            sharedPreferences.edit().putBoolean(PREF_HARD_SUB_RESCAN_DONE_ONCE, false).apply()
+        }
 
         candidates.forEach { item ->
-            if (isStopped) return Result.success()
+            currentCoroutineContext().ensureActive()
+            if (isStopped) throw CancellationException("Hard-sub scan worker stopped")
             try {
                 if (item.url.isBlank() || !item.url.isYoutubeURL()) {
                     historyDao.updateHardSubScanState(item.id, removed = true, done = false)
@@ -67,13 +95,23 @@ class HardSubScanWorker(
                     return@forEach
                 }
 
-                val manualSubs = runCatching {
+                val manualSubs = try {
                     resultRepository
                         .getResultsFromSource(item.url, resetResults = false, addToResults = false, singleItem = true)
                         .firstOrNull()
                         ?.availableSubtitles
                         .orEmpty()
-                }.getOrDefault(emptyList())
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    failedLookups += 1
+                    Log.w(
+                        TAG,
+                        "Subtitle lookup failed for history id=${item.id} " +
+                            "type=${error.javaClass.simpleName}"
+                    )
+                    return@forEach
+                }
 
                 val hasRequestedLanguage = SubtitleLanguageMatcher.hasRequestedSubtitle(manualSubs, subsLanguages)
                 if (!hasRequestedLanguage) {
@@ -81,7 +119,7 @@ class HardSubScanWorker(
                     return@forEach
                 }
 
-                val marker = "$HISTORY_REDOWNLOAD_MARKER${item.id}"
+                val marker = HistoryRedownloadMarker.regular(item.id)
                 if (downloadDao.countPendingByPlaylistMarker(marker) > 0) {
                     return@forEach
                 }
@@ -92,7 +130,13 @@ class HardSubScanWorker(
                 queuedItems.add(downloadItem)
             } finally {
                 processed += 1
-                updateScanNotification(notificationUtil, processed, candidates.size)
+                try {
+                    updateScanNotification(notificationUtil, processed, candidates.size)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    Log.w(TAG, "Unable to update hard-sub scan notification", error)
+                }
             }
         }
 
@@ -101,7 +145,11 @@ class HardSubScanWorker(
         }
         notificationUtil.cancelDownloadNotification(SCAN_NOTIFICATION_ID)
 
-        return Result.success()
+        return if (failedLookups > 0 && hardSubAttemptsRemain(runAttemptCount)) {
+            Result.retry()
+        } else {
+            Result.success()
+        }
     }
 
     private fun isAlreadyHardSubbed(command: String): Boolean {
@@ -113,7 +161,6 @@ class HardSubScanWorker(
     companion object {
         const val UNIQUE_WORK_NAME = "hard_sub_scan_worker"
         const val TAG = "hard_sub_scan"
-        private const val HISTORY_REDOWNLOAD_MARKER = "history-redownload:"
         private const val SCAN_NOTIFICATION_ID = 1000000002
         private const val PREF_HARD_SUB_RESCAN_DONE_ONCE = "hard_sub_rescan_done_once_v2"
 
@@ -222,7 +269,8 @@ class HardSubScanWorker(
             playlistURL = marker,
             playlistIndex = null,
             incognito = sharedPreferences.getBoolean("incognito", false),
-            availableSubtitles = availableSubtitles
+            availableSubtitles = availableSubtitles,
+            mediaPublishedAt = historyItem.mediaPublishedAt
         )
     }
 
@@ -255,4 +303,24 @@ class HardSubScanWorker(
             ForegroundInfo(SCAN_NOTIFICATION_ID, notification)
         }
     }
+}
+
+private const val MAX_HARD_SUB_ATTEMPTS = 3
+
+internal enum class HardSubForegroundAttemptOutcome {
+    PROCEED,
+    RETRY,
+    FAILURE,
+}
+
+internal fun hardSubAttemptsRemain(runAttemptCount: Int): Boolean =
+    runAttemptCount < MAX_HARD_SUB_ATTEMPTS - 1
+
+internal fun hardSubForegroundAttemptOutcome(
+    runAttemptCount: Int,
+    foregroundStarted: Boolean,
+): HardSubForegroundAttemptOutcome = when {
+    foregroundStarted -> HardSubForegroundAttemptOutcome.PROCEED
+    hardSubAttemptsRemain(runAttemptCount) -> HardSubForegroundAttemptOutcome.RETRY
+    else -> HardSubForegroundAttemptOutcome.FAILURE
 }

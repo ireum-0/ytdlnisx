@@ -12,6 +12,8 @@ object LinkUtil {
         "m.youtube.com",
         "music.youtube.com",
         "gaming.youtube.com",
+        "youtube-nocookie.com",
+        "www.youtube-nocookie.com",
         "youtu.be",
         "www.youtu.be",
         "piped.video",
@@ -29,6 +31,10 @@ object LinkUtil {
 
     fun isUrl(value: String): Boolean {
         return urlPattern.matcher(value.trim()).matches()
+    }
+
+    fun isExtractorInput(value: String): Boolean {
+        return WebUrlInput.resolveExtractorInput(value) != null
     }
 
     fun isYoutubeUrl(value: String): Boolean {

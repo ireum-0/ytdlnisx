@@ -34,10 +34,17 @@ import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.Extensions.isYoutubeWatchVideosURL
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.ExtractorSourceIdentity
+import com.ireum.ytdl.util.ExtractorSourceIdentityPolicy
 import com.ireum.ytdl.util.WebsiteUtil
 import com.ireum.ytdl.util.FormatUtil
+import com.ireum.ytdl.util.MediaPublishedDateParser
+import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.HistoryRedownloadQueuePolicy
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import com.ireum.ytdl.util.SubtitleSelection
+import com.ireum.ytdl.util.VideoQualityPolicy
+import com.ireum.ytdl.util.WebUrlInput
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -49,12 +56,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.lang.reflect.Type
-import java.security.MessageDigest
 import java.util.Base64
 import java.util.Locale
 import java.util.StringJoiner
 import java.util.UUID
-import java.util.zip.CRC32
 import java.util.concurrent.TimeUnit
 import java.util.regex.PatternSyntaxException
 
@@ -153,7 +158,28 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     }
 
     @SuppressLint("RestrictedApi")
-    fun getFromYTDL(query: String, singleItem: Boolean = false, resultsGenerated: (results: List<ResultItem>) -> Unit): List<ResultItem> {
+    fun getFromYTDL(
+        query: String,
+        singleItem: Boolean = false,
+        resultsGenerated: (results: List<ResultItem>) -> Unit,
+    ): List<ResultItem> = getFromYTDLInternal(
+        query = query,
+        singleItem = singleItem,
+        processId = null,
+        resultsGenerated = resultsGenerated,
+    )
+
+    private fun getFromYTDLInternal(
+        query: String,
+        singleItem: Boolean = false,
+        processId: String? = null,
+        resultsGenerated: (results: List<ResultItem>) -> Unit,
+    ): List<ResultItem> {
+        val dispatchQuery = when (val route = WebUrlInput.routeInput(query)) {
+            is WebUrlInput.InputRoute.Extractor -> route.input.dispatchValue
+            WebUrlInput.InputRoute.SearchQuery -> query
+            is WebUrlInput.InputRoute.UnsupportedExplicitScheme -> return emptyList()
+        }
         val searchEngine = sharedPreferences.getString("search_engine", "ytsearch")
 
         var dataFetchUrl: String? = null
@@ -165,8 +191,8 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
         fun buildRequest(includeYoutubeAuthentication: Boolean): YoutubeDLRequest {
             val request: YoutubeDLRequest
-            if (isHttpDataFetchUrl(query)){
-                val safeQuery = validateDataFetchUrl(query)
+            if (isHttpDataFetchUrl(dispatchQuery)){
+                val safeQuery = validateDataFetchUrl(dispatchQuery)
                 dataFetchUrl = safeQuery
                 if (safeQuery.isYoutubeWatchVideosURL()) {
                     request = YoutubeDLRequest(emptyList())
@@ -190,8 +216,8 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     }
                 }
             }
-            if (searchEngine == "ytsearch" || query.isYoutubeURL()) {
-                val extractorUrl = dataFetchUrl ?: query
+            if (searchEngine == "ytsearch" || dispatchQuery.isYoutubeURL()) {
+                val extractorUrl = dataFetchUrl ?: dispatchQuery
                 request.setYoutubeExtractorArgs(
                     extractorUrl,
                     includeWebClientForSubtitles = extractorUrl.isYoutubeURL(),
@@ -214,9 +240,12 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         }
 
         fun executeRequest(request: YoutubeDLRequest) {
-            YoutubeDL.getInstance().execute(request) { _, _, line ->
+            val callback: (Float, Long, String) -> Unit = { _, _, line ->
                 runCatching {
-                    val generatedResults = parseYTDLPListResults(listOf(line))
+                    val generatedResults = parseYTDLPListResults(
+                        results = listOf(line),
+                        requestedSource = query,
+                    )
                     if (generatedResults.isNotEmpty()) {
 
                         generatedResults.forEach {
@@ -237,16 +266,23 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     }
                 }
             }
+            if (processId == null) {
+                YoutubeDL.getInstance().execute(request) { progress, eta, line ->
+                    callback(progress, eta, line)
+                }
+            } else {
+                YoutubeDLCompat.execute(context, request, processId, true, callback)
+            }
         }
 
         val request = buildRequest(includeYoutubeAuthentication = true)
         runCatching {
             executeRequest(request)
         }.onFailure { firstError ->
-            if (postedProgress || !shouldRetryYoutubeMetadataWithoutAuthentication(dataFetchUrl ?: query, firstError)) {
+            if (postedProgress || !shouldRetryYoutubeMetadataWithoutAuthentication(dataFetchUrl ?: dispatchQuery, firstError)) {
                 throw firstError
             }
-            Log.w("YTDLPUtil", "Retrying YouTube metadata fetch without authentication or custom data-fetching commands url=${dataFetchUrl ?: query}", firstError)
+            Log.w("YTDLPUtil", "Retrying YouTube metadata fetch without authentication or custom data-fetching commands url=${dataFetchUrl ?: dispatchQuery}", firstError)
             finalResults.clear()
             postedProgress = false
             retriedWithoutAuthentication = true
@@ -255,9 +291,9 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         if (
             finalResults.isEmpty() &&
             !retriedWithoutAuthentication &&
-            shouldRetryYoutubeMetadataWithoutAuthentication(dataFetchUrl ?: query, null)
+            shouldRetryYoutubeMetadataWithoutAuthentication(dataFetchUrl ?: dispatchQuery, null)
         ) {
-            Log.w("YTDLPUtil", "Retrying empty YouTube metadata fetch without authentication or custom data-fetching commands url=${dataFetchUrl ?: query}")
+            Log.w("YTDLPUtil", "Retrying empty YouTube metadata fetch without authentication or custom data-fetching commands url=${dataFetchUrl ?: dispatchQuery}")
             executeRequest(buildRequest(includeYoutubeAuthentication = false))
         }
 
@@ -265,7 +301,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         return finalResults
     }
 
-    private fun parseYTDLPListResults(results: List<String?>, query: String = "") : ArrayList<ResultItem> {
+    private fun parseYTDLPListResults(
+        results: List<String?>,
+        query: String = "",
+        requestedSource: String = query,
+    ) : ArrayList<ResultItem> {
         val items = arrayListOf<ResultItem>()
 
         for (result in results) {
@@ -383,8 +423,16 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 chapters = chapters,
                 playlistURL = playlistURL,
                 playlistIndex = playlistIndex,
-                availableSubtitles = availableSubtitles
+                availableSubtitles = availableSubtitles,
+                mediaPublishedAt = MediaPublishedDateParser.resolve(
+                    releaseTimestampSeconds = jsonObject.opt("release_timestamp") as? Number,
+                    timestampSeconds = jsonObject.opt("timestamp") as? Number,
+                    releaseDate = jsonObject.optString("release_date"),
+                    uploadDate = jsonObject.optString("upload_date"),
+                    publishedAt = jsonObject.optString("published_at")
+                )
             )
+            res.sourceIdentity = jsonObject.toExtractorSourceIdentity(requestedSource)
 
             items.add(res)
         }
@@ -726,55 +774,208 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         val cachePath = "${FileUtil.getCachePath(context)}infojsons"
         File(cachePath).mkdirs()
 
-        var id = url
-        if (url.isYoutubeURL()) {
-            id = url.getIDFromYoutubeURL() ?: url
-        }
-
-        val infoJsonName = "${hash(id)}$INFO_JSON_HASH_SEPARATOR"
+        val cacheKey = InfoJsonCacheKeyPolicy.resolve(url)
         //yt-dlp doesnt overwrite info json, so delete manually
-        File("${cachePath}/${infoJsonName}video.info.json").delete()
-        this.addCommands(listOf("--print-to-file", "video:%()j", "${cachePath}/${infoJsonName}${System.currentTimeMillis()}video.info.json"))
-    }
-
-    fun hash(text: String): String {
-        val crc = CRC32()
-        crc.update(text.toByteArray())
-        return crc.value.toString(16) // 8 hex chars max
+        File(cachePath, "${cacheKey.authoritativePrefix}video.info.json").delete()
+        this.addCommands(
+            listOf(
+                "--print-to-file",
+                "video:%()j",
+                File(cachePath, cacheKey.writeFileName(System.currentTimeMillis())).absolutePath
+            )
+        )
     }
 
     @OptIn(ExperimentalStdlibApi::class)
-    private fun getInfoJsonFile(url: String): File? {
-        val cachePath = "${FileUtil.getCachePath(context)}infojsons"
-
-        var id = url
-        if (url.isYoutubeURL()) {
-            id = url.getIDFromYoutubeURL() ?: url
-        }
-
-        val infoJsonName = "${hash(id)}$INFO_JSON_HASH_SEPARATOR"
-        val infoJsonFile : File? =
-            File(cachePath)
-                .walkTopDown()
-                .sortedByDescending { it.lastModified() }
-                .filter {
-                    it.isFile &&
-                        it.name.startsWith(infoJsonName) &&
-                        System.currentTimeMillis() - it.lastModified() <= INFO_JSON_MAX_AGE_MS
-                }
-                .filter { cachedInfoJsonMatchesUrl(it, url) }
-                .firstOrNull()
-
-        return infoJsonFile
+    private fun getInfoJsonFile(url: String, strictUrlMatch: Boolean = false): File? {
+        return getInfoJsonFiles(url, strictUrlMatch).firstOrNull()
     }
 
     fun getCachedInfoJsonResult(url: String): ResultItem? {
+        val cacheKey = InfoJsonCacheKeyPolicy.resolve(url)
         val infoJsonFile = getInfoJsonFile(url) ?: return null
         return runCatching {
-            parseYTDLPListResults(listOf(readInfoJsonPayload(infoJsonFile)), url).firstOrNull()
+            parseYTDLPListResults(
+                listOf(readInfoJsonPayload(infoJsonFile)),
+                query = url,
+                requestedSource = cacheKey.dispatchSource,
+            ).firstOrNull()
         }.onFailure {
             Log.w("YTDLPUtil", "Failed to parse cached info JSON file=${infoJsonFile.name}", it)
         }.getOrNull()
+    }
+
+    fun getCachedInfoJsonResultOrThrow(url: String): ResultItem? {
+        val cacheKey = InfoJsonCacheKeyPolicy.resolve(url)
+        val infoJsonFile = getInfoJsonFile(url, strictUrlMatch = true) ?: return null
+        return parseYTDLPListResults(
+            listOf(readInfoJsonPayload(infoJsonFile)),
+            query = url,
+            requestedSource = cacheKey.dispatchSource,
+        ).firstOrNull()
+    }
+
+    fun getCachedInfoJsonResultsOrThrow(url: String): List<ResultItem> {
+        val cacheKey = InfoJsonCacheKeyPolicy.resolve(url)
+        if (WebUrlInput.resolveExtractorInput(cacheKey.dispatchSource) == null) return emptyList()
+        return getInfoJsonFiles(url, strictUrlMatch = true)
+            .asSequence()
+            .mapNotNull { file ->
+                parseYTDLPListResults(
+                    listOf(readInfoJsonPayload(file)),
+                    requestedSource = cacheKey.dispatchSource,
+                ).singleOrNull()
+            }
+            .toList()
+    }
+
+    private fun getInfoJsonFiles(url: String, strictUrlMatch: Boolean): List<File> {
+        val cacheRoot = File(FileUtil.getCachePath(context), "infojsons")
+        val cacheKey = InfoJsonCacheKeyPolicy.resolve(url)
+        val authoritativeFiles = matchingInfoJsonFiles(
+            cacheRoot = cacheRoot,
+            prefix = cacheKey.authoritativePrefix,
+            requestedSource = cacheKey.dispatchSource,
+            strictUrlMatch = strictUrlMatch,
+        )
+        if (authoritativeFiles.isNotEmpty()) return authoritativeFiles
+
+        val legacyPrefix = InfoJsonCacheKeyPolicy.legacySchemeLessPrefix(
+            source = url,
+            authoritativeKey = cacheKey,
+        ) ?: return emptyList()
+        return matchingInfoJsonFiles(
+            cacheRoot = cacheRoot,
+            prefix = legacyPrefix,
+            requestedSource = cacheKey.dispatchSource,
+            strictUrlMatch = strictUrlMatch,
+        ).map { legacyFile ->
+            migrateLegacyInfoJsonFile(
+                legacyFile = legacyFile,
+                legacyPrefix = legacyPrefix,
+                authoritativePrefix = cacheKey.authoritativePrefix,
+            )
+        }
+    }
+
+    private fun matchingInfoJsonFiles(
+        cacheRoot: File,
+        prefix: String,
+        requestedSource: String,
+        strictUrlMatch: Boolean,
+    ): List<File> {
+        val now = System.currentTimeMillis()
+        return cacheRoot
+            .walkTopDown()
+            .sortedByDescending(File::lastModified)
+            .filter { file ->
+                file.isFile &&
+                    file.name.startsWith(prefix) &&
+                    file.name.endsWith(".info.json") &&
+                    now - file.lastModified() <= INFO_JSON_MAX_AGE_MS
+            }
+            .filter { infoJsonFile ->
+                if (strictUrlMatch) {
+                    cachedInfoJsonMatchesUrlOrThrow(infoJsonFile, requestedSource)
+                } else {
+                    cachedInfoJsonMatchesUrl(infoJsonFile, requestedSource)
+                }
+            }
+            .toList()
+    }
+
+    private fun migrateLegacyInfoJsonFile(
+        legacyFile: File,
+        legacyPrefix: String,
+        authoritativePrefix: String,
+    ): File {
+        val suffix = legacyFile.name.removePrefix(legacyPrefix)
+        val authoritativeFile = File(legacyFile.parentFile, "$authoritativePrefix$suffix")
+        if (authoritativeFile.exists()) return legacyFile
+        return if (legacyFile.renameTo(authoritativeFile)) authoritativeFile else legacyFile
+    }
+
+    /**
+     * Minimal, single-source request used only by durable History date fetching.
+     * It intentionally omits format selection, player-client/token configuration,
+     * subtitle configuration, and user data-fetch command templates.
+     */
+    fun getDateOnlyMetadata(inputUrl: String, processId: String): ResultItem? {
+        val dispatchUrl = WebUrlInput.resolveExtractorInput(inputUrl)?.dispatchValue ?: return null
+        val safeUrl = validateDataFetchUrl(dispatchUrl)
+        val request = YoutubeDLRequest(safeUrl).apply {
+            addOption("--skip-download")
+            addOption("--quiet")
+            addOption("--no-warnings")
+            addOption("--no-playlist")
+            addOption("--no-check-formats")
+            addOption("--ignore-no-formats-error")
+            addOption("-R", "1")
+            addOption(
+                "--print",
+                "%(.{id,title,extractor,extractor_key,webpage_url,original_url,url,_type," +
+                    "playlist_webpage_url,release_timestamp,timestamp,release_date,upload_date," +
+                    "published_at})j",
+            )
+            applyDateFetchNetworkOptions()
+        }
+        val response = YoutubeDLCompat.execute(context, request, processId, true)
+        return parseVerifiedSingleDateResult(response.out, dispatchUrl)
+    }
+
+    /** Uses the existing one-item metadata request as the compatibility fallback. */
+    fun getCompatibilityDateMetadata(inputUrl: String, processId: String): ResultItem? {
+        val dispatchUrl = WebUrlInput.resolveExtractorInput(inputUrl)?.dispatchValue ?: return null
+        if (!isHttpDataFetchUrl(dispatchUrl)) return null
+        val results = getFromYTDLInternal(
+            query = dispatchUrl,
+            singleItem = true,
+            processId = processId,
+            resultsGenerated = {},
+        )
+        return results.filter { result ->
+            val identity = result.sourceIdentity ?: return@filter false
+            ExtractorSourceIdentityPolicy.matchesRequestedSource(dispatchUrl, identity) &&
+                com.ireum.ytdl.util.MediaPublishedDate.isPresent(result.mediaPublishedAt)
+        }.singleOrNull()
+    }
+
+    private fun YoutubeDLRequest.applyDateFetchNetworkOptions() {
+        val socketTimeout = sharedPreferences.getString("socket_timeout", "5")!!.ifEmpty { "5" }
+        addOption("--socket-timeout", socketTimeout)
+        if (sharedPreferences.getBoolean("force_ipv4", false)) addOption("-4")
+        if (sharedPreferences.getBoolean("use_cookies", false)) {
+            FileUtil.getCookieFile(context) { addOption("--cookies", it) }
+            if (sharedPreferences.getBoolean("use_header", false)) {
+                sharedPreferences.getString("useragent_header", "")
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { addOption("--add-header", "User-Agent:$it") }
+            }
+        }
+        sharedPreferences.getString("proxy", "")
+            ?.takeIf(String::isNotBlank)
+            ?.let { addOption("--proxy", it) }
+        if (sharedPreferences.getBoolean("no_check_certificates", false)) {
+            addOption("--no-check-certificates")
+        }
+    }
+
+    private fun parseVerifiedSingleDateResult(payload: String, requestedSource: String): ResultItem? {
+        val results = payload.lineSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .flatMap { line ->
+                runCatching {
+                    parseYTDLPListResults(listOf(line), requestedSource = requestedSource).asSequence()
+                }.getOrDefault(emptySequence())
+            }
+            .filter { result ->
+                val identity = result.sourceIdentity ?: return@filter false
+                ExtractorSourceIdentityPolicy.matchesRequestedSource(requestedSource, identity) &&
+                    com.ireum.ytdl.util.MediaPublishedDate.isPresent(result.mediaPublishedAt)
+            }
+            .toList()
+        return results.singleOrNull()
     }
 
     private fun readInfoJsonPayload(infoJsonFile: File): String {
@@ -789,24 +990,32 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
     private fun cachedInfoJsonMatchesUrl(infoJsonFile: File, requestedUrl: String): Boolean {
         return runCatching {
-            val jsonObject = JSONObject(readInfoJsonPayload(infoJsonFile))
-            val requestedYoutubeId = if (requestedUrl.isYoutubeURL()) requestedUrl.getIDFromYoutubeURL() else null
-            if (requestedYoutubeId != null) {
-                val candidateIds = mutableListOf(jsonObject.getStringByAny("id"))
-                listOf("webpage_url", "original_url", "url").forEach { key ->
-                    jsonObject.getStringByAny(key)
-                        .takeIf { it.isYoutubeURL() }
-                        ?.getIDFromYoutubeURL()
-                        ?.let { candidateIds.add(it) }
-                }
-                candidateIds.any { it == requestedYoutubeId }
-            } else {
-                val requested = requestedUrl.trim()
-                listOf("webpage_url", "original_url", "url")
-                    .map { jsonObject.getStringByAny(it).trim() }
-                    .any { it.equals(requested, ignoreCase = true) }
-            }
+            cachedInfoJsonMatchesUrlOrThrow(infoJsonFile, requestedUrl)
         }.getOrDefault(false)
+    }
+
+    private fun cachedInfoJsonMatchesUrlOrThrow(
+        infoJsonFile: File,
+        requestedUrl: String,
+    ): Boolean {
+        val jsonObject = JSONObject(readInfoJsonPayload(infoJsonFile))
+        return ExtractorSourceIdentityPolicy.matchesRequestedSource(
+            requestedSource = requestedUrl,
+            identity = jsonObject.toExtractorSourceIdentity(requestedUrl),
+        )
+    }
+
+    private fun JSONObject.toExtractorSourceIdentity(requestedSource: String): ExtractorSourceIdentity {
+        return ExtractorSourceIdentity(
+            requestedSource = requestedSource,
+            originalUrl = getStringByAny("original_url"),
+            canonicalUrl = getStringByAny("webpage_url"),
+            fallbackUrl = getStringByAny("url"),
+            stableMediaId = getStringByAny("id"),
+            extractor = getStringByAny("extractor_key", "extractor", "ie_key"),
+            resultType = getStringByAny("_type"),
+            playlistUrl = getStringByAny("playlist_webpage_url"),
+        )
     }
 
     private fun cachedInfoJsonHasRequestedSubtitles(
@@ -833,7 +1042,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
     fun getFilenameTemplatePreview(item: DownloadItem, filenameTemplate: String): String {
         item.customFileNameTemplate = filenameTemplate
-        val request = buildYoutubeDLRequest(item)
+        val request = buildYoutubeDLRequest(item, resolveInitialYoutubeMediaAccessProfile(item))
         request.addOption("--print", "%(filename)s")
         request.addOption("--skip-download")
         request.addOption("--simulate")
@@ -877,13 +1086,27 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     fun buildRequestDiagnostics(
         downloadItem: DownloadItem,
         request: YoutubeDLRequest,
-        commandString: String? = null
+        commandString: String? = null,
+        mediaAccessProfile: YoutubeMediaAccessProfile? = null,
     ): String {
         val normalizedDownloadPath = FileUtil.formatPath(downloadItem.downloadPath)
         val canWriteDirectly = FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
         val writtenPath = downloadItem.type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
         val cacheDownloadsEnabled = sharedPreferences.getBoolean("cache_downloads", true)
-        val noCache = writtenPath || (!cacheDownloadsEnabled && canWriteDirectly)
+        val requiresVerifiedQualityStaging = VideoQualityPolicy.requiresVerifiedStaging(
+            isVideo = downloadItem.type == DownloadType.video,
+            format = downloadItem.format,
+            sourceFormats = downloadItem.allFormats,
+            isQualityReplacement = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
+                ?.isQualityReplacement == true
+        ) || (
+            downloadItem.type == DownloadType.video &&
+                downloadItem.url.isYoutubeURL() &&
+                YoutubeMediaAccessPolicy.containsRawFormatOverride(downloadItem.extraCommands)
+            )
+        val noCache = writtenPath || (
+            !requiresVerifiedQualityStaging && !cacheDownloadsEnabled && canWriteDirectly
+            )
         val tempDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
         val ffmpegPayload = App.instance.getFfmpegPayloadDiagnostics()
         val ffmpegResolution = buildYtDlpFfmpegResolutionDiagnostics()
@@ -907,6 +1130,8 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             ?: "<default>"
         val poTokenUsed = extractorArgs.contains("po_token=")
         val webSubsTokenUsed = extractorArgs.contains("web.subs+")
+        val guardedQualityTarget = commandString?.let(::extractAppQualityTarget)
+            ?: expectedMediaQualityTarget(downloadItem)
         val cachedSubtitleDiagnostics = hasLoadInfoJson
             .takeIf { it != "<none>" }
             ?.let { buildCachedSubtitleDiagnostics(File(it)) }
@@ -914,6 +1139,25 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
         return buildString {
             appendLine("Debug:")
+            mediaAccessProfile?.let { profile ->
+                val subtitleMode = when {
+                    downloadItem.videoPreferences.embedSubs -> "hard"
+                    downloadItem.videoPreferences.writeSubs -> "manual"
+                    downloadItem.videoPreferences.writeAutoSubs -> "automatic"
+                    else -> "none"
+                }
+                appendLine(
+                    "youtubeMediaPolicy: profile=$profile " +
+                        "cookies=${request.getArguments("--cookies")?.isNotEmpty() == true} " +
+                        "dataSync=${extractorArgs.contains("data_sync_id=")} " +
+                        "subtitles=$subtitleMode " +
+                        "target=${guardedQualityTarget ?: "none"}"
+                )
+                appendLine("youtubeMediaProfile: $profile")
+                appendLine("youtubeCookiesUsed: ${request.getArguments("--cookies")?.isNotEmpty() == true}")
+                appendLine("youtubeDataSyncUsed: ${extractorArgs.contains("data_sync_id=")}")
+                appendLine("youtubeQualityTarget: ${guardedQualityTarget ?: "<none>"}")
+            }
             appendLine("downloadPathRaw: ${downloadItem.downloadPath}")
             appendLine("downloadPathNormalized: $normalizedDownloadPath")
             appendLine("downloadPathCanWrite: $canWriteDirectly")
@@ -1021,6 +1265,17 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             ?.firstOrNull { it.isNotBlank() }
     }
 
+    private fun extractAppQualityTarget(command: String): Int? {
+        return Regex("""height>=([0-9]{2,5})\]\[height<=([0-9]{2,5})""")
+            .findAll(command)
+            .mapNotNull { match ->
+                val minimum = match.groupValues.getOrNull(1)?.toIntOrNull()
+                val maximum = match.groupValues.getOrNull(2)?.toIntOrNull()
+                minimum.takeIf { it != null && it == maximum }
+            }
+            .minOrNull()
+    }
+
     private fun shouldRetryYoutubeMetadataWithoutAuthentication(url: String?, error: Throwable?): Boolean {
         if (url.isNullOrBlank() || !url.isYoutubeURL()) return false
         if (error == null) return true
@@ -1047,7 +1302,9 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         includeAuthentication: Boolean = true,
         includeCookies: Boolean = includeAuthentication,
         includePoTokens: Boolean = includeAuthentication,
-        includeDataSyncId: Boolean = includeAuthentication
+        includeDataSyncId: Boolean = includeAuthentication,
+        useConfiguredPlayerClients: Boolean = true,
+        forceDefaultPublicClients: Boolean = false,
     ) {
         val extractorArgs = mutableListOf<String>()
         val playerClients = mutableSetOf<String>()
@@ -1055,7 +1312,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         val useCookies = includeCookies && sharedPreferences.getBoolean("use_cookies", false)
 
         val configuredPlayerClientsRaw = sharedPreferences.getString("youtube_player_clients", "[]")!!.ifEmpty { "[]" }
-        kotlin.runCatching {
+        if (useConfiguredPlayerClients) kotlin.runCatching {
             val configuredPlayerClients = Gson().fromJson(configuredPlayerClientsRaw, Array<YoutubePlayerClientItem>::class.java).toMutableList()
 
             for (value in configuredPlayerClients) {
@@ -1140,14 +1397,14 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             }
         }
 
-        if (!includeAuthentication && !includePoTokens && excludeWebClientForMediaFormats) {
+        if (forceDefaultPublicClients && excludeWebClientForMediaFormats) {
             playerClients.clear()
             playerClients.addAll(DEFAULT_NON_WEB_MEDIA_PLAYER_CLIENTS)
         } else if (excludeWebClientForMediaFormats && playerClients.none { it.canUseAsMediaPlayerClient(true) }) {
             playerClients.addAll(DEFAULT_NON_WEB_MEDIA_PLAYER_CLIENTS)
         }
 
-        if (includeWebClientForSubtitles && includePoTokens) {
+        if (includeWebClientForSubtitles) {
             playerClients.add("web")
         }
         if (useCookies) {
@@ -1198,6 +1455,29 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         if (extractorArgs.isNotEmpty()) {
             this.addOption("--extractor-args", "youtube:${extArgs}")
         }
+    }
+
+    private fun YoutubeDLRequest.setYoutubeMediaExtractorArgs(
+        url: String?,
+        profile: YoutubeMediaAccessProfile,
+        includeWebClientForSubtitles: Boolean,
+        excludeWebClientForMediaFormats: Boolean,
+    ) {
+        val policy = YoutubeMediaAccessPolicy.requestPolicy(
+            profile = profile,
+            subtitlesRequested = includeWebClientForSubtitles,
+        )
+        setYoutubeExtractorArgs(
+            url = url,
+            includeWebClientForSubtitles = policy.includeWebClientForSubtitles,
+            excludeWebClientForMediaFormats = excludeWebClientForMediaFormats,
+            includeAuthentication = policy.includeCookies,
+            includeCookies = policy.includeCookies,
+            includePoTokens = policy.includePoTokens,
+            includeDataSyncId = policy.includeDataSyncId,
+            useConfiguredPlayerClients = policy.useConfiguredPlayerClients,
+            forceDefaultPublicClients = policy.forceDefaultPublicClients,
+        )
     }
 
     private fun YoutubePlayerClientItem.canUseAsMediaPlayerClient(excludeWebClientForMediaFormats: Boolean): Boolean {
@@ -1259,13 +1539,75 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         }
     }
 
+    fun resolveInitialYoutubeMediaAccessProfile(
+        downloadItem: DownloadItem,
+    ): YoutubeMediaAccessProfile {
+        val configuredClients = readConfiguredYoutubePlayerClients()
+        val generatedTokens = readGeneratedYoutubePoTokens()
+        val otherExtractorArgs = sharedPreferences.getString("youtube_other_extractor_args", "").orEmpty()
+        return YoutubeMediaAccessPolicy.initialProfile(
+            YoutubeMediaPolicyInput(
+                hasConfiguredPublicClients = configuredClients.any {
+                    it.enabled && !it.useOnlyPoToken &&
+                        it.playerClient.canUseAsMediaPlayerClient(downloadItem.type == DownloadType.video)
+                },
+                hasEnabledPoTokenConfiguration = configuredClients.any { client ->
+                    client.enabled && client.poTokens.any { it.token.isNotBlank() }
+                } || generatedTokens.any { generated ->
+                    generated.enabled && generated.poTokens.any { it.token.isNotBlank() }
+                },
+                hasRawAccessConfiguration = YoutubeMediaAccessPolicy.containsRawAccessConfiguration(
+                    otherExtractorArgs,
+                    downloadItem.extraCommands,
+                ),
+                hasRawFormatOverride = YoutubeMediaAccessPolicy.containsRawFormatOverride(
+                    downloadItem.extraCommands,
+                ),
+            )
+        )
+    }
+
+    fun hasYoutubeAuthenticationConfiguration(): Boolean {
+        return sharedPreferences.getBoolean("use_cookies", false) ||
+            sharedPreferences.getString("youtube_data_sync_id", "").orEmpty().isNotBlank() ||
+            readConfiguredYoutubePlayerClients().any { client ->
+                client.enabled && client.poTokens.any { it.token.isNotBlank() }
+            } ||
+            readGeneratedYoutubePoTokens().any { generated ->
+                generated.enabled && generated.poTokens.any { it.token.isNotBlank() }
+            }
+    }
+
+    fun canBuildCleanPublicRequest(downloadItem: DownloadItem): Boolean {
+        // Structured extractor arguments and app-managed credentials are filtered by
+        // setYoutubeMediaExtractorArgs for public profiles. An unstructured command
+        // cannot be safely rewritten without risking unrelated explicit behavior.
+        return !YoutubeMediaAccessPolicy.containsRawAccessConfiguration(
+            downloadItem.extraCommands
+        )
+    }
+
+    private fun readConfiguredYoutubePlayerClients(): List<YoutubePlayerClientItem> {
+        val raw = sharedPreferences.getString("youtube_player_clients", "[]").orEmpty().ifEmpty { "[]" }
+        return runCatching {
+            Gson().fromJson(raw, Array<YoutubePlayerClientItem>::class.java).toList()
+        }.getOrDefault(emptyList())
+    }
+
+    private fun readGeneratedYoutubePoTokens(): List<YoutubeGeneratePoTokenItem> {
+        val raw = sharedPreferences.getString("youtube_generated_po_tokens", "[]").orEmpty().ifEmpty { "[]" }
+        return runCatching {
+            Gson().fromJson(raw, Array<YoutubeGeneratePoTokenItem>::class.java).toList()
+        }.getOrDefault(emptyList())
+    }
+
     @SuppressLint("RestrictedApi")
     fun buildYoutubeDLRequest(
         downloadItem: DownloadItem,
+        mediaAccessProfile: YoutubeMediaAccessProfile,
         useCachedInfoJson: Boolean = true,
-        includeYoutubeAuthentication: Boolean = true,
-        includeYoutubeCookies: Boolean = includeYoutubeAuthentication,
-        includeYoutubePoTokens: Boolean = includeYoutubeAuthentication
+        applyQualityGuard: Boolean = true,
+        selectionOnly: Boolean = false,
     ) : YoutubeDLRequest {
         var useItemURL = sharedPreferences.getBoolean("use_itemurl_instead_playlisturl", false)
         if (downloadItem.observeSourceId > 0L && downloadItem.url.isYoutubeURL() && downloadItem.url.getIDFromYoutubeURL() != null) {
@@ -1325,7 +1667,18 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         val canWrite = FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
         val writtenPath = type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
 
-        if (writtenPath || (!sharedPreferences.getBoolean("cache_downloads", true) && canWrite)){
+        val requiresVerifiedQualityStaging = VideoQualityPolicy.requiresVerifiedStaging(
+            isVideo = downloadItem.type == DownloadType.video,
+            format = downloadItem.format,
+            sourceFormats = downloadItem.allFormats,
+            isQualityReplacement = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
+                ?.isQualityReplacement == true
+        ) || (
+            downloadItem.type == DownloadType.video &&
+                downloadItem.url.isYoutubeURL() &&
+                YoutubeMediaAccessPolicy.containsRawFormatOverride(downloadItem.extraCommands)
+            )
+        if (writtenPath || (!requiresVerifiedQualityStaging && !sharedPreferences.getBoolean("cache_downloads", true) && canWrite)){
             downDir = File(FileUtil.formatPath(downloadItem.downloadPath))
             request.addOption("--no-quiet")
             request.addOption("--no-simulate")
@@ -1372,9 +1725,19 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         if (sharedPreferences.getBoolean("force_ipv4", false)){
             request.addOption("-4")
         }
-        if (includeYoutubeCookies && sharedPreferences.getBoolean("use_cookies", false)){
-            FileUtil.getCookieFile(context){
-                request.addOption("--cookies", it)
+        val cookiesEnabled = sharedPreferences.getBoolean("use_cookies", false)
+        if (cookiesEnabled) {
+            FileUtil.getCookieFile(context) { cookiePath ->
+                if (
+                    YoutubeMediaAccessPolicy.shouldAttachConfiguredCookies(
+                        isYoutubeRequest = downloadItem.url.isYoutubeURL(),
+                        profile = mediaAccessProfile,
+                        cookiesEnabled = true,
+                        cookieFileAvailable = cookiePath.isNotBlank(),
+                    )
+                ) {
+                    request.addOption("--cookies", cookiePath)
+                }
             }
         }
 
@@ -1469,16 +1832,13 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             }
 
             if (downloadItem.url.isYoutubeURL()) {
-                ytDlRequest.setYoutubeExtractorArgs(
-                    downloadItem.url,
+                ytDlRequest.setYoutubeMediaExtractorArgs(
+                    url = downloadItem.url,
+                    profile = mediaAccessProfile,
                     includeWebClientForSubtitles = downloadItem.videoPreferences.embedSubs ||
                         downloadItem.videoPreferences.writeSubs ||
                         downloadItem.videoPreferences.writeAutoSubs,
                     excludeWebClientForMediaFormats = downloadItem.type == DownloadType.video,
-                    includeAuthentication = includeYoutubeAuthentication,
-                    includeCookies = includeYoutubeCookies,
-                    includePoTokens = includeYoutubePoTokens,
-                    includeDataSyncId = includeYoutubeAuthentication
                 )
             }
 
@@ -1487,6 +1847,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             * Cant use info json when using download sections
             * */
             val canUseWriteInfoJson =
+                !selectionOnly &&
                 !sharedPreferences.getBoolean("disable_write_info_json", false) &&
                 !request.toString().contains("--download-sections")
 
@@ -1515,7 +1876,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             }
         }
 
-        if (sharedPreferences.getString("prevent_duplicate_downloads", "")!! == "download_archive"){
+        if (
+            sharedPreferences.getString("prevent_duplicate_downloads", "")!! == "download_archive" &&
+            HistoryRedownloadQueuePolicy.shouldUseDownloadArchive(downloadItem.playlistURL)
+        ) {
             request.addOption("--download-archive", FileUtil.getDownloadArchivePath(context))
         }
 
@@ -1967,6 +2331,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     formatExpr = prependCompatibilityFormatFallback(
                         existingExpr = formatExpr,
                         profile = autoCompatibilityProfile,
+                        requestedHeight = VideoQualityPolicy.requestedHeight(downloadItem.format),
                         audioSelector = audioF,
                         altAudioSelector = altAudioF,
                         preferredAudioLanguage = preferredAudioLanguage,
@@ -1986,6 +2351,20 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                     // Hard-sub runtime ffmpeg on Android may not include AV1 decoders.
                     // Prefer non-AV1 video streams to keep burn-in path reliable.
                     formatExpr = enforceHardSubNoAv1Format(formatExpr)
+                }
+                if (
+                    applyQualityGuard &&
+                    downloadItem.url.isYoutubeURL() &&
+                    !YoutubeMediaAccessPolicy.containsRawFormatOverride(downloadItem.extraCommands)
+                ) {
+                    formatExpr = VideoQualityPolicy.guardedFormatExpression(
+                        expression = formatExpr,
+                        minimumHeight = expectedMediaQualityTarget(
+                            downloadItem = downloadItem,
+                            compatibilityMaximum = autoCompatibilityProfile?.maxHeight,
+                        ),
+                        preserveLeadingSpecificSelectors = !usingGenericFormat,
+                    )
                 }
                 request.addOption("-f", formatExpr)
 
@@ -2221,16 +2600,41 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         ).firstOrNull { it != null }
     }
 
+    private fun expectedMediaQualityTarget(
+        downloadItem: DownloadItem,
+        compatibilityMaximum: Int? = null,
+    ): Int? {
+        if (downloadItem.type != DownloadType.video) return null
+        val markerTarget = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
+            ?.expectedMinimumHeight
+            ?.takeIf { it > 0 }
+        if (markerTarget != null) {
+            // A verified replacement may never lower its persisted marker target;
+            // the original remains protected when that target cannot be selected.
+            return markerTarget
+        }
+        return VideoQualityPolicy.effectiveTargetHeight(
+            intent = VideoQualityPolicy.qualityIntent(downloadItem.format, downloadItem.allFormats),
+            knownSourceMaximum = VideoQualityPolicy.maxSourceHeight(downloadItem.allFormats),
+            compatibilityMaximum = compatibilityMaximum,
+        )
+    }
+
     private fun prependCompatibilityFormatFallback(
         existingExpr: String,
         profile: AutomaticCompatibilityProfile,
+        requestedHeight: Int?,
         audioSelector: String,
         altAudioSelector: String,
         preferredAudioLanguage: String,
         removeAudio: Boolean
     ): String {
-        val codecLimitedVideo = "bv*[vcodec~='${profile.codecRegex}'][height<=${profile.maxHeight}]"
-        val heightLimitedVideo = "bv*[height<=${profile.maxHeight}]"
+        val maxAllowedHeight = VideoQualityPolicy.compatibleMaximumHeight(
+            requestedHeight = requestedHeight,
+            decoderMaximumHeight = profile.maxHeight
+        )
+        val codecLimitedVideo = "bv*[vcodec~='${profile.codecRegex}'][height<=${maxAllowedHeight}]"
+        val heightLimitedVideo = "bv*[height<=${maxAllowedHeight}]"
         val compatibilityTokens = mutableListOf<String>()
 
         fun addVideoCandidates(videoSelector: String) {
@@ -2398,7 +2802,6 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     companion object {
         private const val MAX_USER_REGEX_LENGTH = 512
         private const val INFO_JSON_MAX_AGE_MS = 1000L * 60L * 60L * 5L
-        private const val INFO_JSON_HASH_SEPARATOR = "-"
         private val COMMON_VIDEO_HEIGHTS = listOf(2160, 1440, 1080, 720, 480, 360, 240)
         private val DEFAULT_NON_WEB_MEDIA_PLAYER_CLIENTS = listOf(
             "android",

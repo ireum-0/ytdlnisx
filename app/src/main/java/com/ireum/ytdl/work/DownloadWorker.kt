@@ -24,11 +24,13 @@ import com.ireum.ytdl.App
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.LogItem
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementResult
 import com.ireum.ytdl.database.repository.LogRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
@@ -37,12 +39,22 @@ import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.Extensions.toDurationSeconds
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.DownloadQualityDecision
+import com.ireum.ytdl.util.DownloadQualityFallbackPolicy
+import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.HistoryReplacementFilePolicy
+import com.ireum.ytdl.util.HistoryVideoQualityProbe
+import com.ireum.ytdl.util.MediaPublishedDate
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.PendingDuplicateDownloadStore
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.SubtitleFileValidator
 import com.ireum.ytdl.util.SubtitleFormatConverter
 import com.ireum.ytdl.util.SubtitleSelection
+import com.ireum.ytdl.util.StagedVideoQualityValidationPolicy
+import com.ireum.ytdl.util.VideoMediaQuality
+import com.ireum.ytdl.util.VideoFileQualityState
+import com.ireum.ytdl.util.VideoQualityPolicy
 import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueClassifier
 import com.ireum.ytdl.util.download.DownloadIssueCode
@@ -59,14 +71,26 @@ import com.ireum.ytdl.util.download.DownloadSuggestedAction
 import com.ireum.ytdl.util.download.MembershipAccessDetector
 import com.ireum.ytdl.util.download.MembershipAccessPolicy
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeMediaAccessPolicy
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeMediaAccessProfile
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeMediaAttemptSet
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeMediaFailureKind
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeQualityRouteInput
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeQualityRouteOutcome
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRetryLog
+import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.HistoryDeletionRecord
+import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
+import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.referencesSameFile
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
@@ -78,7 +102,6 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.PrintStream
-import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.text.Regex
@@ -145,6 +168,33 @@ class DownloadWorker(
         Log.i(TAG, "Stopped worker cleanup completed for ${activeIds.size} active download(s)")
     }
 
+    private suspend fun persistDownloadMetadata(
+        resultRepo: ResultRepository,
+        dao: DownloadDao,
+        downloadItem: DownloadItem
+    ) {
+        val updatedItem = try {
+            resultRepo.updateDownloadItem(
+                downloadItem,
+                lookupOrder = ResultRepository.DownloadMetadataLookupOrder.CACHE_FIRST,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w(
+                TAG,
+                "Download metadata enrichment failed id=${downloadItem.id} type=${error.javaClass.simpleName}"
+            )
+            null
+        }
+        updatedItem?.apply {
+            val status = dao.checkStatus(this.id)
+            if (status == DownloadRepository.Status.Active){
+                dao.updateWithoutUpsert(this)
+            }
+        }
+    }
+
     override suspend fun doWork(): Result {
         return try {
             doWorkSerialized()
@@ -156,7 +206,7 @@ class DownloadWorker(
     }
 
     @OptIn(ExperimentalStdlibApi::class)
-    @SuppressLint("RestrictedApi")
+    @SuppressLint("RestrictedApi", "SuspiciousIndentation")
     private suspend fun doWorkSerialized(): Result {
         if (isStopped) return Result.Failure()
 
@@ -175,12 +225,14 @@ class DownloadWorker(
         val alarmScheduler = AlarmScheduler(context)
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val time = System.currentTimeMillis() + 6000
-        val priorityItemIDs = (inputData.getLongArray("priority_item_ids") ?: longArrayOf()).toMutableList()
+        val requestedPriorityItemIDs =
+            (inputData.getLongArray("priority_item_ids") ?: longArrayOf()).toList()
+        var priorityItemIDs = requestedPriorityItemIDs
         val continueAfterPriorityIds = inputData.getBoolean("continue_after_priority_ids", true)
-        val queuedItems = if (priorityItemIDs.isEmpty()) {
-            dao.getQueuedScheduledDownloadsUntil(time)
-        }else {
-            dao.getQueuedScheduledDownloadsUntilWithPriority(time, priorityItemIDs)
+        val queuedItems = when (DownloadQueuePolicy.observationMode(priorityItemIDs)) {
+            DownloadQueueObservationMode.STANDARD -> dao.getQueuedScheduledDownloadsUntil(time)
+            DownloadQueueObservationMode.PRIORITY ->
+                dao.getQueuedScheduledDownloadsUntilWithPriority(time, requestedPriorityItemIDs)
         }
 
         // this is needed for observe sources call, so it wont create result items
@@ -223,31 +275,80 @@ class DownloadWorker(
                 }
 
                 val running = ArrayList(runningYTDLInstances)
+                val priorityRecords = if (priorityItemIDs.isEmpty()) {
+                    emptyList()
+                } else {
+                    dao.getDownloadsByIdsSuspend(priorityItemIDs)
+                }
+                val prioritySnapshot = DownloadQueuePolicy.prioritySnapshot(
+                    priorityItemIds = priorityItemIDs,
+                    queueRecords = priorityRecords,
+                    eligibleItemIds = priorityRecords.asSequence()
+                        .filter { record ->
+                            record.status in setOf(
+                                DownloadRepository.Status.Queued.name,
+                                DownloadRepository.Status.Scheduled.name,
+                            ) && record.downloadStartTime <= time
+                        }
+                        .mapTo(linkedSetOf(), DownloadItem::id),
+                    activeOrRunningIds = running.toSet(),
+                    nonterminalLinkedIds = if (priorityItemIDs.isEmpty()) {
+                        emptySet()
+                    } else {
+                        dbManager.lowQualityRedownloadDao
+                            .getNonterminalItemsByDownloadIds(priorityItemIDs)
+                            .mapNotNullTo(linkedSetOf()) { it.downloadId }
+                    },
+                    idOf = DownloadItem::id,
+                    statusOf = DownloadItem::status,
+                )
+                priorityItemIDs = prioritySnapshot.outstandingIds
                 val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
-                if (items.isEmpty() && running.isEmpty()) {
+                if (
+                    items.isEmpty() &&
+                    running.isEmpty() &&
+                    prioritySnapshot.outstandingIds.isEmpty()
+                ) {
                     WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
                     return@collect
                 }
 
                 if (useScheduler){
-                    if (items.none{it.downloadStartTime > 0L} && running.isEmpty() && !alarmScheduler.isDuringTheScheduledTime()) {
+                    if (
+                        items.none { it.downloadStartTime > 0L } &&
+                        running.isEmpty() &&
+                        prioritySnapshot.outstandingIds.isEmpty() &&
+                        !alarmScheduler.isDuringTheScheduledTime()
+                    ) {
                         WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
                         return@collect
                     }
                 }
 
-                if (priorityItemIDs.isEmpty() && !continueAfterPriorityIds) {
+                if (DownloadQueuePolicy.shouldStopAfterPriorities(
+                        priorityItemIDs,
+                        continueAfterPriorityIds,
+                    )
+                ) {
                     WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
                     return@collect
                 }
 
-                val concurrentDownloads = sharedPreferences.getInt("concurrent_downloads", 1) - running.size
-                val baseEligibleDownloads = if (priorityItemIDs.isNotEmpty()) {
-                    val tmp = priorityItemIDs.take(concurrentDownloads)
-                    items.filter { it.id !in running && tmp.contains(it.id) }
-                }else{
-                    items.take(concurrentDownloads).filter {  it.id !in running }
-                }
+                val concurrentDownloads = (
+                    sharedPreferences.getInt("concurrent_downloads", 1).coerceAtLeast(1) -
+                        running.size
+                    ).coerceAtLeast(0)
+                val baseEligibleDownloads = DownloadQueuePolicy.selectCandidates(
+                    items = if (prioritySnapshot.outstandingIds.isEmpty()) {
+                        items
+                    } else {
+                        (priorityRecords + items).distinctBy(DownloadItem::id)
+                    },
+                    runningIds = running.toSet(),
+                    prioritySnapshot = prioritySnapshot,
+                    availableSlots = concurrentDownloads,
+                    idOf = DownloadItem::id,
+                )
                 val hasRunningHardSub = activeDownloads.any { isHardSubRedownload(it) }
                 val selectedDownloads = if (hasRunningHardSub) {
                     baseEligibleDownloads.filterNot { isHardSubRedownload(it) }
@@ -267,7 +368,6 @@ class DownloadWorker(
                         workerCleanupDownloadIds.add(it.id)
                         ownedDownloadIds.add(it.id)
                         it.status = DownloadRepository.Status.Active.toString()
-                        priorityItemIDs.remove(it.id)
                     }
                     dao.updateMultiple(selectedDownloads)
                 }
@@ -278,14 +378,8 @@ class DownloadWorker(
                 eligibleDownloads.forEach{downloadItem ->
                     launch(Dispatchers.IO) {
                     workerDownloadIds.add(downloadItem.id)
-                    var requestsToCleanup = mutableListOf<YoutubeDLRequest>()
-                    var tempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
-                    var validatedTempFileDir: File? = null
-                    var effectiveCommandString = ""
-                    val recentYtdlpOutput = ArrayDeque<String>()
-                    var logDownloads = false
-                    var initialLogDetails = ""
-                    var retryLogDetails = ""
+                    val rawTempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
+                    var ytdlpExecutionState: YtdlpExecutionState? = null
                     var hardSubPostProcessLockHeld = false
                     var currentIssueStage = DownloadIssueStage.PREFLIGHT
                     var createdOutputPaths: List<String> = emptyList()
@@ -318,271 +412,71 @@ class DownloadWorker(
 
                     val writtenPath = downloadItem.format.format_note.contains("-P ")
                     var shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
-                    val noCache = writtenPath || (!sharedPreferences.getBoolean("cache_downloads", true) && FileUtil.canWriteToDestination(downloadItem.downloadPath, context))
-
-                    var request = ytdlpUtil.buildYoutubeDLRequest(downloadItem)
-                    requestsToCleanup = mutableListOf(request)
-
-                    // DISABLED BECAUSE YT_DLP CONSIDERS DOWNLOAD FAILURE IF -U PART FAILS, ytdlnisx #1043
-//                    val updateYTDLP = sharedPreferences.getBoolean("update_ytdlp_while_downloading", false)
-//                    if (updateYTDLP) {
-//                        request.addOption("-U")
-//                    }
-
-                    downloadItem.status = DownloadRepository.Status.Active.toString()
-                    if (downloadItem.operationId.isBlank()) {
-                        downloadItem.operationId = "download-${downloadItem.id}"
-                    }
-                    launch {
-                        delay(1500)
-                        //update item if its incomplete
-                        resultRepo.updateDownloadItem(downloadItem)?.apply {
-                            val status = dao.checkStatus(this.id)
-                            if (status == DownloadRepository.Status.Active){
-                                dao.updateWithoutUpsert(this)
-                            }
-                        }
-                    }
-
-                    val rawTempFileDir = tempFileDir
+                    val qualityReplacement = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
+                        ?.isQualityReplacement == true
+                    val requiresVerifiedQualityStaging = VideoQualityPolicy.requiresVerifiedStaging(
+                        isVideo = downloadItem.type == DownloadType.video,
+                        format = downloadItem.format,
+                        sourceFormats = downloadItem.allFormats,
+                        isQualityReplacement = qualityReplacement
+                    ) || (
+                        downloadItem.type == DownloadType.video &&
+                            downloadItem.url.isYoutubeURL() &&
+                            YoutubeMediaAccessPolicy.containsRawFormatOverride(downloadItem.extraCommands)
+                        )
+                    val noCache = writtenPath || (
+                        !requiresVerifiedQualityStaging &&
+                            !sharedPreferences.getBoolean("cache_downloads", true) &&
+                            FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
+                        )
 
                     val downloadLocation = downloadItem.downloadPath
                     val keepCache = sharedPreferences.getBoolean("keep_cache", false)
                     val noKeepSubs = sharedPreferences.getBoolean("no_keep_subs", false)
-                    logDownloads = sharedPreferences.getBoolean("log_downloads", false) && !downloadItem.incognito
-
-
-                    val commandString = ytdlpUtil.parseYTDLRequestString(request)
-                    effectiveCommandString = commandString
-                    val requestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, commandString)
-                    initialLogDetails = SensitiveTextRedactor.redactOutput("Downloading:\n" +
-                            "Title: ${downloadItem.title}\n" +
-                            "URL: ${downloadItem.url}\n" +
-                            "Type: ${downloadItem.type}\n" +
-                            "Command:\n${SensitiveTextRedactor.redactCommand(commandString)} \n" +
-                            "$requestDiagnostics\n")
-                    val logString = StringBuilder(initialLogDetails)
-                    val currentLogItem = LogItem(
-                        0,
-                        SensitiveTextRedactor.redactOutput(downloadItem.title.ifBlank { downloadItem.url }),
-                        logString.toString(),
-                        downloadItem.format,
-                        downloadItem.type,
-                        System.currentTimeMillis(),
+                    val ytdlpInput = YtdlpPhaseInput(
+                        downloadItem = downloadItem,
+                        rawTempDirectory = rawTempFileDir,
+                        notificationTitle = notificationTitle,
+                        loggingEnabled = sharedPreferences.getBoolean("log_downloads", false) &&
+                            !downloadItem.incognito,
                     )
-
-
-                    if (logDownloads) {
-                        currentLogItem.id = logRepo.insert(currentLogItem)
-                        downloadItem.logID = currentLogItem.id
-                    } else {
-                        downloadItem.logID = null
-                    }
-                    dao.update(downloadItem)
-
+                    val ytdlpServices = YtdlpPhaseServices(
+                        ytdlpUtil = ytdlpUtil,
+                        notificationUtil = notificationUtil,
+                        logRepository = logRepo,
+                        downloadDao = dao,
+                        resources = resources,
+                    )
+                    val ytdlpPreparation = prepareYtdlpPhase(ytdlpInput, ytdlpServices)
                     val eventBus = EventBus.getDefault()
-                    var lastNotificationUpdateAt = 0L
-                    var lastNotificationProgress = -1
                     val downloadStartedAt = System.currentTimeMillis()
-
                     try {
-                        val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
-                        val canonicalTempFileDir = File(cacheRoot, downloadItem.id.toString()).canonicalFile
-                        if (canonicalTempFileDir.parentFile != cacheRoot || canonicalTempFileDir.name != downloadItem.id.toString()) {
-                            throw IOException("Unsafe temporary download directory: ${canonicalTempFileDir.absolutePath}")
+                    val ytdlpOutcome = executeYtdlpPhase(
+                        input = ytdlpInput,
+                        services = ytdlpServices,
+                        eventBus = eventBus,
+                        preparation = ytdlpPreparation,
+                        startedAt = downloadStartedAt,
+                    )
+                    ytdlpExecutionState = ytdlpOutcome.state
+                    currentIssueStage = ytdlpOutcome.state.issueStage
+                    val ytdlpPhase = when (ytdlpOutcome) {
+                        is YtdlpPhaseOutcome.Completed -> ytdlpOutcome
+                        is YtdlpPhaseOutcome.Failed -> throw ytdlpOutcome.error
+                        is YtdlpPhaseOutcome.Cancelled -> throw ytdlpOutcome.error
+                    }
+                    val tempFileDir = ytdlpPhase.state.validatedTempDirectory ?: rawTempFileDir
+
+                    persistDownloadMetadata(resultRepo, dao, downloadItem)
+                    //val wasQuickDownloaded = resultDao.getCountInt() == 0
+                    var finalPaths = mutableListOf<String>()
+                    var hardSubBurned = false
+
+                        val hardSubSkipReason = if (shouldBurnHardSub) {
+                            resolveHardSubSkipReason(ytdlpPhase.result.response.out)
+                        } else {
+                            null
                         }
-                        tempFileDir = canonicalTempFileDir
-                        validatedTempFileDir = canonicalTempFileDir
-                        if (tempFileDir.exists() && !tempFileDir.deleteRecursively()) {
-                            throw IOException("Failed to clean temporary download directory: ${tempFileDir.absolutePath}")
-                        }
-                        if (!tempFileDir.mkdirs() && !tempFileDir.isDirectory) {
-                            throw IOException("Failed to create temporary download directory: ${tempFileDir.absolutePath}")
-                        }
-
-                        fun executeYtdlpRequest(requestToRun: YoutubeDLRequest): YoutubeDLResponse {
-                            currentIssueStage = DownloadIssueStage.EXTRACT
-                            YoutubeDL.getInstance().destroyProcessById(downloadItem.id.toString())
-                            YoutubeDLCompat.destroyProcessById(downloadItem.id.toString())
-                            return YoutubeDLCompat.execute(applicationContext, requestToRun, downloadItem.id.toString(), true){ progress, _, line ->
-                                currentIssueStage = DownloadIssueStageTracker.update(currentIssueStage, line)
-                                val redactedLine = SensitiveTextRedactor.redactOutput(line)
-                                if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
-                                    val lowerLine = line.lowercase(Locale.US)
-                                    if (
-                                        lowerLine.contains("downloading subtitles") ||
-                                        lowerLine.contains("writing video subtitles to:") ||
-                                        lowerLine.contains("subtitle") ||
-                                        lowerLine.contains("subtitlesconvertor")
-                                    ) {
-                                        Log.i(TAG, "HardSub sub log id=${downloadItem.id}: $redactedLine")
-                                    }
-                                }
-                                eventBus.post(WorkerProgress(progress.toInt(), redactedLine, downloadItem.id, downloadItem.logID))
-                                val title = SensitiveTextRedactor.redactOutput(
-                                    downloadItem.title.ifEmpty { downloadItem.url }
-                                )
-                                val now = System.currentTimeMillis()
-                                val intProgress = progress.toInt()
-                                val progressAdvancedEnough = lastNotificationProgress < 0 || (intProgress - lastNotificationProgress) >= 2
-                                if (now - lastNotificationUpdateAt >= 800L || progressAdvancedEnough || intProgress >= 100) {
-                                    notificationUtil.updateDownloadNotification(
-                                        downloadItem.id.toInt(),
-                                        redactedLine, intProgress, 0, title,
-                                        NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
-                                        getHardSubStatusText(resources)
-                                    )
-                                    lastNotificationUpdateAt = now
-                                    lastNotificationProgress = intProgress
-                                }
-                                runBlocking(Dispatchers.IO) {
-                                    if (logDownloads) {
-                                        logRepo.update(redactedLine, currentLogItem.id)
-                                    }
-                                    logString.append("$redactedLine\n")
-                                    recentYtdlpOutput.addLast(redactedLine)
-                                    while (recentYtdlpOutput.size > FAILURE_YTDLP_TAIL_LINES) {
-                                        recentYtdlpOutput.removeFirst()
-                                    }
-                                }
-                            }
-                        }
-                        fun resetTempDirectoryForRetry() {
-                            if (tempFileDir.exists() && !tempFileDir.deleteRecursively()) {
-                                throw IOException("Failed to clean temporary download directory before retry: ${tempFileDir.absolutePath}")
-                            }
-                            if (!tempFileDir.mkdirs() && !tempFileDir.isDirectory) {
-                                throw IOException("Failed to recreate temporary download directory before retry: ${tempFileDir.absolutePath}")
-                            }
-                        }
-                        val response = try {
-                            executeYtdlpRequest(request)
-                        } catch (firstError: Exception) {
-                            val retryProbeText = buildYtdlpRetryProbeText(firstError, recentYtdlpOutput)
-                            if (MembershipAccessDetector.isMembershipRequired(retryProbeText)) {
-                                throw firstError
-                            }
-                            val retryWithoutCachedInfoJson = shouldRetryWithoutCachedInfoJson(retryProbeText, commandString)
-                            val retryWithoutYoutubeAuthentication = shouldRetryYoutube403WithoutAuthentication(
-                                retryProbeText = retryProbeText,
-                                commandString = commandString,
-                                item = downloadItem
-                            )
-                            if (!retryWithoutCachedInfoJson && !retryWithoutYoutubeAuthentication) {
-                                throw firstError
-                            }
-                            val retryKeepingYoutubePoTokens =
-                                retryWithoutYoutubeAuthentication &&
-                                    commandHasYtdlpOption(commandString, "--cookies") &&
-                                    commandString.contains("po_token=")
-
-                            val retryNotice = when {
-                                retryWithoutCachedInfoJson && retryWithoutYoutubeAuthentication -> {
-                                    deleteLoadedAppInfoJson(commandString)
-                                    if (retryKeepingYoutubePoTokens) {
-                                        resources.getString(R.string.retry_cached_auth_keep_token)
-                                    } else {
-                                        resources.getString(R.string.retry_cached_auth_public)
-                                    }
-                                }
-                                retryWithoutCachedInfoJson -> {
-                                    deleteLoadedAppInfoJson(commandString)
-                                    resources.getString(R.string.retry_cached_info)
-                                }
-                                retryKeepingYoutubePoTokens -> {
-                                    resources.getString(R.string.retry_auth_keep_token)
-                                }
-                                else -> {
-                                    resources.getString(R.string.retry_auth_public)
-                                }
-                            }
-                            Log.w(TAG, "$retryNotice id=${downloadItem.id}", firstError)
-                            eventBus.post(WorkerProgress(0, retryNotice, downloadItem.id, downloadItem.logID))
-                            notificationUtil.updateDownloadNotification(
-                                downloadItem.id.toInt(),
-                                retryNotice, 0, 0,
-                                notificationTitle,
-                                NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
-                                getHardSubStatusText(resources)
-                            )
-                            resetTempDirectoryForRetry()
-
-                            request = ytdlpUtil.buildYoutubeDLRequest(
-                                downloadItem = downloadItem,
-                                useCachedInfoJson = false,
-                                includeYoutubeAuthentication = !retryWithoutYoutubeAuthentication,
-                                includeYoutubeCookies = !retryWithoutYoutubeAuthentication,
-                                includeYoutubePoTokens = retryKeepingYoutubePoTokens || !retryWithoutYoutubeAuthentication
-                            )
-                            requestsToCleanup.add(request)
-                            val retryCommandString = ytdlpUtil.parseYTDLRequestString(request)
-                            effectiveCommandString = retryCommandString
-                            val retryRequestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, retryCommandString)
-                            retryLogDetails = SensitiveTextRedactor.redactOutput("\nRetry:\n" +
-                                "Reason: $retryNotice\n" +
-                                "First error:\n${firstError.message.orEmpty().takeLast(4000)}\n" +
-                                "Command:\n${SensitiveTextRedactor.redactCommand(retryCommandString)} \n" +
-                                "$retryRequestDiagnostics\n")
-                            if (logDownloads) {
-                                logRepo.update(retryLogDetails, currentLogItem.id)
-                            }
-                            logString.append(retryLogDetails)
-
-                            try {
-                                executeYtdlpRequest(request)
-                            } catch (retryError: Exception) {
-                                if (!retryKeepingYoutubePoTokens) {
-                                    throw retryError
-                                }
-
-                                val publicRetryNotice = resources.getString(R.string.retry_token_public)
-                                Log.w(TAG, "$publicRetryNotice id=${downloadItem.id}", retryError)
-                                eventBus.post(WorkerProgress(0, publicRetryNotice, downloadItem.id, downloadItem.logID))
-                                notificationUtil.updateDownloadNotification(
-                                    downloadItem.id.toInt(),
-                                    publicRetryNotice, 0, 0,
-                                    notificationTitle,
-                                    NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
-                                    getHardSubStatusText(resources)
-                                )
-                                resetTempDirectoryForRetry()
-
-                                request = ytdlpUtil.buildYoutubeDLRequest(
-                                    downloadItem = downloadItem,
-                                    useCachedInfoJson = false,
-                                    includeYoutubeAuthentication = false,
-                                    includeYoutubeCookies = false,
-                                    includeYoutubePoTokens = false
-                                )
-                                requestsToCleanup.add(request)
-                                val publicRetryCommandString = ytdlpUtil.parseYTDLRequestString(request)
-                                effectiveCommandString = publicRetryCommandString
-                                val publicRetryRequestDiagnostics = ytdlpUtil.buildRequestDiagnostics(downloadItem, request, publicRetryCommandString)
-                                val publicRetryLogDetails = SensitiveTextRedactor.redactOutput("\nRetry:\n" +
-                                    "Reason: $publicRetryNotice\n" +
-                                    "Previous retry error:\n${retryError.message.orEmpty().takeLast(4000)}\n" +
-                                    "Command:\n${SensitiveTextRedactor.redactCommand(publicRetryCommandString)} \n" +
-                                    "$publicRetryRequestDiagnostics\n")
-                                if (logDownloads) {
-                                    logRepo.update(publicRetryLogDetails, currentLogItem.id)
-                                }
-                                logString.append(publicRetryLogDetails)
-
-                                executeYtdlpRequest(request)
-                            }
-                        }
-
-                        resultRepo.updateDownloadItem(downloadItem)?.apply {
-                            val status = dao.checkStatus(this.id)
-                            if (status == DownloadRepository.Status.Active){
-                                dao.updateWithoutUpsert(this)
-                            }
-                        }
-                        //val wasQuickDownloaded = resultDao.getCountInt() == 0
-                        var finalPaths = mutableListOf<String>()
-                        var hardSubBurned = false
-
-                        val hardSubSkipReason = if (shouldBurnHardSub) resolveHardSubSkipReason(response.out) else null
                         if (hardSubSkipReason != null) {
                             shouldBurnHardSub = false
                             Log.w(TAG, "HardSub skipped id=${downloadItem.id} reason=$hardSubSkipReason")
@@ -605,7 +499,7 @@ class DownloadWorker(
                                 getHardSubStatusText(resources)
                             )
                             Log.i(TAG, "HardSub post-processing slot released id=${downloadItem.id}")
-                            DownloadRepository(dao).startDownloadWorker(emptyList(), context)
+                            DownloadRepository(dbManager).startDownloadWorker(emptyList(), context)
                             hardSubPostProcessMutex.lock()
                             hardSubPostProcessLockHeld = true
                         }
@@ -621,10 +515,13 @@ class DownloadWorker(
                             )
                         }
                         if (!noCache && shouldBurnHardSub) {
-                            var preMoveBurnPaths = extractPathsFromYtdlpOutput(response.out).toMutableList()
+                            var preMoveBurnPaths = extractPathsFromYtdlpOutput(ytdlpPhase.result.response.out).toMutableList()
                             logPathCandidates("HardSub pre-move parsed", downloadItem.id, preMoveBurnPaths)
                             if (preMoveBurnPaths.isEmpty()) {
-                                preMoveBurnPaths = recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt).toMutableList()
+                                preMoveBurnPaths = recoverPathsFromDirectory(
+                                    tempFileDir.absolutePath,
+                                    ytdlpPhase.state.startedAt
+                                ).toMutableList()
                                 Log.w(
                                     TAG,
                                     "HardSub pre-move temp fallback used id=${downloadItem.id} recovered=${preMoveBurnPaths.size} dir=${tempFileDir.absolutePath}"
@@ -671,7 +568,10 @@ class DownloadWorker(
                                 ext !in setOf("ass", "srv3", "json3", "ttml", "vtt", "srt")
                             }
                             if (!hasMediaForPreMove) {
-                                val recoveredFromTemp = recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt)
+                                val recoveredFromTemp = recoverPathsFromDirectory(
+                                    tempFileDir.absolutePath,
+                                    ytdlpPhase.state.startedAt
+                                )
                                 if (recoveredFromTemp.isNotEmpty()) {
                                     preMoveBurnPaths.addAll(recoveredFromTemp)
                                     preMoveBurnPaths = remapPathsForBurnIn(
@@ -775,11 +675,14 @@ class DownloadWorker(
 
                             if (noCache){
                             eventBus.post(WorkerProgress(100, "Scanning Files", downloadItem.id, downloadItem.logID))
-                            finalPaths = extractPathsFromYtdlpOutput(response.out).toMutableList()
+                            finalPaths = extractPathsFromYtdlpOutput(ytdlpPhase.result.response.out).toMutableList()
                             logPathCandidates("HardSub no-cache parsed", downloadItem.id, finalPaths)
 
                             if (finalPaths.isEmpty()) {
-                                finalPaths = recoverPathsFromDirectory(downloadLocation, downloadStartedAt).toMutableList()
+                                finalPaths = recoverPathsFromDirectory(
+                                    downloadLocation,
+                                    ytdlpPhase.state.startedAt
+                                ).toMutableList()
                                 Log.w(
                                     TAG,
                                     "HardSub path recovery used id=${downloadItem.id} recovered=${finalPaths.size} dir=$downloadLocation"
@@ -848,7 +751,10 @@ class DownloadWorker(
                                             )
                                         }
                                     }
-                                    val recoveredAfterMove = recoverPathsFromDirectory(downloadLocation, downloadStartedAt)
+                                    val recoveredAfterMove = recoverPathsFromDirectory(
+                                        downloadLocation,
+                                        ytdlpPhase.state.startedAt
+                                    )
                                         .filter { File(it).exists() && File(it).isFile }
                                         .toMutableList()
                                     if (finalPaths.isEmpty() && recoveredAfterMove.isNotEmpty()) {
@@ -867,13 +773,14 @@ class DownloadWorker(
                                     }
                                 }
                             }catch (e: Exception){
+                                if (e is CancellationException) throw e
                                 e.printStackTrace()
                                 Log.e(TAG, "HardSub move failed id=${downloadItem.id}", e)
                                 val recoveredAfterFailure = buildList {
                                     if (expectedMovedNames.isNotEmpty()) {
                                         addAll(recoverPathsByFileNames(downloadLocation, expectedMovedNames.toList()))
                                     }
-                                    addAll(recoverPathsFromDirectory(downloadLocation, downloadStartedAt))
+                                    addAll(recoverPathsFromDirectory(downloadLocation, ytdlpPhase.state.startedAt))
                                 }
                                     .distinct()
                                     .filter { File(it).exists() && File(it).isFile }
@@ -886,7 +793,10 @@ class DownloadWorker(
                                         "HardSub move failure recovery used id=${downloadItem.id} recovered=${finalPaths.size}"
                                     )
                                 } else {
-                                    val recoveredTempPaths = recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt)
+                                    val recoveredTempPaths = recoverPathsFromDirectory(
+                                        tempFileDir.absolutePath,
+                                        ytdlpPhase.state.startedAt
+                                    )
                                         .filter { File(it).exists() && File(it).isFile }
                                     if (recoveredTempPaths.isNotEmpty()) {
                                         Log.w(
@@ -923,12 +833,17 @@ class DownloadWorker(
                             }
                         }
 
+                        validateMovedQualityReplacement(
+                            downloadItem = downloadItem,
+                            finalPaths = finalPaths,
+                            historyDao = historyDao
+                        )
                         recordCreatedOutputs(finalPaths)
 
                         if (shouldBurnHardSub && !noCache && deferBurnUntilPostMove) {
                             var postMoveBurnPaths = finalPaths.toMutableList()
                             if (postMoveBurnPaths.isEmpty()) {
-                                val fromOutput = extractPathsFromYtdlpOutput(response.out)
+                                val fromOutput = extractPathsFromYtdlpOutput(ytdlpPhase.result.response.out)
                                 if (fromOutput.isNotEmpty()) {
                                     postMoveBurnPaths = remapPathsForBurnIn(
                                         fromOutput,
@@ -944,7 +859,10 @@ class DownloadWorker(
                                 }
                             }
                             if (postMoveBurnPaths.isEmpty()) {
-                                postMoveBurnPaths = recoverPathsFromDirectory(downloadLocation, downloadStartedAt).toMutableList()
+                                postMoveBurnPaths = recoverPathsFromDirectory(
+                                    downloadLocation,
+                                    ytdlpPhase.state.startedAt
+                                ).toMutableList()
                                 Log.w(
                                     TAG,
                                     "HardSub post-move fallback used id=${downloadItem.id} recovered=${postMoveBurnPaths.size} dir=$downloadLocation"
@@ -956,7 +874,10 @@ class DownloadWorker(
                                 tempFileDir.absolutePath
                             ).toMutableList()
                             if (postMoveBurnPaths.isEmpty()) {
-                                val directRecovered = recoverPathsFromDirectory(downloadLocation, downloadStartedAt)
+                                val directRecovered = recoverPathsFromDirectory(
+                                    downloadLocation,
+                                    ytdlpPhase.state.startedAt
+                                )
                                     .filter { File(it).exists() && File(it).isFile }
                                     .toMutableList()
                                 if (directRecovered.isNotEmpty()) {
@@ -982,7 +903,7 @@ class DownloadWorker(
                                 }
                             }
                             if (postMoveBurnPaths.isEmpty()) {
-                                val nameHints = extractPathsFromYtdlpOutput(response.out)
+                                val nameHints = extractPathsFromYtdlpOutput(ytdlpPhase.result.response.out)
                                     .map { File(it).name }
                                     .filter { it.isNotBlank() }
                                 if (nameHints.isNotEmpty()) {
@@ -1026,7 +947,7 @@ class DownloadWorker(
 
                         if (shouldBurnHardSub && noCache) {
                             if (finalPaths.isEmpty()) {
-                                finalPaths = extractPathsFromYtdlpOutput(response.out).toMutableList()
+                                finalPaths = extractPathsFromYtdlpOutput(ytdlpPhase.result.response.out).toMutableList()
                                 if (finalPaths.isNotEmpty()) {
                                     Log.w(
                                         TAG,
@@ -1035,14 +956,20 @@ class DownloadWorker(
                                 }
                             }
                             if (finalPaths.isEmpty()) {
-                                finalPaths = recoverPathsFromDirectory(downloadLocation, downloadStartedAt).toMutableList()
+                                finalPaths = recoverPathsFromDirectory(
+                                    downloadLocation,
+                                    ytdlpPhase.state.startedAt
+                                ).toMutableList()
                                 Log.w(
                                     TAG,
                                     "HardSub pre-burn fallback used id=${downloadItem.id} recovered=${finalPaths.size} dir=$downloadLocation"
                                 )
                             }
                             if (finalPaths.isEmpty()) {
-                                finalPaths = recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt).toMutableList()
+                                finalPaths = recoverPathsFromDirectory(
+                                    tempFileDir.absolutePath,
+                                    ytdlpPhase.state.startedAt
+                                ).toMutableList()
                                 Log.w(
                                     TAG,
                                     "HardSub pre-burn temp fallback used id=${downloadItem.id} recovered=${finalPaths.size} dir=${tempFileDir.absolutePath}"
@@ -1054,7 +981,10 @@ class DownloadWorker(
                             Log.i(TAG, "HardSub pre-remap paths=${finalPaths.size}")
                             finalPaths = remapPathsForBurnIn(finalPaths, downloadLocation, tempFileDir.absolutePath).toMutableList()
                             if (finalPaths.isEmpty()) {
-                                finalPaths = recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt).toMutableList()
+                                finalPaths = recoverPathsFromDirectory(
+                                    tempFileDir.absolutePath,
+                                    ytdlpPhase.state.startedAt
+                                ).toMutableList()
                                 Log.w(
                                     TAG,
                                     "HardSub remap-empty temp fallback used id=${downloadItem.id} recovered=${finalPaths.size} dir=${tempFileDir.absolutePath}"
@@ -1082,11 +1012,16 @@ class DownloadWorker(
                             downloadItem.type == DownloadType.video &&
                             !downloadItem.videoPreferences.embedSubs &&
                             (
-                                commandHasYtdlpOption(effectiveCommandString, "--write-subs") ||
-                                    commandHasYtdlpOption(effectiveCommandString, "--write-auto-subs")
+                                commandHasYtdlpOption(ytdlpPhase.state.effectiveCommand, "--write-subs") ||
+                                    commandHasYtdlpOption(ytdlpPhase.state.effectiveCommand, "--write-auto-subs")
                             )
                         ) {
-                            validateSavedSubtitleSidecars(downloadItem, finalPaths, downloadLocation, downloadStartedAt)
+                            validateSavedSubtitleSidecars(
+                                downloadItem,
+                                finalPaths,
+                                downloadLocation,
+                                ytdlpPhase.state.startedAt
+                            )
                         }
 
                         val nonMediaExtensions = mutableSetOf<String>().apply {
@@ -1115,7 +1050,10 @@ class DownloadWorker(
                                 )
                             }
                             if (finalPaths.isEmpty()) {
-                                val strandedTempMedia = recoverPathsFromDirectory(tempFileDir.absolutePath, downloadStartedAt)
+                                val strandedTempMedia = recoverPathsFromDirectory(
+                                    tempFileDir.absolutePath,
+                                    ytdlpPhase.state.startedAt
+                                )
                                     .filter { candidate ->
                                         val file = File(candidate)
                                         file.exists() &&
@@ -1140,7 +1078,7 @@ class DownloadWorker(
                             }
                             Log.i(TAG, "HardSub final paths id=${downloadItem.id} count=${finalPaths.size} sample=$summary")
                         }
-                        requestsToCleanup.forEach { requestToCleanup ->
+                        ytdlpPhase.state.requests.forEach { requestToCleanup ->
                             runCatching { FileUtil.deleteConfigFiles(requestToCleanup) }
                                 .onFailure { cleanupError ->
                                     Log.w(TAG, "Config cleanup failed id=${downloadItem.id}", cleanupError)
@@ -1148,12 +1086,27 @@ class DownloadWorker(
                         }
                         recordCreatedOutputs(finalPaths)
                         val completionIssues = mutableListOf<DownloadIssue>()
+                        var historyTargetDeleted = false
+                        ytdlpPhase.result.qualityWarning?.let { mismatch ->
+                            completionIssues += DownloadIssue.create(
+                                stage = DownloadIssueStage.DOWNLOAD,
+                                code = DownloadIssueCode.FORMAT_UNAVAILABLE,
+                                severity = DownloadIssueSeverity.WARNING,
+                                suggestedActions = setOf(
+                                    DownloadSuggestedAction.VIEW_LOG,
+                                    DownloadSuggestedAction.RECONFIGURE,
+                                ),
+                                details = "Requested ${mismatch.expectedHeight}p; downloaded " +
+                                    "${mismatch.actualHeight}p after bounded fallback",
+                                source = DownloadIssueSource.EXPLICIT_STATE,
+                            )
+                        }
 
                         //put download in history
                         currentIssueStage = DownloadIssueStage.HISTORY
                         try {
                             if (!downloadItem.incognito) {
-                                if (request.hasOption("--download-archive") && finalPaths.isEmpty()) {
+                                if (ytdlpPhase.state.activeRequest.hasOption("--download-archive") && finalPaths.isEmpty()) {
                                     handler.postDelayed({
                                         Toast.makeText(context, resources.getString(R.string.download_already_exists), Toast.LENGTH_LONG).show()
                                     }, 100)
@@ -1170,10 +1123,9 @@ class DownloadWorker(
                                         downloadItem.duration = duration
                                     }
 
-                                    val replacedHistoryId = downloadItem.playlistURL
-                                        ?.takeIf { it.startsWith(HISTORY_REDOWNLOAD_MARKER) }
-                                        ?.removePrefix(HISTORY_REDOWNLOAD_MARKER)
-                                        ?.toLongOrNull() ?: 0L
+                                    val replacedHistoryId = HistoryRedownloadMarker
+                                        .parse(downloadItem.playlistURL)
+                                        ?.historyId ?: 0L
                                     val isHistoryRedownload = replacedHistoryId > 0L
 
                                     val previousHistoryItem = if (replacedHistoryId > 0L) {
@@ -1210,57 +1162,97 @@ class DownloadWorker(
                                         format = downloadItem.format,
                                         filesize = downloadItem.format.filesize,
                                         downloadId = downloadItem.id,
-                                        command = commandString,
+                                        command = ytdlpPhase.state.initialCommand,
                                         playbackPositionMs = restoredPlaybackPositionMs,
                                         localTreeUri = if (isHistoryRedownload) "" else (previousHistoryItem?.localTreeUri ?: ""),
                                         localTreePath = if (isHistoryRedownload) "" else (previousHistoryItem?.localTreePath ?: ""),
                                         keywords = previousHistoryItem?.keywords.orEmpty(),
                                         customThumb = previousHistoryItem?.customThumb ?: "",
                                         hardSubScanRemoved = if (completedHardSub) true else previousHistoryItem?.hardSubScanRemoved ?: false,
-                                        hardSubDone = if (completedHardSub) true else previousHistoryItem?.hardSubDone ?: false
+                                        hardSubDone = if (completedHardSub) true else previousHistoryItem?.hardSubDone ?: false,
+                                        mediaPublishedAt = downloadItem.mediaPublishedAt.takeIf(MediaPublishedDate::isPresent)
+                                            ?: previousHistoryItem?.mediaPublishedAt
+                                            ?: 0L
                                     )
                                     val keywordAssignments =
                                         com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(dbManager)
-                                    val insertedHistoryId = if (replacedHistoryId > 0L) {
-                                        keywordAssignments.replaceHistoryPreservingAssignments(historyItem)
+                                    val persistedHistoryId = if (replacedHistoryId > 0L) {
+                                        when (
+                                            keywordAssignments.replaceHistoryPreservingAssignments(historyItem)
+                                        ) {
+                                            HistoryReplacementResult.UPDATED -> replacedHistoryId
+                                            HistoryReplacementResult.TARGET_MISSING -> {
+                                                historyTargetDeleted = true
+                                                completionIssues += DownloadIssue.create(
+                                                    stage = DownloadIssueStage.HISTORY,
+                                                    code = DownloadIssueCode.HISTORY_TARGET_DELETED,
+                                                    severity = DownloadIssueSeverity.WARNING,
+                                                    suggestedActions = setOf(
+                                                        DownloadSuggestedAction.VIEW_LOG,
+                                                        DownloadSuggestedAction.COPY_SUMMARY,
+                                                    ),
+                                                    details = "History target was deleted before replacement persistence",
+                                                    source = DownloadIssueSource.EXPLICIT_STATE,
+                                                )
+                                                null
+                                            }
+                                        }
                                     } else {
                                         keywordAssignments.insertHistory(historyItem)
                                     }
-                                    com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(dbManager)
-                                        .applyToHistory(
-                                            insertedHistoryId,
-                                            downloadItem.url,
-                                            downloadItem.observeSourceId,
-                                            observeKeyword
-                                        )
-                                    if (replacedHistoryId > 0L) {
+                                    persistedHistoryId?.let { historyId ->
+                                        com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(dbManager)
+                                            .applyToHistory(
+                                                historyId,
+                                                downloadItem.url,
+                                                downloadItem.observeSourceId,
+                                                observeKeyword
+                                            )
+                                    }
+                                    if (replacedHistoryId > 0L && persistedHistoryId != null) {
                                         deleteReplacedHistoryMedia(previousHistoryItem, finalPaths)
-                                    } else if (existingDuplicateHistoryItem != null) {
+                                    } else if (
+                                        replacedHistoryId == 0L &&
+                                        existingDuplicateHistoryItem != null &&
+                                        persistedHistoryId != null
+                                    ) {
                                         PendingDuplicateDownloadStore.add(
                                             sharedPreferences,
-                                            newHistoryId = insertedHistoryId,
+                                            newHistoryId = persistedHistoryId,
                                             existingHistoryId = existingDuplicateHistoryItem.id
                                         )
                                         Log.i(
                                             TAG,
-                                            "Duplicate download needs user choice newHistoryId=$insertedHistoryId existingHistoryId=${existingDuplicateHistoryItem.id} url=${downloadItem.url}"
+                                            "Duplicate download needs user choice newHistoryId=$persistedHistoryId existingHistoryId=${existingDuplicateHistoryItem.id} url=${downloadItem.url}"
                                         )
                                     }
                                 }
                             }
                         } catch (historyError: Exception) {
+                            if (historyError is CancellationException) throw historyError
                             preserveQueueRecord = true
                             downloadItem.status = DownloadRepository.Status.Error.toString()
                             downloadItem.lastIssueCode = DownloadIssueCode.HISTORY_WRITE_FAILED.name
                             downloadItem.lastIssueStage = DownloadIssueStage.HISTORY.name
-                            runCatching { dao.update(downloadItem) }
-                                .onFailure { queueError ->
-                                    Log.e(
-                                        TAG,
-                                        "Failed to mark history recovery record id=${downloadItem.id}",
-                                        queueError
+                            try {
+                                dao.update(downloadItem)
+                                runCatching {
+                                    LowQualityRedownloadLedger.transition(
+                                        context,
+                                        downloadItem.id,
+                                        com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                        DownloadIssueCode.HISTORY_WRITE_FAILED.name
                                     )
                                 }
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (queueError: Exception) {
+                                Log.e(
+                                    TAG,
+                                    "Failed to mark history recovery record id=${downloadItem.id}",
+                                    queueError
+                                )
+                            }
                             val historyIssue = DownloadIssue.create(
                                 stage = DownloadIssueStage.HISTORY,
                                 code = DownloadIssueCode.HISTORY_WRITE_FAILED,
@@ -1297,6 +1289,7 @@ class DownloadWorker(
                                 )
                             }
                         } catch (notificationError: Exception) {
+                            if (notificationError is CancellationException) throw notificationError
                             completionIssues += DownloadIssue.create(
                                 stage = DownloadIssueStage.NOTIFICATION,
                                 code = DownloadIssueCode.NOTIFICATION_FAILED,
@@ -1337,30 +1330,45 @@ class DownloadWorker(
 //                        }
 
                         if (!preserveQueueRecord) {
-                            dao.delete(downloadItem.id)
+                            val downloadRepository = DownloadRepository(dbManager)
+                            val affectedOperations = if (historyTargetDeleted) {
+                                downloadRepository.completeHistoryTargetDeletedAndDelete(downloadItem.id)
+                            } else {
+                                downloadRepository.completeAndDelete(downloadItem.id)
+                            }
+                            runCatching {
+                                LowQualityRedownloadLedger.refresh(context, affectedOperations)
+                            }
                         }
 
-                        if (logDownloads){
+                        if (ytdlpPhase.state.logging.enabled){
                             val structuredOutcomeLog = outcomeSummary?.let {
                                 "\nStructured outcome: ${completedOutcome.status}\n$it\n"
                             }.orEmpty()
                             logRepo.update(
-                                initialLogDetails + retryLogDetails +
-                                    SensitiveTextRedactor.redactOutput(response.out) + structuredOutcomeLog,
-                                currentLogItem.id,
+                                ytdlpPhase.state.logging.initialDetails +
+                                    ytdlpPhase.state.logging.retryDetails +
+                                    SensitiveTextRedactor.redactOutput(ytdlpPhase.result.response.out) +
+                                    structuredOutcomeLog,
+                                ytdlpPhase.state.logging.logId ?: 0L,
                                 true
                             )
                         }
 
                     } catch (it: Exception) {
+                        val failedYtdlpState = ytdlpExecutionState
                         if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
                             Log.e(TAG, "HardSub failed id=${downloadItem.id} type=${it.javaClass.simpleName}")
                         }
-                        requestsToCleanup.forEach { requestToCleanup ->
+                        failedYtdlpState?.requests.orEmpty().forEach { requestToCleanup ->
                             runCatching { FileUtil.deleteConfigFiles(requestToCleanup) }
                                 .onFailure { cleanupError ->
                                     Log.w(TAG, "Failure cleanup failed id=${downloadItem.id}", cleanupError)
                                 }
+                        }
+                        if (it is CancellationException) {
+                            downloadOutcome = DownloadOutcome.canceled()
+                            throw it
                         }
                         withContext(Dispatchers.Main){
                             notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
@@ -1390,13 +1398,37 @@ class DownloadWorker(
                                 stage = currentIssueStage,
                                 exceptionClassName = it.javaClass.name,
                                 message = it.message.orEmpty(),
-                                output = recentYtdlpOutput.joinToString("\n"),
+                                output = failedYtdlpState?.logging?.recentOutput.orEmpty().joinToString("\n"),
                                 destinationWritable = destinationWritable
                             )
                         )
                         val primaryIssue = classifiedIssues.first()
                         val structuredFailureSummary = classifiedIssues.joinToString("\n") { issue ->
                             DownloadIssueText.formatted(resources, issue)
+                        }
+
+                        val failedQualityMarker = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
+                            ?.takeIf { marker -> marker.isQualityReplacement }
+                        if (failedQualityMarker != null) {
+                            deleteRejectedQualityReplacementOutputs(
+                                historyId = failedQualityMarker.historyId,
+                                candidatePaths = createdOutputPaths,
+                                historyDao = historyDao
+                            )
+                            createdOutputPaths = emptyList()
+                            runCatching {
+                                resetYtdlpTempDirectory(
+                                    rawTempDirectory = rawTempFileDir,
+                                    downloadId = downloadItem.id,
+                                    beforeRetry = true
+                                ).delete()
+                            }.onFailure { cleanupError ->
+                                Log.w(
+                                    TAG,
+                                    "Failed to clean rejected quality replacement cache id=${downloadItem.id}",
+                                    cleanupError
+                                )
+                            }
                         }
 
                         createdOutputPaths = createdOutputPaths.filter { path ->
@@ -1421,28 +1453,51 @@ class DownloadWorker(
                             )
                             downloadOutcome = partialOutcome
                             val warningSummary = DownloadIssueText.formatted(resources, warningIssue)
-                            if (logDownloads) {
+                            if (failedYtdlpState?.logging?.enabled == true) {
                                 logRepo.update(
                                     "\nStructured outcome: ${partialOutcome.status}\n$warningSummary\n",
-                                    currentLogItem.id
+                                    failedYtdlpState.logging.logId ?: 0L
                                 )
                             }
                             if (!preserveQueueRecord) {
-                                runCatching { dao.delete(downloadItem.id) }
-                                    .onFailure { deleteError ->
-                                        preserveQueueRecord = true
-                                        downloadItem.status = DownloadRepository.Status.Error.toString()
-                                        downloadItem.lastIssueCode = primaryIssue.code.name
-                                        downloadItem.lastIssueStage = primaryIssue.stage.name
-                                        runCatching { dao.update(downloadItem) }
-                                        Log.e(
-                                            TAG,
-                                            "Failed to delete completed queue record id=${downloadItem.id}",
-                                            deleteError
+                                try {
+                                    val affectedOperations = DownloadRepository(dbManager)
+                                        .completeAndDelete(
+                                            downloadItem.id,
+                                            "SUCCESS_WITH_WARNINGS"
+                                        )
+                                    runCatching {
+                                        LowQualityRedownloadLedger.refresh(
+                                            context,
+                                            affectedOperations
                                         )
                                     }
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (deleteError: Exception) {
+                                    preserveQueueRecord = true
+                                    downloadItem.status = DownloadRepository.Status.Error.toString()
+                                    downloadItem.lastIssueCode = primaryIssue.code.name
+                                    downloadItem.lastIssueStage = primaryIssue.stage.name
+                                    try {
+                                        dao.update(downloadItem)
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (updateError: Exception) {
+                                        Log.e(
+                                            TAG,
+                                            "Failed to preserve queue record id=${downloadItem.id}",
+                                            updateError
+                                        )
+                                    }
+                                    Log.e(
+                                        TAG,
+                                        "Failed to delete completed queue record id=${downloadItem.id}",
+                                        deleteError
+                                    )
+                                }
                             }
-                            runCatching {
+                            try {
                                 withContext(Dispatchers.Main) {
                                     notificationUtil.createDownloadFinished(
                                         downloadItem.id,
@@ -1453,6 +1508,14 @@ class DownloadWorker(
                                         warningSummary
                                     )
                                 }
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (notificationError: Exception) {
+                                Log.w(
+                                    TAG,
+                                    "Failed to report partial download completion id=${downloadItem.id}",
+                                    notificationError
+                                )
                             }
                             eventBus.post(
                                 WorkerProgress(100, warningSummary, downloadItem.id, downloadItem.logID)
@@ -1462,24 +1525,33 @@ class DownloadWorker(
                         val failedOutcome = DownloadOutcome.failed(primaryIssue)
                         downloadOutcome = failedOutcome
                         if (it.message?.contains("JSONDecodeError") == true) {
-                            val cachePath = "${FileUtil.getCachePath(context)}infojsons"
-                            val infoJsonName = MessageDigest.getInstance("MD5").digest(downloadItem.url.toByteArray()).toHexString()
-                            FileUtil.deleteFile("${cachePath}/${infoJsonName}.info.json")
+                            deleteLoadedAppInfoJson(
+                                failedYtdlpState?.effectiveCommand.orEmpty()
+                            )
                         }
 
                         val failureDiagnostics = buildFailureDiagnostics(
                             error = it,
                             item = downloadItem,
-                            requestCommand = effectiveCommandString,
-                            tempDir = validatedTempFileDir ?: tempFileDir,
-                            recentOutput = recentYtdlpOutput.toList()
+                            requestCommand = failedYtdlpState?.effectiveCommand.orEmpty(),
+                            tempDir = failedYtdlpState?.validatedTempDirectory ?: rawTempFileDir,
+                            recentOutput = failedYtdlpState?.logging?.recentOutput.orEmpty()
                         ) + "\nStructured failure:\n$structuredFailureSummary\n"
-                        if (logDownloads){
-                            logRepo.update(failureDiagnostics, currentLogItem.id)
+                        if (failedYtdlpState?.logging?.enabled == true){
+                            logRepo.update(failureDiagnostics, failedYtdlpState.logging.logId ?: 0L)
                         }
 
 
-                        validatedTempFileDir?.delete()
+                        failedYtdlpState?.validatedTempDirectory?.let { failedTempDirectory ->
+                            runCatching { failedTempDirectory.deleteRecursively() }
+                                .onFailure { cleanupError ->
+                                    Log.w(
+                                        TAG,
+                                        "Failed to clean failed download cache id=${downloadItem.id}",
+                                        cleanupError
+                                    )
+                                }
+                        }
 
                         Log.e(
                             TAG,
@@ -1499,6 +1571,7 @@ class DownloadWorker(
                             val parked = observeSourcesDao.parkDownloadForMembership(
                                 downloadId = downloadItem.id,
                                 sourceId = downloadItem.observeSourceId,
+                                expectedStatus = DownloadRepository.Status.Active.toString(),
                                 issueCode = primaryIssue.code.name,
                                 issueStage = primaryIssue.stage.name
                             ) > 0
@@ -1534,6 +1607,14 @@ class DownloadWorker(
                         downloadItem.lastIssueCode = primaryIssue.code.name
                         downloadItem.lastIssueStage = primaryIssue.stage.name
                         dao.update(downloadItem)
+                        runCatching {
+                            LowQualityRedownloadLedger.transition(
+                                context,
+                                downloadItem.id,
+                                com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                primaryIssue.code.name
+                            )
+                        }
                         if (isHardSubRedownload(downloadItem)) {
                             markHardSubProcessed(downloadItem.id)
                             updateHardSubWorkerNotification(notificationUtil)
@@ -1575,6 +1656,64 @@ class DownloadWorker(
                             )
                         )
                     }
+                    } catch (unexpected: Exception) {
+                        if (unexpected is CancellationException) throw unexpected
+                        val issue = DownloadIssue.create(
+                            stage = currentIssueStage,
+                            code = DownloadIssueCode.UNKNOWN,
+                            details = unexpected.message.orEmpty(),
+                            source = DownloadIssueSource.TYPED_EXCEPTION
+                        )
+                        downloadOutcome = DownloadOutcome.failed(issue)
+                        withContext(Dispatchers.IO + NonCancellable) {
+                            runCatching {
+                                val latestStatus = dao.checkStatus(downloadItem.id)
+                                if (
+                                    latestStatus == DownloadRepository.Status.Active ||
+                                    latestStatus == DownloadRepository.Status.PostProcessing
+                                ) {
+                                    downloadItem.status = DownloadRepository.Status.Error.toString()
+                                    downloadItem.lastIssueCode = issue.code.name
+                                    downloadItem.lastIssueStage = issue.stage.name
+                                    dao.update(downloadItem)
+                                    runCatching {
+                                        LowQualityRedownloadLedger.transition(
+                                            context,
+                                            downloadItem.id,
+                                            com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                            issue.code.name
+                                        )
+                                    }
+                                }
+                            }.onFailure { recoveryError ->
+                                Log.e(
+                                    TAG,
+                                    "Failed to recover unexpected download error id=${downloadItem.id}",
+                                    recoveryError
+                                )
+                            }
+                            runCatching {
+                                notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
+                                notificationUtil.createDownloadErrored(
+                                    downloadItem.id,
+                                    SensitiveTextRedactor.redactOutput(
+                                        downloadItem.title.ifBlank { downloadItem.url }
+                                    ),
+                                    DownloadIssueText.formatted(resources, issue),
+                                    downloadItem.logID,
+                                    resources,
+                                    retryable = false,
+                                    allowReconfigure = true
+                                )
+                            }.onFailure { notificationError ->
+                                Log.w(
+                                    TAG,
+                                    "Failed to report unexpected download error id=${downloadItem.id}",
+                                    notificationError
+                                )
+                            }
+                        }
+                        Log.e(TAG, "Unexpected download failure id=${downloadItem.id}", unexpected)
                     } finally {
                         downloadOutcome?.let { outcome ->
                             Log.i(
@@ -1603,12 +1742,931 @@ class DownloadWorker(
         return Result.success()
     }
 
+    private data class YtdlpPhaseInput(
+        val downloadItem: DownloadItem,
+        val rawTempDirectory: File,
+        val notificationTitle: String,
+        val loggingEnabled: Boolean,
+    )
+
+    private data class YtdlpPhaseServices(
+        val ytdlpUtil: YTDLPUtil,
+        val notificationUtil: NotificationUtil,
+        val logRepository: LogRepository,
+        val downloadDao: DownloadDao,
+        val resources: Resources,
+    )
+
+    private data class YtdlpPhasePreparation(
+        val initialAttempt: YtdlpAttempt,
+        val registeredRequests: List<YoutubeDLRequest>,
+        val logging: YtdlpLoggingSnapshot,
+    )
+
+    private sealed interface YtdlpPhaseOutcome {
+        val state: YtdlpExecutionState
+
+        data class Completed(
+            val result: YtdlpExecutionResult,
+            override val state: YtdlpExecutionState,
+        ) : YtdlpPhaseOutcome
+
+        data class Failed(
+            val error: Exception,
+            override val state: YtdlpExecutionState,
+        ) : YtdlpPhaseOutcome
+
+        data class Cancelled(
+            val error: CancellationException,
+            override val state: YtdlpExecutionState,
+        ) : YtdlpPhaseOutcome
+    }
+
+    private data class YtdlpExecutionResult(
+        val response: YoutubeDLResponse,
+        val qualityWarning: VideoQualityMismatch? = null,
+    )
+
+    private data class YtdlpAttemptsResult(
+        val response: YoutubeDLResponse,
+        val qualityWarning: VideoQualityMismatch? = null,
+    )
+
+    private data class VideoQualityMismatch(
+        val expectedHeight: Int,
+        val actualHeight: Int,
+    )
+
+    private class YtdlpQualityRejectedException(message: String) : IOException(message)
+
+    private sealed interface CompletedYtdlpQualityOutcome {
+        data class Accept(val result: YtdlpAttemptsResult) : CompletedYtdlpQualityOutcome
+        data class Retry(val profile: YoutubeMediaAccessProfile) : CompletedYtdlpQualityOutcome
+        data class Reject(val message: String) : CompletedYtdlpQualityOutcome
+    }
+
+    private data class YtdlpExecutionState(
+        val requests: List<YoutubeDLRequest>,
+        val validatedTempDirectory: File?,
+        val initialCommand: String,
+        val effectiveCommand: String,
+        val startedAt: Long,
+        val issueStage: DownloadIssueStage,
+        val logging: YtdlpLoggingSnapshot,
+    ) {
+        val activeRequest: YoutubeDLRequest
+            get() = requests.last()
+    }
+
+    private data class YtdlpLoggingSnapshot(
+        val enabled: Boolean,
+        val logId: Long?,
+        val initialDetails: String,
+        val retryDetails: String,
+        val recentOutput: List<String>,
+    )
+
+    private data class YtdlpAttempt(
+        val request: YoutubeDLRequest,
+        val command: String,
+        val diagnostics: String,
+        val mediaAccessProfile: YoutubeMediaAccessProfile,
+        val qualityGuardApplied: Boolean,
+        val qualityTargetHeight: Int?,
+    )
+
+    private sealed interface YtdlpRetryPlan {
+        object NoRetry : YtdlpRetryPlan
+
+        sealed interface Attempt : YtdlpRetryPlan {
+            val notice: String
+            val mediaAccessProfile: YoutubeMediaAccessProfile
+            val useCachedInfoJson: Boolean
+            val applyQualityGuard: Boolean
+        }
+
+        data class CachedInfo(
+            override val notice: String,
+            override val mediaAccessProfile: YoutubeMediaAccessProfile,
+        ) : Attempt
+        {
+            override val useCachedInfoJson = false
+            override val applyQualityGuard = true
+        }
+
+        data class Route(
+            override val notice: String,
+            override val mediaAccessProfile: YoutubeMediaAccessProfile,
+            override val applyQualityGuard: Boolean = true,
+        ) : Attempt {
+            override val useCachedInfoJson = false
+        }
+    }
+
+    private class YtdlpPhaseRuntimeState(
+        preparation: YtdlpPhasePreparation,
+        startedAt: Long,
+    ) {
+        private val requestRegistry = preparation.registeredRequests.toMutableList()
+        val recentOutput = ArrayDeque<String>().apply {
+            addAll(preparation.logging.recentOutput)
+        }
+        val currentAttemptOutput = ArrayDeque<String>()
+        var validatedTempDirectory: File? = null
+        val initialCommand = preparation.initialAttempt.command
+        var effectiveCommand = preparation.initialAttempt.command
+        val startedAt = startedAt
+        var issueStage = DownloadIssueStage.PREFLIGHT
+        val loggingEnabled = preparation.logging.enabled
+        val logId = preparation.logging.logId
+        val initialLogDetails = preparation.logging.initialDetails
+        var retryLogDetails = preparation.logging.retryDetails
+        var lastNotificationUpdateAt = 0L
+        var lastNotificationProgress = -1
+        var currentAttemptTransferStarted = false
+        var completedMediaTransfers = 0
+
+        fun beginAttempt() {
+            currentAttemptTransferStarted = false
+            currentAttemptOutput.clear()
+        }
+
+        fun registerRequest(request: YoutubeDLRequest) {
+            requestRegistry += request
+        }
+
+        fun snapshot() = YtdlpExecutionState(
+            requests = requestRegistry.toList(),
+            validatedTempDirectory = validatedTempDirectory,
+            initialCommand = initialCommand,
+            effectiveCommand = effectiveCommand,
+            startedAt = startedAt,
+            issueStage = issueStage,
+            logging = YtdlpLoggingSnapshot(
+                enabled = loggingEnabled,
+                logId = logId,
+                initialDetails = initialLogDetails,
+                retryDetails = retryLogDetails,
+                recentOutput = recentOutput.toList(),
+            ),
+        )
+    }
+
+    private suspend fun executeYtdlpPhase(
+        input: YtdlpPhaseInput,
+        services: YtdlpPhaseServices,
+        eventBus: EventBus,
+        preparation: YtdlpPhasePreparation,
+        startedAt: Long,
+    ): YtdlpPhaseOutcome {
+        val runtime = YtdlpPhaseRuntimeState(preparation, startedAt)
+        return try {
+            runtime.validatedTempDirectory = resetYtdlpTempDirectory(
+                rawTempDirectory = input.rawTempDirectory,
+                downloadId = input.downloadItem.id,
+                beforeRetry = false,
+            )
+            val progressCallback = createYtdlpProgressCallback(input, services, eventBus, runtime)
+            val attemptsResult = executeYtdlpAttempts(
+                input = input,
+                services = services,
+                eventBus = eventBus,
+                runtime = runtime,
+                initialAttempt = preparation.initialAttempt,
+                progressCallback = progressCallback,
+            )
+            YtdlpPhaseOutcome.Completed(
+                YtdlpExecutionResult(
+                    response = attemptsResult.response,
+                    qualityWarning = attemptsResult.qualityWarning,
+                ),
+                runtime.snapshot()
+            )
+        } catch (error: CancellationException) {
+            YtdlpPhaseOutcome.Cancelled(error, runtime.snapshot())
+        } catch (error: Exception) {
+            YtdlpPhaseOutcome.Failed(error, runtime.snapshot())
+        }
+    }
+
+    private suspend fun prepareYtdlpPhase(
+        input: YtdlpPhaseInput,
+        services: YtdlpPhaseServices,
+    ): YtdlpPhasePreparation {
+        val downloadItem = input.downloadItem
+        val requestOwner = YtdlpPreparationRequestOwner<YoutubeDLRequest>(
+            cleanupRequest = FileUtil::deleteConfigFiles,
+        )
+        return try {
+            val initialProfile = services.ytdlpUtil.resolveInitialYoutubeMediaAccessProfile(downloadItem)
+            val request = services.ytdlpUtil.buildYoutubeDLRequest(downloadItem, initialProfile)
+            requestOwner.register(request)
+            val initialAttempt = run {
+                downloadItem.status = DownloadRepository.Status.Active.toString()
+                if (downloadItem.operationId.isBlank()) {
+                    downloadItem.operationId = "download-${downloadItem.id}"
+                }
+                val command = services.ytdlpUtil.parseYTDLRequestString(request)
+                val rawFormatOverride = YoutubeMediaAccessPolicy.containsRawFormatOverride(
+                    downloadItem.extraCommands,
+                )
+                YtdlpAttempt(
+                    request = request,
+                    command = command,
+                    diagnostics = services.ytdlpUtil.buildRequestDiagnostics(
+                        downloadItem,
+                        request,
+                        command,
+                        initialProfile,
+                    ),
+                    mediaAccessProfile = initialProfile,
+                    qualityGuardApplied = !rawFormatOverride && commandQualityTarget(command) != null,
+                    qualityTargetHeight = commandQualityTarget(command).takeUnless { rawFormatOverride },
+                )
+            }
+            val initialLogDetails = SensitiveTextRedactor.redactOutput(
+                "Downloading:\n" +
+                    "Title: ${downloadItem.title}\n" +
+                    "URL: ${downloadItem.url}\n" +
+                    "Type: ${downloadItem.type}\n" +
+                    "Command:\n${SensitiveTextRedactor.redactCommand(initialAttempt.command)} \n" +
+                    "${initialAttempt.diagnostics}\n"
+            )
+            val logItem = LogItem(
+                0,
+                SensitiveTextRedactor.redactOutput(downloadItem.title.ifBlank { downloadItem.url }),
+                initialLogDetails,
+                downloadItem.format,
+                downloadItem.type,
+                System.currentTimeMillis(),
+            )
+            val logId = if (input.loggingEnabled) {
+                services.logRepository.insert(logItem).also { insertedLogId ->
+                    logItem.id = insertedLogId
+                    downloadItem.logID = insertedLogId
+                }
+            } else {
+                downloadItem.logID = null
+                null
+            }
+            services.downloadDao.update(downloadItem)
+            YtdlpPhasePreparation(
+                initialAttempt = initialAttempt,
+                registeredRequests = requestOwner.snapshot(),
+                logging = YtdlpLoggingSnapshot(
+                    enabled = input.loggingEnabled,
+                    logId = logId,
+                    initialDetails = initialLogDetails,
+                    retryDetails = "",
+                    recentOutput = emptyList(),
+                ),
+            )
+        } catch (error: Throwable) {
+            cleanupYtdlpPreparationAndRethrow(requestOwner, error)
+        }
+    }
+
+    private fun buildYtdlpAttempt(
+        downloadItem: DownloadItem,
+        ytdlpUtil: YTDLPUtil,
+        retryPlan: YtdlpRetryPlan.Attempt,
+        onRequestBuilt: (YoutubeDLRequest) -> Unit,
+        onCommandBuilt: (String) -> Unit,
+    ): YtdlpAttempt {
+        val request = ytdlpUtil.buildYoutubeDLRequest(
+            downloadItem = downloadItem,
+            mediaAccessProfile = retryPlan.mediaAccessProfile,
+            useCachedInfoJson = retryPlan.useCachedInfoJson,
+            applyQualityGuard = retryPlan.applyQualityGuard,
+        )
+        onRequestBuilt(request)
+        val command = ytdlpUtil.parseYTDLRequestString(request)
+        val rawFormatOverride = YoutubeMediaAccessPolicy.containsRawFormatOverride(
+            downloadItem.extraCommands,
+        )
+        onCommandBuilt(command)
+        return YtdlpAttempt(
+            request = request,
+            command = command,
+            diagnostics = ytdlpUtil.buildRequestDiagnostics(
+                downloadItem,
+                request,
+                command,
+                retryPlan.mediaAccessProfile,
+            ),
+            mediaAccessProfile = retryPlan.mediaAccessProfile,
+            qualityGuardApplied = retryPlan.applyQualityGuard &&
+                !rawFormatOverride && commandQualityTarget(command) != null,
+            qualityTargetHeight = commandQualityTarget(command).takeUnless { rawFormatOverride },
+        )
+    }
+
+    private fun createYtdlpProgressCallback(
+        input: YtdlpPhaseInput,
+        services: YtdlpPhaseServices,
+        eventBus: EventBus,
+        runtime: YtdlpPhaseRuntimeState,
+    ): (Float, Long, String) -> Unit {
+        val item = input.downloadItem
+        val notificationTitle = input.notificationTitle
+        return { progress, _, line ->
+            runtime.issueStage = DownloadIssueStageTracker.update(runtime.issueStage, line)
+            val normalizedDownloadLine = line.trimStart()
+            if (
+                normalizedDownloadLine.startsWith("[download]") &&
+                (
+                    normalizedDownloadLine.contains("Destination:", ignoreCase = true) ||
+                        normalizedDownloadLine.contains("%") ||
+                        normalizedDownloadLine.contains("Resuming download", ignoreCase = true)
+                    )
+            ) {
+                runtime.currentAttemptTransferStarted = true
+            }
+            val redactedLine = SensitiveTextRedactor.redactOutput(line)
+            if (item.type == DownloadType.video && item.videoPreferences.embedSubs) {
+                val lowerLine = line.lowercase(Locale.US)
+                if (
+                    lowerLine.contains("downloading subtitles") ||
+                    lowerLine.contains("writing video subtitles to:") ||
+                    lowerLine.contains("subtitle") ||
+                    lowerLine.contains("subtitlesconvertor")
+                ) {
+                    Log.i(TAG, "HardSub sub log id=${item.id}: $redactedLine")
+                }
+            }
+            eventBus.post(WorkerProgress(progress.toInt(), redactedLine, item.id, item.logID))
+            val now = System.currentTimeMillis()
+            val intProgress = progress.toInt()
+            val progressAdvancedEnough = runtime.lastNotificationProgress < 0 ||
+                (intProgress - runtime.lastNotificationProgress) >= 2
+            if (
+                now - runtime.lastNotificationUpdateAt >= 800L ||
+                progressAdvancedEnough ||
+                intProgress >= 100
+            ) {
+                val totalHardSubs = hardSubTargetIds.size
+                val hardSubStatus = if (totalHardSubs <= 0) {
+                    null
+                } else {
+                    services.resources.getString(
+                        R.string.hard_sub_progress,
+                        hardSubProcessedIds.size.coerceAtMost(totalHardSubs),
+                        totalHardSubs,
+                    )
+                }
+                services.notificationUtil.updateDownloadNotification(
+                    item.id.toInt(),
+                    redactedLine,
+                    intProgress,
+                    0,
+                    notificationTitle,
+                    NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
+                    hardSubStatus,
+                )
+                runtime.lastNotificationUpdateAt = now
+                runtime.lastNotificationProgress = intProgress
+            }
+            runBlocking(Dispatchers.IO) {
+                if (runtime.loggingEnabled) {
+                    services.logRepository.update(redactedLine, runtime.logId ?: 0L)
+                }
+                runtime.recentOutput.addLast(redactedLine)
+                runtime.currentAttemptOutput.addLast(redactedLine)
+                while (runtime.recentOutput.size > FAILURE_YTDLP_TAIL_LINES) {
+                    runtime.recentOutput.removeFirst()
+                }
+                while (runtime.currentAttemptOutput.size > FAILURE_YTDLP_TAIL_LINES) {
+                    runtime.currentAttemptOutput.removeFirst()
+                }
+            }
+        }
+    }
+
+    private fun executeYtdlpAttempt(
+        input: YtdlpPhaseInput,
+        runtime: YtdlpPhaseRuntimeState,
+        attempt: YtdlpAttempt,
+        progressCallback: (Float, Long, String) -> Unit,
+    ): YoutubeDLResponse {
+        runtime.issueStage = DownloadIssueStage.EXTRACT
+        val processId = input.downloadItem.id.toString()
+        YoutubeDL.getInstance().destroyProcessById(processId)
+        YoutubeDLCompat.destroyProcessById(processId)
+        return YoutubeDLCompat.execute(
+            applicationContext,
+            attempt.request,
+            processId,
+            true,
+            progressCallback,
+        )
+    }
+
+    private suspend fun executeYtdlpAttempts(
+        input: YtdlpPhaseInput,
+        services: YtdlpPhaseServices,
+        eventBus: EventBus,
+        runtime: YtdlpPhaseRuntimeState,
+        initialAttempt: YtdlpAttempt,
+        progressCallback: (Float, Long, String) -> Unit,
+    ): YtdlpAttemptsResult {
+        val routeAttempts = YoutubeMediaAttemptSet()
+        routeAttempts.markAttempted(initialAttempt.mediaAccessProfile)
+        var currentAttempt = initialAttempt
+        val expectedHeight = StagedVideoQualityValidationPolicy.targetHeight(
+            attemptTargetHeight = initialAttempt.qualityTargetHeight,
+            configuredFallbackHeight = expectedVideoHeight(input.downloadItem),
+            hasRawFormatOverride = YoutubeMediaAccessPolicy.containsRawFormatOverride(
+                input.downloadItem.extraCommands,
+            ),
+        )
+        val qualityMarker = HistoryRedownloadMarker.parse(input.downloadItem.playlistURL)
+
+        while (true) {
+            runtime.beginAttempt()
+            try {
+                val completedResponse = executeYtdlpAttempt(
+                    input,
+                    runtime,
+                    currentAttempt,
+                    progressCallback
+                )
+                if (runtime.currentAttemptTransferStarted) {
+                    runtime.completedMediaTransfers += 1
+                    check(routeAttempts.recordCompletedMediaTransfer()) {
+                        "Completed media transfer budget exceeded"
+                    }
+                }
+
+                when (val qualityOutcome = resolveCompletedYtdlpQuality(
+                    input = input,
+                    services = services,
+                    runtime = runtime,
+                    currentAttempt = currentAttempt,
+                    routeAttempts = routeAttempts,
+                    completedResponse = completedResponse,
+                    expectedHeight = expectedHeight,
+                    isVerifiedReplacement = qualityMarker?.isQualityReplacement == true,
+                )) {
+                    is CompletedYtdlpQualityOutcome.Accept -> return qualityOutcome.result
+                    is CompletedYtdlpQualityOutcome.Reject -> {
+                        resetYtdlpTempDirectory(
+                            rawTempDirectory = input.rawTempDirectory,
+                            downloadId = input.downloadItem.id,
+                            beforeRetry = true
+                        )
+                        throw YtdlpQualityRejectedException(qualityOutcome.message)
+                    }
+                    is CompletedYtdlpQualityOutcome.Retry -> {
+                        if (!routeAttempts.markAttempted(qualityOutcome.profile)) {
+                            error("Media access route was already attempted")
+                        }
+                        val retryError = IOException(
+                            "Completed media was below the verified quality target"
+                        )
+                        currentAttempt = prepareYtdlpRetry(
+                            input = input,
+                            services = services,
+                            eventBus = eventBus,
+                            runtime = runtime,
+                            previousAttempt = currentAttempt,
+                            plan = YtdlpRetryPlan.Route(
+                                notice = if (qualityOutcome.profile.isPublic) {
+                                    services.resources.getString(R.string.retry_clean_public_before_transfer)
+                                } else {
+                                    services.resources.getString(R.string.retry_quality_authenticated_selected)
+                                },
+                                mediaAccessProfile = qualityOutcome.profile,
+                            ),
+                            previousError = retryError,
+                            errorLabel = "Completed quality validation",
+                        )
+                        continue
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (attemptError: Exception) {
+                if (attemptError is YtdlpQualityRejectedException) throw attemptError
+                val latestStatus = runCatching {
+                    services.downloadDao.checkStatus(input.downloadItem.id)
+                }.getOrNull()
+                if (
+                    isStopped ||
+                    latestStatus == DownloadRepository.Status.Paused ||
+                    latestStatus == DownloadRepository.Status.Cancelled
+                ) {
+                    throw CancellationException("Download was cancelled before media route transition")
+                }
+                val failureText = buildYtdlpRetryProbeText(
+                    attemptError,
+                    runtime.currentAttemptOutput.toList(),
+                )
+                val failureKind = YoutubeMediaAccessPolicy.classifyFailure(failureText)
+                val cachedInfoRetry = shouldRetryWithoutCachedInfoJson(
+                    failureText,
+                    currentAttempt.command,
+                ) && routeAttempts.markCachedInfoRetried(currentAttempt.mediaAccessProfile)
+
+                var retryPlan: YtdlpRetryPlan.Attempt? = when {
+                    cachedInfoRetry -> YtdlpRetryPlan.CachedInfo(
+                        notice = services.resources.getString(R.string.retry_cached_info),
+                        mediaAccessProfile = currentAttempt.mediaAccessProfile,
+                    )
+                    currentAttempt.mediaAccessProfile == YoutubeMediaAccessProfile.USER_PINNED -> null
+                    failureKind == YoutubeMediaFailureKind.ACCOUNT_RESTRICTED &&
+                        currentAttempt.mediaAccessProfile.isPublic &&
+                        services.ytdlpUtil.hasYoutubeAuthenticationConfiguration() -> {
+                        routeAttempts.authenticatedIfUntried()?.also(routeAttempts::markAttempted)?.let { profile ->
+                            YtdlpRetryPlan.Route(
+                                notice = services.resources.getString(R.string.retry_public_account_authenticated),
+                                mediaAccessProfile = profile,
+                            )
+                        }
+                    }
+                    (failureKind == YoutubeMediaFailureKind.QUALITY_UNAVAILABLE ||
+                        failureKind == YoutubeMediaFailureKind.GENERIC_FORBIDDEN) -> {
+                        routeAttempts.nextCleanPublicAfter(currentAttempt.mediaAccessProfile)
+                            ?.also(routeAttempts::markAttempted)
+                            ?.let { profile ->
+                                YtdlpRetryPlan.Route(
+                                    notice = services.resources.getString(R.string.retry_clean_public_before_transfer),
+                                    mediaAccessProfile = profile,
+                                )
+                            }
+                    }
+                    else -> null
+                }
+
+                if (retryPlan == null && YoutubeMediaAccessPolicy.shouldRunSelectionProbe(
+                        profile = currentAttempt.mediaAccessProfile,
+                        failureKind = failureKind,
+                        transferStarted = runtime.currentAttemptTransferStarted,
+                        qualityGuardApplied = currentAttempt.qualityGuardApplied,
+                        targetHeight = expectedHeight,
+                    )
+                ) {
+                    val guardedTargetHeight = expectedHeight
+                        ?: error("Selection probe requires a quality target")
+                    val publicHeight = runSelectionProbe(
+                        input = input,
+                        services = services,
+                        runtime = runtime,
+                        profile = currentAttempt.mediaAccessProfile,
+                        routeAttempts = routeAttempts,
+                    )
+                    val authenticatedHeight = if (
+                        services.ytdlpUtil.hasYoutubeAuthenticationConfiguration() &&
+                        !routeAttempts.wasAttempted(YoutubeMediaAccessProfile.AUTHENTICATED)
+                    ) {
+                        runSelectionProbe(
+                            input = input,
+                            services = services,
+                            runtime = runtime,
+                            profile = YoutubeMediaAccessProfile.AUTHENTICATED,
+                            routeAttempts = routeAttempts,
+                        )
+                    } else {
+                        null
+                    }
+
+                    retryPlan = when {
+                        authenticatedHeight != null && authenticatedHeight >= guardedTargetHeight -> {
+                            routeAttempts.markAttempted(YoutubeMediaAccessProfile.AUTHENTICATED)
+                            YtdlpRetryPlan.Route(
+                                notice = services.resources.getString(R.string.retry_quality_authenticated_selected),
+                                mediaAccessProfile = YoutubeMediaAccessProfile.AUTHENTICATED,
+                            )
+                        }
+                        qualityMarker?.isQualityReplacement == true -> null
+                        publicHeight != null && publicHeight > 0 -> {
+                            YtdlpRetryPlan.Route(
+                                notice = services.resources.getString(
+                                    R.string.retry_quality_degraded_selected,
+                                    publicHeight,
+                                ),
+                                mediaAccessProfile = currentAttempt.mediaAccessProfile,
+                                applyQualityGuard = false,
+                            )
+                        }
+                        else -> null
+                    }
+                }
+
+                if (retryPlan == null) throw attemptError
+                currentAttempt = prepareYtdlpRetry(
+                    input = input,
+                    services = services,
+                    eventBus = eventBus,
+                    runtime = runtime,
+                    previousAttempt = currentAttempt,
+                    plan = retryPlan,
+                    previousError = attemptError,
+                    errorLabel = "Previous selection error",
+                )
+            }
+        }
+    }
+
+    private suspend fun prepareYtdlpRetry(
+        input: YtdlpPhaseInput,
+        services: YtdlpPhaseServices,
+        eventBus: EventBus,
+        runtime: YtdlpPhaseRuntimeState,
+        previousAttempt: YtdlpAttempt,
+        plan: YtdlpRetryPlan.Attempt,
+        previousError: Exception,
+        errorLabel: String,
+    ): YtdlpAttempt {
+        if (plan is YtdlpRetryPlan.CachedInfo) {
+            deleteLoadedAppInfoJson(previousAttempt.command)
+        }
+        announceYtdlpRetry(input, services, eventBus, plan.notice, previousError)
+        resetYtdlpTempDirectory(input.rawTempDirectory, input.downloadItem.id, beforeRetry = true)
+        return buildYtdlpAttempt(
+            downloadItem = input.downloadItem,
+            ytdlpUtil = services.ytdlpUtil,
+            retryPlan = plan,
+            onRequestBuilt = runtime::registerRequest,
+            onCommandBuilt = { command -> runtime.effectiveCommand = command },
+        ).also { attempt ->
+            appendYtdlpRetryLog(
+                services = services,
+                runtime = runtime,
+                attempt = attempt,
+                notice = plan.notice,
+                errorLabel = errorLabel,
+                error = previousError,
+            )
+        }
+    }
+
+    private fun resolveCompletedYtdlpQuality(
+        input: YtdlpPhaseInput,
+        services: YtdlpPhaseServices,
+        runtime: YtdlpPhaseRuntimeState,
+        currentAttempt: YtdlpAttempt,
+        routeAttempts: YoutubeMediaAttemptSet,
+        completedResponse: YoutubeDLResponse,
+        expectedHeight: Int?,
+        isVerifiedReplacement: Boolean,
+    ): CompletedYtdlpQualityOutcome {
+        val stagedQuality = probeStagedVideoQuality(input)
+            ?: return CompletedYtdlpQualityOutcome.Accept(YtdlpAttemptsResult(completedResponse))
+        val isYoutubeVideo = input.downloadItem.type == DownloadType.video &&
+            input.downloadItem.url.isYoutubeURL()
+        val routeInput = YoutubeQualityRouteInput(
+            completedProfile = currentAttempt.mediaAccessProfile,
+            attempts = routeAttempts.snapshot(),
+            expectedHeight = expectedHeight,
+            actualHeight = stagedQuality.resolutionHeight,
+            isYoutubeVideo = isYoutubeVideo,
+            isVerifiedReplacement = isVerifiedReplacement,
+            canBuildCleanPublicRequest = services.ytdlpUtil.canBuildCleanPublicRequest(input.downloadItem),
+            hasAuthenticationConfiguration = services.ytdlpUtil.hasYoutubeAuthenticationConfiguration(),
+            accountRestrictionEvidence = YoutubeMediaAccessPolicy.classifyFailure(
+                completedResponse.out.orEmpty()
+            ) == YoutubeMediaFailureKind.ACCOUNT_RESTRICTED
+        )
+        var route = if (isYoutubeVideo) {
+            YoutubeMediaAccessPolicy.qualityRoute(routeInput)
+        } else {
+            when (DownloadQualityFallbackPolicy.decide(
+                expectedHeight = expectedHeight,
+                actualHeight = stagedQuality.resolutionHeight,
+                isYoutubeVideo = false,
+                initialAttemptHadAuthentication = false,
+                publicRetryAlreadyUsed = true,
+                isVerifiedReplacement = isVerifiedReplacement,
+            )) {
+                DownloadQualityDecision.ACCEPT -> YoutubeQualityRouteOutcome.Accept
+                DownloadQualityDecision.RETRY_PUBLIC ->
+                    YoutubeQualityRouteOutcome.Retry(YoutubeMediaAccessProfile.PUBLIC_DEFAULT)
+                DownloadQualityDecision.ACCEPT_WITH_DEGRADED_WARNING ->
+                    YoutubeQualityRouteOutcome.AcceptDegraded
+                DownloadQualityDecision.REJECT_REPLACEMENT ->
+                    YoutubeQualityRouteOutcome.RejectReplacement
+                DownloadQualityDecision.REJECT_INVALID_OUTPUT ->
+                    YoutubeQualityRouteOutcome.RejectInvalid
+            }
+        }
+        if (route is YoutubeQualityRouteOutcome.Probe) {
+            val probeHeight = runSelectionProbe(
+                input = input,
+                services = services,
+                runtime = runtime,
+                profile = route.profile,
+                routeAttempts = routeAttempts,
+            )
+            route = YoutubeMediaAccessPolicy.qualityRoute(
+                routeInput.copy(
+                    attempts = routeAttempts.snapshot(),
+                    authenticatedProbeHeight = probeHeight
+                )
+            )
+        }
+        return when (route) {
+            YoutubeQualityRouteOutcome.Accept ->
+                CompletedYtdlpQualityOutcome.Accept(YtdlpAttemptsResult(completedResponse))
+            YoutubeQualityRouteOutcome.AcceptDegraded ->
+                CompletedYtdlpQualityOutcome.Accept(
+                    YtdlpAttemptsResult(
+                        response = completedResponse,
+                        qualityWarning = VideoQualityMismatch(
+                            expectedHeight = expectedHeight ?: 0,
+                            actualHeight = stagedQuality.resolutionHeight,
+                        )
+                    )
+                )
+            YoutubeQualityRouteOutcome.RejectReplacement,
+            YoutubeQualityRouteOutcome.RejectInvalid -> CompletedYtdlpQualityOutcome.Reject(
+                "Requested format is not available: downloaded video quality did not pass validation " +
+                    "(expected=${expectedHeight ?: 0}p, actual=${stagedQuality.resolutionHeight}p)"
+            )
+            is YoutubeQualityRouteOutcome.Retry -> CompletedYtdlpQualityOutcome.Retry(route.profile)
+            is YoutubeQualityRouteOutcome.Probe -> error("Selection probe outcome was not resolved")
+        }
+    }
+
+    private fun runSelectionProbe(
+        input: YtdlpPhaseInput,
+        services: YtdlpPhaseServices,
+        runtime: YtdlpPhaseRuntimeState,
+        profile: YoutubeMediaAccessProfile,
+        routeAttempts: YoutubeMediaAttemptSet,
+    ): Int? {
+        if (!routeAttempts.markProbed(profile)) return null
+        val request = services.ytdlpUtil.buildYoutubeDLRequest(
+            downloadItem = input.downloadItem,
+            mediaAccessProfile = profile,
+            useCachedInfoJson = false,
+            applyQualityGuard = false,
+            selectionOnly = true,
+        ).apply {
+            addOption("--simulate")
+            addOption("--skip-download")
+            addOption("--check-formats")
+            addOption("--no-write-info-json")
+            addOption("--no-write-thumbnail")
+            addOption("--no-write-subs")
+            addOption("--no-write-auto-subs")
+            addOption("--print", "ytdlnisx-selection-height:%(height|0)s")
+        }
+        runtime.registerRequest(request)
+        val command = services.ytdlpUtil.parseYTDLRequestString(request)
+        val probeAttempt = YtdlpAttempt(
+            request = request,
+            command = command,
+            diagnostics = services.ytdlpUtil.buildRequestDiagnostics(
+                input.downloadItem,
+                request,
+                command,
+                profile,
+            ),
+            mediaAccessProfile = profile,
+            qualityGuardApplied = false,
+            qualityTargetHeight = null,
+        )
+        val response = try {
+            runtime.beginAttempt()
+            executeYtdlpAttempt(input, runtime, probeAttempt) { _, _, line ->
+                val redacted = SensitiveTextRedactor.redactOutput(line)
+                runtime.recentOutput.addLast(redacted)
+                runtime.currentAttemptOutput.addLast(redacted)
+                while (runtime.recentOutput.size > FAILURE_YTDLP_TAIL_LINES) {
+                    runtime.recentOutput.removeFirst()
+                }
+                while (runtime.currentAttemptOutput.size > FAILURE_YTDLP_TAIL_LINES) {
+                    runtime.currentAttemptOutput.removeFirst()
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+        return response?.out
+            ?.lineSequence()
+            ?.mapNotNull { line ->
+                line.substringAfter("ytdlnisx-selection-height:", "")
+                    .trim()
+                    .toIntOrNull()
+            }
+            ?.maxOrNull()
+    }
+
+    private fun expectedVideoHeight(item: DownloadItem): Int? {
+        if (item.type != DownloadType.video) return null
+        return HistoryRedownloadMarker.parse(item.playlistURL)?.expectedMinimumHeight
+            ?: VideoQualityPolicy.expectedDownloadHeight(item.format, item.allFormats)
+    }
+
+    private fun commandQualityTarget(command: String): Int? {
+        return Regex("""height>=([0-9]{2,5})\]\[height<=([0-9]{2,5})""")
+            .findAll(command)
+            .mapNotNull { match ->
+                val minimum = match.groupValues.getOrNull(1)?.toIntOrNull()
+                val maximum = match.groupValues.getOrNull(2)?.toIntOrNull()
+                minimum.takeIf { it != null && it == maximum }
+            }
+            .minOrNull()
+    }
+
+    private fun probeStagedVideoQuality(input: YtdlpPhaseInput): VideoMediaQuality? {
+        if (input.downloadItem.type != DownloadType.video) {
+            return null
+        }
+        val paths = input.rawTempDirectory.walkTopDown()
+            .filter { it.isFile && it.length() > 0L }
+            .sortedByDescending { it.length() }
+            .map { it.absolutePath }
+            .toList()
+        if (paths.isEmpty()) return null
+        return HistoryVideoQualityProbe.probe(context, paths)
+    }
+
+    private fun commandHasYoutubeAuthentication(command: String): Boolean {
+        return commandHasYtdlpOption(command, "--cookies") ||
+            command.contains("po_token=") ||
+            command.contains("data_sync_id=") ||
+            command.contains("visitor_data=")
+    }
+
+    private fun resetYtdlpTempDirectory(
+        rawTempDirectory: File,
+        downloadId: Long,
+        beforeRetry: Boolean,
+    ): File {
+        val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
+        val tempDirectory = rawTempDirectory.canonicalFile
+        if (tempDirectory.parentFile != cacheRoot || tempDirectory.name != downloadId.toString()) {
+            throw IOException("Unsafe temporary download directory: ${tempDirectory.absolutePath}")
+        }
+        val cleanFailure = if (beforeRetry) {
+            "Failed to clean temporary download directory before retry"
+        } else {
+            "Failed to clean temporary download directory"
+        }
+        val createFailure = if (beforeRetry) {
+            "Failed to recreate temporary download directory before retry"
+        } else {
+            "Failed to create temporary download directory"
+        }
+        if (tempDirectory.exists() && !tempDirectory.deleteRecursively()) {
+            throw IOException("$cleanFailure: ${tempDirectory.absolutePath}")
+        }
+        if (!tempDirectory.mkdirs() && !tempDirectory.isDirectory) {
+            throw IOException("$createFailure: ${tempDirectory.absolutePath}")
+        }
+        return tempDirectory
+    }
+
+    private suspend fun appendYtdlpRetryLog(
+        services: YtdlpPhaseServices,
+        runtime: YtdlpPhaseRuntimeState,
+        attempt: YtdlpAttempt,
+        notice: String,
+        errorLabel: String,
+        error: Exception,
+    ) {
+        val retryDetails = YtdlpRetryLog.format(
+            notice = notice,
+            errorLabel = errorLabel,
+            errorMessage = error.message.orEmpty(),
+            command = attempt.command,
+            diagnostics = attempt.diagnostics,
+        )
+        runtime.retryLogDetails = YtdlpRetryLog.append(runtime.retryLogDetails, retryDetails)
+        if (runtime.loggingEnabled) {
+            services.logRepository.update(retryDetails, runtime.logId ?: 0L)
+        }
+    }
+
+    private fun announceYtdlpRetry(
+        input: YtdlpPhaseInput,
+        services: YtdlpPhaseServices,
+        eventBus: EventBus,
+        notice: String,
+        error: Exception,
+    ) {
+        val item = input.downloadItem
+        Log.w(TAG, "$notice id=${item.id}", error)
+        eventBus.post(WorkerProgress(0, notice, item.id, item.logID))
+        services.notificationUtil.updateDownloadNotification(
+            item.id.toInt(),
+            notice,
+            0,
+            0,
+            input.notificationTitle,
+            NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
+            getHardSubStatusText(services.resources),
+        )
+    }
+
 
 
     companion object {
-        val runningYTDLInstances: MutableList<Long> = mutableListOf()
+        val runningYTDLInstances: MutableSet<Long> = ConcurrentHashMap.newKeySet()
         const val TAG = "DownloadWorker"
-        const val HISTORY_REDOWNLOAD_MARKER = "history-redownload:"
         private val downloadWorkerMutex = Mutex()
         private val hardSubH264Containers = setOf(
             "mp4", "m4v", "mov", "mkv", "avi", "flv",
@@ -1741,7 +2799,7 @@ class DownloadWorker(
     private fun isHardSubRedownload(item: DownloadItem): Boolean {
         return item.type == com.ireum.ytdl.database.enums.DownloadType.video &&
             item.videoPreferences.embedSubs &&
-            item.playlistURL?.startsWith(HISTORY_REDOWNLOAD_MARKER) == true
+            HistoryRedownloadMarker.parse(item.playlistURL) != null
     }
 
     private fun buildYtdlpRetryProbeText(error: Exception, recentOutput: List<String>): String {
@@ -3321,10 +4379,7 @@ class DownloadWorker(
         downloadItem: DownloadItem,
         historyDao: com.ireum.ytdl.database.dao.HistoryDao
     ): List<String> {
-        val historyId = downloadItem.playlistURL
-            ?.takeIf { it.startsWith(HISTORY_REDOWNLOAD_MARKER) }
-            ?.removePrefix(HISTORY_REDOWNLOAD_MARKER)
-            ?.toLongOrNull()
+        val historyId = HistoryRedownloadMarker.parse(downloadItem.playlistURL)?.historyId
             ?: return emptyList()
         val previous = runCatching { historyDao.getItem(historyId) }.getOrNull() ?: return emptyList()
         return previous.downloadPath
@@ -3341,31 +4396,118 @@ class DownloadWorker(
     private fun deleteReplacedHistoryMedia(previousHistoryItem: HistoryItem?, finalPaths: List<String>) {
         if (previousHistoryItem == null) return
 
-        val retainedPaths = finalPaths
-            .asSequence()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .toSet()
-        if (retainedPaths.isEmpty()) return
-
-        val stalePaths = previousHistoryItem.downloadPath
-            .asSequence()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .filter { oldPath -> oldPath !in retainedPaths }
-            .toList()
+        val stalePaths = HistoryReplacementFilePolicy.originalPathsToDelete(
+            previousPaths = previousHistoryItem.downloadPath,
+            replacementPaths = finalPaths
+        )
         if (stalePaths.isEmpty()) return
 
-        stalePaths.forEach { oldPath ->
-            runCatching { FileUtil.deleteFile(oldPath) }
-                .onSuccess {
-                    Log.i(TAG, "HardSub redownload cleanup deleted old media path=$oldPath")
-                }
-                .onFailure { error ->
-                    Log.w(TAG, "HardSub redownload cleanup failed path=$oldPath reason=${error.message}")
-            }
+        deleteValidatedReplacementPaths(
+            historyId = previousHistoryItem.id,
+            paths = stalePaths,
+            historyDao = DBManager.getInstance(context).historyDao,
+            logLabel = "History replacement cleanup",
+            trustedHistoryItem = previousHistoryItem
+        )
+    }
+
+    private fun validateMovedQualityReplacement(
+        downloadItem: DownloadItem,
+        finalPaths: List<String>,
+        historyDao: com.ireum.ytdl.database.dao.HistoryDao
+    ) {
+        val marker = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
+            ?.takeIf { it.isQualityReplacement }
+            ?: return
+        val expectedHeight = marker.expectedMinimumHeight ?: return
+        val quality = HistoryVideoQualityProbe.probe(context, finalPaths)
+        if (
+            quality.state == VideoFileQualityState.READY &&
+            quality.resolutionHeight >= expectedHeight
+        ) {
+            return
         }
+
+        deleteRejectedQualityReplacementOutputs(marker.historyId, finalPaths, historyDao)
+        throw IOException(
+            "Quality replacement was not committed because the moved output failed validation " +
+                "(expected=${expectedHeight}p, actual=${quality.resolutionHeight}p, state=${quality.state})"
+        )
+    }
+
+    private fun deleteRejectedQualityReplacementOutputs(
+        historyId: Long,
+        candidatePaths: List<String>,
+        historyDao: com.ireum.ytdl.database.dao.HistoryDao
+    ) {
+        val previous = runCatching { historyDao.getItem(historyId) }.getOrNull() ?: return
+        val rejectedPaths = HistoryReplacementFilePolicy.rejectedPathsToDelete(
+            previousPaths = previous.downloadPath,
+            candidatePaths = candidatePaths
+        )
+        deleteValidatedReplacementPaths(
+            historyId = historyId,
+            paths = rejectedPaths,
+            historyDao = historyDao,
+            logLabel = "Rejected quality replacement cleanup"
+        )
+    }
+
+    private fun deleteValidatedReplacementPaths(
+        historyId: Long,
+        paths: List<String>,
+        historyDao: com.ireum.ytdl.database.dao.HistoryDao,
+        logLabel: String,
+        trustedHistoryItem: HistoryItem? = null
+    ) {
+        if (paths.isEmpty()) return
+        val gateway = AndroidHistoryFileDeletionGateway(context)
+        val engine = HistoryFileDeletionEngine(gateway)
+        val trustedDocumentTargets: Set<String> = trustedHistoryItem
+            ?.let { item -> trustedResolvedTreeTargets(item, paths, gateway) }
+            ?: emptySet()
+        val retainedTargets = historyDao.getDeletionReferenceRecords()
+            .asSequence()
+            .flatMap { record -> record.downloadPath.asSequence() }
+        val validation = engine.excludeTargetsReferencedBy(
+            validation = engine.validate(
+                listOf(
+                    HistoryDeletionRecord(
+                        id = historyId,
+                        storedTargets = (paths + trustedDocumentTargets).distinct(),
+                        trustedDocumentTargets = trustedDocumentTargets
+                    )
+                )
+            ),
+            retainedStoredTargets = retainedTargets
+        )
+        val result = engine.execute(validation)
+        Log.i(
+            TAG,
+            "$logLabel deleted=${result.filesDeleted} absent=${result.filesAlreadyAbsent} " +
+                "skipped=${result.filesSkipped} permission=${result.filesPermissionDenied} " +
+                "failed=${result.filesFailed}"
+        )
+    }
+
+    private fun trustedResolvedTreeTargets(
+        item: HistoryItem,
+        storedTargets: List<String>,
+        gateway: HistoryFileDeletionGateway
+    ): Set<String> {
+        val resolvedTreeTarget = if (
+            item.localTreeUri.isNotBlank() && item.localTreePath.isNotBlank()
+        ) {
+            FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath)?.toString()
+        } else {
+            null
+        }
+        return listOfNotNull(resolvedTreeTarget)
+            .filterTo(linkedSetOf()) { treeTarget ->
+                storedTargets.any { storedTarget ->
+                    gateway.referencesSameFile(treeTarget, storedTarget)
+                }
+            }
     }
 
     private fun findExistingHistoryForDownloadedItem(
@@ -3409,8 +4551,8 @@ class DownloadWorker(
         downloadLogId: Long?,
         eventBus: EventBus
     ): List<String> {
-        return runCatching {
-            withContext(Dispatchers.IO) {
+        return try {
+            val recovered = withContext(Dispatchers.IO) {
                 FileUtil.moveFile(tempFileDir, context, downloadLocation, keepCache) { progress ->
                     eventBus.post(
                         WorkerProgress(
@@ -3422,16 +4564,19 @@ class DownloadWorker(
                     )
                 }
             }.filter { !it.matches("\\.(description)|(txt)\$".toRegex()) }
-        }.onSuccess { recovered ->
             if (recovered.isNotEmpty()) {
                 Log.w(
                     TAG,
                     "HardSub temp move retry succeeded id=$downloadItemId recovered=${recovered.size}"
                 )
             }
-        }.onFailure { error ->
+            recovered
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
             Log.e(TAG, "HardSub temp move retry failed id=$downloadItemId", error)
-        }.getOrDefault(emptyList())
+            emptyList()
+        }
     }
 
     private data class BurnInSubtitle(

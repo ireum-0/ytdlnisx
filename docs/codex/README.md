@@ -18,14 +18,16 @@ When instructions conflict, use this order:
 
 Never treat a task in this plan as permission to expand the requested scope.
 
-## Baseline
+## Current baseline
 
 - Repository: `ireum-0/ytdlnisx`
-- Baseline date: 2026-07-13
-- Baseline branch: `main`
-- Baseline commit used for this plan: `1a0a7fdbe419047262a1a552be927b5af9799bd0`
-- Application version at baseline: `1.8.9`
-- Room database version at baseline: `50`
+- Reconciliation date: 2026-07-30
+- Application version: `1.8.9`
+- Room database version: `53`
+
+The task registry was reconciled against the current source tree on that date.
+It deliberately avoids naming a permanent branch or commit because this
+repository changes quickly.
 
 The repository changes quickly. Before implementing a task:
 
@@ -49,34 +51,17 @@ Read `docs/testing/release-checklist.md` only for release-candidate work.
 
 ## Task selection
 
-- Implement one task ID per change unless the user explicitly requests a batch.
-- Prefer the first `READY` task that matches the user's request.
-- Do not start a `BLOCKED` task.
+- Use `TASKS.md` to determine whether an older item is already implemented,
+  partial, or deferred.
+- Use `../future-work.md` for the current recommendation, category, priority,
+  and complexity.
+- Implement one bounded concern per change unless the user explicitly requests
+  a batch.
 - Do not silently implement dependencies outside the requested scope.
 - A task may be split into smaller changes when risk is high.
-- Do not combine Room, WorkManager, Media3, and native-runtime changes in one change unless unavoidable.
+- Do not combine Room, WorkManager, Media3, and native-runtime changes in one
+  change unless unavoidable.
 - Documentation-only tasks do not authorize code changes.
-
-## Active execution order
-
-The recommended order is:
-
-1. `PRIV-01` — redact normal download diagnostics
-2. `QG-01` — add pull-request compile and unit-test checks
-3. `QG-02` — harden the existing release workflow
-4. `DB-01` — expand representative migration tests
-5. `FAIL-01` — introduce outcome and issue types
-6. `FAIL-02` — classify a small set of high-confidence failures
-7. `FAIL-03` — show structured failure information and safe actions
-8. `RETRY-01` — add user-initiated safe retry
-9. `FILE-01` — copy paths and open locations with fallbacks
-10. `FILE-02` — represent missing and inaccessible files
-11. `FILE-03` — add app-owned cache management
-12. `RUNTIME-01` — add on-demand runtime diagnostics
-13. `PRESET-01` — audit and unify existing configuration models
-14. `PRESET-02` — implement a minimal preset feature
-
-Player, advanced History, Observe Sources, and Terminal expansion remain later work.
 
 ## Definition of done
 
@@ -93,10 +78,11 @@ A task is complete only when:
 
 ## File map
 
-- `PROJECT_STATE.md`: current capabilities, known risks, and unverified assumptions.
+- `PROJECT_STATE.md`: concise current capabilities, risks, and unverified assumptions.
 - `RULES.md`: implementation constraints and shared design rules.
-- `TASKS.md`: ordered task registry with acceptance criteria.
+- `TASKS.md`: reconciliation of the original task IDs with current code.
 - `CHECKS.md`: verification commands and change-specific test matrices.
+- `../future-work.md`: maintained recommendations and priorities.
 - `../architecture/`: accepted architecture decisions; read the relevant ADR when a task depends on one.
 - `../testing/release-checklist.md`: release-candidate checks, outside the normal task reading path.
 - `../archive/`: historical audits, reviews, and prompts; never treat them as current guidance.

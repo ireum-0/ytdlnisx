@@ -7,13 +7,21 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AutomaticKeywordRule
 import com.ireum.ytdl.database.models.AutomaticKeywordRuleKeyword
+import com.ireum.ytdl.database.models.AudioPreferences
+import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.database.models.ResultItem
+import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
+import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementResult
+import com.ireum.ytdl.database.repository.ObserveSourcesRepository
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -345,6 +353,17 @@ class AutomaticKeywordRulePersistenceTest {
     }
 
     @Test
+    fun ruleSummaryPreservesConfiguredKeywordOrder() = runBlocking {
+        val ruleId = rule("youtube:playlist:A", listOf("Zulu", "Alpha"))
+
+        val summary = db.automaticKeywordRuleDao.observeRuleSummaries().first().single {
+            it.id == ruleId
+        }
+
+        assertEquals("Zulu,Alpha", summary.keywordsCsv)
+    }
+
+    @Test
     fun mixedDiscoveryResultsStayScopedToTheirPlaylist() = runBlocking {
         val firstHistory = HistoryKeywordAssignmentRepository(db).insertHistory(
             history(url = "https://youtu.be/first")
@@ -361,7 +380,7 @@ class AutomaticKeywordRulePersistenceTest {
             db.automaticKeywordRuleDao.getRule(secondRule)!!.copy(baselineComplete = true)
         )
 
-        AutomaticKeywordRuleEngine(db).recordDiscovery(
+        val result = AutomaticKeywordRuleEngine(db).recordDiscovery(
             mapOf(
                 "youtube:playlist:A" to listOf(result("https://youtu.be/first")),
                 "youtube:playlist:B" to listOf(result("https://youtu.be/second"))
@@ -370,6 +389,11 @@ class AutomaticKeywordRulePersistenceTest {
 
         assertEquals("First", db.historyDao.getItem(firstHistory).keywords)
         assertEquals("Second", db.historyDao.getItem(secondHistory).keywords)
+        assertEquals(
+            mapOf(firstRule to 1, secondRule to 1),
+            result.ruleResults.associate { it.ruleId to it.matched }
+        )
+        assertTrue(result.ruleResults.all { it.failed == 0 })
     }
 
     @Test
@@ -389,6 +413,24 @@ class AutomaticKeywordRulePersistenceTest {
         val current = db.automaticKeywordRuleDao.getRule(ruleId)!!
         assertEquals(oldRevision + 1, current.revision)
         assertTrue(current.pendingApplyToExisting)
+    }
+
+    @Test
+    fun olderDiscoveryRunCannotOverwriteANewerRuleRevision() = runBlocking {
+        val ruleId = rule("youtube:playlist:A", listOf("Music"))
+        val previous = db.automaticKeywordRuleDao.getRule(ruleId)!!
+        db.automaticKeywordRuleDao.updateRule(previous.copy(revision = previous.revision + 1))
+
+        val updated = db.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
+            ruleId = ruleId,
+            revision = previous.revision,
+            status = "FAILED",
+            at = 10L,
+            error = "UNKNOWN",
+        )
+
+        assertEquals(0, updated)
+        assertEquals("NEVER", db.automaticKeywordRuleDao.getRule(ruleId)!!.discoveryStatus)
     }
 
     @Test
@@ -426,6 +468,62 @@ class AutomaticKeywordRulePersistenceTest {
     }
 
     @Test
+    fun blankVideoIdentityNeverCreatesCrossItemRuleMatch() = runBlocking {
+        val ruleId = rule("youtube:playlist:A", listOf("Live"))
+        val engine = AutomaticKeywordRuleEngine(db)
+
+        engine.applyFullSync(ruleId, listOf(result("")))
+        val historyId = HistoryKeywordAssignmentRepository(db).insertHistory(history(url = ""))
+
+        assertTrue(db.automaticKeywordRuleDao.getAllVideoMatches().isEmpty())
+        assertEquals("", db.historyDao.getItem(historyId).keywords)
+    }
+
+    @Test
+    fun membershipParkingCannotOverwriteAConcurrentCancellation() = runBlocking {
+        val sourceId = db.observeSourcesDao.insert(observeSource())
+        val downloadId = db.downloadDao.insert(
+            download(sourceId, DownloadRepository.Status.Cancelled.toString())
+        )
+
+        val parked = db.observeSourcesDao.parkDownloadForMembership(
+            downloadId = downloadId,
+            sourceId = sourceId,
+            expectedStatus = DownloadRepository.Status.Active.toString(),
+            issueCode = "MEMBERSHIP_REQUIRED",
+            issueStage = "DOWNLOAD",
+        )
+
+        assertEquals(0, parked)
+        assertEquals(
+            DownloadRepository.Status.Cancelled.toString(),
+            db.downloadDao.getDownloadById(downloadId).status,
+        )
+    }
+
+    @Test
+    fun cancelledMembershipWaitCanBeExplicitlyRestored() = runBlocking {
+        val sourceId = db.observeSourcesDao.insert(observeSource())
+        val downloadId = db.downloadDao.insert(
+            download(sourceId, DownloadRepository.Status.Cancelled.toString())
+        )
+
+        val restored = db.observeSourcesDao.parkDownloadForMembership(
+            downloadId = downloadId,
+            sourceId = sourceId,
+            expectedStatus = DownloadRepository.Status.Cancelled.toString(),
+            issueCode = "MEMBERSHIP_REQUIRED",
+            issueStage = "DOWNLOAD",
+        )
+
+        assertEquals(1, restored)
+        assertEquals(
+            DownloadRepository.Status.WaitingForMembership.toString(),
+            db.downloadDao.getDownloadById(downloadId).status,
+        )
+    }
+
+    @Test
     fun compatibilityHistoryUpdateCannotDivergeFromAssignments() = runBlocking {
         val historyId = HistoryKeywordAssignmentRepository(db).insertHistory(
             history(keywords = "Manual")
@@ -439,6 +537,68 @@ class AutomaticKeywordRulePersistenceTest {
             listOf("Manual"),
             db.automaticKeywordRuleDao.getAssignmentsRaw(historyId).map { it.keyword }
         )
+    }
+
+    @Test
+    fun compatibilityHistoryUpdateAfterConcurrentDeletionIsANoOp() = runBlocking {
+        val historyId = HistoryKeywordAssignmentRepository(db).insertHistory(history())
+        val stale = db.historyDao.getItem(historyId)
+        db.historyDao.deleteById(historyId)
+
+        db.historyDao.update(stale.copy(title = "Stale rename"))
+
+        assertTrue(db.historyDao.getAll().isEmpty())
+    }
+
+    @Test
+    fun replacementUpdatesExistingHistoryAndPreservesAssignments() = runBlocking {
+        val repository = HistoryKeywordAssignmentRepository(db)
+        val historyId = repository.insertHistory(history(keywords = "Manual"))
+        repository.replaceSourceKeywords(
+            historyId,
+            HistoryKeywordAssignmentSources.RULE,
+            9L,
+            listOf("Rule")
+        )
+        val assignmentsBefore = db.automaticKeywordRuleDao.getAssignmentsRaw(historyId)
+        val replacement = db.historyDao.getItem(historyId).copy(
+            title = "Replacement",
+            downloadPath = listOf("/tmp/replacement.mp4")
+        )
+
+        assertEquals(
+            HistoryReplacementResult.UPDATED,
+            repository.replaceHistoryPreservingAssignments(replacement)
+        )
+
+        assertEquals("Replacement", db.historyDao.getItem(historyId).title)
+        assertEquals("Manual, Rule", db.historyDao.getItem(historyId).keywords)
+        assertEquals(assignmentsBefore, db.automaticKeywordRuleDao.getAssignmentsRaw(historyId))
+    }
+
+    @Test
+    fun missingReplacementTargetIsReportedWithoutCreatingHistoryOrAssignments() = runBlocking {
+        val result = HistoryKeywordAssignmentRepository(db)
+            .replaceHistoryPreservingAssignments(history().copy(id = 404L))
+
+        assertEquals(HistoryReplacementResult.TARGET_MISSING, result)
+        assertTrue(db.historyDao.getAll().isEmpty())
+        assertTrue(db.automaticKeywordRuleDao.getAssignmentsRaw(404L).isEmpty())
+    }
+
+    @Test
+    fun staleReplacementSnapshotCannotRecreateDeletedHistoryOrAssignments() = runBlocking {
+        val repository = HistoryKeywordAssignmentRepository(db)
+        val historyId = repository.insertHistory(history(keywords = "Manual"))
+        val stale = db.historyDao.getItem(historyId).copy(title = "Stale replacement")
+        db.historyDao.deleteById(historyId)
+
+        assertEquals(
+            HistoryReplacementResult.TARGET_MISSING,
+            repository.replaceHistoryPreservingAssignments(stale)
+        )
+        assertTrue(db.historyDao.getAll().isEmpty())
+        assertTrue(db.automaticKeywordRuleDao.getAssignmentsRaw(historyId).isEmpty())
     }
 
     @Test
@@ -551,5 +711,54 @@ class AutomaticKeywordRulePersistenceTest {
         urls = "",
         chapters = null,
         playlistURL = "https://www.youtube.com/playlist?list=A"
+    )
+
+    private fun observeSource() = ObserveSourcesItem(
+        id = 0,
+        name = "Source",
+        url = "https://www.youtube.com/playlist?list=A",
+        downloadItemTemplate = download(0, DownloadRepository.Status.Cancelled.toString()),
+        everyNr = 1,
+        everyCategory = ObserveSourcesRepository.EveryCategory.DAY,
+        everyTime = 0,
+        weeklyConfig = null,
+        monthlyConfig = null,
+        status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+        startsTime = 0,
+        endsDate = 0,
+        endsAfterCount = 0,
+        runCount = 0,
+        getOnlyNewUploads = false,
+        retryMissingDownloads = false,
+        ignoredLinks = mutableListOf(),
+        alreadyProcessedLinks = mutableListOf(),
+        syncWithSource = false,
+    )
+
+    private fun download(sourceId: Long, status: String) = DownloadItem(
+        id = 0,
+        url = "https://youtu.be/video1",
+        title = "Video",
+        author = "Author",
+        thumb = "",
+        duration = "1:00",
+        type = DownloadType.video,
+        format = Format(),
+        container = "mp4",
+        downloadSections = "",
+        allFormats = mutableListOf(),
+        downloadPath = "/tmp",
+        website = "YouTube",
+        downloadSize = "",
+        playlistTitle = "",
+        audioPreferences = AudioPreferences(),
+        videoPreferences = VideoPreferences(),
+        extraCommands = "",
+        customFileNameTemplate = "",
+        SaveThumb = false,
+        status = status,
+        downloadStartTime = 0,
+        logID = null,
+        observeSourceId = sourceId,
     )
 }

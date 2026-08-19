@@ -7,10 +7,14 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import com.ireum.ytdl.database.models.ResultItem
+import com.ireum.ytdl.database.models.KnownMediaPublishedDate
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ResultDao {
+    @Query("SELECT url, mediaPublishedAt FROM results WHERE mediaPublishedAt != 0")
+    suspend fun getKnownMediaPublishedDates(): List<KnownMediaPublishedDate>
+
     @Query("SELECT * FROM results order by id")
     fun getResults() : Flow<List<ResultItem>>
 

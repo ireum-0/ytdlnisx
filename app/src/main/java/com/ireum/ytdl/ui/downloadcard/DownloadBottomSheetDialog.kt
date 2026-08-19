@@ -44,6 +44,7 @@ import com.ireum.ytdl.receiver.ShareActivity
 import com.ireum.ytdl.ui.BaseActivity
 import com.ireum.ytdl.ui.more.cookies.WebViewActivity
 import com.ireum.ytdl.util.UiUtil
+import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.preset.DownloadPreset
 import com.ireum.ytdl.util.preset.DownloadPresetStore
 import com.ireum.ytdl.util.preset.DownloadPresetText
@@ -1000,7 +1001,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
 
     private fun applyHistoryRedownloadMarker(item: DownloadItem): DownloadItem {
         if (sourceHistoryId <= 0L) return item
-        item.playlistURL = "$HISTORY_REDOWNLOAD_MARKER$sourceHistoryId"
+        item.playlistURL = HistoryRedownloadMarker.regular(sourceHistoryId)
         return item
     }
 
@@ -1043,9 +1044,6 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
         }
     }
 
-    companion object {
-        private const val HISTORY_REDOWNLOAD_MARKER = "history-redownload:"
-    }
 }
 
 private fun com.ireum.ytdl.database.models.Format.isGenericPlaceholderFormat(): Boolean {

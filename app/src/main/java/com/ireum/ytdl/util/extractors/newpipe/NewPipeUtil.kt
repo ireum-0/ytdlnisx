@@ -11,6 +11,8 @@ import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.viewmodel.ResultViewModel
 import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
 import com.ireum.ytdl.util.Extensions.toStringDuration
+import com.ireum.ytdl.util.MediaPublishedDate
+import com.ireum.ytdl.util.MediaPublishedDateParser
 import com.ireum.ytdl.util.extractors.newpipe.potoken.NewPipePoTokenGenerator
 import com.google.gson.Gson
 import okhttp3.OkHttpClient
@@ -353,7 +355,14 @@ class NewPipeUtil(context: Context) {
                 "",
                 ArrayList(),
                 "",
-                ArrayList()
+                ArrayList(),
+                mediaPublishedAt = try {
+                    MediaPublishedDateParser.fromEpochSeconds(
+                        stream.uploadDate?.instant?.epochSecond
+                    ) ?: MediaPublishedDate.MISSING
+                } catch (_: Exception) {
+                    MediaPublishedDate.MISSING
+                }
             )
 
         } catch (e: Exception) {
@@ -467,7 +476,14 @@ class NewPipeUtil(context: Context) {
                 "",
                 formats,
                 if (stream.hlsUrl.isNotBlank() && stream.hlsUrl != "null") stream.hlsUrl else "",
-                chapters
+                chapters,
+                mediaPublishedAt = try {
+                    MediaPublishedDateParser.fromEpochSeconds(
+                        stream.uploadDate?.instant?.epochSecond
+                    ) ?: MediaPublishedDate.MISSING
+                } catch (_: Exception) {
+                    MediaPublishedDate.MISSING
+                }
             )
         } catch (e: Exception) {
             Log.e("NewPipeUtil", e.toString())

@@ -96,6 +96,19 @@
                     android:focusable="true" />
 
                 <com.google.android.material.chip.Chip
+                    android:id="@+id/media_published_date"
+                    style="@style/Widget.Material3.FloatingActionButton.Large.Primary"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clickable="false"
+                    android:focusable="false"
+                    android:minWidth="30dp"
+                    android:stateListAnimator="@null"
+                    android:visibility="gone"
+                    app:chipIcon="@drawable/ic_clock"
+                    app:cornerRadius="10dp" />
+
+                <com.google.android.material.chip.Chip
                     android:id="@+id/thumbnail"
                     style="@style/Widget.Material3.FloatingActionButton.Large.Primary"
                     android:layout_width="wrap_content"

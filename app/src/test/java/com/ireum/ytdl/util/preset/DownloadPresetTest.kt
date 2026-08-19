@@ -155,7 +155,8 @@ class DownloadPresetTest {
             SaveThumb = false,
             status = "Queued",
             downloadStartTime = 0,
-            logID = null
+            logID = null,
+            orderPosition = 0
         )
     }
 }

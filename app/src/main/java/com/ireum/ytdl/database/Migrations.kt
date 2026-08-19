@@ -25,6 +25,31 @@ object Migrations {
         }
     }
 
+    private fun repairMaterializedHistoryKeywords(database: SupportSQLiteDatabase) {
+        val materializedByHistory = linkedMapOf<Long, LinkedHashMap<String, String>>()
+        database.query(
+            "SELECT historyItemId, normalizedKeyword, keyword FROM history_keyword_assignments " +
+                "ORDER BY historyItemId, " +
+                "CASE sourceType WHEN 'MANUAL' THEN 0 WHEN 'RULE' THEN 1 ELSE 2 END, " +
+                "sourceId, position"
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val historyId = cursor.getLong(0)
+                val normalized = cursor.getString(1)
+                val keyword = cursor.getString(2)
+                materializedByHistory
+                    .getOrPut(historyId) { linkedMapOf() }
+                    .putIfAbsent(normalized, keyword)
+            }
+        }
+        materializedByHistory.forEach { (historyId, keywords) ->
+            database.execSQL(
+                "UPDATE history SET keywords = ? WHERE id = ?",
+                arrayOf<Any>(keywords.values.joinToString(", "), historyId)
+            )
+        }
+    }
+
     @SuppressLint("Range")
     val migrationList = arrayOf(
         //Moving from one file path to multiple file paths of a history item
@@ -266,6 +291,7 @@ object Migrations {
                 while (cursor.moveToNext()) {
                     val historyId = cursor.getLong(idColumn)
                     val seen = linkedSetOf<String>()
+                    val materializedKeywords = mutableListOf<String>()
                     cursor.getString(keywordColumn).orEmpty()
                         .split(',', '\n', '，')
                         .map { it.trim().replace(Regex("\\s+"), " ") }
@@ -273,6 +299,7 @@ object Migrations {
                         .forEachIndexed { position, keyword ->
                             val normalized = keyword.lowercase(Locale.ROOT)
                             if (seen.add(normalized)) {
+                                materializedKeywords += keyword
                                 database.execSQL(
                                     "INSERT OR IGNORE INTO history_keyword_assignments " +
                                         "(historyItemId, normalizedKeyword, keyword, sourceType, sourceId, position, createdAt) " +
@@ -281,8 +308,108 @@ object Migrations {
                                 )
                             }
                         }
+                    database.execSQL(
+                        "UPDATE history SET keywords = ? WHERE id = ?",
+                        arrayOf<Any>(materializedKeywords.joinToString(", "), historyId)
+                    )
                 }
             }
+        },
+        Migration(52, 53) { database ->
+            database.execSQL("ALTER TABLE results ADD COLUMN mediaPublishedAt INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE downloads ADD COLUMN mediaPublishedAt INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE history ADD COLUMN mediaPublishedAt INTEGER NOT NULL DEFAULT 0")
+            repairMaterializedHistoryKeywords(database)
+        },
+        Migration(53, 54) { database ->
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `low_quality_redownload_operations` (" +
+                    "`operationId` TEXT NOT NULL, `phase` TEXT NOT NULL DEFAULT 'SCANNING', " +
+                    "`state` TEXT NOT NULL DEFAULT 'RUNNING', " +
+                    "`scanUpperBoundHistoryId` INTEGER NOT NULL DEFAULT 0, " +
+                    "`scanCursorHistoryId` INTEGER NOT NULL DEFAULT 0, " +
+                    "`scanTotal` INTEGER NOT NULL DEFAULT 0, `scanProcessed` INTEGER NOT NULL DEFAULT 0, " +
+                    "`scanFailures` INTEGER NOT NULL DEFAULT 0, `cancelRequested` INTEGER NOT NULL DEFAULT 0, " +
+                    "`createdAt` INTEGER NOT NULL DEFAULT 0, `updatedAt` INTEGER NOT NULL DEFAULT 0, " +
+                    "`completedAt` INTEGER NOT NULL DEFAULT 0, `terminalReason` TEXT NOT NULL DEFAULT '', " +
+                    "PRIMARY KEY(`operationId`))"
+            )
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `low_quality_redownload_items` (" +
+                    "`operationId` TEXT NOT NULL, `historyId` INTEGER NOT NULL, " +
+                    "`candidateReason` TEXT NOT NULL DEFAULT '', `mediaState` TEXT NOT NULL DEFAULT '', " +
+                    "`actualHeight` INTEGER NOT NULL DEFAULT 0, `requestedHeight` INTEGER NOT NULL DEFAULT 0, " +
+                    "`expectedHeight` INTEGER NOT NULL DEFAULT 0, `sourceMaxHeight` INTEGER NOT NULL DEFAULT 0, " +
+                    "`selected` INTEGER NOT NULL DEFAULT 0, `itemState` TEXT NOT NULL DEFAULT 'PROVISIONAL', " +
+                    "`reasonCode` TEXT NOT NULL DEFAULT '', `downloadId` INTEGER, " +
+                    "`updatedAt` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`operationId`, `historyId`), " +
+                    "FOREIGN KEY(`operationId`) REFERENCES `low_quality_redownload_operations`(`operationId`) " +
+                    "ON UPDATE NO ACTION ON DELETE CASCADE)"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_low_quality_redownload_items_operationId` " +
+                    "ON `low_quality_redownload_items` (`operationId`)"
+            )
+            database.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS `index_low_quality_redownload_items_downloadId` " +
+                    "ON `low_quality_redownload_items` (`downloadId`)"
+            )
+        },
+        Migration(54, 55) { database ->
+            database.execSQL(
+                "ALTER TABLE downloads ADD COLUMN orderPosition INTEGER NOT NULL DEFAULT 0"
+            )
+            database.execSQL("UPDATE downloads SET orderPosition = id")
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_downloads_orderPosition " +
+                    "ON downloads(orderPosition)"
+            )
+        },
+        Migration(55, 56) { database ->
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `history_date_fetch_operations` (" +
+                    "`operationId` TEXT NOT NULL, `state` TEXT NOT NULL DEFAULT 'RUNNING', " +
+                    "`cancelRequested` INTEGER NOT NULL DEFAULT 0, " +
+                    "`candidateCount` INTEGER NOT NULL DEFAULT 0, " +
+                    "`uniqueSourceCount` INTEGER NOT NULL DEFAULT 0, " +
+                    "`processedSourceCount` INTEGER NOT NULL DEFAULT 0, " +
+                    "`localHits` INTEGER NOT NULL DEFAULT 0, `cacheHits` INTEGER NOT NULL DEFAULT 0, " +
+                    "`duplicateCoalesced` INTEGER NOT NULL DEFAULT 0, " +
+                    "`extractorLaunches` INTEGER NOT NULL DEFAULT 0, " +
+                    "`compatibilityFallbacks` INTEGER NOT NULL DEFAULT 0, " +
+                    "`elapsedMs` INTEGER NOT NULL DEFAULT 0, `createdAt` INTEGER NOT NULL DEFAULT 0, " +
+                    "`updatedAt` INTEGER NOT NULL DEFAULT 0, `completedAt` INTEGER NOT NULL DEFAULT 0, " +
+                    "`terminalReason` TEXT NOT NULL DEFAULT '', PRIMARY KEY(`operationId`))"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_history_date_fetch_operations_state` " +
+                    "ON `history_date_fetch_operations` (`state`)"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_history_date_fetch_operations_createdAt` " +
+                    "ON `history_date_fetch_operations` (`createdAt`)"
+            )
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `history_date_fetch_items` (" +
+                    "`operationId` TEXT NOT NULL, `historyId` INTEGER NOT NULL, " +
+                    "`sourceUrlSnapshot` TEXT NOT NULL, `sourceGroupKey` TEXT NOT NULL DEFAULT '', " +
+                    "`itemState` TEXT NOT NULL DEFAULT 'PENDING', `reasonCode` TEXT NOT NULL DEFAULT '', " +
+                    "`updatedAt` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`operationId`, `historyId`), " +
+                    "FOREIGN KEY(`operationId`) REFERENCES `history_date_fetch_operations`(`operationId`) " +
+                    "ON UPDATE NO ACTION ON DELETE CASCADE)"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_history_date_fetch_items_operationId` " +
+                    "ON `history_date_fetch_items` (`operationId`)"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_history_date_fetch_items_historyId` " +
+                    "ON `history_date_fetch_items` (`historyId`)"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_history_date_fetch_items_operationId_itemState` " +
+                    "ON `history_date_fetch_items` (`operationId`, `itemState`)"
+            )
         }
     )
 

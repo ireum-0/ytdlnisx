@@ -7,6 +7,11 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 
+enum class HistoryReplacementResult {
+    UPDATED,
+    TARGET_MISSING,
+}
+
 /**
  * The only application-level writer for HistoryItem.keywords.
  *
@@ -209,13 +214,15 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 HistoryKeywordAssignmentSources.MANUAL_SOURCE_ID,
                 manualKeywords
             )
-            db.automaticKeywordRuleDao.getEnabledRulesForVideoKey(videoKey).forEach { rule ->
-                replaceSourceKeywordsInTransaction(
-                    id,
-                    HistoryKeywordAssignmentSources.RULE,
-                    rule.id,
-                    db.automaticKeywordRuleDao.getRuleKeywords(rule.id).map { it.keyword }
-                )
+            if (videoKey.isNotBlank()) {
+                db.automaticKeywordRuleDao.getEnabledRulesForVideoKey(videoKey).forEach { rule ->
+                    replaceSourceKeywordsInTransaction(
+                        id,
+                        HistoryKeywordAssignmentSources.RULE,
+                        rule.id,
+                        db.automaticKeywordRuleDao.getRuleKeywords(rule.id).map { it.keyword }
+                    )
+                }
             }
             id
         }
@@ -281,19 +288,22 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         }
     }
 
-    suspend fun replaceHistoryPreservingAssignments(item: HistoryItem): Long {
+    suspend fun replaceHistoryPreservingAssignments(item: HistoryItem): HistoryReplacementResult {
         require(item.id > 0)
         return db.withTransaction {
+            val existingHistory = db.historyDao.getNullableItem(item.id)
+                ?: return@withTransaction HistoryReplacementResult.TARGET_MISSING
             val existingAssignments = dao.getAssignmentsRaw(item.id)
             val legacyManual = if (existingAssignments.isEmpty()) {
                 AutomaticKeywordNormalizer.parseKeywords(
-                    runCatching { db.historyDao.getItem(item.id).keywords }.getOrDefault(item.keywords)
+                    existingHistory.keywords
                 )
             } else {
                 emptyList()
             }
-            db.historyDao.insertRaw(item.copy(keywords = ""))
-            if (existingAssignments.isNotEmpty()) dao.insertAssignments(existingAssignments)
+            if (db.historyDao.updateRaw(item.copy(keywords = "")) != 1) {
+                return@withTransaction HistoryReplacementResult.TARGET_MISSING
+            }
             if (legacyManual.isNotEmpty()) {
                 replaceSourceKeywordsInTransaction(
                     item.id,
@@ -304,7 +314,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             } else {
                 materializeInTransaction(item.id)
             }
-            item.id
+            HistoryReplacementResult.UPDATED
         }
     }
 

@@ -41,6 +41,8 @@ interface ObserveSourcesDao {
             lastIssueCode = :issueCode,
             lastIssueStage = :issueStage
         WHERE id = :downloadId
+          AND observeSourceId = :sourceId
+          AND status = :expectedStatus
           AND EXISTS(
               SELECT 1 FROM sources
               WHERE id = :sourceId AND status = 'ACTIVE'
@@ -49,6 +51,7 @@ interface ObserveSourcesDao {
     suspend fun parkDownloadForMembership(
         downloadId: Long,
         sourceId: Long,
+        expectedStatus: String,
         issueCode: String,
         issueStage: String
     ): Int
@@ -124,6 +127,7 @@ interface ObserveSourcesDao {
         UPDATE downloads
         SET status='WaitingForMembership', downloadStartTime=0
         WHERE id IN (:downloadIds)
+          AND observeSourceId=:sourceId
           AND status='Queued'
           AND lastIssueCode='MEMBERSHIP_REQUIRED'
           AND EXISTS(

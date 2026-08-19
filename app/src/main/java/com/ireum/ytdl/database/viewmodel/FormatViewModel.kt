@@ -63,7 +63,7 @@ class FormatViewModel(private val application: Application) : AndroidViewModel(a
     val noFreeSpace = _noFreeSpace.asSharedFlow()
 
     init {
-        downloadRepository = DownloadRepository(DBManager.getInstance(application).downloadDao)
+        downloadRepository = DownloadRepository(DBManager.getInstance(application))
         formats = combine(listOf(selectedItemsSharedFlow, filterBy)) { f ->
             val items = selectedItems.value
 

@@ -1,7 +1,6 @@
 ﻿package com.ireum.ytdl.database.repository
 
 import android.content.Context
-import android.util.Patterns
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.database.dao.CommandTemplateDao
 import com.ireum.ytdl.database.dao.ResultDao
@@ -14,7 +13,13 @@ import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
 import com.ireum.ytdl.util.Extensions.isYoutubeChannelURL
 import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.Extensions.isYoutubeWatchVideosURL
-import com.ireum.ytdl.util.Extensions.needsDataUpdating
+import com.ireum.ytdl.util.DownloadMetadataEnrichmentPolicy
+import com.ireum.ytdl.util.ExtractorSourceIdentity
+import com.ireum.ytdl.util.ExtractorSourceIdentityPolicy
+import com.ireum.ytdl.util.LinkUtil
+import com.ireum.ytdl.util.MediaPublishedDate
+import com.ireum.ytdl.util.MetadataEnrichmentResolver
+import com.ireum.ytdl.util.WebUrlInput
 import com.ireum.ytdl.util.extractors.GoogleApiUtil
 import com.ireum.ytdl.util.extractors.newpipe.NewPipeUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
@@ -46,6 +51,11 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
         YOUTUBE_CHANNEL,
         SEARCH_QUERY,
         YT_DLP
+    }
+
+    enum class DownloadMetadataLookupOrder {
+        FRESH_FIRST,
+        CACHE_FIRST,
     }
 
     private fun isUsingNewPipeExtractorDataFetching() = sharedPreferences.getString("youtube_data_fetching_extractor", "NEWPIPE") == "NEWPIPE"
@@ -110,6 +120,9 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
 
     suspend fun search(inputQuery: String, resetResults: Boolean, addToResults: Boolean) : List<ResultItem>{
         if (resetResults) deleteAll()
+        if (WebUrlInput.routeInput(inputQuery) is WebUrlInput.InputRoute.UnsupportedExplicitScheme) {
+            return emptyList()
+        }
         val useLanguageForMetadata = sharedPreferences.getBoolean("use_app_language_for_metadata", true)
         val apiKey = sharedPreferences.getString("api_key", "") ?: ""
         val lang = resolveLanguage()
@@ -429,6 +442,10 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
     }
 
     suspend fun getResultsFromSource(inputQuery: String, resetResults: Boolean, addToResults: Boolean = true, singleItem: Boolean = false) : List<ResultItem> {
+        if (WebUrlInput.routeInput(inputQuery) is WebUrlInput.InputRoute.UnsupportedExplicitScheme) {
+            if (resetResults) deleteAll()
+            return emptyList()
+        }
         return when(getQueryType(inputQuery)){
             SourceType.YOUTUBE_VIDEO -> {
                 getYoutubeVideo(inputQuery, resetResults, addToResults)
@@ -462,65 +479,138 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
 
     suspend fun getSingleMetadataFromSource(inputQuery: String): ResultItem? {
         if (inputQuery.isBlank()) return null
-        val fetched = runCatching {
-            getResultsFromSource(
-                inputQuery,
-                resetResults = false,
-                addToResults = false,
-                singleItem = true
-            ).firstOrNull()
-        }.onFailure {
-            android.util.Log.w("ResultRepository", "Metadata fetch failed url=$inputQuery", it)
-        }.getOrNull()
-
-        if (fetched.hasUsefulMetadata()) return fetched
-
-        val cached = ytdlpUtil.getCachedInfoJsonResult(inputQuery)
-        if (cached.hasUsefulMetadata()) {
-            android.util.Log.d("ResultRepository", "Metadata fetch using cached info JSON url=$inputQuery")
-            return cached
+        if (WebUrlInput.routeInput(inputQuery) is WebUrlInput.InputRoute.UnsupportedExplicitScheme) {
+            return null
         }
+        return MetadataEnrichmentResolver.resolveFreshFirst(
+            loadFresh = { fetchSingleMetadataFromSource(inputQuery) },
+            loadCached = { ytdlpUtil.getCachedInfoJsonResultOrThrow(inputQuery) },
+            isUsable = ResultMetadataMergePolicy::isUsable,
+            needsFallback = ResultMetadataMergePolicy::needsFallback,
+            merge = ResultMetadataMergePolicy::merge,
+        )
+    }
 
+    private suspend fun fetchSingleMetadataFromSource(inputQuery: String): ResultItem? {
+        return getResultsFromSource(
+            inputQuery,
+            resetResults = false,
+            addToResults = false,
+            singleItem = true
+        ).firstOrNull()
+    }
+
+    suspend fun getSingleMetadataFromUrl(inputUrl: String): ResultItem? {
+        val normalizedUrl = inputUrl.trim()
+        if (!LinkUtil.isExtractorInput(normalizedUrl)) return null
+
+        val fetched = getSingleMetadataFromSource(normalizedUrl) ?: return null
+        val fetchedUrl = fetched.url.trim()
+        val sourceIdentity = fetched.sourceIdentity ?: ExtractorSourceIdentity(
+            canonicalUrl = fetchedUrl,
+        )
+        val matchesSource = ExtractorSourceIdentityPolicy.matchesRequestedSource(
+            requestedSource = normalizedUrl,
+            identity = sourceIdentity,
+        )
+        if (!matchesSource) {
+            android.util.Log.w(
+                "ResultRepository",
+                "Ignoring metadata whose source does not match the requested URL"
+            )
+            return null
+        }
         return fetched
     }
 
-    private fun ResultItem?.hasUsefulMetadata(): Boolean {
-        return this != null && (title.isNotBlank() || author.isNotBlank() || thumb.isNotBlank())
-    }
-
     private fun getQueryType(inputQuery: String) : SourceType {
+        val extractorInput = when (val route = WebUrlInput.routeInput(inputQuery)) {
+            is WebUrlInput.InputRoute.Extractor -> route.input.dispatchValue
+            WebUrlInput.InputRoute.SearchQuery -> return SourceType.SEARCH_QUERY
+            is WebUrlInput.InputRoute.UnsupportedExplicitScheme -> return SourceType.SEARCH_QUERY
+        }
         var type = SourceType.SEARCH_QUERY
-        if (inputQuery.isYoutubeURL()) {
+        if (extractorInput.isYoutubeURL()) {
             type = SourceType.YOUTUBE_VIDEO
-            if (inputQuery.contains("playlist?list=")) {
+            if (extractorInput.contains("playlist?list=")) {
                 type = SourceType.YOUTUBE_PLAYLIST
-            }else if (inputQuery.isYoutubeChannelURL()) {
+            }else if (extractorInput.isYoutubeChannelURL()) {
                 type = SourceType.YOUTUBE_CHANNEL
-            }else if (inputQuery.isYoutubeWatchVideosURL()) {
+            }else if (extractorInput.isYoutubeWatchVideosURL()) {
                 type = SourceType.YOUTUBE_WATCHVIDEOS
             }
-        } else if (Patterns.WEB_URL.matcher(inputQuery).matches()) {
+        } else {
             type = SourceType.YT_DLP
         }
         return type
     }
 
     suspend fun updateDownloadItem(
-        downloadItem: DownloadItem
+        downloadItem: DownloadItem,
+        lookupOrder: DownloadMetadataLookupOrder = DownloadMetadataLookupOrder.FRESH_FIRST,
     ) : DownloadItem? {
-        if (downloadItem.needsDataUpdating()){
-            runCatching {
+        if (!DownloadMetadataEnrichmentPolicy.shouldEnrich(downloadItem)) return null
+
+        val changed = when (lookupOrder) {
+            DownloadMetadataLookupOrder.FRESH_FIRST -> {
                 val info = getSingleMetadataFromSource(downloadItem.url) ?: return null
-                if (downloadItem.title.isEmpty() && info.title.isNotBlank()) downloadItem.title = info.title
-                if (downloadItem.author.isEmpty() && info.author.isNotBlank()) downloadItem.author = info.author
-                if (downloadItem.playlistTitle.isNotBlank() && downloadItem.playlistTitle != YTDLNIS_SEARCH) downloadItem.playlistTitle = info.playlistTitle
-                if (info.duration.isNotBlank()) downloadItem.duration = info.duration
-                if (info.website.isNotBlank()) downloadItem.website = info.website
-                if (downloadItem.thumb.isEmpty() && info.thumb.isNotBlank()) downloadItem.thumb = info.thumb
-                return downloadItem
+                applyMetadata(downloadItem, info)
+            }
+            DownloadMetadataLookupOrder.CACHE_FIRST -> {
+                MetadataEnrichmentResolver.enrichCacheFirst(
+                    loadCached = {
+                        ytdlpUtil.getCachedInfoJsonResultOrThrow(downloadItem.url)
+                    },
+                    loadFresh = {
+                        fetchSingleMetadataFromSource(downloadItem.url)
+                    },
+                    applyMetadata = { info -> applyMetadata(downloadItem, info) },
+                    isComplete = { !DownloadMetadataEnrichmentPolicy.shouldEnrich(downloadItem) },
+                )
             }
         }
-        return null
+        return downloadItem.takeIf { changed }
+    }
+
+    private fun applyMetadata(downloadItem: DownloadItem, info: ResultItem): Boolean {
+        var changed = false
+        if (downloadItem.title.isBlank() && info.title.isNotBlank()) {
+            downloadItem.title = info.title
+            changed = true
+        }
+        if (downloadItem.author.isBlank() && info.author.isNotBlank()) {
+            downloadItem.author = info.author
+            changed = true
+        }
+        if (
+            downloadItem.playlistTitle.isNotBlank() &&
+            downloadItem.playlistTitle != YTDLNIS_SEARCH &&
+            info.playlistTitle.isNotBlank() &&
+            downloadItem.playlistTitle != info.playlistTitle
+        ) {
+            downloadItem.playlistTitle = info.playlistTitle
+            changed = true
+        }
+        if (info.duration.isNotBlank() && downloadItem.duration != info.duration) {
+            downloadItem.duration = info.duration
+            changed = true
+        }
+        if (info.website.isNotBlank() && downloadItem.website != info.website) {
+            downloadItem.website = info.website
+            changed = true
+        }
+        if (downloadItem.thumb.isBlank() && info.thumb.isNotBlank()) {
+            downloadItem.thumb = info.thumb
+            changed = true
+        }
+        if (
+            MediaPublishedDate.isPresent(info.mediaPublishedAt) &&
+            downloadItem.mediaPublishedAt != info.mediaPublishedAt
+        ) {
+            downloadItem.mediaPublishedAt = info.mediaPublishedAt
+            changed = true
+        }
+        return changed
     }
 
 }

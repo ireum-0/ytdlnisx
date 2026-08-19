@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.util.Log
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.database.models.ResultItem
+import com.ireum.ytdl.util.MediaPublishedDateParser
 import org.json.JSONException
 import org.json.JSONObject
 import java.util.ArrayList
@@ -84,7 +85,10 @@ class YoutubeApiUtil(context: Context) {
                 "",
                 ArrayList(),
                 "",
-                ArrayList()
+                ArrayList(),
+                mediaPublishedAt = MediaPublishedDateParser.resolve(
+                    publishedAt = obj.optString("publishedAt")
+                )
             )
         } catch (e: Exception) {
             Log.e("YoutubeApiUtil", e.toString())

@@ -12,7 +12,8 @@ data class LocalAddMatchDto(
     val author: String,
     val duration: String,
     val thumb: String,
-    val website: String
+    val website: String,
+    val mediaPublishedAt: Long = 0
 )
 
 data class LocalAddCandidateDto(

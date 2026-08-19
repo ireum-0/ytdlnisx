@@ -27,6 +27,16 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/redownload_low_quality"
+        android:title="@string/redownload_low_quality_videos"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/fetch_missing_source_dates"
+        android:title="@string/fetch_missing_source_dates"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/remove_history"
         android:icon="@drawable/ic_delete_all"
         android:title="@string/remove_all"

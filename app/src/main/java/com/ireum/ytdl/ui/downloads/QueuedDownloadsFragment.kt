@@ -2,7 +2,6 @@
 
 import android.animation.AnimatorSet
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.DialogInterface
 import android.content.SharedPreferences
 import android.graphics.Canvas
@@ -45,6 +44,7 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.BaseTransientBottomBar
 import com.google.android.material.snackbar.Snackbar
 import it.xabaras.android.recyclerview.swipedecorator.RecyclerViewSwipeDecorator
 import kotlinx.coroutines.Dispatchers
@@ -55,7 +55,6 @@ import kotlinx.coroutines.withContext
 
 class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickListener {
     private var fragmentView: View? = null
-    private var activity: Activity? = null
     private lateinit var downloadViewModel : DownloadViewModel
     private lateinit var ytdlpViewModel : YTDLPViewModel
     private lateinit var queuedRecyclerView : RecyclerView
@@ -74,7 +73,6 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
         savedInstanceState: Bundle?
     ): View? {
         fragmentView = inflater.inflate(R.layout.fragment_inqueue, container, false)
-        activity = getActivity()
         notificationUtil = NotificationUtil(requireContext())
         downloadViewModel = ViewModelProvider(this)[DownloadViewModel::class.java]
         ytdlpViewModel = ViewModelProvider(this)[YTDLPViewModel::class.java]
@@ -104,14 +102,14 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
         }
         queuedRecyclerView.layoutManager = GridLayoutManager(context, resources.getInteger(R.integer.grid_size))
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             downloadViewModel.queuedDownloads.collectLatest {
                 adapter.submitData(it)
             }
         }
 
         adapter.addLoadStateListener { loadState ->
-            lifecycleScope.launch {
+            viewLifecycleOwner.lifecycleScope.launch {
                 if (loadState.append.endOfPaginationReached )
                 {
                     if ( adapter.itemCount < 1){
@@ -147,7 +145,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
     }
 
     private fun removeItem(id: Long){
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             val item = withContext(Dispatchers.IO){
                 downloadViewModel.getItemByID(id)
             }
@@ -157,23 +155,36 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
             deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
                 val wasWaitingForMembership =
                     item.status == DownloadRepository.Status.WaitingForMembership.toString()
-                item.status = DownloadRepository.Status.Cancelled.toString()
-                downloadViewModel.cancelDownloadOnly(item.id)
-                lifecycleScope.launch(Dispatchers.IO){
-                    downloadViewModel.updateDownload(item)
-                }
-
-                Snackbar.make(queuedRecyclerView, getString(R.string.cancelled) + ": " + item.title.ifEmpty { item.url }, Snackbar.LENGTH_INDEFINITE)
-                    .setAction(getString(R.string.undo)) {
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            if (wasWaitingForMembership) {
-                                downloadViewModel.restoreMembershipWaiting(item)
+                viewLifecycleOwner.lifecycleScope.launch {
+                    val pendingToken = withContext(Dispatchers.IO) {
+                        downloadViewModel.beginUndoableCancellation(item.id)
+                    }
+                    val snackbar = Snackbar.make(queuedRecyclerView, getString(R.string.cancelled) + ": " + item.title.ifEmpty { item.url }, Snackbar.LENGTH_INDEFINITE)
+                        .setAction(getString(R.string.undo)) {
+                            if (pendingToken != null) {
+                                downloadViewModel.undoPendingCancellation(item, pendingToken)
                             } else {
-                                downloadViewModel.deleteDownload(item.id)
-                                downloadViewModel.queueDownloads(listOf(item))
+                                viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                                    if (wasWaitingForMembership) {
+                                        downloadViewModel.restoreMembershipWaiting(item)
+                                    } else {
+                                        downloadViewModel.deleteDownload(item.id)
+                                        downloadViewModel.queueDownloads(listOf(item))
+                                    }
+                                }
                             }
                         }
-                    }.show()
+                    if (pendingToken != null) {
+                        snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
+                            override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
+                                if (event != DISMISS_EVENT_ACTION) {
+                                    downloadViewModel.commitPendingCancellation(item.id, pendingToken)
+                                }
+                            }
+                        })
+                    }
+                    snackbar.show()
+                }
             }
             deleteDialog.show()
         }
@@ -199,7 +210,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
         ): Boolean {
             return when (item!!.itemId) {
                 R.id.select_between -> {
-                    lifecycleScope.launch {
+                    viewLifecycleOwner.lifecycleScope.launch {
                         val selectedIDs = getSelectedIDs().sortedBy { it }
                         val idsInMiddle = withContext(Dispatchers.IO){
                             downloadViewModel.getIDsBetweenTwoItems(selectedIDs.first(), selectedIDs.last(), listOf(
@@ -219,7 +230,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                     deleteDialog.setTitle(getString(R.string.you_are_going_to_delete_multiple_items))
                     deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
                     deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
-                        lifecycleScope.launch {
+                        viewLifecycleOwner.lifecycleScope.launch {
                             val selectedObjects = getSelectedIDs()
                             adapter.clearCheckedItems()
                             for (id in selectedObjects){
@@ -246,7 +257,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                     true
                 }
                 R.id.up -> {
-                    lifecycleScope.launch {
+                    viewLifecycleOwner.lifecycleScope.launch {
                         val selectedObjects = getSelectedIDs()
                         adapter.clearCheckedItems()
                         withContext(Dispatchers.IO){
@@ -257,7 +268,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                     true
                 }
                 R.id.down -> {
-                    lifecycleScope.launch {
+                    viewLifecycleOwner.lifecycleScope.launch {
                         val selectedObjects = getSelectedIDs()
                         adapter.clearCheckedItems()
                         withContext(Dispatchers.IO){
@@ -268,7 +279,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                     true
                 }
                 R.id.copy_urls -> {
-                    lifecycleScope.launch {
+                    viewLifecycleOwner.lifecycleScope.launch {
                         val selectedObjects = getSelectedIDs()
                         val urls = withContext(Dispatchers.IO){
                             downloadViewModel.getURLsByIds(selectedObjects)
@@ -321,7 +332,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                 }
                 when (direction) {
                     ItemTouchHelper.LEFT -> {
-                        lifecycleScope.launch {
+                        viewLifecycleOwner.lifecycleScope.launch {
                             val deletedItem = withContext(Dispatchers.IO){
                                 runCatching { downloadViewModel.getItemByID(itemID) }.getOrNull()
                             } ?: return@launch
@@ -463,19 +474,19 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
         }
 
     override fun onMoveQueuedItemToTop(itemID: Long) {
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             downloadViewModel.putAtTopOfQueue(listOf(itemID))
         }
     }
 
     override fun onMoveQueuedItemToBottom(itemID: Long) {
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             downloadViewModel.putAtBottomOfQueue(listOf(itemID))
         }
     }
 
     override fun onQueuedCardClick(itemID: Long) {
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             val item = withContext(Dispatchers.IO){
                 downloadViewModel.getItemByID(itemID)
             }
@@ -491,14 +502,12 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                     removeItem(it.id)
                 },
                 downloadItem = {
-                    downloadViewModel.deleteDownload(it.id)
-                    it.downloadStartTime = 0
-                    lifecycleScope.launch(Dispatchers.IO) {
-                        downloadViewModel.queueDownloads(listOf(it))
+                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                        downloadViewModel.rescheduleExistingDownload(it.id, 0L)
                     }
                 },
                 longClickDownloadButton = {
-                    lifecycleScope.launch {
+                    viewLifecycleOwner.lifecycleScope.launch {
                         it.status = DownloadRepository.Status.Saved.toString()
                         withContext(Dispatchers.IO){
                             downloadViewModel.updateToStatus(it.id, DownloadRepository.Status.Saved)
@@ -514,10 +523,11 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                 scheduleButtonClick = {downloadItem ->
                     UiUtil.showDatePicker(parentFragmentManager, sharedPreferences) {
                         Toast.makeText(context, getString(R.string.download_rescheduled_to) + " " + it.time, Toast.LENGTH_LONG).show()
-                        downloadViewModel.deleteDownload(downloadItem.id)
-                        downloadItem.downloadStartTime = it.timeInMillis
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            downloadViewModel.queueDownloads(listOf(downloadItem))
+                        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                            downloadViewModel.rescheduleExistingDownload(
+                                downloadItem.id,
+                                it.timeInMillis
+                            )
                         }
                     }
                 }
@@ -526,7 +536,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
     }
 
     override fun onQueuedCardSelect(isChecked: Boolean, position: Int) {
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             val selectedObjects = adapter.getSelectedObjectsCount(totalSize)
             if (actionMode == null) actionMode = (getActivity() as AppCompatActivity?)!!.startSupportActionMode(contextualActionBar)
             actionMode?.apply {
@@ -554,11 +564,18 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
     }
 
     private fun cancelDownload(itemID: Long){
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             withContext(Dispatchers.IO){
                 downloadViewModel.cancelDownload(itemID)
             }
         }
+    }
+
+    override fun onDestroyView() {
+        actionMode?.finish()
+        queuedRecyclerView.adapter = null
+        fragmentView = null
+        super.onDestroyView()
     }
 
 }

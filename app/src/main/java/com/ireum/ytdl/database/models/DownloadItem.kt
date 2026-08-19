@@ -13,7 +13,8 @@ import kotlinx.parcelize.Parcelize
     tableName = "downloads",
     indices = [
         Index(value = ["status"]),
-        Index(value = ["downloadStartTime"])
+        Index(value = ["downloadStartTime"]),
+        Index(value = ["orderPosition"])
     ]
 )
 @Parcelize
@@ -67,5 +68,9 @@ data class DownloadItem(
     @ColumnInfo(defaultValue = "")
     var lastIssueCode: String = "",
     @ColumnInfo(defaultValue = "")
-    var lastIssueStage: String = ""
+    var lastIssueStage: String = "",
+    @ColumnInfo(defaultValue = "0")
+    var mediaPublishedAt: Long = 0,
+    @ColumnInfo(defaultValue = "0")
+    var orderPosition: Long = 0
 ) : Parcelable

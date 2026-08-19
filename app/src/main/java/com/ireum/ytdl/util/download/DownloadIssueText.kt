@@ -15,6 +15,7 @@ object DownloadIssueText {
                 DownloadIssueCode.DESTINATION_NOT_WRITABLE -> R.string.download_issue_destination_not_writable
                 DownloadIssueCode.FFMPEG_FAILED -> R.string.download_issue_ffmpeg_failed
                 DownloadIssueCode.HISTORY_WRITE_FAILED -> R.string.download_issue_history_failed
+                DownloadIssueCode.HISTORY_TARGET_DELETED -> R.string.download_issue_history_failed
                 DownloadIssueCode.NOTIFICATION_FAILED -> R.string.download_issue_notification_failed
                 DownloadIssueCode.UNKNOWN -> R.string.download_issue_unknown
             }

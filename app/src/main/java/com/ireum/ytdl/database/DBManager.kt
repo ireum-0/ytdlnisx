@@ -12,8 +12,10 @@ import com.ireum.ytdl.database.dao.AutomaticKeywordRuleDao
 import com.ireum.ytdl.database.dao.CookieDao
 import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.dao.HistoryDao
+import com.ireum.ytdl.database.dao.HistoryDateFetchDao
 import com.ireum.ytdl.database.dao.KeywordGroupDao
 import com.ireum.ytdl.database.dao.LogDao
+import com.ireum.ytdl.database.dao.LowQualityRedownloadDao
 import com.ireum.ytdl.database.dao.ObserveSourcesDao
 import com.ireum.ytdl.database.dao.PlaylistDao
 import com.ireum.ytdl.database.dao.PlaylistGroupDao
@@ -30,9 +32,13 @@ import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.HistoryDateFetchItem
+import com.ireum.ytdl.database.models.HistoryDateFetchOperation
 import com.ireum.ytdl.database.models.KeywordGroup
 import com.ireum.ytdl.database.models.KeywordGroupMember
 import com.ireum.ytdl.database.models.LogItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.models.Playlist
 import com.ireum.ytdl.database.models.PlaylistGroup
@@ -73,9 +79,13 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         AutomaticKeywordRule::class,
         AutomaticKeywordRuleKeyword::class,
         AutomaticKeywordRuleVideoMatch::class,
-        HistoryKeywordAssignment::class
+        HistoryKeywordAssignment::class,
+        LowQualityRedownloadOperation::class,
+        LowQualityRedownloadItem::class,
+        HistoryDateFetchOperation::class,
+        HistoryDateFetchItem::class
     ],
-    version = 52,
+    version = 56,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),
@@ -123,6 +133,8 @@ abstract class DBManager : RoomDatabase(){
     abstract val youtuberGroupDao: YoutuberGroupDao
     abstract val youtuberMetaDao: YoutuberMetaDao
     abstract val automaticKeywordRuleDao: AutomaticKeywordRuleDao
+    abstract val lowQualityRedownloadDao: LowQualityRedownloadDao
+    abstract val historyDateFetchDao: HistoryDateFetchDao
 
     enum class SORTING{
         DESC, ASC

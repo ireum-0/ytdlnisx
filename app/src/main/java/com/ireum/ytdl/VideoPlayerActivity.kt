@@ -75,6 +75,8 @@ import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.database.viewmodel.HistoryViewModel
 import com.ireum.ytdl.ui.adapter.VideoQueueAdapter
 import com.ireum.ytdl.ui.downloads.HistoryFragment
+import com.ireum.ytdl.ui.downloads.ThumbnailMetadataDialogStateRenderer
+import com.ireum.ytdl.ui.downloads.ThumbnailMetadataSaveController
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.Extensions.loadThumbnail
 import com.ireum.ytdl.util.NotificationUtil
@@ -214,6 +216,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var backNavigationInProgress: Boolean = false
     private var rebuildingQueueTimeline: Boolean = false
     private val downloadViewModel by lazy { ViewModelProvider(this)[DownloadViewModel::class.java] }
+    private val historyViewModel by lazy { ViewModelProvider(this)[HistoryViewModel::class.java] }
     private val promptedCompatibleRedownloadIds = mutableSetOf<Long>()
 
     private val pickCustomThumbLauncher = registerForActivityResult(
@@ -479,6 +482,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 if (isLikelyUnsupportedVideoPlayback(error)) {
                     maybeOfferCompatibleRedownload(error)
                 } else {
+                    val isIoFailure = error.errorCodeName.contains("IO_")
                     val isPersistentAccessFailure =
                         error.errorCodeName.contains("FILE_NOT_FOUND") ||
                             error.errorCodeName.contains("NO_PERMISSION")
@@ -488,8 +492,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                         error.errorCodeName.contains("IO_") -> R.string.file_access_failed
                         else -> R.string.playback_failed
                     }
+                    if (isIoFailure && tryNextPlaybackLocation()) return
                     if (isPersistentAccessFailure) {
-                        if (tryNextPlaybackLocation()) return
                         val failedHistoryId = currentHistoryItem()?.id ?: launchHistoryId
                         if (
                             failedHistoryId != null &&
@@ -1655,10 +1659,11 @@ class VideoPlayerActivity : AppCompatActivity() {
         urlInput.setText(item.url)
         keywordsInput.setText(item.keywords)
 
-        var editedCustomThumb = item.customThumb
+        val originalCustomThumb = item.customThumb
+        val thumbnailSaveController = ThumbnailMetadataSaveController(originalCustomThumb)
 
         fun updatePreview() {
-            val preview = editedCustomThumb.ifBlank { item.thumb }
+            val preview = thumbnailSaveController.editedThumbnail.ifBlank { item.thumb }
             if (preview.isBlank()) {
                 thumbPreview.setImageDrawable(null)
                 return
@@ -1674,22 +1679,22 @@ class VideoPlayerActivity : AppCompatActivity() {
             thumbPreview.loadThumbnail(
                 hideThumb = false,
                 imageURL = resolved,
-                fallbackImageURL = item.thumb.takeIf { editedCustomThumb.isNotBlank() }.orEmpty()
+                fallbackImageURL = item.thumb.takeIf {
+                    thumbnailSaveController.editedThumbnail.isNotBlank()
+                }.orEmpty()
             )
         }
 
         updatePreview()
-        removeThumb.isVisible = editedCustomThumb.isNotBlank()
+        removeThumb.isVisible = thumbnailSaveController.editedThumbnail.isNotBlank()
 
         selectThumb.setOnClickListener {
             pendingThumbItem = item
             pendingThumbCallback = { path ->
-                if (editedCustomThumb.isNotBlank() && editedCustomThumb != path) {
-                    deleteCustomThumb(editedCustomThumb)
+                if (thumbnailSaveController.replaceThumbnail(path, ::deleteCustomThumb)) {
+                    removeThumb.isVisible = true
+                    updatePreview()
                 }
-                editedCustomThumb = path
-                removeThumb.isVisible = true
-                updatePreview()
             }
             pickCustomThumbLauncher.launch("image/*")
         }
@@ -1699,34 +1704,48 @@ class VideoPlayerActivity : AppCompatActivity() {
                 if (saved.isNullOrBlank()) {
                     Toast.makeText(this, R.string.error_saving_thumbnail, Toast.LENGTH_SHORT).show()
                 } else {
-                    if (editedCustomThumb.isNotBlank() && editedCustomThumb != saved) {
-                        deleteCustomThumb(editedCustomThumb)
+                    if (thumbnailSaveController.replaceThumbnail(saved, ::deleteCustomThumb)) {
+                        removeThumb.isVisible = true
+                        updatePreview()
                     }
-                    editedCustomThumb = saved
-                    removeThumb.isVisible = true
-                    updatePreview()
                 }
             }
         }
 
         removeThumb.setOnClickListener {
-            if (editedCustomThumb.isNotBlank()) {
-                deleteCustomThumb(editedCustomThumb)
+            if (thumbnailSaveController.removeThumbnail(::deleteCustomThumb)) {
+                removeThumb.isVisible = false
+                updatePreview()
             }
-            editedCustomThumb = ""
-            removeThumb.isVisible = false
-            updatePreview()
         }
 
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(getString(R.string.edit_video_info))
             .setView(view)
-            .setPositiveButton(R.string.ok) { _, _ ->
+            .setPositiveButton(R.string.ok, null)
+            .setNegativeButton(R.string.cancel, null)
+            .create()
+
+        dialog.setOnShowListener {
+            val positiveButton = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+            val thumbnailActions = listOf(selectThumb, captureThumb, removeThumb)
+            ThumbnailMetadataDialogStateRenderer.render(
+                dialog,
+                thumbnailSaveController,
+                thumbnailActions
+            )
+            positiveButton.setOnClickListener {
                 val title = titleInput.text?.toString()?.trim().orEmpty()
                 if (title.isBlank()) {
                     Toast.makeText(this, R.string.video_info_required, Toast.LENGTH_SHORT).show()
-                    return@setPositiveButton
+                    return@setOnClickListener
                 }
+                if (!thumbnailSaveController.beginSave()) return@setOnClickListener
+                ThumbnailMetadataDialogStateRenderer.render(
+                    dialog,
+                    thumbnailSaveController,
+                    thumbnailActions
+                )
                 val author = authorInput.text?.toString()?.trim().orEmpty()
                 val artist = artistInput.text?.toString()?.trim().orEmpty()
                 val url = urlInput.text?.toString()?.trim().orEmpty()
@@ -1737,38 +1756,68 @@ class VideoPlayerActivity : AppCompatActivity() {
                     artist = artist,
                     url = url,
                     keywords = keywords,
-                    customThumb = editedCustomThumb
+                    customThumb = thumbnailSaveController.editedThumbnail,
+                    mediaPublishedAt = item.mediaPublishedAt.takeIf {
+                        com.ireum.ytdl.util.MediaPublishedDateSource.matches(item.url, url)
+                    } ?: 0L
                 )
-                lifecycleScope.launch(Dispatchers.IO) {
-                    val db = DBManager.getInstance(this@VideoPlayerActivity)
-                    val currentItem = runCatching { db.historyDao.getItem(item.id) }
-                        .getOrDefault(item)
-                    db.historyDao.update(updated.copy(keywords = currentItem.keywords))
-                    val protectedCount = if (keywords != currentItem.keywords) {
-                        com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
-                            .updateManualFromMaterializedEditor(
-                                item.id,
-                                com.ireum.ytdl.util.AutomaticKeywordNormalizer.parseKeywords(keywords)
-                            )
-                    } else 0
-                    com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(db)
-                        .reconcileHistoryUrlChange(item.id, currentItem.url, updated.url)
-                    if (protectedCount > 0) {
-                        withContext(Dispatchers.Main) {
+                lifecycleScope.launch {
+                    try {
+                        val result = thumbnailSaveController.persist {
+                            historyViewModel.updateWithKeywordNotice(updated)
+                        }
+                        ThumbnailMetadataDialogStateRenderer.render(
+                            dialog,
+                            thumbnailSaveController,
+                            thumbnailActions
+                        )
+                        if (
+                            originalCustomThumb.isNotBlank() &&
+                            originalCustomThumb != result.item.customThumb
+                        ) {
+                            withContext(Dispatchers.IO) {
+                                deleteCustomThumb(originalCustomThumb)
+                            }
+                        }
+                        playbackQueueState.updateItem(result.item)
+                        queueAdapter?.submitList(queueItems.toList())
+                        updateTitleViews(result.item.title, result.item.author)
+                        updateMediaSessionMetadata()
+                        playerNotificationManager?.invalidate()
+                        if (result.protectedAutomaticKeywordCount > 0) {
                             Toast.makeText(
                                 this@VideoPlayerActivity,
                                 R.string.automatic_keyword_automatic_preserved,
                                 Toast.LENGTH_LONG
                             ).show()
                         }
+                        dialog.dismiss()
+                    } catch (error: kotlinx.coroutines.CancellationException) {
+                        ThumbnailMetadataDialogStateRenderer.render(
+                            dialog,
+                            thumbnailSaveController,
+                            thumbnailActions
+                        )
+                        throw error
+                    } catch (error: Exception) {
+                        Log.e("VideoPlayerActivity", "Failed to update history item id=${item.id}", error)
+                        Toast.makeText(
+                            this@VideoPlayerActivity,
+                            R.string.history_metadata_update_failed,
+                            Toast.LENGTH_LONG
+                        ).show()
+                        ThumbnailMetadataDialogStateRenderer.render(
+                            dialog,
+                            thumbnailSaveController,
+                            thumbnailActions
+                        )
                     }
                 }
-                updateTitleViews(updated.title, updated.author)
             }
-            .setNegativeButton(R.string.cancel, null)
-            .create()
+        }
 
         dialog.setOnDismissListener {
+            thumbnailSaveController.cleanupOnDismiss(::deleteCustomThumb)
             isEditVideoInfoDialogVisible = false
             pendingThumbItem = null
             pendingThumbCallback = null
@@ -1995,7 +2044,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         val dir = resolveCustomThumbDirectory(item, mediaPath) ?: return null
         if (!dir.exists()) dir.mkdirs()
         val baseName = resolveCustomThumbBaseName(item, mediaPath)
-        val file = File(dir, "${baseName}_custom_thumb.jpg")
+        val file = File(dir, "${baseName}_custom_thumb_${SystemClock.elapsedRealtimeNanos()}.jpg")
         var out: OutputStream? = null
         return runCatching {
             out = FileOutputStream(file)
@@ -2082,6 +2131,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             listOf(
                 "context_sort_type",
                 "context_sort_order",
+                "context_missing_source_date_policy",
                 "context_status",
                 "context_query",
                 "context_title_query",
@@ -3168,6 +3218,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                 intent.getStringExtra("context_sort_order") ?: DBManager.SORTING.DESC.name
             )
         }.getOrDefault(DBManager.SORTING.DESC)
+        val missingSourceDatePolicy = runCatching {
+            com.ireum.ytdl.util.MissingSourceDatePolicy.valueOf(
+                intent.getStringExtra("context_missing_source_date_policy")
+                    ?: com.ireum.ytdl.util.MissingSourceDatePolicy.USE_DOWNLOAD_DATE.name
+            )
+        }.getOrDefault(com.ireum.ytdl.util.MissingSourceDatePolicy.USE_DOWNLOAD_DATE)
         updateQueueTitle(authorFilter, playlistId, playlistName)
         val db = DBManager.getInstance(this)
         val initialUri = uriFromPath(videoPath)
@@ -3231,7 +3287,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                     status = Unit,
                     website = websiteFilter,
                     playlistId = playlistId,
-                    searchFields = searchFields
+                    searchFields = searchFields,
+                    missingSourceDatePolicy = missingSourceDatePolicy
                 )
                 val relationIds = historyRepo.getFilteredIDs(
                     query = queryFilter,
@@ -3246,7 +3303,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                     status = Unit,
                     website = websiteFilter,
                     playlistId = playlistId,
-                    searchFields = searchFields
+                    searchFields = searchFields,
+                    missingSourceDatePolicy = missingSourceDatePolicy
                 )
                 val groupFilteredIds = filterIdsByYoutuberGroup(
                     db = db,
@@ -3280,7 +3338,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                     }
                     .toList()
             }
-            val fullItems = sortQueueItems(items.map { it.first }, sortType, sortOrder)
+            val fullItems = sortQueueItems(
+                items.map { it.first },
+                sortType,
+                sortOrder,
+                missingSourceDatePolicy
+            )
             logPlaybackTiming("loadQueueForContext full size=${fullItems.size}")
             playbackQueueState.setBaseItems(fullItems)
             if (fullItems.isEmpty()) {
@@ -3384,8 +3447,19 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun sortQueueItems(
         items: List<HistoryItem>,
         sortType: HistoryRepository.HistorySortType,
-        sortOrder: DBManager.SORTING
+        sortOrder: DBManager.SORTING,
+        missingSourceDatePolicy: com.ireum.ytdl.util.MissingSourceDatePolicy
     ): List<HistoryItem> {
+        if (sortType == HistoryRepository.HistorySortType.MEDIA_PUBLISHED_DATE) {
+            return com.ireum.ytdl.util.MediaPublishedDateOrder.sorted(
+                items = items,
+                policy = missingSourceDatePolicy,
+                descending = sortOrder == DBManager.SORTING.DESC,
+                mediaPublishedAt = HistoryItem::mediaPublishedAt,
+                downloadTime = HistoryItem::time,
+                stableId = HistoryItem::id
+            )
+        }
         val sorted = when (sortType) {
             HistoryRepository.HistorySortType.TITLE ->
                 items.sortedBy { it.title.lowercase(java.util.Locale.getDefault()) }
@@ -3395,6 +3469,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                 items.sortedBy { it.durationSeconds }
             HistoryRepository.HistorySortType.DATE ->
                 items.sortedBy { it.time }
+            HistoryRepository.HistorySortType.MEDIA_PUBLISHED_DATE ->
+                error("Handled above")
         }
         return if (sortOrder == DBManager.SORTING.DESC) sorted.asReversed() else sorted
     }

@@ -31,6 +31,9 @@ import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.setForegroundSafely
 import android.media.MediaMetadataRetriever
 import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.util.Locale
 import java.util.UUID
@@ -46,6 +49,7 @@ class LocalAddWorker(
     override suspend fun doWork(): Result {
         val entriesJson = inputData.getString(KEY_ENTRIES_JSON).orEmpty()
         val sessionId = inputData.getString(KEY_SESSION_ID).orEmpty()
+        val loadedFromSession = entriesJson.isBlank() && sessionId.isNotBlank()
         val type = object : TypeToken<List<LocalAddEntryDto>>() {}.type
         val entries: List<LocalAddEntryDto> = if (entriesJson.isNotBlank()) {
             runCatching {
@@ -53,9 +57,7 @@ class LocalAddWorker(
                 Gson().fromJson(entriesJson, type) as? List<LocalAddEntryDto>
             }.getOrNull() ?: emptyList()
         } else if (sessionId.isNotBlank()) {
-            val loaded = LocalAddStorage.loadEntries(context, sessionId)
-            LocalAddStorage.clearEntries(context, sessionId)
-            loaded
+            LocalAddStorage.loadEntries(context, sessionId)
         } else {
             emptyList()
         }
@@ -83,6 +85,8 @@ class LocalAddWorker(
         updateProgressNotification(processed, dedupedEntries.size, force = true)
 
         dedupedEntries.forEach { entry ->
+            currentCoroutineContext().ensureActive()
+            if (isStopped) throw CancellationException("Local add worker stopped")
             try {
                 val uri = Uri.parse(entry.uri)
                 val treeUri = entry.treeUri?.let { Uri.parse(it) }
@@ -103,9 +107,13 @@ class LocalAddWorker(
                 val size = getFileSize(uri)
                 val durationSeconds = getDurationSeconds(uri)
 
-                val match = runCatching {
+                val match = try {
                     LocalMatchUtil.findYoutubeMatch(resultRepository, title, durationSeconds)
-                }.getOrNull()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                }
 
                 if (match != null && match.exactTitleMatch) {
                     val existingByUrl = db.historyDao.getItem(match.item.url)
@@ -139,7 +147,8 @@ class LocalAddWorker(
                         filesize = size,
                         downloadId = 0,
                         localTreeUri = treeMeta.first,
-                        localTreePath = treeMeta.second
+                        localTreePath = treeMeta.second,
+                        mediaPublishedAt = match.item.mediaPublishedAt
                     )
                     HistoryKeywordAssignmentRepository(db).insertHistory(item)
                     if (baseName.isNotBlank()) {
@@ -155,7 +164,8 @@ class LocalAddWorker(
                         author = it.author,
                         duration = it.duration,
                         thumb = it.thumb,
-                        website = it.website
+                        website = it.website,
+                        mediaPublishedAt = it.mediaPublishedAt
                     )
                 }
                 pending.add(
@@ -176,6 +186,8 @@ class LocalAddWorker(
             }
         }
 
+        currentCoroutineContext().ensureActive()
+        if (isStopped) throw CancellationException("Local add worker stopped")
         if (pending.isNotEmpty()) {
             val sessionId = UUID.randomUUID().toString()
             LocalAddStorage.savePending(context, sessionId, pending)
@@ -186,6 +198,9 @@ class LocalAddWorker(
             )
         }
 
+        if (loadedFromSession) {
+            LocalAddStorage.clearEntries(context, sessionId)
+        }
         LocalAddStorage.clearProgressSnapshot(context)
         return Result.success()
     }

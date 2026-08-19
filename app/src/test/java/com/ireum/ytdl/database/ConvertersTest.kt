@@ -36,7 +36,8 @@ class ConvertersTest {
             SaveThumb = false,
             status = "Queued",
             downloadStartTime = 0L,
-            logID = null
+            logID = null,
+            orderPosition = 1L
         )
         val legacyJson = JsonParser.parseString(Gson().toJson(current)).asJsonObject.apply {
             remove("operationId")
@@ -44,6 +45,7 @@ class ConvertersTest {
             remove("retryStrategy")
             remove("lastIssueCode")
             remove("lastIssueStage")
+            remove("orderPosition")
         }.toString()
 
         val restored = Converters().stringToDownloadItem(legacyJson)
@@ -53,6 +55,7 @@ class ConvertersTest {
         assertEquals("ORIGINAL", restored.retryStrategy)
         assertEquals("", restored.lastIssueCode)
         assertEquals("", restored.lastIssueStage)
+        assertEquals(1L, restored.orderPosition)
         restored.hashCode()
     }
 }

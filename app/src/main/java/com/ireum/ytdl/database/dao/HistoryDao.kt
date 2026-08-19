@@ -11,6 +11,7 @@ import androidx.room.Update
 import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.KnownMediaPublishedDate
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
@@ -73,6 +74,15 @@ interface HistoryDao {
     @Query("SELECT * FROM history WHERE customThumb = '' AND (thumb LIKE 'http://%' OR thumb LIKE 'https://%') ORDER BY time DESC LIMIT :limit")
     fun getItemsWithRemoteThumb(limit: Int): List<HistoryItem>
 
+    @Query(
+        "SELECT * FROM history WHERE mediaPublishedAt = 0 " +
+            "AND type IN ('video', 'audio') ORDER BY time DESC"
+    )
+    fun getItemsWithMissingMediaPublishedAt(): List<HistoryItem>
+
+    @Query("SELECT url, mediaPublishedAt FROM history WHERE mediaPublishedAt != 0")
+    suspend fun getKnownMediaPublishedDates(): List<KnownMediaPublishedDate>
+
     @Query("SELECT thumb FROM history WHERE id = :id")
     fun getThumb(id: Long): String
 
@@ -99,6 +109,21 @@ interface HistoryDao {
     @Query("SELECT * FROM history WHERE type = 'video' ORDER BY time DESC")
     fun getAllVideos(): List<HistoryItem>
 
+    @Query("SELECT COALESCE(MAX(id), 0) FROM history WHERE type = 'video'")
+    fun getVideoQualityScanUpperBound(): Long
+
+    @Query("SELECT COUNT(*) FROM history WHERE type = 'video' AND id <= :upperBound")
+    fun getVideoQualityScanCount(upperBound: Long): Int
+
+    @Query(
+        "SELECT * FROM history WHERE type = 'video' AND id > :cursor AND id <= :upperBound " +
+            "ORDER BY id ASC LIMIT :limit"
+    )
+    fun getVideoQualityScanPage(cursor: Long, upperBound: Long, limit: Int): List<HistoryItem>
+
+    @Query("SELECT * FROM history WHERE id = :id LIMIT 1")
+    fun getNullableItem(id: Long): HistoryItem?
+
     @Query("SELECT * FROM history WHERE type = 'video' AND hardSubScanRemoved = 0 AND hardSubDone = 0 ORDER BY time DESC")
     fun getHardSubScanCandidates(): List<HistoryItem>
 
@@ -118,24 +143,39 @@ interface HistoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertAndGetIdRaw(item: HistoryItem): Long
 
+    @Query("SELECT keywords FROM history WHERE id = :id")
+    fun getMaterializedKeywordsOrNull(id: Long): String?
+
     /**
      * Compatibility writes cannot change the materialized keyword projection.
      * Keyword changes must go through HistoryKeywordAssignmentRepository.
      */
     @Transaction
     fun update(item: HistoryItem) {
-        val materialized = getItem(item.id).keywords
+        // Preserve the old @Update no-op behavior when a row was deleted between
+        // being loaded and written by a background/UI task.
+        val materialized = getMaterializedKeywordsOrNull(item.id) ?: return
         updateRaw(item.copy(keywords = materialized))
     }
 
     @Update
-    fun updateRaw(item: HistoryItem)
+    fun updateRaw(item: HistoryItem): Int
 
     @Query("UPDATE history SET playbackPositionMs = :positionMs WHERE id = :id")
     fun updatePlaybackPosition(id: Long, positionMs: Long)
 
     @Query("UPDATE history SET lastWatched = :time WHERE id = :id")
     fun updateLastWatched(id: Long, time: Long)
+
+    @Query(
+        "UPDATE history SET mediaPublishedAt = :mediaPublishedAt " +
+            "WHERE id = :id AND mediaPublishedAt = 0 AND TRIM(url) = :normalizedUrl"
+    )
+    fun updateMediaPublishedAtIfMissing(
+        id: Long,
+        normalizedUrl: String,
+        mediaPublishedAt: Long
+    ): Int
 
     @Query("UPDATE history SET keywords = :keywords WHERE id = :id")
     suspend fun updateKeywordsMaterialized(id: Long, keywords: String)

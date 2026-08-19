@@ -11,12 +11,17 @@ import androidx.preference.PreferenceManager
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.ThemeUtil
 import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
+import com.ireum.ytdl.work.LowQualityRedownloadManager
+import com.ireum.ytdl.work.HistoryDateFetchManager
 import com.yausername.aria2c.Aria2c
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
 import java.io.File
@@ -34,31 +39,58 @@ class App : Application() {
         val sharedPreferences =  PreferenceManager.getDefaultSharedPreferences(this@App)
         setDefaultValues()
         applicationScope = CoroutineScope(SupervisorJob())
-        applicationScope.launch((Dispatchers.IO)) {
-            try {
-                createNotificationChannels()
-                initLibraries()
+        val runtimeReadiness = applicationScope.async(Dispatchers.IO) {
+            runStartupInitialization(
+                initialize = {
+                    createNotificationChannels()
+                    initLibraries()
 
-                val appVer = sharedPreferences.getString("version", "")!!
-                if(appVer.isEmpty() || appVer != BuildConfig.VERSION_NAME){
-                    sharedPreferences.edit(commit = true){
-                        putString("version", BuildConfig.VERSION_NAME)
+                    val appVer = sharedPreferences.getString("version", "")!!
+                    if(appVer.isEmpty() || appVer != BuildConfig.VERSION_NAME){
+                        sharedPreferences.edit(commit = true){
+                            putString("version", BuildConfig.VERSION_NAME)
+                        }
                     }
+                },
+                reportFailure = { failure ->
+                    runCatching {
+                        Looper.prepare()
+                        Toast.makeText(
+                            this@App,
+                            R.string.runtime_initialization_failed,
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    failure.printStackTrace()
                 }
-            }catch (e: Exception){
-                Looper.prepare().runCatching {
-                    Toast.makeText(
-                        this@App,
-                        R.string.runtime_initialization_failed,
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-                e.printStackTrace()
-            }
+            )
         }
         applicationScope.launch(Dispatchers.IO) {
-            runCatching { AutomaticKeywordObservationCoverage(this@App).reconcile() }
-                .onFailure { Log.w(TAG, "Automatic keyword observation coverage reconciliation failed", it) }
+            runStartupReconciliation(
+                readiness = runtimeReadiness,
+                reconcile = { AutomaticKeywordObservationCoverage(this@App).reconcile() },
+                reportFailure = {
+                    Log.w(TAG, "Automatic keyword observation coverage reconciliation failed", it)
+                }
+            )
+        }
+        applicationScope.launch(Dispatchers.IO) {
+            runStartupReconciliation(
+                readiness = runtimeReadiness,
+                reconcile = { LowQualityRedownloadManager.get(this@App).reconcile() },
+                reportFailure = {
+                    Log.w(TAG, "Low-quality re-download reconciliation failed", it)
+                }
+            )
+        }
+        applicationScope.launch(Dispatchers.IO) {
+            runStartupReconciliation(
+                readiness = runtimeReadiness,
+                reconcile = { HistoryDateFetchManager.get(this@App).reconcile() },
+                reportFailure = {
+                    Log.w(TAG, "History date-fetch reconciliation failed", it)
+                }
+            )
         }
         ThemeUtil.init(this)
     }
@@ -350,6 +382,34 @@ class App : Application() {
         private const val TAG = "App"
         private lateinit var applicationScope: CoroutineScope
         lateinit var instance: App
+    }
+}
+
+internal suspend fun runStartupInitialization(
+    initialize: suspend () -> Unit,
+    reportFailure: (Exception) -> Unit
+): Boolean = try {
+    initialize()
+    true
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (failure: Exception) {
+    reportFailure(failure)
+    false
+}
+
+internal suspend fun runStartupReconciliation(
+    readiness: Deferred<Boolean>,
+    reconcile: suspend () -> Unit,
+    reportFailure: (Exception) -> Unit
+) {
+    if (!readiness.await()) return
+    try {
+        reconcile()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        reportFailure(failure)
     }
 }
 

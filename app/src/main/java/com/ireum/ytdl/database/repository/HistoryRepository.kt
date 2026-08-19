@@ -6,6 +6,9 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.KeywordInfo
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.WebsiteUtil
+import com.ireum.ytdl.util.HistoryMediaPublishedDateCandidatePolicy
+import com.ireum.ytdl.util.MediaPublishedDateOrder
+import com.ireum.ytdl.util.MissingSourceDatePolicy
 import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
 import kotlinx.coroutines.flow.Flow
@@ -85,7 +88,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         website: String,
         playlistId: Long,
         searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS),
-        status: Any? = null
+        status: Any? = null,
+        missingSourceDatePolicy: MissingSourceDatePolicy = MissingSourceDatePolicy.USE_DOWNLOAD_DATE
     ) = historyDao.getPaginatedSource(
         buildFilterQuery(
             rawQuery = query,
@@ -100,7 +104,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             website = website,
             playlistId = playlistId,
             status = statusToFilterKey(status),
-            searchFields = searchFields
+            searchFields = searchFields,
+            missingSourceDatePolicy = missingSourceDatePolicy
         )
     )
 
@@ -117,7 +122,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         status: Any,
         website: String,
         playlistId: Long,
-        searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS)
+        searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS),
+        missingSourceDatePolicy: MissingSourceDatePolicy = MissingSourceDatePolicy.USE_DOWNLOAD_DATE
     ): List<Long> {
         return historyDao.getFilteredIDs(
             buildFilterQuery(
@@ -134,7 +140,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 playlistId,
                 status = statusToFilterKey(status),
                 selectIds = true,
-                searchFields = searchFields
+                searchFields = searchFields,
+                missingSourceDatePolicy = missingSourceDatePolicy
             )
         )
     }
@@ -214,6 +221,14 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
     fun getItemsWithRemoteThumb(limit: Int): List<HistoryItem> {
         return historyDao.getItemsWithRemoteThumb(limit)
     }
+
+    fun getItemsMissingMediaPublishedAt(): List<HistoryItem> {
+        return HistoryMediaPublishedDateCandidatePolicy.select(
+            historyDao.getItemsWithMissingMediaPublishedAt()
+        )
+    }
+
+    fun getVideoQualityScanCandidates(): List<HistoryItem> = historyDao.getAllVideos()
 
     fun getDownloadPathsFromIDs(ids: List<Long>): List<List<String>> {
         return historyDao.getItemsFromIDs(ids).map { it.downloadPath }
@@ -363,6 +378,18 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         historyDao.update(item)
     }
 
+    fun updateMediaPublishedAtIfMissing(
+        id: Long,
+        normalizedUrl: String,
+        mediaPublishedAt: Long
+    ): Boolean {
+        return historyDao.updateMediaPublishedAtIfMissing(
+            id = id,
+            normalizedUrl = normalizedUrl,
+            mediaPublishedAt = mediaPublishedAt
+        ) > 0
+    }
+
     fun updateHardSubScanRemoved(ids: List<Long>, removed: Boolean) {
         if (ids.isEmpty()) return
         ids.chunked(ID_BATCH_SIZE).forEach { batch ->
@@ -378,7 +405,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
     }
 
     enum class HistorySortType {
-        DATE, TITLE, AUTHOR, DURATION
+        DATE, MEDIA_PUBLISHED_DATE, TITLE, AUTHOR, DURATION
     }
 
     private data class YoutuberInfoAccumulator(
@@ -515,7 +542,8 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         status: String? = null,
         selectIds: Boolean = false,
         countOnly: Boolean = false,
-        searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS)
+        searchFields: Set<SearchField> = setOf(SearchField.TITLE, SearchField.KEYWORDS),
+        missingSourceDatePolicy: MissingSourceDatePolicy = MissingSourceDatePolicy.USE_DOWNLOAD_DATE
     ): SupportSQLiteQuery {
         val where = StringBuilder()
         val args = ArrayList<Any>()
@@ -680,7 +708,7 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             }
             // Narrow candidate set before in-memory file-existence verification.
             "CUSTOM_THUMBNAIL" -> appendClause("customThumb != ''")
-            "MISSING_THUMBNAIL" -> appendClause("thumb = ''")
+            "MISSING_THUMBNAIL" -> appendClause("thumb = '' AND customThumb = ''")
         }
 
         val select = when {
@@ -694,13 +722,23 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
             sql.append(" WHERE ").append(where)
         }
         if (!countOnly) {
-            val sortColumn = when (sortType) {
-                HistorySortType.DATE -> "time"
-                HistorySortType.TITLE -> "title"
-                HistorySortType.AUTHOR -> "author"
-                HistorySortType.DURATION -> "durationSeconds"
+            if (sortType == HistorySortType.MEDIA_PUBLISHED_DATE) {
+                sql.append(" ORDER BY ").append(
+                    MediaPublishedDateOrder.sqlOrderBy(
+                        policy = missingSourceDatePolicy,
+                        descending = order == SORTING.DESC
+                    )
+                )
+            } else {
+                val sortColumn = when (sortType) {
+                    HistorySortType.DATE -> "time"
+                    HistorySortType.TITLE -> "title"
+                    HistorySortType.AUTHOR -> "author"
+                    HistorySortType.DURATION -> "durationSeconds"
+                    HistorySortType.MEDIA_PUBLISHED_DATE -> error("Handled above")
+                }
+                sql.append(" ORDER BY ").append(sortColumn).append(" ").append(order.name)
             }
-            sql.append(" ORDER BY ").append(sortColumn).append(" ").append(order.name)
         }
 
         return SimpleSQLiteQuery(sql.toString(), args.toArray())

@@ -56,7 +56,7 @@ class AutomaticKeywordRuleRepository(
         val needsInitialSync = oldRule == null || conditionChanged || !nextBaselineComplete
         val pendingApplyToExisting = input.applyToExistingVideos ||
             (syncWasActive && oldRule?.pendingApplyToExisting == true)
-        val ruleId = db.withTransaction {
+        val (ruleId, ruleRevision) = db.withTransaction {
             if (conditionChanged) {
                 assignments.removeSourceAssignments(
                     HistoryKeywordAssignmentSources.RULE,
@@ -98,15 +98,15 @@ class AutomaticKeywordRuleRepository(
                 )
             })
             assignments.replaceRuleAssignmentsForExistingHistories(id, parsedKeywords)
-            id
+            id to next.revision
         }
 
-        AutomaticKeywordObservationCoverage(context, db).reconcile()
         val shouldScheduleInitialSync =
             needsInitialSync || pendingApplyToExisting || syncWasActive
         if (input.enabled && shouldScheduleInitialSync) {
-            dao.updateManualSyncStatus(
+            dao.updateManualSyncStatusIfRevision(
                 ruleId,
+                ruleRevision,
                 AutomaticKeywordSyncStatus.QUEUED,
                 System.currentTimeMillis(),
                 AutomaticKeywordSyncError.NONE
@@ -123,6 +123,7 @@ class AutomaticKeywordRuleRepository(
         } else if (!input.enabled && oldRule?.enabled == true) {
             AutomaticKeywordRuleScheduler.cancel(context, ruleId)
         }
+        AutomaticKeywordObservationCoverage(context, db).reconcile()
         return ruleId
     }
 

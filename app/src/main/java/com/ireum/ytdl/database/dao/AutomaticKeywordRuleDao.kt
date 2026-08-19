@@ -32,13 +32,21 @@ interface AutomaticKeywordRuleDao {
     @Query(
         """
         SELECT r.*,
-               GROUP_CONCAT(DISTINCT k.keyword) AS keywordsCsv,
-               COUNT(DISTINCT a.historyItemId) AS matchedHistoryCount
+               (
+                   SELECT GROUP_CONCAT(orderedKeywords.keyword)
+                   FROM (
+                       SELECT keyword
+                       FROM automatic_keyword_rule_keywords
+                       WHERE ruleId = r.id
+                       ORDER BY position, normalizedKeyword
+                   ) AS orderedKeywords
+               ) AS keywordsCsv,
+               (
+                   SELECT COUNT(DISTINCT a.historyItemId)
+                   FROM history_keyword_assignments a
+                   WHERE a.sourceType = 'RULE' AND a.sourceId = r.id
+               ) AS matchedHistoryCount
         FROM automatic_keyword_rules r
-        LEFT JOIN automatic_keyword_rule_keywords k ON k.ruleId = r.id
-        LEFT JOIN history_keyword_assignments a
-          ON a.sourceType = 'RULE' AND a.sourceId = r.id
-        GROUP BY r.id
         ORDER BY r.id DESC
         """
     )
@@ -70,12 +78,6 @@ interface AutomaticKeywordRuleDao {
 
     @Query(
         "UPDATE automatic_keyword_rules SET manualSyncStatus = :status, manualSyncAt = :at, " +
-            "manualSyncError = :error WHERE id = :ruleId"
-    )
-    suspend fun updateManualSyncStatus(ruleId: Long, status: String, at: Long, error: String)
-
-    @Query(
-        "UPDATE automatic_keyword_rules SET manualSyncStatus = :status, manualSyncAt = :at, " +
             "manualSyncError = :error WHERE id = :ruleId AND revision = :revision"
     )
     suspend fun updateManualSyncStatusIfRevision(
@@ -96,9 +98,15 @@ interface AutomaticKeywordRuleDao {
 
     @Query(
         "UPDATE automatic_keyword_rules SET discoveryStatus = :status, discoveryAt = :at, " +
-            "discoveryError = :error WHERE id = :ruleId"
+            "discoveryError = :error WHERE id = :ruleId AND revision = :revision"
     )
-    suspend fun updateDiscoveryStatus(ruleId: Long, status: String, at: Long, error: String)
+    suspend fun updateDiscoveryStatusIfRevision(
+        ruleId: Long,
+        revision: Long,
+        status: String,
+        at: Long,
+        error: String
+    ): Int
 
     @Query("UPDATE automatic_keyword_rules SET baselineComplete = :complete WHERE id = :ruleId")
     suspend fun updateBaselineComplete(ruleId: Long, complete: Boolean)

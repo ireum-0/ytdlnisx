@@ -1,17 +1,18 @@
 ﻿package com.ireum.ytdl.work
 
 import android.content.Context
-import android.content.pm.ServiceInfo
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
 import android.os.Build
+import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.App
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.repository.ResultRepository
-import com.ireum.ytdl.database.viewmodel.DownloadViewModel
+import com.ireum.ytdl.util.DownloadMetadataEnrichmentPolicy
 import com.ireum.ytdl.util.NotificationUtil
+import kotlinx.coroutines.CancellationException
 
 
 class UpdateMultipleDownloadsDataWorker(private val context: Context,workerParams: WorkerParameters) : CoroutineWorker(context, workerParams) {
@@ -40,35 +41,49 @@ class UpdateMultipleDownloadsDataWorker(private val context: Context,workerParam
         val ids = inputData.getLongArray("ids")?.toMutableList() ?: return Result.failure()
 
         if (!setForegroundSafely()) return Result.retry()
-        try{
-            ids.forEach {
-                if (!isStopped){
-                    val d = dao.getDownloadById(it)
-                    if (d.title.isNotBlank() && d.author.isNotBlank() && d.thumb.isNotBlank()) {
-                        return@forEach
+        try {
+            val batchResult = MetadataBatchProcessor.process(
+                ids = ids,
+                loadItem = { id ->
+                    if (isStopped) {
+                        throw CancellationException("Metadata update worker stopped")
                     }
-
-                    runCatching {
-                        resultRepo.updateDownloadItem(d)?.apply {
-                            val dd = dao.getNullableDownloadById(it)
-                            if (dd != null) {
-                                d.status = dd.status
-                                dao.updateWithoutUpsert(this)
-                            }
+                    dao.getDownloadById(id)
+                },
+                shouldProcess = DownloadMetadataEnrichmentPolicy::shouldEnrich,
+                processItem = { id, item ->
+                    resultRepo.updateDownloadItem(item)?.let { updatedItem ->
+                        val currentItem = dao.getNullableDownloadById(id)
+                        if (currentItem != null) {
+                            updatedItem.status = currentItem.status
+                            dao.updateWithoutUpsert(updatedItem)
                         }
                     }
-                }else{
-                    throw Exception()
-                }
+                },
+                onItemFailure = { id, error ->
+                    Log.w(
+                        TAG,
+                        "Metadata update failed for item id=$id type=${error.javaClass.simpleName}",
+                    )
+                },
+            )
+            if (batchResult.failed > 0) {
+                Log.w(
+                    TAG,
+                    "Metadata batch completed with failures attempted=${batchResult.attempted} " +
+                        "completed=${batchResult.completed} failed=${batchResult.failed}",
+                )
             }
-
-
-        }catch (e: Exception){
-            ids.clear()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
             return Result.failure()
         }
 
         return Result.success()
     }
 
+    companion object {
+        private const val TAG = "UpdateDownloadsData"
+    }
 }

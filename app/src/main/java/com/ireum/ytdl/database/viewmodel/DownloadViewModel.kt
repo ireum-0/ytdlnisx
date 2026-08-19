@@ -33,18 +33,23 @@ import com.ireum.ytdl.database.models.DownloadItemConfigureMultiple
 import com.ireum.ytdl.database.models.DownloadItemSimple
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
+import com.ireum.ytdl.database.repository.HistoryRedownloadItemFactory
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.ui.downloadcard.MultipleItemFormatTuple
 import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
 import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.Extensions.needsDataUpdating
+import com.ireum.ytdl.util.DownloadConfigurationDuplicatePolicy
 import com.ireum.ytdl.util.Extensions.toListString
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.FormatUtil
+import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.HistoryRedownloadQueuePolicy
 import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
@@ -61,12 +66,12 @@ import com.ireum.ytdl.util.preset.DownloadPreset
 import com.ireum.ytdl.util.preset.DownloadPresetMapper
 import com.ireum.ytdl.util.preset.DownloadPresetStore
 import com.ireum.ytdl.work.AlarmScheduler
+import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.UpdateMultipleDownloadsDataWorker
 import com.ireum.ytdl.work.UpdateMultipleDownloadsFormatsWorker
 import com.google.gson.Gson
 import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -84,7 +89,6 @@ import java.util.UUID
 class DownloadViewModel(private val application: Application) : AndroidViewModel(application) {
     private companion object {
         const val DUP_LOG_TAG = "DuplicateCheck"
-        const val HISTORY_REDOWNLOAD_MARKER = "history-redownload:"
     }
 
     private val dbManager: DBManager
@@ -153,7 +157,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         dbManager =  DBManager.getInstance(application)
         dao = dbManager.downloadDao
         commandTemplateDao = DBManager.getInstance(application).commandTemplateDao
-        repository = DownloadRepository(dao)
+        repository = DownloadRepository(dbManager)
         historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao)
         resultRepository = ResultRepository(dbManager.resultDao, commandTemplateDao, application)
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(application)
@@ -225,13 +229,32 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     fun deleteDownload(id: Long) = viewModelScope.launch(Dispatchers.IO) {
-        repository.delete(id)
+        deleteDownloadAndWait(id)
+    }
+
+    suspend fun deleteDownloadAndWait(id: Long) = withContext(Dispatchers.IO) {
+        LowQualityRedownloadLedger.refresh(application, repository.delete(id))
+        notificationUtil.cancelMembershipWaitingNotification(id)
     }
 
     suspend fun updateDownload(item: DownloadItem){
+        if (item.status == DownloadRepository.Status.Cancelled.name) {
+            val affected = repository.cancelByUser(item.id).toMutableSet()
+            if (sharedPreferences.getBoolean("incognito", false)) {
+                affected += repository.delete(item.id)
+            }
+            LowQualityRedownloadLedger.refresh(application, affected)
+            return
+        }
         if (sharedPreferences.getBoolean("incognito", false)){
-            if (item.status == DownloadRepository.Status.Cancelled.toString() || item.status == DownloadRepository.Status.Error.toString()){
-                repository.delete(item.id)
+            if (item.status == DownloadRepository.Status.Error.toString()){
+                LowQualityRedownloadLedger.transition(
+                    application,
+                    item.id,
+                    LowQualityRedownloadItemState.FAILED,
+                    "ITEM_FAILED"
+                )
+                LowQualityRedownloadLedger.refresh(application, repository.delete(item.id))
                 return
             }
         }
@@ -240,8 +263,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun putToSaved(item: DownloadItem) {
-        item.status = DownloadRepository.Status.Saved.toString()
-        val id = repository.update(item)
+        val result = repository.saveForLater(item)
+        LowQualityRedownloadLedger.refresh(application, result.affectedOperationIds)
+        val id = result.downloadId
         if (item.needsDataUpdating()) {
             continueUpdatingDataInBackground(listOf(id))
         }
@@ -385,7 +409,8 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             playlistURL = resultItem.playlistURL,
             playlistIndex = resultItem.playlistIndex,
             incognito = sharedPreferences.getBoolean("incognito", false),
-            availableSubtitles = resultItem.availableSubtitles
+            availableSubtitles = resultItem.availableSubtitles,
+            mediaPublishedAt = resultItem.mediaPublishedAt
         )
         val shouldApplyPreset = requestedPreset != null && (
             applyQuickDownloadPreset || requestedPreset.configuration.type.toDownloadType() == downloadItem.type
@@ -457,7 +482,8 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             arrayListOf(),
             downloadItem.playlistURL,
             downloadItem.playlistIndex,
-            System.currentTimeMillis()
+            System.currentTimeMillis(),
+            mediaPublishedAt = downloadItem.mediaPublishedAt
         )
     }
 
@@ -476,7 +502,8 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             arrayListOf(),
             "",
             null,
-            System.currentTimeMillis()
+            System.currentTimeMillis(),
+            mediaPublishedAt = downloadItem.mediaPublishedAt
         )
 
     }
@@ -659,12 +686,20 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             DownloadRepository.Status.Queued.toString(),
             0,
             null,
-            playlistURL = "$HISTORY_REDOWNLOAD_MARKER${historyItem.id}",
+            playlistURL = HistoryRedownloadMarker.regular(historyItem.id),
             incognito = sharedPreferences.getBoolean("incognito", false),
-            availableSubtitles = availableSubtitles
+            availableSubtitles = availableSubtitles,
+            mediaPublishedAt = historyItem.mediaPublishedAt
         )
         return downloadItem
     }
+
+    suspend fun createQualityRedownloadItem(
+        historyItem: HistoryItem,
+        expectedMinimumHeight: Int,
+        sourceFormats: List<Format>
+    ): DownloadItem = HistoryRedownloadItemFactory(application, dbManager)
+        .createQualityReplacement(historyItem, expectedMinimumHeight, sourceFormats)
 
     private fun String.isLocalFormatLike(): Boolean {
         val normalized = trim().lowercase(Locale.getDefault())
@@ -941,11 +976,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     fun deleteCancelled() = viewModelScope.launch(Dispatchers.IO) {
-        repository.deleteCancelled()
+        LowQualityRedownloadLedger.refresh(application, repository.deleteCancelled())
     }
 
     fun deleteScheduled() = viewModelScope.launch(Dispatchers.IO) {
-        repository.deleteScheduled()
+        LowQualityRedownloadLedger.refresh(application, repository.deleteScheduled())
     }
 
     fun deleteErrored() = viewModelScope.launch(Dispatchers.IO) {
@@ -953,7 +988,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     fun deleteQueued() = viewModelScope.launch(Dispatchers.IO) {
-        repository.deleteQueued()
+        val membershipWaitingIds = repository.getMembershipWaitingDownloads().map(DownloadItem::id)
+        LowQualityRedownloadLedger.refresh(application, repository.deleteQueued())
+        membershipWaitingIds.forEach(notificationUtil::cancelMembershipWaitingNotification)
     }
 
     fun deleteSaved() = viewModelScope.launch(Dispatchers.IO) {
@@ -968,8 +1005,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         repository.deleteWithDuplicateStatus()
     }
 
-    suspend fun deleteAllWithID(ids: List<Long>) {
-        repository.deleteAllWithIDs(ids)
+    suspend fun deleteAllWithID(ids: List<Long>) = withContext(Dispatchers.IO) {
+        LowQualityRedownloadLedger.refresh(application, repository.deleteAllWithIDs(ids))
+        ids.distinct().forEach(notificationUtil::cancelMembershipWaitingNotification)
     }
 
     private suspend fun cancelActiveQueued() = withContext(Dispatchers.IO) {
@@ -1020,83 +1058,34 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         return repository.getActiveAndQueuedDownloadIDs()
     }
 
-    suspend fun resetScheduleTimeForItemsAndStartDownload(items: List<Long>) = CoroutineScope(Dispatchers.IO).launch {
+    suspend fun resetScheduleTimeForItemsAndStartDownload(items: List<Long>) = withContext(Dispatchers.IO) {
         dbManager.downloadDao.resetScheduleTimeForItems(items)
         repository.startDownloadWorker(emptyList(), application)
     }
 
-    suspend fun resetScheduleItemForAllScheduledItemsAndStartDownload() = CoroutineScope(Dispatchers.IO).launch {
+    suspend fun resetScheduleItemForAllScheduledItemsAndStartDownload() = withContext(Dispatchers.IO) {
         dbManager.downloadDao.resetScheduleTimeForAllScheduledItems()
         repository.startDownloadWorker(emptyList(), application)
     }
 
-    suspend fun putAtTopOfQueue(ids: List<Long>) = CoroutineScope(Dispatchers.IO).launch{
-        val downloads = dao.getQueuedDownloadsListIDs()
-        val queuedIds = ids.filter(downloads::contains)
-        if (queuedIds.isEmpty()) return@launch
-        val lastID = queuedIds.maxOf { it }
-        val tempIds = queuedIds.associateWith { dao.moveToTemporaryId(it) }
-        val newIDs = downloads.take(queuedIds.size)
-
-        //other ids that need to move around
-        val takenPositions = mutableListOf<Long>()
-        downloads.filter { !queuedIds.contains(it) && it < lastID }.toMutableList().apply {
-            this.reverse()
-            this.forEach { dID ->
-                val newID = downloads.last { !newIDs.contains(it) && !takenPositions.contains(it) && it <= lastID }
-                takenPositions.add(newID)
-                dao.updateDownloadID(dID, newID)
-            }
-        }
-        queuedIds.forEachIndexed { idx, it ->
-            dao.updateDownloadID(tempIds[it] ?: it, newIDs[idx])
+    suspend fun rescheduleExistingDownload(id: Long, startTime: Long) = withContext(Dispatchers.IO) {
+        if (dao.rescheduleQueuedOrScheduled(id, startTime) == 1) {
+            repository.startDownloadWorker(emptyList(), application)
         }
     }
 
-
-    suspend fun putAtBottomOfQueue(ids: List<Long>) = CoroutineScope(Dispatchers.IO).launch{
-        val downloads = dao.getQueuedDownloadsListIDs()
-        val queuedIds = ids.filter(downloads::contains)
-        if (queuedIds.isEmpty()) return@launch
-        val tempIds = queuedIds.associateWith { dao.moveToTemporaryId(it) }
-        val newIDs = downloads.takeLast(queuedIds.size)
-
-        //other ids that need to move around
-        val takenPositions = mutableListOf<Long>()
-        for (dID in downloads.filter { !queuedIds.contains(it) }){
-            val newID = downloads.first { !newIDs.contains(it) && !takenPositions.contains(it) }
-            takenPositions.add(newID)
-            dao.updateDownloadID(dID, newID)
-        }
-
-        queuedIds.toMutableList().apply {
-            this.reverse()
-            this.forEachIndexed { idx, it ->
-                dao.updateDownloadID(tempIds[it] ?: it, newIDs[idx])
-            }
-        }
+    suspend fun putAtTopOfQueue(ids: List<Long>) = withContext(Dispatchers.IO) {
+        dao.putAtTopOfTheQueue(ids)
     }
 
 
-    fun putAtPosition(current: Long, id: Long) = CoroutineScope(Dispatchers.IO).launch {
-        val downloads = dao.getQueuedDownloadsListIDs()
-        val tempCurrent = dao.moveToTemporaryId(current)
+    suspend fun putAtBottomOfQueue(ids: List<Long>) = withContext(Dispatchers.IO) {
+        dao.putAtBottomOfTheQueue(ids)
+    }
 
-        if (current > id){
-            downloads.filter { it in id until current }.toMutableList().apply {
-                this.reverse()
-                this.forEach { dID ->
-                    val index = downloads.indexOf(dID)
-                    dao.updateDownloadID(dID, downloads[index + 1])
-                }
-            }
-        }else{
-            for (dID in downloads.filter { it in (current + 1)..id }){
-                val index = downloads.indexOf(dID)
-                dao.updateDownloadID(dID, downloads[index - 1])
-            }
-        }
-        dao.updateDownloadID(tempCurrent, id)
+
+    fun putAtPosition(current: Long, id: Long) = viewModelScope.launch(Dispatchers.IO) {
+        dao.putAtPosition(current, id)
     }
 
     fun reQueueDownloadItems(items: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
@@ -1105,6 +1094,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     suspend fun reQueueDownloadItemsAndWait(items: List<Long>) = withContext(Dispatchers.IO) {
         dbManager.downloadDao.reQueueDownloadItems(items)
+        items.distinct().forEach(notificationUtil::cancelMembershipWaitingNotification)
         repository.startDownloadWorker(emptyList(), application)
     }
 
@@ -1190,14 +1180,21 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     private suspend fun hydrateHistoryRedownloadBeforeQueue(item: DownloadItem): Throwable? = withContext(Dispatchers.IO) {
         if (item.type != DownloadType.video) return@withContext null
         val marker = item.playlistURL ?: return@withContext null
-        if (!marker.startsWith(HISTORY_REDOWNLOAD_MARKER)) return@withContext null
-        val historyId = marker.removePrefix(HISTORY_REDOWNLOAD_MARKER).toLongOrNull() ?: return@withContext null
+        val redownloadMarker = HistoryRedownloadMarker.parse(marker) ?: return@withContext null
+        val historyId = redownloadMarker.historyId
         val historyItem = runCatching {
             historyRepository.getItem(historyId)
         }.getOrElse { error ->
             if (error is CancellationException) throw error
             Log.w(DUP_LOG_TAG, "Failed to load history item for redownload id=$historyId", error)
             return@withContext error
+        }
+        if (redownloadMarker.isQualityReplacement) {
+            item.videoPreferences.embedSubs = false
+            item.videoPreferences.writeSubs = false
+            item.videoPreferences.writeAutoSubs = false
+            if (item.id != 0L) repository.update(item)
+            return@withContext null
         }
         val subsLanguages = sharedPreferences.getString("subs_lang", "en.*,.*-orig")!!
         val requiresHardSubLookup =
@@ -1378,7 +1375,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
         val batchItemIds = items.asSequence().map { it.id }.filter { it > 0L }.toSet()
         val seenBatchUrlTypeKeys = mutableSetOf<String>()
-        val seenHistoryRedownloadMarkers = mutableSetOf<String>()
+        val seenHistoryRedownloadIds = mutableSetOf<Long>()
 
         suspend fun markDuplicate(item: DownloadItem, historyId: Long? = null) {
             if (item.id == 0L) {
@@ -1400,14 +1397,20 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             var isDuplicate = false
             if (it.isHistoryRedownload()) {
                 val marker = it.playlistURL.orEmpty()
-                val hasExistingPendingRedownload = pendingHistoryRedownloads.any { pending ->
-                    pending.id !in batchItemIds && pending.playlistURL == marker
-                }
-                val isDuplicateInBatch = !seenHistoryRedownloadMarkers.add(marker)
-                if (hasExistingPendingRedownload || isDuplicateInBatch) {
+                val pendingMarkers = pendingHistoryRedownloads
+                    .asSequence()
+                    .filter { pending -> pending.id !in batchItemIds }
+                    .map { pending -> pending.playlistURL }
+                    .asIterable()
+                val isDuplicate = HistoryRedownloadQueuePolicy.isDuplicate(
+                    markerValue = marker,
+                    pendingMarkerValues = pendingMarkers,
+                    seenHistoryIds = seenHistoryRedownloadIds
+                )
+                if (isDuplicate) {
                     Log.d(
                         DUP_LOG_TAG,
-                        "duplicate(history-redownload) id=${it.id} marker=$marker pending=$hasExistingPendingRedownload batch=$isDuplicateInBatch"
+                        "duplicate(history-redownload) id=${it.id} marker=$marker"
                     )
                     markDuplicate(it)
                 } else {
@@ -1472,22 +1475,15 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                     }
 
                     "config" -> {
-                        val currentCommand = ytdlpUtil.buildYoutubeDLRequest(it)
+                        val currentCommand = ytdlpUtil.buildYoutubeDLRequest(
+                            it,
+                            ytdlpUtil.resolveInitialYoutubeMediaAccessProfile(it),
+                        )
                         val parsedCurrentCommand = ytdlpUtil.parseYTDLRequestString(currentCommand)
-                        val existingDownload = activeAndQueuedDownloads.firstOrNull { d ->
-                            val normalized = d.copy(
-                                id = 0,
-                                logID = null,
-                                customFileNameTemplate = it.customFileNameTemplate,
-                                status = DownloadRepository.Status.Queued.toString(),
-                                operationId = it.operationId,
-                                retryAttempt = it.retryAttempt,
-                                retryStrategy = it.retryStrategy,
-                                lastIssueCode = it.lastIssueCode,
-                                lastIssueStage = it.lastIssueStage
-                            )
-                            normalized.toString() == it.toString()
-                        }
+                        val existingDownload = DownloadConfigurationDuplicatePolicy.findMatch(
+                            activeAndQueuedDownloads,
+                            it,
+                        )
 
                         if (existingDownload != null) {
                             Log.d(
@@ -1544,7 +1540,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     private fun DownloadItem.isHistoryRedownload(): Boolean {
-        return playlistURL?.startsWith(HISTORY_REDOWNLOAD_MARKER) == true
+        return HistoryRedownloadMarker.parse(playlistURL) != null
     }
 
     private fun canonicalDuplicateUrl(url: String): String {
@@ -1796,13 +1792,18 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun updateToStatus(id: Long, status: DownloadRepository.Status) {
-        repository.setDownloadStatus(id, status)
+        if (status == DownloadRepository.Status.Saved) {
+            LowQualityRedownloadLedger.refresh(application, repository.moveToSaved(id))
+        } else {
+            repository.setDownloadStatus(id, status)
+        }
     }
 
     suspend fun restoreMembershipWaiting(item: DownloadItem) {
         val restored = dbManager.observeSourcesDao.parkDownloadForMembership(
             downloadId = item.id,
             sourceId = item.observeSourceId,
+            expectedStatus = DownloadRepository.Status.Cancelled.toString(),
             issueCode = DownloadIssueCode.MEMBERSHIP_REQUIRED.name,
             issueStage = item.lastIssueStage
         ) > 0
@@ -1829,7 +1830,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     fun getIDsBetweenTwoItems(item1: Long, item2: Long, statuses: List<String>) : List<Long> {
-        return dao.getIDsBetweenTwoItems(item1, item2, statuses)
+        return if (statuses == listOf(DownloadRepository.Status.Queued.name)) {
+            dao.getQueuedIDsBetweenTwoItems(item1, item2)
+        } else {
+            dao.getIDsBetweenTwoItems(item1, item2, statuses)
+        }
     }
 
     fun getScheduledIDsBetweenTwoItems(item1: Long, item2: Long) : List<Long> {
@@ -1861,8 +1866,53 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun cancelDownload(id: Long) {
-        updateToStatus(id, DownloadRepository.Status.Cancelled)
+        LowQualityRedownloadLedger.refresh(application, repository.cancelByUser(id))
         cancelDownloadOnly(id)
+    }
+
+    suspend fun beginUndoableCancellation(id: Long): String? {
+        val outcome = repository.beginUndoableCancellation(id)
+        LowQualityRedownloadLedger.refresh(application, outcome.affectedOperationIds)
+        cancelDownloadOnly(id)
+        return outcome.pendingToken
+    }
+
+    fun undoPendingCancellation(item: DownloadItem, token: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val originalStatus = runCatching {
+                DownloadRepository.Status.valueOf(item.status)
+            }.getOrNull() ?: return@launch
+            val resolution = repository.undoPendingCancellation(
+                item.id,
+                token,
+                originalStatus
+            )
+            LowQualityRedownloadLedger.refresh(application, resolution.affectedOperationIds)
+            when (resolution.restoredStatus) {
+                DownloadRepository.Status.Queued -> {
+                    repository.getItemByID(item.id).let { restored ->
+                        repository.startDownloadWorker(listOf(restored), application)
+                    }
+                }
+                DownloadRepository.Status.WaitingForMembership -> {
+                    notificationUtil.createMembershipWaiting(
+                        item.id,
+                        item.title.ifEmpty { item.url },
+                        resources
+                    )
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    fun commitPendingCancellation(id: Long, token: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            LowQualityRedownloadLedger.refresh(
+                application,
+                repository.commitPendingCancellation(id, token)
+            )
+        }
     }
 
     suspend fun pauseDownload(id: Long)  {
@@ -1909,7 +1959,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     fun deleteAll() = viewModelScope.launch {
         cancelAllDownloadsImpl()
-        repository.deleteAll()
+        LowQualityRedownloadLedger.refresh(application, repository.deleteAll())
     }
 
     fun cancelAllDownloads() = viewModelScope.launch {
@@ -1918,6 +1968,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     private suspend fun cancelAllDownloadsImpl() {
         WorkManager.getInstance(application).cancelAllWorkByTag("download")
+        val linkedBatchIds = dbManager.lowQualityRedownloadDao.getActiveOperation()
+            ?.let { operation ->
+                dbManager.lowQualityRedownloadDao.getNonterminalDownloadIds(operation.operationId)
+            }
+            .orEmpty()
         val downloadsToCancel = withContext(Dispatchers.IO){
             getActiveAndPostProcessingDownloads() +
                 dao.getMembershipWaitingDownloads()
@@ -1926,6 +1981,14 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             cancelDownloadOnly(it.id)
         }
         cancelActiveQueued()
+        linkedBatchIds.forEach { id ->
+            LowQualityRedownloadLedger.transition(
+                application,
+                id,
+                LowQualityRedownloadItemState.CANCELLED,
+                "ITEM_CANCELLED"
+            )
+        }
     }
 
     fun resumeDownload(itemID: Long) = viewModelScope.launch {

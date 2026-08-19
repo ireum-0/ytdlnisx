@@ -39,6 +39,7 @@ import com.ireum.ytdl.util.BackupSettingsUtil
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
@@ -74,7 +75,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     init {
         historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao)
         historyKeywordAssignments = HistoryKeywordAssignmentRepository(dbManager)
-        downloadRepository = DownloadRepository(dbManager.downloadDao)
+        downloadRepository = DownloadRepository(dbManager)
         cookieRepository = CookieRepository(dbManager.cookieDao)
         commandTemplateRepository = CommandTemplateRepository(dbManager.commandTemplateDao)
         searchHistoryRepository = SearchHistoryRepository(dbManager.searchHistoryDao)
@@ -375,7 +376,10 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     downloadRepository.getMembershipWaitingDownloads().forEach {
                         notificationUtil.cancelMembershipWaitingNotification(it.id)
                     }
-                    downloadRepository.deleteQueued()
+                    LowQualityRedownloadLedger.refresh(
+                        application,
+                        downloadRepository.deleteQueued()
+                    )
                 }
             }
 
@@ -576,7 +580,12 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
             data.scheduled?.apply {
                 withContext(Dispatchers.IO) {
-                    if (resetData) downloadRepository.deleteScheduled()
+                    if (resetData) {
+                        LowQualityRedownloadLedger.refresh(
+                            application,
+                            downloadRepository.deleteScheduled()
+                        )
+                    }
                     val restoredScheduled = mutableListOf<com.ireum.ytdl.database.models.DownloadItem>()
                     data.scheduled!!.forEach {
                         val restoredItem = remapRestoredDownload(it)
@@ -589,7 +598,12 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
             data.cancelled?.apply {
                 withContext(Dispatchers.IO){
-                    if (resetData) downloadRepository.deleteCancelled()
+                    if (resetData) {
+                        LowQualityRedownloadLedger.refresh(
+                            application,
+                            downloadRepository.deleteCancelled()
+                        )
+                    }
                     data.cancelled!!.forEach {
                         downloadRepository.insert(remapRestoredDownload(it))
                     }

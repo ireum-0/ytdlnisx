@@ -8,6 +8,7 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.work.DownloadWorker
+import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,9 +25,10 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
                 CoroutineScope(Dispatchers.IO).launch{
                     try {
                         runCatching {
-                            val item = dbManager.downloadDao.getDownloadById(id.toLong())
-                            item.status = DownloadRepository.Status.Cancelled.toString()
-                            dbManager.downloadDao.update(item)
+                            val affectedOperationIds = DownloadRepository(dbManager).cancelByUser(
+                                id.toLong()
+                            )
+                            LowQualityRedownloadLedger.refresh(c, affectedOperationIds)
                         }
                         YoutubeDL.getInstance().destroyProcessById(id.toString())
                         YoutubeDLCompat.destroyProcessById(id.toString())

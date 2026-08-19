@@ -83,6 +83,11 @@ import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.database.viewmodel.HistoryViewModel
+import com.ireum.ytdl.database.viewmodel.HistoryDateFetchUiState
+import com.ireum.ytdl.database.viewmodel.HistoryDateFetchViewModel
+import com.ireum.ytdl.database.viewmodel.LowQualityRedownloadCandidateUi
+import com.ireum.ytdl.database.viewmodel.LowQualityRedownloadUiState
+import com.ireum.ytdl.database.viewmodel.LowQualityRedownloadViewModel
 import com.ireum.ytdl.database.viewmodel.PlaylistViewModel
 import com.ireum.ytdl.ui.adapter.HistoryPaginatedAdapter
 import com.ireum.ytdl.util.FileUtil
@@ -109,6 +114,15 @@ import androidx.lifecycle.asFlow
 import androidx.work.workDataOf
 import com.ireum.ytdl.util.LocalAddEntryDto
 import com.ireum.ytdl.util.LocalAddStorage
+import com.ireum.ytdl.util.LinkUtil
+import com.ireum.ytdl.util.HistorySortPolicy
+import com.ireum.ytdl.util.LowQualityCandidateReason
+import com.ireum.ytdl.util.MediaPublishedDate
+import com.ireum.ytdl.util.MediaPublishedDateSource
+import com.ireum.ytdl.util.MissingSourceDatePolicy
+import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
+import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
+import com.ireum.ytdl.database.models.HistoryDateFetchOperationState
 import com.ireum.ytdl.work.LocalAddWorker
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
@@ -256,6 +270,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private val playlistFilterUnassigned = -2L
     private lateinit var historyViewModel: HistoryViewModel
     private lateinit var downloadViewModel: DownloadViewModel
+    private lateinit var historyDateFetchViewModel: HistoryDateFetchViewModel
+    private lateinit var lowQualityRedownloadViewModel: LowQualityRedownloadViewModel
     private lateinit var playlistViewModel: PlaylistViewModel
 
     private lateinit var fragmentView: View
@@ -330,6 +346,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private var localAddSnackbar: Snackbar? = null
     private var localAddProgressJob: Job? = null
     private var localAddProgressTickerJob: Job? = null
+    private var mediaDateFetchSnackbar: Snackbar? = null
+    private var reportedDateFetchTerminalOperationId: String? = null
+    private var qualityScanSnackbar: Snackbar? = null
+    private var qualitySelectionDialog: androidx.appcompat.app.AlertDialog? = null
+    private var displayedQualityOperationId: String? = null
+    private var reportedQualityTerminalOperationId: String? = null
     private var fastScrollEnabled = false
     private var lastScreenKey: ScreenKey? = null
     private var lastRecentMode: Boolean? = null
@@ -778,6 +800,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
         downloadViewModel = ViewModelProvider(this)[DownloadViewModel::class.java]
+        historyDateFetchViewModel =
+            ViewModelProvider(this)[HistoryDateFetchViewModel::class.java]
+        viewLifecycleOwner.lifecycleScope.launch {
+            historyDateFetchViewModel.uiState.collectLatest(::renderHistoryDateFetchState)
+        }
+        lowQualityRedownloadViewModel =
+            ViewModelProvider(this)[LowQualityRedownloadViewModel::class.java]
+        viewLifecycleOwner.lifecycleScope.launch {
+            lowQualityRedownloadViewModel.uiState.collectLatest(::renderLowQualityRedownloadState)
+        }
         consumeIntentScrollRestore()
         consumePendingStoredScrollRestore()
         historyAdapter.addOnPagesUpdatedListener {
@@ -859,57 +891,57 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.authors.collectLatest {
                 authorList = it
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.keywords.collectLatest {
                 keywordList = it
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.websites.collectLatest { 
                 websiteList = it
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             playlistViewModel.allPlaylists.collectLatest { playlists ->
                 playlistsCache = playlists
                  updatePlaylistLabel(historyViewModel.playlistFilter.value)
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.youtuberGroups.collectLatest { groups ->
                 youtuberGroupsCache = groups
                 updateYoutuberLabel()
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.youtuberGroupRelations.collectLatest { relations ->
                 youtuberGroupRelationsCache = relations
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.playlistGroups.collectLatest { groups ->
                 playlistGroupsCache = groups
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.keywordGroups.collectLatest { groups ->
                 keywordGroupsCache = groups
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.totalCount.collectLatest {
                 totalCount = it
                 updateHistoryEmptyState()
@@ -917,7 +949,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.statusFilter.collectLatest { status ->
                 historyAdapter.setDisableGeneratedThumbnails(
                     status == HistoryViewModel.HistoryStatus.MISSING_THUMBNAIL
@@ -926,27 +958,26 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
-            historyViewModel.sortOrder.collectLatest {
-                when (it) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            historyViewModel.effectiveSort.collectLatest { effective ->
+                sortChip.isVisible = effective.controlsVisible
+                when (effective.order) {
                     SORTING.ASC -> sortChip.chipIcon = ContextCompat.getDrawable(requireContext(), R.drawable.ic_down)
                     SORTING.DESC -> sortChip.chipIcon = ContextCompat.getDrawable(requireContext(), R.drawable.ic_up)
                 }
-            }
-        }
-
-        lifecycleScope.launch {
-            historyViewModel.sortType.collectLatest {
-                when (it) {
+                when (effective.type) {
                     HistoryRepository.HistorySortType.AUTHOR -> sortChip.text = getString(R.string.author)
                     HistoryRepository.HistorySortType.DATE -> sortChip.text = getString(R.string.date_added)
+                    HistoryRepository.HistorySortType.MEDIA_PUBLISHED_DATE ->
+                        sortChip.text = getString(R.string.upload_release_date)
                     HistoryRepository.HistorySortType.TITLE -> sortChip.text = getString(R.string.title)
                     HistoryRepository.HistorySortType.DURATION -> sortChip.text = getString(R.string.length)
                 }
+                historyAdapter.setDateDisplayMode(effective.dateDisplayMode)
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.authorFilter.collectLatest { filter ->
                 updateYoutuberLabel()
                 updateYoutuberChipCheckedState()
@@ -954,7 +985,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.youtuberGroupFilter.collectLatest { groupId ->
                 updateYoutuberLabel()
                 updateYoutuberChipCheckedState()
@@ -962,7 +993,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.playlistFilter.collectLatest { playlistId ->
                 updatePlaylistLabel(playlistId)
                 playlistChip.isChecked = playlistId != -1L || historyViewModel.playlistGroupFilter.value >= 0L
@@ -970,28 +1001,28 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.keywordFilter.collectLatest { keyword ->
                 updateKeywordLabel()
                 updateFilterBadge()
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.playlistGroupFilter.collectLatest { groupId ->
                 updatePlaylistLabel(historyViewModel.playlistFilter.value)
                 updateFilterBadge()
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.keywordGroupFilter.collectLatest { groupId ->
                 updateKeywordLabel()
                 updateFilterBadge()
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.isPlaylistSelectionMode.collectLatest { isSelectionMode ->
                 playlistChip.isChecked = isSelectionMode ||
                     historyViewModel.playlistFilter.value != -1L ||
@@ -1009,7 +1040,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.isKeywordSelectionMode.collectLatest { isSelectionMode ->
                 keywordChip.isChecked = isSelectionMode ||
                     historyViewModel.keywordFilter.value.isNotBlank() ||
@@ -1027,7 +1058,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.isYoutuberSelectionMode.collectLatest { isSelectionMode ->
                 updateYoutuberChipCheckedState()
                 if (isSelectionMode && shouldAutoScrollToTop()) {
@@ -1051,7 +1082,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             historyViewModel.isRecentMode.collectLatest { isRecentMode ->
                 recentChip.isChecked = isRecentMode
                 if (lastRecentMode != null && lastRecentMode != isRecentMode && shouldAutoScrollToTop()) {
@@ -1084,7 +1115,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             downloadViewModel.alreadyExistsUiState.collectLatest { res ->
                 if (res.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
@@ -1151,6 +1182,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         localAddProgressTickerJob = null
         localAddSnackbar?.dismiss()
         localAddSnackbar = null
+        mediaDateFetchSnackbar?.dismiss()
+        mediaDateFetchSnackbar = null
+        qualityScanSnackbar?.dismiss()
+        qualityScanSnackbar = null
+        qualitySelectionDialog?.dismiss()
+        qualitySelectionDialog = null
+        displayedQualityOperationId = null
         clearNavigationBackStack()
         pendingRestoreEntry = null
         activeNavigationRestoreEntry = null
@@ -1495,7 +1533,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             urls = "",
             chapters = null,
             playlistURL = "",
-            playlistIndex = null
+            playlistIndex = null,
+            mediaPublishedAt = match.mediaPublishedAt
         )
     }
 
@@ -1552,7 +1591,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 filesize = candidate.size,
                                 downloadId = 0,
                                 localTreeUri = updatedTreeMeta.first,
-                                localTreePath = updatedTreeMeta.second
+                                localTreePath = updatedTreeMeta.second,
+                                mediaPublishedAt = manual.mediaPublishedAt
                             )
                             com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
                                 .insertHistory(item)
@@ -1588,7 +1628,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             filesize = candidate.size,
                             downloadId = 0,
                             localTreeUri = candidate.treeUri?.toString().orEmpty(),
-                            localTreePath = buildTreeMeta(candidate.treeUri, candidate.uri).second
+                            localTreePath = buildTreeMeta(candidate.treeUri, candidate.uri).second,
+                            mediaPublishedAt = match.item.mediaPublishedAt
                         )
                         com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
                             .insertHistory(item)
@@ -1640,7 +1681,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             filesize = candidate.size,
                             downloadId = 0,
                             localTreeUri = updatedTreeMeta.first,
-                            localTreePath = updatedTreeMeta.second
+                            localTreePath = updatedTreeMeta.second,
+                            mediaPublishedAt = manual.mediaPublishedAt
                         )
                         com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
                             .insertHistory(item)
@@ -2533,6 +2575,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                         deleteDialog.show()
                     }
                 }
+                R.id.redownload_low_quality -> startLowQualityVideoScan()
+                R.id.fetch_missing_source_dates -> showFetchMissingSourceDatesDialog()
                 R.id.filters -> showFiltersDialog()
             }
             true
@@ -2657,7 +2701,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 filesize = candidate.size,
                 downloadId = 0,
                 localTreeUri = updatedTreeMeta.first,
-                localTreePath = updatedTreeMeta.second
+                localTreePath = updatedTreeMeta.second,
+                mediaPublishedAt = manual.mediaPublishedAt
             )
             com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
                 .insertHistory(item)
@@ -2736,7 +2781,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 filesize = candidate.size,
                                 downloadId = 0,
                                 localTreeUri = updatedTreeMeta.first,
-                                localTreePath = updatedTreeMeta.second
+                                localTreePath = updatedTreeMeta.second,
+                                mediaPublishedAt = match.item.mediaPublishedAt
                             )
                             com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
                                 .insertHistory(item)
@@ -3556,7 +3602,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val duration: String,
         val sourceUrl: String,
         val thumb: String,
-        val website: String
+        val website: String,
+        val mediaPublishedAt: Long
     )
 
     private data class ManualMetadataResult(
@@ -3893,7 +3940,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                     duration = duration,
                                     sourceUrl = sourceUrl,
                                     thumb = result?.thumb.orEmpty(),
-                                    website = result?.website.orEmpty()
+                                    website = result?.website.orEmpty(),
+                                    mediaPublishedAt = result?.mediaPublishedAt ?: 0L
                                 ),
                                 cancelled = false
                             )
@@ -3962,8 +4010,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     ): com.ireum.ytdl.database.models.ResultItem? {
         if (url.isBlank()) return null
         return runCatching {
-            resultRepository.getSingleMetadataFromSource(url)
-        }.getOrNull()
+            resultRepository.getSingleMetadataFromUrl(url)
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            null
+        }
     }
 
     private fun showSearchResultsDialog(
@@ -4033,11 +4084,15 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
         }
 
+        val originalCustomThumb = item.customThumb
         var editedThumb = item.thumb
         var editedWebsite = item.website
-        var editedCustomThumb = item.customThumb
+        val thumbnailSaveController = ThumbnailMetadataSaveController(originalCustomThumb)
+        var editedMediaPublishedAt = item.mediaPublishedAt
+        var mediaPublishedAtSourceUrl = item.url
 
         fun updatePreview() {
+            val editedCustomThumb = thumbnailSaveController.editedThumbnail
             val preview = if (editedCustomThumb.isNotBlank() && FileUtil.exists(editedCustomThumb)) {
                 editedCustomThumb
             } else {
@@ -4062,17 +4117,15 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
 
         updatePreview()
-        removeThumb.isVisible = editedCustomThumb.isNotBlank()
+        removeThumb.isVisible = thumbnailSaveController.editedThumbnail.isNotBlank()
 
         selectThumb.setOnClickListener {
             pendingThumbItem = item.copy(downloadPath = operationPaths)
             pendingThumbCallback = { path ->
-                if (editedCustomThumb.isNotBlank() && editedCustomThumb != path) {
-                    deleteCustomThumb(editedCustomThumb)
+                if (thumbnailSaveController.replaceThumbnail(path, ::deleteCustomThumb)) {
+                    removeThumb.isVisible = true
+                    updatePreview()
                 }
-                editedCustomThumb = path
-                removeThumb.isVisible = true
-                updatePreview()
             }
             pickCustomThumbLauncher.launch("image/*")
         }
@@ -4082,23 +4135,19 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 if (saved.isNullOrBlank()) {
                     Toast.makeText(requireContext(), R.string.error_saving_thumbnail, Toast.LENGTH_SHORT).show()
                 } else {
-                    if (editedCustomThumb.isNotBlank() && editedCustomThumb != saved) {
-                        deleteCustomThumb(editedCustomThumb)
+                    if (thumbnailSaveController.replaceThumbnail(saved, ::deleteCustomThumb)) {
+                        removeThumb.isVisible = true
+                        updatePreview()
                     }
-                    editedCustomThumb = saved
-                    removeThumb.isVisible = true
-                    updatePreview()
                 }
             }
         }
 
         removeThumb.setOnClickListener {
-            if (editedCustomThumb.isNotBlank()) {
-                deleteCustomThumb(editedCustomThumb)
+            if (thumbnailSaveController.removeThumbnail(::deleteCustomThumb)) {
+                removeThumb.isVisible = false
+                updatePreview()
             }
-            editedCustomThumb = ""
-            removeThumb.isVisible = false
-            updatePreview()
         }
 
         val db = DBManager.getInstance(requireContext())
@@ -4155,6 +4204,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                                 durationInput.setText(info.duration)
                                                 editedThumb = info.thumb
                                                 editedWebsite = info.website
+                                                editedMediaPublishedAt = info.mediaPublishedAt
+                                                mediaPublishedAtSourceUrl = info.url.ifBlank { link }
                                                 updatePreview()
                                             }
                                         }
@@ -4166,6 +4217,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                     durationInput.setText(selected.duration)
                                     editedThumb = selected.thumb
                                     editedWebsite = selected.website
+                                    editedMediaPublishedAt = selected.mediaPublishedAt
+                                    mediaPublishedAtSourceUrl = selected.url
                                     updatePreview()
                                 }
                                 .show()
@@ -4196,6 +4249,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     durationInput.setText(info.duration)
                     editedThumb = info.thumb
                     editedWebsite = info.website
+                    editedMediaPublishedAt = info.mediaPublishedAt
+                    mediaPublishedAtSourceUrl = info.url.ifBlank { url }
                     updatePreview()
                 }
             }
@@ -4209,17 +4264,36 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             .create()
 
         dialog.setOnShowListener {
-            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val positiveButton = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+            val thumbnailActions = listOf(selectThumb, captureThumb, removeThumb)
+            ThumbnailMetadataDialogStateRenderer.render(
+                dialog,
+                thumbnailSaveController,
+                thumbnailActions
+            )
+            positiveButton.setOnClickListener {
                 val title = titleInput.text?.toString()?.trim().orEmpty()
                 if (title.isBlank()) {
                     Toast.makeText(requireContext(), R.string.video_info_required, Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
+                if (!thumbnailSaveController.beginSave()) return@setOnClickListener
+                ThumbnailMetadataDialogStateRenderer.render(
+                    dialog,
+                    thumbnailSaveController,
+                    thumbnailActions
+                )
                 val author = normalizeAuthors(authorInput.text?.toString().orEmpty())
                 val artist = normalizeAuthors(artistInput.text?.toString().orEmpty())
                 val url = urlInput.text?.toString()?.trim().orEmpty()
                 val duration = durationInput.text?.toString()?.trim().orEmpty()
                 val keywords = keywordsInput.text?.toString()?.trim().orEmpty()
+                val resolvedMediaPublishedAt = when {
+                    !matchesMediaPublishedDateSource(mediaPublishedAtSourceUrl, url) -> 0L
+                    MediaPublishedDate.isPresent(editedMediaPublishedAt) -> editedMediaPublishedAt
+                    matchesMediaPublishedDateSource(item.url, url) -> item.mediaPublishedAt
+                    else -> 0L
+                }
                 val updated = item.copy(
                     title = title,
                     author = author,
@@ -4229,25 +4303,63 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     durationSeconds = duration.toDurationSeconds(),
                     keywords = keywords,
                     thumb = editedThumb,
-                    customThumb = editedCustomThumb,
-                    website = editedWebsite
+                    customThumb = thumbnailSaveController.editedThumbnail,
+                    website = editedWebsite,
+                    mediaPublishedAt = resolvedMediaPublishedAt
                 )
-                lifecycleScope.launch {
-                    val protectedCount = historyViewModel.updateWithKeywordNotice(updated)
-                    if (protectedCount > 0) {
+                viewLifecycleOwner.lifecycleScope.launch {
+                    try {
+                        val result = thumbnailSaveController.persist {
+                            historyViewModel.updateWithKeywordNotice(updated)
+                        }
+                        ThumbnailMetadataDialogStateRenderer.render(
+                            dialog,
+                            thumbnailSaveController,
+                            thumbnailActions
+                        )
+                        if (
+                            originalCustomThumb.isNotBlank() &&
+                            originalCustomThumb != result.item.customThumb
+                        ) {
+                            withContext(Dispatchers.IO) {
+                                deleteCustomThumb(originalCustomThumb)
+                            }
+                        }
+                        if (result.protectedAutomaticKeywordCount > 0) {
+                            Toast.makeText(
+                                requireContext(),
+                                R.string.automatic_keyword_automatic_preserved,
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        historyAdapter.refresh()
+                        dialog.dismiss()
+                    } catch (error: CancellationException) {
+                        ThumbnailMetadataDialogStateRenderer.render(
+                            dialog,
+                            thumbnailSaveController,
+                            thumbnailActions
+                        )
+                        throw error
+                    } catch (error: Exception) {
+                        Log.e("HistoryFragment", "Failed to update history item id=${item.id}", error)
                         Toast.makeText(
                             requireContext(),
-                            R.string.automatic_keyword_automatic_preserved,
+                            R.string.history_metadata_update_failed,
                             Toast.LENGTH_LONG
                         ).show()
+                        ThumbnailMetadataDialogStateRenderer.render(
+                            dialog,
+                            thumbnailSaveController,
+                            thumbnailActions
+                        )
                     }
-                    historyAdapter.refresh()
                 }
-                dialog.dismiss()
             }
         }
 
         dialog.setOnDismissListener {
+            thumbnailSaveController.cleanupOnDismiss(::deleteCustomThumb)
             pendingThumbItem = null
             pendingThumbCallback = null
         }
@@ -5247,7 +5359,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val dir = resolveCustomThumbDirectory(mediaPath) ?: return null
         if (!dir.exists()) dir.mkdirs()
         val baseName = resolveCustomThumbBaseName(item, mediaPath)
-        val file = File(dir, "${baseName}_custom_thumb.jpg")
+        val file = File(dir, "${baseName}_custom_thumb_${SystemClock.elapsedRealtimeNanos()}.jpg")
         var out: OutputStream? = null
         return runCatching {
             out = FileOutputStream(file)
@@ -6140,44 +6252,382 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
 
     private fun showSortDialog() {
+        val effectiveSort = historyViewModel.currentEffectiveSort()
+        if (!effectiveSort.controlsVisible) return
         sortSheet = BottomSheetDialog(requireContext())
         sortSheet.requestWindowFeature(Window.FEATURE_NO_TITLE)
         sortSheet.setContentView(R.layout.history_sort_sheet)
 
         val date = sortSheet.findViewById<TextView>(R.id.date)
+        val mediaPublishedDate = sortSheet.findViewById<TextView>(R.id.media_published_date)
         val title = sortSheet.findViewById<TextView>(R.id.title)
         val duration = sortSheet.findViewById<TextView>(R.id.duration)
+        val sourceDatePolicy = sortSheet.findViewById<View>(R.id.source_date_policy)
+        val sourceDatePolicyOptions =
+            sortSheet.findViewById<android.widget.RadioGroup>(R.id.source_date_policy_options)
+        val supportsMediaPublishedDateSort =
+            HistorySortPolicy.isSelectable(
+                type = HistoryRepository.HistorySortType.MEDIA_PUBLISHED_DATE,
+                isRecentMode = historyViewModel.isRecentMode.value,
+                isYoutuberMode = historyViewModel.isYoutuberSelectionMode.value,
+                isKeywordMode = historyViewModel.isKeywordSelectionMode.value,
+            )
+        mediaPublishedDate?.isVisible = supportsMediaPublishedDateSort
 
-        val sortOptions = listOf(date!!, title!!, duration!!)
+        val sortOptions = listOf(date!!, mediaPublishedDate!!, title!!, duration!!)
         sortOptions.forEach { it.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.empty, 0, 0, 0) }
 
-        when (historyViewModel.sortType.value!!) {
+        when (effectiveSort.type) {
             HistoryRepository.HistorySortType.DATE -> changeSortIcon(date, historyViewModel.sortOrder.value!!)
+            HistoryRepository.HistorySortType.MEDIA_PUBLISHED_DATE ->
+                changeSortIcon(mediaPublishedDate, historyViewModel.sortOrder.value!!)
             HistoryRepository.HistorySortType.TITLE -> changeSortIcon(title, historyViewModel.sortOrder.value!!)
             HistoryRepository.HistorySortType.AUTHOR -> changeSortIcon(title, historyViewModel.sortOrder.value!!)
             HistoryRepository.HistorySortType.DURATION -> changeSortIcon(duration, historyViewModel.sortOrder.value!!)
         }
+        sourceDatePolicy?.isVisible =
+            supportsMediaPublishedDateSort &&
+                effectiveSort.type == HistoryRepository.HistorySortType.MEDIA_PUBLISHED_DATE
 
+        sourceDatePolicyOptions?.check(
+            when (historyViewModel.missingSourceDatePolicy.value) {
+                MissingSourceDatePolicy.USE_DOWNLOAD_DATE -> R.id.source_date_use_download_date
+                MissingSourceDatePolicy.GROUP_FIRST -> R.id.source_date_group_first
+                MissingSourceDatePolicy.GROUP_LAST -> R.id.source_date_group_last
+            }
+        )
+        sourceDatePolicyOptions?.setOnCheckedChangeListener { _, checkedId ->
+            val policy = when (checkedId) {
+                R.id.source_date_group_first -> MissingSourceDatePolicy.GROUP_FIRST
+                R.id.source_date_group_last -> MissingSourceDatePolicy.GROUP_LAST
+                else -> MissingSourceDatePolicy.USE_DOWNLOAD_DATE
+            }
+            historyViewModel.setMissingSourceDatePolicy(policy)
+            clearNavigationBackStack()
+            requestScrollToTop()
+        }
         date.setOnClickListener {
             sortOptions.forEach { it.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.empty, 0, 0, 0) }
             historyViewModel.setSorting(HistoryRepository.HistorySortType.DATE)
             changeSortIcon(date, historyViewModel.sortOrder.value!!)
+            sourceDatePolicy?.isVisible = false
+        }
+        mediaPublishedDate.setOnClickListener {
+            sortOptions.forEach { it.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.empty, 0, 0, 0) }
+            historyViewModel.setSorting(HistoryRepository.HistorySortType.MEDIA_PUBLISHED_DATE)
+            changeSortIcon(mediaPublishedDate, historyViewModel.sortOrder.value!!)
+            sourceDatePolicy?.isVisible = true
         }
         title.setOnClickListener {
             sortOptions.forEach { it.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.empty, 0, 0, 0) }
             historyViewModel.setSorting(HistoryRepository.HistorySortType.TITLE)
             changeSortIcon(title, historyViewModel.sortOrder.value!!)
+            sourceDatePolicy?.isVisible = false
         }
         duration.setOnClickListener {
             sortOptions.forEach { it.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.empty, 0, 0, 0) }
             historyViewModel.setSorting(HistoryRepository.HistorySortType.DURATION)
             changeSortIcon(duration, historyViewModel.sortOrder.value!!)
+            sourceDatePolicy?.isVisible = false
         }
 
         val displayMetrics = DisplayMetrics()
         requireActivity().windowManager.defaultDisplay.getMetrics(displayMetrics)
         sortSheet.behavior.peekHeight = displayMetrics.heightPixels
         sortSheet.show()
+    }
+
+    private fun showFetchMissingSourceDatesDialog() {
+        val current = historyDateFetchViewModel.uiState.value.operation
+        if (current?.stateValue == HistoryDateFetchOperationState.RUNNING) {
+            historyDateFetchViewModel.startOrReconnect()
+            return
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            val candidates = try {
+                historyViewModel.getItemsMissingMediaPublishedAt()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.e(
+                    "HistoryDateBackfill",
+                    "Failed to load source-date candidates type=${error.javaClass.simpleName}"
+                )
+                Toast.makeText(
+                    requireContext(),
+                    R.string.fetch_source_dates_failed,
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            if (candidates.isEmpty()) {
+                Toast.makeText(
+                    requireContext(),
+                    R.string.fetch_source_dates_none,
+                    Toast.LENGTH_SHORT
+                ).show()
+                return@launch
+            }
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(R.string.fetch_missing_source_dates_title)
+                .setMessage(
+                    getString(
+                        R.string.fetch_missing_source_dates_message,
+                        candidates.size
+                    )
+                )
+                .setPositiveButton(R.string.ok) { _, _ ->
+                    historyDateFetchViewModel.startOrReconnect()
+                }
+                .setNegativeButton(R.string.cancel, null)
+                .show()
+        }
+    }
+
+    private fun renderHistoryDateFetchState(state: HistoryDateFetchUiState) {
+        val operation = state.operation
+        val counts = state.counts
+        if (operation == null || counts == null) {
+            mediaDateFetchSnackbar?.dismiss()
+            mediaDateFetchSnackbar = null
+            return
+        }
+        if (operation.stateValue.isTerminal) {
+            mediaDateFetchSnackbar?.dismiss()
+            mediaDateFetchSnackbar = null
+            if (reportedDateFetchTerminalOperationId == operation.operationId) return
+            reportedDateFetchTerminalOperationId = operation.operationId
+            if (counts.updated > 0) {
+                historyViewModel.invalidateAfterMediaPublishedDateBackfill()
+            }
+            val text = when (operation.stateValue) {
+                HistoryDateFetchOperationState.CANCELLED ->
+                    getString(R.string.fetch_source_dates_cancelled, counts.updated)
+                HistoryDateFetchOperationState.FAILED ->
+                    getString(R.string.fetch_source_dates_failed)
+                HistoryDateFetchOperationState.COMPLETED ->
+                    getString(R.string.fetch_source_dates_result, counts.updated, counts.total)
+                HistoryDateFetchOperationState.RUNNING -> return
+            }
+            Snackbar.make(recyclerView, text, Snackbar.LENGTH_LONG).show()
+            return
+        }
+
+        val text = getString(
+            R.string.fetch_source_dates_progress,
+            counts.processed,
+            counts.total,
+        )
+        val snackbar = mediaDateFetchSnackbar ?: Snackbar.make(
+            recyclerView,
+            text,
+            Snackbar.LENGTH_INDEFINITE,
+        ).also { mediaDateFetchSnackbar = it }
+        snackbar.setText(text)
+        snackbar.setAction(R.string.cancel) {
+            historyDateFetchViewModel.cancel(operation.operationId)
+        }
+        if (!snackbar.isShown) snackbar.show()
+    }
+
+    private fun startLowQualityVideoScan() {
+        if (sharedPreferences.getBoolean("incognito", false)) {
+            Toast.makeText(requireContext(), R.string.low_quality_scan_incognito, Toast.LENGTH_LONG).show()
+            return
+        }
+        lowQualityRedownloadViewModel.startOrReconnect()
+    }
+
+    private fun renderLowQualityRedownloadState(state: LowQualityRedownloadUiState) {
+        val operation = state.operation
+        val progress = state.progress
+        if (operation == null || progress == null) {
+            qualityScanSnackbar?.dismiss()
+            qualityScanSnackbar = null
+            return
+        }
+        if (operation.stateValue.isTerminal) {
+            qualityScanSnackbar?.dismiss()
+            qualityScanSnackbar = null
+            qualitySelectionDialog?.dismiss()
+            qualitySelectionDialog = null
+            displayedQualityOperationId = null
+            if (reportedQualityTerminalOperationId != operation.operationId) {
+                reportedQualityTerminalOperationId = operation.operationId
+                val message = when (operation.stateValue) {
+                    LowQualityRedownloadOperationState.COMPLETED -> when (operation.terminalReason) {
+                        com.ireum.ytdl.database.repository.LowQualityRedownloadRepository.REASON_NO_CANDIDATES ->
+                            getString(R.string.low_quality_scan_none)
+                        com.ireum.ytdl.database.repository.LowQualityRedownloadRepository.REASON_NO_CANDIDATES_WITH_FAILURES ->
+                            getString(R.string.low_quality_scan_none_with_failures, progress.scanFailures)
+                        else -> getString(
+                            R.string.low_quality_batch_completed,
+                            progress.succeeded,
+                            progress.skipped
+                        )
+                    }
+                    LowQualityRedownloadOperationState.PARTIAL_FAILURE -> getString(
+                        R.string.low_quality_batch_partial,
+                        progress.succeeded,
+                        progress.failed,
+                        progress.skipped
+                    )
+                    LowQualityRedownloadOperationState.CANCELLED -> getString(
+                        R.string.low_quality_batch_cancelled,
+                        progress.succeeded,
+                        progress.cancelled
+                    )
+                    LowQualityRedownloadOperationState.FAILED -> if (
+                        operation.terminalReason ==
+                        com.ireum.ytdl.database.repository.LowQualityRedownloadRepository.REASON_SCAN_FAILED
+                    ) {
+                        getString(R.string.low_quality_scan_failed)
+                    } else {
+                        getString(R.string.low_quality_batch_failed, progress.failed)
+                    }
+                    LowQualityRedownloadOperationState.UNRECOVERABLE ->
+                        getString(R.string.low_quality_batch_unrecoverable)
+                    LowQualityRedownloadOperationState.RUNNING -> return
+                }
+                Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+
+        if (operation.phaseValue == LowQualityRedownloadPhase.AWAITING_SELECTION) {
+            qualityScanSnackbar?.dismiss()
+            qualityScanSnackbar = null
+            if (shouldPresentLowQualitySelection(operation, state.candidates.size)) {
+                showLowQualityCandidates(operation.operationId, state.candidates, progress)
+            }
+            return
+        }
+
+        qualitySelectionDialog?.dismiss()
+        qualitySelectionDialog = null
+        displayedQualityOperationId = null
+        val text = when (operation.phaseValue) {
+            LowQualityRedownloadPhase.SCANNING -> getString(
+                R.string.low_quality_scan_progress,
+                progress.scanProcessed,
+                progress.scanTotal
+            )
+            LowQualityRedownloadPhase.PREPARING,
+            LowQualityRedownloadPhase.QUEUEING -> getString(
+                R.string.low_quality_verify_progress,
+                progress.qualificationProcessed,
+                progress.selected
+            )
+            LowQualityRedownloadPhase.DOWNLOADING,
+            LowQualityRedownloadPhase.FINALIZING -> getString(
+                R.string.low_quality_download_progress,
+                progress.completed,
+                progress.selected,
+                progress.queued,
+                progress.active,
+                progress.waiting
+            )
+            LowQualityRedownloadPhase.AWAITING_SELECTION -> return
+        }
+        val snackbar = qualityScanSnackbar ?: Snackbar.make(
+            recyclerView,
+            text,
+            Snackbar.LENGTH_INDEFINITE
+        ).also { qualityScanSnackbar = it }
+        snackbar.setText(text)
+        snackbar.setAction(R.string.cancel) {
+            lowQualityRedownloadViewModel.cancel(operation.operationId)
+        }
+        if (!snackbar.isShown) snackbar.show()
+    }
+
+    private fun showLowQualityCandidates(
+        operationId: String,
+        candidates: List<LowQualityRedownloadCandidateUi>,
+        progress: com.ireum.ytdl.util.LowQualityRedownloadProgress
+    ) {
+        if (displayedQualityOperationId == operationId && qualitySelectionDialog?.isShowing == true) return
+        if (candidates.isEmpty()) return
+        qualitySelectionDialog?.dismiss()
+        displayedQualityOperationId = operationId
+        val selected = BooleanArray(candidates.size) { index -> candidates[index].item.selected }
+        val labels = candidates.map { candidate ->
+            val reason = runCatching {
+                LowQualityCandidateReason.valueOf(candidate.item.candidateReason)
+            }.getOrDefault(LowQualityCandidateReason.BELOW_EXPECTED)
+            val qualityText = when (reason) {
+                LowQualityCandidateReason.BELOW_EXPECTED -> getString(
+                    R.string.low_quality_candidate_resolution,
+                    candidate.item.actualHeight,
+                    candidate.item.expectedHeight
+                )
+                LowQualityCandidateReason.FILE_MISSING -> getString(
+                    R.string.low_quality_candidate_missing,
+                    candidate.item.expectedHeight
+                )
+                LowQualityCandidateReason.FILE_CORRUPT -> getString(
+                    R.string.low_quality_candidate_corrupt,
+                    candidate.item.expectedHeight
+                )
+                LowQualityCandidateReason.NO_VIDEO_STREAM -> getString(
+                    R.string.low_quality_candidate_no_video,
+                    candidate.item.expectedHeight
+                )
+            }
+            "${candidate.title.ifBlank { candidate.url }}\n$qualityText"
+        }.toTypedArray()
+
+        val actionOwner = LowQualitySelectionDialogActionOwner(
+            onConfirm = { lowQualityRedownloadViewModel.confirm(operationId) },
+            onCancel = { lowQualityRedownloadViewModel.cancel(operationId) }
+        )
+        val dialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(
+                getString(
+                    R.string.low_quality_scan_summary,
+                    candidates.size,
+                    (progress.scanProcessed - candidates.size - progress.scanFailures).coerceAtLeast(0),
+                    progress.scanFailures
+                )
+            )
+            .setMultiChoiceItems(labels, selected) { _, which, checked ->
+                selected[which] = checked
+                lowQualityRedownloadViewModel.setSelected(
+                    operationId,
+                    candidates[which].item.historyId,
+                    checked
+                )
+            }
+            .setPositiveButton(R.string.queue_selected_redownloads, null)
+            .setNegativeButton(R.string.cancel) { _, _ ->
+                actionOwner.cancel()
+            }
+            .create()
+        dialog.setOnCancelListener {
+            actionOwner.cancel()
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (selected.none { it }) {
+                    Toast.makeText(
+                        requireContext(),
+                        R.string.low_quality_select_at_least_one,
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    if (actionOwner.confirm()) dialog.dismiss()
+                }
+            }
+        }
+        dialog.setOnDismissListener {
+            if (qualitySelectionDialog === dialog) qualitySelectionDialog = null
+        }
+        qualitySelectionDialog = dialog
+        dialog.show()
+    }
+
+    private fun matchesMediaPublishedDateSource(firstUrl: String, secondUrl: String): Boolean {
+        return MediaPublishedDateSource.matches(firstUrl, secondUrl)
     }
 
     private data class PendingDuplicateDownload(
@@ -6318,6 +6768,14 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             runCatching {
                 val db = DBManager.getInstance(requireContext())
                 val currentExistingItem = db.historyDao.getItem(existingItem.id)
+                if (
+                    !MediaPublishedDate.isPresent(currentExistingItem.mediaPublishedAt) &&
+                    MediaPublishedDate.isPresent(newItem.mediaPublishedAt)
+                ) {
+                    db.historyDao.update(
+                        currentExistingItem.copy(mediaPublishedAt = newItem.mediaPublishedAt)
+                    )
+                }
                 com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
                     .mergeHistoryAssignments(newItem.id, currentExistingItem.id)
                 true
@@ -6460,8 +6918,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     intent.putExtra(EXTRA_RESTORE_SCROLL_ITEM_TOP, clickedTop)
                 }
                 intent.putExtra(EXTRA_RESTORE_SCREEN_SNAPSHOT, navigationEntryToBundle(currentEntry))
-                intent.putExtra("context_sort_type", historyViewModel.sortType.value.name)
-                intent.putExtra("context_sort_order", historyViewModel.sortOrder.value.name)
+                val effectiveSort = historyViewModel.currentEffectiveSort()
+                intent.putExtra("context_sort_type", effectiveSort.type.name)
+                intent.putExtra("context_sort_order", effectiveSort.order.name)
+                intent.putExtra(
+                    "context_missing_source_date_policy",
+                    historyViewModel.missingSourceDatePolicy.value.name
+                )
                 intent.putExtra("context_status", historyViewModel.statusFilter.value.name)
                 intent.putExtra("context_query", historyViewModel.queryFilterFlow.value)
                 intent.putExtra("context_title_query", historyViewModel.titleQueryFilterFlow.value)

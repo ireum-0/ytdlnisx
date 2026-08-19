@@ -112,6 +112,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import java.util.TimeZone
 import java.util.logging.Handler
 
 
@@ -882,6 +883,7 @@ object UiUtil {
         }
 
         val time = bottomSheet.findViewById<TextView>(R.id.time)
+        val mediaPublishedDate = bottomSheet.findViewById<Chip>(R.id.media_published_date)
         val thumbnail = bottomSheet.findViewById<TextView>(R.id.thumbnail)
         val formatNote = bottomSheet.findViewById<TextView>(R.id.format_note)
         val container = bottomSheet.findViewById<Chip>(R.id.container_chip)
@@ -896,6 +898,22 @@ object UiUtil {
         calendar.timeInMillis = item.time * 1000L
         time!!.text = SimpleDateFormat(DateFormat.getBestDateTimePattern(Locale.getDefault(), "ddMMMyyyy - HHmm"), Locale.getDefault()).format(calendar.time)
         time.isClickable = false
+        if (MediaPublishedDate.isPresent(item.mediaPublishedAt)) {
+            calendar.timeInMillis = item.mediaPublishedAt * 1000L
+            val formattedSourceDate = SimpleDateFormat(
+                DateFormat.getBestDateTimePattern(Locale.getDefault(), "ddMMMyyyy"),
+                Locale.getDefault()
+            ).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }.format(calendar.time)
+            mediaPublishedDate?.isVisible = true
+            mediaPublishedDate?.text = context.getString(
+                R.string.history_source_date_value,
+                formattedSourceDate
+            )
+        } else {
+            mediaPublishedDate?.isVisible = false
+        }
 
         thumbnail?.isVisible = item.thumb.isNotBlank()
         thumbnail?.apply {

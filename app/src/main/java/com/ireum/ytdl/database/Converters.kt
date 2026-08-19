@@ -110,6 +110,10 @@ internal fun normalizeDownloadItemJson(value: String): String {
         if (!item.has(name) || item[name].isJsonNull) item.addProperty(name, defaultValue)
     }
 
+    fun putLongDefault(name: String, defaultValue: Long) {
+        if (!item.has(name) || item[name].isJsonNull) item.addProperty(name, defaultValue)
+    }
+
     // Gson does not apply Kotlin constructor defaults to fields absent from older
     // Auto Download templates. Keep those templates valid as DownloadItem evolves.
     putStringDefault("operationId", "")
@@ -117,5 +121,6 @@ internal fun normalizeDownloadItemJson(value: String): String {
     putStringDefault("retryStrategy", "ORIGINAL")
     putStringDefault("lastIssueCode", "")
     putStringDefault("lastIssueStage", "")
+    putLongDefault("orderPosition", item["id"]?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L)
     return item.toString()
 }

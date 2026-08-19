@@ -26,6 +26,8 @@ import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.Extensions.loadThumbnail
 import com.ireum.ytdl.util.Extensions.popup
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.HistoryDateDisplayMode
+import com.ireum.ytdl.util.MediaPublishedDate
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.progressindicator.LinearProgressIndicator
@@ -55,11 +57,18 @@ class HistoryPaginatedAdapter(
     private val selectedKeywordGroups: MutableSet<Long> = mutableSetOf()
     private val sharedPreferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(activity)
     private var disableGeneratedThumbnails: Boolean = false
+    private var dateDisplayMode: HistoryDateDisplayMode = HistoryDateDisplayMode.DOWNLOAD_DATE
     private var attachedRecyclerView: RecyclerView? = null
 
     fun setDisableGeneratedThumbnails(disable: Boolean) {
         if (disableGeneratedThumbnails == disable) return
         disableGeneratedThumbnails = disable
+        refreshVisibleItems()
+    }
+
+    fun setDateDisplayMode(mode: HistoryDateDisplayMode) {
+        if (dateDisplayMode == mode) return
+        dateDisplayMode = mode
         refreshVisibleItems()
     }
 
@@ -242,7 +251,42 @@ class HistoryPaginatedAdapter(
             length.text = if (item.downloadPath.size == 1) item.duration else ""
 
             val datetime = cardView.findViewById<TextView>(R.id.downloads_info_time)
-            datetime.text = SimpleDateFormat(android.text.format.DateFormat.getBestDateTimePattern(Locale.getDefault(), "ddMMMyyyy - HHmm"), Locale.getDefault()).format(item.time * 1000L)
+            val hasMediaPublishedDate = MediaPublishedDate.isPresent(item.mediaPublishedAt)
+            val displayedTime = when (dateDisplayMode) {
+                HistoryDateDisplayMode.SOURCE_DATE ->
+                    item.mediaPublishedAt.takeIf(MediaPublishedDate::isPresent) ?: item.time
+                HistoryDateDisplayMode.RECENT_ACTIVITY ->
+                    item.lastWatched.takeIf { it > 0L } ?: item.time
+                HistoryDateDisplayMode.DOWNLOAD_DATE -> item.time
+            }
+            val formattedTime = if (
+                dateDisplayMode == HistoryDateDisplayMode.SOURCE_DATE && hasMediaPublishedDate
+            ) {
+                SimpleDateFormat(
+                    android.text.format.DateFormat.getBestDateTimePattern(
+                        Locale.getDefault(),
+                        "ddMMMyyyy"
+                    ),
+                    Locale.getDefault()
+                ).apply {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }.format(displayedTime * 1000L)
+            } else {
+                SimpleDateFormat(
+                    android.text.format.DateFormat.getBestDateTimePattern(
+                        Locale.getDefault(),
+                        "ddMMMyyyy - HHmm"
+                    ),
+                    Locale.getDefault()
+                ).format(displayedTime * 1000L)
+            }
+            datetime.text = when {
+                dateDisplayMode == HistoryDateDisplayMode.SOURCE_DATE && hasMediaPublishedDate ->
+                    activity.getString(R.string.history_source_date_value, formattedTime)
+                dateDisplayMode == HistoryDateDisplayMode.SOURCE_DATE ->
+                    activity.getString(R.string.history_download_date_value, formattedTime)
+                else -> formattedTime
+            }
             val progressBar = itemView.findViewById<LinearProgressIndicator>(R.id.downloads_progress)
 
             val btn = cardView.findViewById<FloatingActionButton>(R.id.downloads_download_button_type)

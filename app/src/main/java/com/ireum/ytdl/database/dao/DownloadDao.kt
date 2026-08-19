@@ -11,6 +11,7 @@ import androidx.room.Transaction
 import androidx.room.Update
 import androidx.room.Upsert
 import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.database.models.KnownMediaPublishedDate
 import com.ireum.ytdl.database.models.DownloadItemConfigureMultiple
 import com.ireum.ytdl.database.models.DownloadItemSimple
 import com.ireum.ytdl.database.models.Format
@@ -20,13 +21,19 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface DownloadDao {
 
+    @Query("SELECT url, mediaPublishedAt FROM downloads WHERE mediaPublishedAt != 0")
+    suspend fun getKnownMediaPublishedDates(): List<KnownMediaPublishedDate>
+
     @Query("SELECT * FROM downloads ORDER BY status")
     fun getAllDownloads() : PagingSource<Int, DownloadItem>
+
+    @Query("SELECT * FROM downloads")
+    suspend fun getAllDownloadsList(): List<DownloadItem>
 
     @Query("SELECT * FROM downloads WHERE status='Active'")
     fun getActiveDownloads() : Flow<List<DownloadItem>>
 
-    @Query("SELECT * FROM downloads WHERE status in('Active','PostProcessing','Paused') ORDER BY id, CASE WHEN status='Active' THEN 0 WHEN status='PostProcessing' THEN 1 ELSE 2 END")
+    @Query("SELECT * FROM downloads WHERE status in('Active','PostProcessing','Paused') ORDER BY orderPosition, id, CASE WHEN status='Active' THEN 0 WHEN status='PostProcessing' THEN 1 ELSE 2 END")
     fun getActiveAndPausedDownloads() : Flow<List<DownloadItem>>
 
     @Query("SELECT * FROM downloads WHERE status='Paused'")
@@ -71,11 +78,11 @@ interface DownloadDao {
     suspend fun updateItemsToProcessing(ids: List<Long>)
 
 
-    @Query("SELECT * FROM downloads WHERE status = 'Processing' ORDER BY id LIMIT 1")
+    @Query("SELECT * FROM downloads WHERE status = 'Processing' ORDER BY orderPosition, id LIMIT 1")
     fun getFirstProcessingDownload() : DownloadItem
 
 
-    @Query("SELECT * FROM downloads WHERE status = 'Processing'")
+    @Query("SELECT * FROM downloads WHERE status = 'Processing' ORDER BY orderPosition, id")
     fun getProcessingDownloadsList() : List<DownloadItem>
 
     @Query("UPDATE downloads set downloadPath=:path WHERE status ='Processing'")
@@ -108,13 +115,13 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE status in('Active','PostProcessing','Queued','WaitingForMembership','Scheduled','Paused','Processing')")
     fun getPendingObservationDownloadsList() : List<DownloadItem>
 
-    @Query("SELECT * FROM downloads WHERE observeSourceId=:sourceId AND status='WaitingForMembership' ORDER BY id")
+    @Query("SELECT * FROM downloads WHERE observeSourceId=:sourceId AND status='WaitingForMembership' ORDER BY orderPosition, id")
     fun getMembershipWaitingDownloads(sourceId: Long): List<DownloadItem>
 
-    @Query("SELECT * FROM downloads WHERE status='WaitingForMembership' ORDER BY id")
+    @Query("SELECT * FROM downloads WHERE status='WaitingForMembership' ORDER BY orderPosition, id")
     fun getMembershipWaitingDownloads(): List<DownloadItem>
 
-    @Query("SELECT COUNT(*) FROM downloads WHERE playlistURL = :marker AND status IN ('Processing','Queued','WaitingForMembership','Active','PostProcessing','Paused','Scheduled','Saved')")
+    @Query("SELECT COUNT(*) FROM downloads WHERE (playlistURL = :marker OR playlistURL LIKE :marker || ':%') AND status IN ('Processing','Queued','WaitingForMembership','Active','PostProcessing','Paused','Scheduled')")
     fun countPendingByPlaylistMarker(marker: String): Int
 
     @Query("UPDATE downloads SET status='Queued', downloadStartTime = -1 where status in ('Paused')")
@@ -127,7 +134,7 @@ interface DownloadDao {
     fun getActiveAndQueuedDownloads() : Flow<List<DownloadItem>>
 
     @RewriteQueriesToDropUnusedColumns
-    @Query("SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') ORDER BY id")
+    @Query("SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') ORDER BY orderPosition, id")
     fun getQueuedDownloads() : PagingSource<Int, DownloadItemSimple>
 
     @Query("SELECT format FROM downloads WHERE status IN ('Queued','WaitingForMembership')")
@@ -136,7 +143,7 @@ interface DownloadDao {
     @Query("""
         SELECT * FROM downloads 
         WHERE status in ('Queued', 'Scheduled') AND downloadStartTime <= :currentTime 
-        ORDER BY downloadStartTime, id
+        ORDER BY downloadStartTime, orderPosition, id
         LIMIT 10
     """)
     fun getQueuedScheduledDownloadsUntil(currentTime: Long) : Flow<List<DownloadItem>>
@@ -149,18 +156,18 @@ interface DownloadDao {
                 WHEN id in (:priorityItems) THEN 0
                 ELSE 1
             END,
-            downloadStartTime, id
+            downloadStartTime, orderPosition, id
         LIMIT 10
     """)
     fun getQueuedScheduledDownloadsUntilWithPriority(currentTime: Long, priorityItems: List<Long>) : Flow<List<DownloadItem>>
 
-    @Query("SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') ORDER BY downloadStartTime, id")
+    @Query("SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') ORDER BY orderPosition, id")
     fun getQueuedDownloadsList() : List<DownloadItem>
 
-    @Query("SELECT * FROM downloads WHERE status='Scheduled' ORDER BY downloadStartTime, id")
+    @Query("SELECT * FROM downloads WHERE status='Scheduled' ORDER BY downloadStartTime, orderPosition, id")
     fun getScheduledDownloadsList() : List<DownloadItem>
 
-    @Query("SELECT id FROM downloads WHERE status='Queued' ORDER BY downloadStartTime, id")
+    @Query("SELECT id FROM downloads WHERE status='Queued' ORDER BY orderPosition, id")
     fun getQueuedDownloadsListIDs() : List<Long>
 
     @RewriteQueriesToDropUnusedColumns
@@ -178,7 +185,7 @@ interface DownloadDao {
     fun getErroredDownloadsList() : List<DownloadItem>
 
 
-    @Query("SELECT id from downloads WHERE status='Scheduled' ORDER BY downloadStartTime, id DESC")
+    @Query("SELECT id from downloads WHERE status='Scheduled' ORDER BY downloadStartTime, orderPosition, id DESC")
     fun getScheduledDownloadIDs(): List<Long>
 
     @RewriteQueriesToDropUnusedColumns
@@ -189,7 +196,7 @@ interface DownloadDao {
     fun getSavedDownloadsList() : List<DownloadItem>
 
     @RewriteQueriesToDropUnusedColumns
-    @Query("SELECT * FROM downloads WHERE status='Scheduled' ORDER BY downloadStartTime, id DESC")
+    @Query("SELECT * FROM downloads WHERE status='Scheduled' ORDER BY downloadStartTime, orderPosition, id DESC")
     fun getScheduledDownloads() : PagingSource<Int, DownloadItemSimple>
 
     @Query("SELECT * FROM downloads WHERE id=:id LIMIT 1")
@@ -202,6 +209,9 @@ interface DownloadDao {
     fun getDownloadsByIds(ids: List<Long>) : List<DownloadItem>
 
     @Query("SELECT * FROM downloads WHERE id IN (:ids)")
+    suspend fun getDownloadsByIdsSuspend(ids: List<Long>): List<DownloadItem>
+
+    @Query("SELECT * FROM downloads WHERE id IN (:ids)")
     fun getDownloadsByIdsFlow(ids: List<Long>) : Flow<List<DownloadItem>>
 
     @Query("SELECT id FROM downloads ORDER BY id DESC LIMIT 1")
@@ -211,10 +221,25 @@ interface DownloadDao {
     fun checkStatus(id: Long) : DownloadRepository.Status?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(item: DownloadItem) : Long
+    suspend fun insertRaw(item: DownloadItem) : Long
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertAll(list: List<DownloadItem>) : List<Long>
+    @Transaction
+    suspend fun insert(item: DownloadItem): Long {
+        if (item.id <= 0L) {
+            item.orderPosition = 0L
+        } else if (item.orderPosition <= 0L) {
+            item.orderPosition = item.id
+        }
+        val id = insertRaw(item)
+        if (item.orderPosition <= 0L) {
+            item.orderPosition = id
+            updateOrderPosition(id, id)
+        }
+        return id
+    }
+
+    @Transaction
+    suspend fun insertAll(list: List<DownloadItem>): List<Long> = list.map { insert(it) }
 
     @Query("DELETE FROM downloads")
     suspend fun deleteAll()
@@ -249,6 +274,15 @@ interface DownloadDao {
     @Query("UPDATE downloads SET status='Cancelled' WHERE status in('Queued','WaitingForMembership','Active','PostProcessing', 'Scheduled', 'Paused')")
     suspend fun cancelActiveQueued()
 
+    @Query(
+        "UPDATE downloads SET status='Cancelled' WHERE id=:id " +
+            "AND status IN ('Queued','WaitingForMembership','Active','PostProcessing','Scheduled','Paused')"
+    )
+    suspend fun cancelByUser(id: Long): Int
+
+    @Query("UPDATE downloads SET status=:status WHERE id=:id AND status='Cancelled'")
+    suspend fun restoreCancelledStatus(id: Long, status: String): Int
+
     @Query("DELETE FROM downloads WHERE status='Processing' AND id=:id")
     suspend fun deleteSingleProcessing(id: Long)
 
@@ -275,6 +309,12 @@ interface DownloadDao {
 
     @Query("UPDATE downloads set status=:status where id IN (:ids)")
     suspend fun setStatusMultiple(ids: List<Long>, status: String)
+
+    @Query(
+        "UPDATE downloads SET status = 'Cancelled' WHERE id IN (:ids) " +
+            "AND status IN ('Queued','Scheduled','Paused','WaitingForMembership','Active','PostProcessing')"
+    )
+    suspend fun cancelLinkedDownloads(ids: List<Long>): Int
 
     @Query("UPDATE downloads set status=:newStatus where id IN (:ids) AND status=:currentStatus")
     suspend fun setStatusMultipleFromStatus(ids: List<Long>, currentStatus: String, newStatus: String)
@@ -333,6 +373,13 @@ interface DownloadDao {
     @Query("UPDATE downloads SET downloadStartTime=0, status='Queued' WHERE status = 'Scheduled'")
     suspend fun resetScheduleTimeForAllScheduledItems()
 
+    @Query(
+        "UPDATE downloads SET downloadStartTime=:startTime, " +
+            "status=CASE WHEN :startTime > 0 THEN 'Scheduled' ELSE 'Queued' END " +
+            "WHERE id=:id AND status IN ('Queued','Scheduled')"
+    )
+    suspend fun rescheduleQueuedOrScheduled(id: Long, startTime: Long): Int
+
     @Query("Update downloads SET status='Queued', downloadStartTime = 0 WHERE id in (:list)")
     suspend fun reQueueDownloadItems(list: List<Long>)
 
@@ -340,76 +387,64 @@ interface DownloadDao {
     suspend fun updateProcessingtoSavedStatus()
 
     @Transaction
-    suspend fun putAtTopOfTheQueue(existingIDs: List<Long>){
-        val downloads = getQueuedDownloadsListIDs()
-        val newIDs = downloads.sortedBy { it }.take(existingIDs.size)
-
-        resetScheduleTimeForItems(existingIDs)
-        val tempIds = existingIDs.associateWith { moveToTemporaryId(it) }
-        downloads.filter { !existingIDs.contains(it) }.toMutableList().apply {
-            this.reverse()
-            this.forEach {
-                updateDownloadID(it, it + existingIDs.size)
-            }
-        }
-
-        existingIDs.forEachIndexed { idx, it ->
-            updateDownloadID(tempIds[it] ?: it, newIDs[idx])
-        }
+    suspend fun putAtTopOfTheQueue(existingIDs: List<Long>) {
+        val current = getQueuedDownloadsListIDs()
+        val selected = current.filter(existingIDs.toSet()::contains)
+        rewriteQueuedOrder(selected + current.filterNot(selected.toSet()::contains))
     }
 
     @Transaction
-    suspend fun putAtBottomOfTheQueue(existingIDs: List<Long>){
-        val downloads = getQueuedDownloadsListIDs()
-        val newIDs = downloads.sortedByDescending { it }.take(existingIDs.size)
+    suspend fun putAtBottomOfTheQueue(existingIDs: List<Long>) {
+        val current = getQueuedDownloadsListIDs()
+        val selected = current.filter(existingIDs.toSet()::contains)
+        rewriteQueuedOrder(current.filterNot(selected.toSet()::contains) + selected)
+    }
 
-        resetScheduleTimeForItems(existingIDs)
-        val tempIds = existingIDs.associateWith { moveToTemporaryId(it) }
-        downloads.filter { !existingIDs.contains(it) }.toMutableList().apply {
-            this.reverse()
-            this.forEach {
-                updateDownloadID(it, it + existingIDs.size)
-            }
-        }
+    @Transaction
+    suspend fun putAtPosition(currentId: Long, targetId: Long) {
+        val ordered = getQueuedDownloadsListIDs().toMutableList()
+        val currentIndex = ordered.indexOf(currentId)
+        val targetIndex = ordered.indexOf(targetId)
+        if (currentIndex < 0 || targetIndex < 0 || currentIndex == targetIndex) return
+        ordered.removeAt(currentIndex)
+        ordered.add(targetIndex, currentId)
+        rewriteQueuedOrder(ordered)
+    }
 
-        existingIDs.forEachIndexed { idx, it ->
-            updateDownloadID(tempIds[it] ?: it, newIDs[idx])
-        }
+    private suspend fun rewriteQueuedOrder(ids: List<Long>) {
+        ids.forEachIndexed { index, id -> updateQueuedOrderPosition(id, index + 1L) }
     }
 
     @Transaction
     suspend fun reverseProcessingDownloads() {
         val items = getProcessingDownloadsList()
-        val newIDs = items.reversed().map { it.id }
-        val tempIds = items.associate { it.id to moveToTemporaryId(it.id) }
-
-        items.forEachIndexed { idx, it ->
-            updateDownloadID(tempIds[it.id] ?: it.id, newIDs[idx])
-            updateDownloadRowNumber(newIDs[idx], items.size - idx)
+        val positions = items.map(DownloadItem::orderPosition)
+        items.reversed().forEachIndexed { index, item ->
+            updateOrderPosition(item.id, positions[index])
+            updateDownloadRowNumber(item.id, items.size - index)
         }
     }
 
-    @Query("Update downloads set id=:newId where id=:id")
-    suspend fun updateDownloadID(id: Long, newId: Long)
+    @Query("UPDATE downloads SET orderPosition=:position WHERE id=:id")
+    suspend fun updateOrderPosition(id: Long, position: Long)
 
-    @Query("SELECT COUNT(*) FROM downloads WHERE id=:id")
-    suspend fun countById(id: Long): Int
-
-    @Transaction
-    suspend fun moveToTemporaryId(id: Long): Long {
-        var candidate = id xor Long.MIN_VALUE
-        while (countById(candidate) > 0) {
-            candidate += 1
-        }
-        updateDownloadID(id, candidate)
-        return candidate
-    }
+    @Query("UPDATE downloads SET orderPosition=:position WHERE id=:id AND status='Queued'")
+    suspend fun updateQueuedOrderPosition(id: Long, position: Long): Int
 
     @Query("Update downloads set rowNumber=:newNr where id=:id")
     suspend fun updateDownloadRowNumber(id: Long, newNr: Int)
 
     @Query("SELECT id from downloads WHERE id > :item1 AND id < :item2 AND status in (:statuses) ORDER BY id DESC")
     fun getIDsBetweenTwoItems(item1: Long, item2: Long, statuses: List<String>) : List<Long>
+
+    @Query(
+        "SELECT id FROM downloads WHERE status='Queued' AND orderPosition > " +
+            "MIN((SELECT orderPosition FROM downloads WHERE id=:item1), " +
+            "(SELECT orderPosition FROM downloads WHERE id=:item2)) AND orderPosition < " +
+            "MAX((SELECT orderPosition FROM downloads WHERE id=:item1), " +
+            "(SELECT orderPosition FROM downloads WHERE id=:item2)) ORDER BY orderPosition, id"
+    )
+    fun getQueuedIDsBetweenTwoItems(item1: Long, item2: Long): List<Long>
 
     @Query("SELECT id from downloads WHERE id > :item1 AND id < :item2 AND status in('Scheduled') ORDER BY downloadStartTime, id")
     fun getScheduledIDsBetweenTwoItems(item1: Long, item2: Long) : List<Long>

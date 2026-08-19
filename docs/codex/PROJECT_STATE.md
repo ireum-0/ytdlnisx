@@ -32,6 +32,11 @@ Do not recreate these as new features without checking the current implementatio
 - Subtitle selection, conversion, sidecar handling, and hard-sub processing.
 - Observe Sources and retry-related source state.
 - Settings backup and Room migrations.
+- Download presets with explicit precedence.
+- Creator groups, keyword groups, and automatic keyword rules.
+- Source-media publication date capture, History display/sort policy, and
+  explicit metadata backfill.
+- Runtime diagnostics and terminal command dry-run.
 
 ## Existing safety and recovery work
 
@@ -45,7 +50,8 @@ Revalidate these before changing adjacent code:
 - Large files are not blindly copied into the share cache.
 - Known sensitive filenames and database/config files are blocked from sharing.
 - DownloadWorker contains stopped-worker cleanup and requeue behavior.
-- Migration smoke tests cover representative recent migration paths.
+- Migration smoke tests cover representative recent migration paths, and
+  exported schemas reach database version 53.
 - Duplicate-related state exists and must be inspected before adding a second duplicate system.
 - Observe Sources stores retry and observed-link state.
 
@@ -72,7 +78,13 @@ Large files are not, by themselves, permission for broad refactoring. Extract on
 
 ### Tests
 
-Automated coverage is limited relative to the feature surface. Do not claim broad regression safety from a compile-only check.
+Automated coverage is limited relative to the feature surface. Do not claim
+broad regression safety from a compile-only check. Connected tests and manual
+device validation remain necessary for storage, WorkManager, Media3, Room
+upgrades, native runtimes, and exported intent handling.
+
+Room compilation currently reports terminal query/projection warnings. Resolve
+the model/query contract rather than ignoring new warnings.
 
 ### Native and runtime support
 
@@ -119,3 +131,5 @@ The following require verification and must not be treated as facts:
 - WorkManager constraints behave as an in-process pause mechanism.
 - Existing duplicate handling covers every duplicate scenario.
 - Existing resume-playback behavior covers every URI type.
+- Metadata providers always return a source-media publication date.
+- Full-history metadata backfill will finish in one foreground UI session.
