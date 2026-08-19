@@ -30,6 +30,9 @@ jobs:
       - name: Grant execute permission for Gradle
         run: chmod +x gradlew
 
+      - name: Create CI local.properties
+        run: touch local.properties
+
       - name: Compile debug Kotlin
         run: ./gradlew :app:compileDebugKotlin -x lint
 
