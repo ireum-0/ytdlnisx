@@ -59,6 +59,60 @@ Required result:
 - cover reset restore, merge restore, ID collision, missing target, regular
   marker, and quality marker cases.
 
+### P0 — BUG-OBSERVE-01 — Require authoritative source snapshots before sync deletion
+
+**State:** Open
+
+Observe Sources treats a source fetch as usable for destructive `syncWithSource`
+reconciliation whenever the fetch returns normally. It compares the returned
+URLs with `alreadyProcessedLinks`, then deletes matching History rows and their
+associated files for processed URLs missing from that returned list. The source
+fetch contract does not prove that the returned list is complete. The yt-dlp
+metadata request uses `--ignore-errors`, so per-item extraction failures can
+produce a partial list without failing the overall call; NewPipe paging can also
+return a successful accumulated list when a page yields no usable items. A
+partial snapshot can therefore make media that is still present at the source
+look removed and trigger destructive local History/media deletion.
+
+Required result:
+
+- carry an explicit complete/authoritative source-snapshot state alongside the
+  returned items;
+- allow `syncWithSource` deletion only after a complete authoritative snapshot;
+- on partial, failed, or ambiguous fetches, preserve History/media and processed
+  membership state and retry/report the source failure;
+- add regressions for yt-dlp ignored item errors, incomplete NewPipe paging, and
+  empty/partial pages proving that no local record or file is deleted.
+
+### P0 — BUG-OUTPUT-01 — Do not adopt unrelated recent destination files as download outputs
+
+**State:** Open
+
+`DownloadWorker` falls back to `recoverPathsFromDirectory()` when parsed or
+moved output paths are unavailable. That helper recursively accepts every file
+in the destination whose modification time is newer than roughly two minutes
+before the current download started, without proving an expected filename,
+source identity, temp-origin mapping, or ownership by the current download.
+These broad candidates can become `finalPaths`. In History replacement flows a
+recovered file can pass only the media/quality checks, be persisted as the
+replacement History path, and then cause the prior History media to be deleted.
+Deferred hard-sub paths can likewise operate on recovered destination files.
+Thus an unrelated file modified concurrently in the same destination can be
+attached to, modified by, or substituted for the current download.
+
+Required result:
+
+- recover outputs only from provenance tied to the current operation, such as
+  exact move results, expected output names/manifests, or verified temp-origin
+  mappings;
+- never accept an arbitrary recent destination file merely because of mtime;
+- if output ownership cannot be proven, preserve recoverable temp artifacts and
+  fail safely instead of committing History replacement;
+- require verified output provenance before quality validation, hard-sub
+  mutation, History replacement, or old-media deletion;
+- add move-failure/output-resolution tests with unrelated recent destination
+  files for normal, hard-sub, and History replacement downloads.
+
 ### P1 — BUG-KEYWORD-01 — Require an authoritative automatic-keyword baseline
 
 **State:** Open
@@ -80,6 +134,25 @@ Required result:
   baseline state;
 - add empty/incomplete -> later nonempty regression coverage.
 
+### P1 — BUG-METADATA-01 — Prevent stale full-row metadata writes
+
+**State:** Open
+
+`UpdateMultipleDownloadsDataWorker` loads a download row, performs potentially
+slow metadata enrichment, then reloads only the current `status` before writing
+the enriched object with `updateWithoutUpsert()`. Other row fields changed
+concurrently while metadata is being fetched can therefore be overwritten by
+the stale pre-fetch object.
+
+Required result:
+
+- update only metadata columns owned by the enrichment worker, or use a row
+  revision/compare-and-set merge contract;
+- preserve concurrent scheduling, configuration, path, and other user/workflow
+  edits;
+- add a regression test that mutates a download row while metadata lookup is in
+  progress.
+
 ### P2 — BUG-KEYWORD-02 — Recompute derived RULE assignments on History Undo
 
 **State:** Open
@@ -99,24 +172,29 @@ Required result:
 - add Undo coverage where a rule is edited or replaced while the History row is
   deleted.
 
-### P1 — BUG-METADATA-01 — Prevent stale full-row metadata writes
+### P2 — BUG-METADATA-02 — Validate source identity before applying download metadata
 
 **State:** Open
 
-`UpdateMultipleDownloadsDataWorker` loads a download row, performs potentially
-slow metadata enrichment, then reloads only the current `status` before writing
-the enriched object with `updateWithoutUpsert()`. Other row fields changed
-concurrently while metadata is being fetched can therefore be overwritten by
-the stale pre-fetch object.
+`ResultRepository` has `getSingleMetadataFromUrl()` specifically to reject an
+extractor result whose trusted source identity does not match the requested
+URL. `updateDownloadItem()`, however, fetches fresh metadata through
+`getSingleMetadataFromSource()` and applies it directly; its cache-first path
+also permits a fresh result to participate in enrichment without first proving
+that it belongs to the download URL. If an extractor returns an unrelated item,
+metadata such as title/author/thumbnail, duration, website, formats, subtitles,
+or publication date can be merged into the wrong download row and later
+materialized into History.
 
 Required result:
 
-- update only metadata columns owned by the enrichment worker, or use a row
-  revision/compare-and-set merge contract;
-- preserve concurrent scheduling, configuration, path, and other user/workflow
-  edits;
-- add a regression test that mutates a download row while metadata lookup is in
-  progress.
+- validate every fresh metadata result against the requested download URL using
+  `ExtractorSourceIdentityPolicy` before merging or applying it;
+- reject a mismatched fresh result in both fresh-first and cache-first lookup
+  paths and do not combine it with a valid cached record;
+- preserve canonical-equivalent and explicitly supported provider redirects;
+- add regressions for accepted canonical equivalents and rejected unrelated
+  extractor results.
 
 ### P2 — BUG-DATE-01 — Preserve extractor failure instead of ambiguous NO_DATE
 
@@ -159,6 +237,51 @@ Required result:
   according to the operation-state contract;
 - make terminal UI/notification counts reflect failed items;
 - add mixed success/failure and all-failed finalization tests.
+
+### P2 — BUG-BACKUP-02 — Use collision-free custom-thumbnail paths during restore
+
+**State:** Open
+
+Custom thumbnails are restored before new History IDs are allocated and are
+written to `restored_<oldHistoryId>.<extension>`. The old ID comes from the
+backup rather than the live database, and `writeBytes()` overwrites an existing
+file at that path. During merge restore, two independent backups can legitimately
+contain different History rows with the same old numeric ID. Restoring the
+second backup then overwrites the thumbnail file still referenced by the first
+restored History row, silently changing or corrupting another record's custom
+thumbnail.
+
+Required result:
+
+- allocate a unique restored-thumbnail path tied to the newly allocated History
+  identity or a collision-resistant generated token;
+- never overwrite a thumbnail path referenced by another History row;
+- clean up newly written thumbnail artifacts if the corresponding History
+  restore fails;
+- add merge-restore tests for two backups sharing an old History ID, repeated
+  restore, different extensions/content, and reset restore.
+
+### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
+
+**State:** Open
+
+The queued screen displays and allows selection of both `Queued` and
+`WaitingForMembership` rows. Per-item move controls and drag handling correctly
+block membership-waiting rows, but the contextual multi-select Move Up/Move
+Down actions do not apply that restriction. Select-all and inverted selection
+explicitly include membership-waiting IDs, while the repository reorder
+implementation rewrites only `Queued` rows. A visible selection can therefore
+contain rows that the requested reorder silently ignores, producing a mismatch
+between the selected action and the resulting order.
+
+Required result:
+
+- hide/disable contextual reorder when the selected set contains a
+  membership-waiting row, or define and implement a consistent ordering contract
+  that includes those rows;
+- make direct, mixed, select-all, and inverted selections follow the same rule
+  as drag and per-item move controls;
+- add focused selection/reorder regressions for membership-waiting rows.
 
 ## Current status
 
