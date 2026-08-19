@@ -394,6 +394,35 @@ Required result:
 - add reset and merge round-trip tests with one History item in multiple
   playlists and playlists belonging to multiple groups.
 
+### P2 — BUG-BACKUP-08 — Restore every supported SharedPreferences value type
+
+**State:** Open
+
+`BackupSettingsUtil.backupSettings()` serializes every preference in
+`SharedPreferences.all` and records the runtime type name, so `Long` and `Float`
+values are written to otherwise successful app-data backups. `restoreData()`,
+however, handles only `String`, `Boolean`, `Int`, and string-set values; every
+other type falls through the set branch and is silently ignored. The app
+currently persists real user/runtime state with the missing types: the player
+stores per-History playback-position cache entries with `putLong`, while
+subtitle text size, hold playback speed, and speed presets use `putFloat`.
+A reset restore clears preferences first and then cannot reconstruct those
+values; a merge restore silently leaves the destination device's old values
+instead of applying the backup. The backup can still report success in both
+cases.
+
+Required result:
+
+- restore `Long` and `Float` with the corresponding SharedPreferences editor
+  methods and reject unknown serialized types instead of silently ignoring them;
+- define whether transient ID-keyed caches such as player playback positions
+  belong in portable settings backup at all, and if retained, remap/validate
+  their History identity separately from value-type restoration;
+- preserve supported primitive types losslessly through backup/restore and
+  version the schema if type encoding changes;
+- add round-trip tests covering String, Boolean, Int, Long, Float, StringSet,
+  reset restore, merge restore, and malformed/unknown type names.
+
 ### P2 — BUG-DUPLICATE-01 — Canonicalize media identity for config duplicate checks
 
 **State:** Open
