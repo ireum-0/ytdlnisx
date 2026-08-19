@@ -59,6 +59,37 @@ Required result:
 - cover reset restore, merge restore, ID collision, missing target, regular
   marker, and quality marker cases.
 
+### P0 — BUG-BACKUP-03 — Make reset restore fail-safe instead of destructively partial
+
+**State:** Open
+
+`restoreData(..., resetData = true)` performs a long sequence of irreversible
+mutations across SharedPreferences, History, keyword/group tables, Observe
+Sources, download queues, cookies, templates, and other state. The sequence is
+wrapped only in an outer `runCatching`; it is not staged or transactionally
+rolled back as a restore operation. Several reset branches delete existing live
+data before later categories are parsed/inserted, and restored queued work can
+be started before the remaining restore stages finish. If any later database,
+filesystem, preference, or scheduling operation throws, the function returns
+failure while earlier live data can already be deleted or partially replaced.
+The restore UI then reports only a generic failure and has no rollback path.
+The parser also does not require the backup `app` marker or a supported
+`backup_format_version` before offering the destructive Reset action.
+
+Required result:
+
+- fully parse and validate the backup manifest, supported format version,
+  category payloads, and required references before mutating live state;
+- stage restored files such as custom thumbnails before committing references;
+- apply related Room reset/restore mutations through a transaction or an
+  explicit rollback-capable restore plan;
+- defer WorkManager scheduling and preference replacement until the database
+  portion has committed, or compensate those side effects on failure;
+- quiesce or otherwise isolate conflicting live workers while a reset restore
+  is committing;
+- add injected-failure tests after early, middle, and late restore stages and
+  prove that a reported failure leaves the pre-restore live state intact.
+
 ### P0 — BUG-OBSERVE-01 — Require authoritative source snapshots before sync deletion
 
 **State:** Open
@@ -112,6 +143,30 @@ Required result:
   mutation, History replacement, or old-media deletion;
 - add move-failure/output-resolution tests with unrelated recent destination
   files for normal, hard-sub, and History replacement downloads.
+
+### P1 — BUG-BACKUP-04 — Fail backup creation when a selected category cannot be captured
+
+**State:** Open
+
+The category helpers in `BackupSettingsUtil` catch their own read/serialization
+exceptions and return an empty JSON array. `SettingsViewModel.backup()` therefore
+cannot distinguish a legitimately empty category from a category whose database
+read or serialization failed. It can write that empty substitute into the file,
+move the file successfully, and let the UI report that the backup was created.
+A user can consequently keep an apparently successful backup that silently
+omits an entire selected data category and discover the loss only during a later
+restore.
+
+Required result:
+
+- propagate category capture failures through a typed `Result`/exception instead
+  of converting them to empty arrays;
+- abort a normal backup when any selected category cannot be captured, or mark
+  an explicitly incomplete artifact that destructive restore refuses to use;
+- capture interdependent database data from a consistent snapshot where cross-
+  table relationships matter;
+- add fault-injection tests for every selected category and prove that a failed
+  category cannot produce a success-labelled backup.
 
 ### P1 — BUG-KEYWORD-01 — Require an authoritative automatic-keyword baseline
 
@@ -260,6 +315,128 @@ Required result:
   restore fails;
 - add merge-restore tests for two backups sharing an old History ID, repeated
   restore, different extensions/content, and reset restore.
+
+### P2 — BUG-BACKUP-05 — Include paused downloads in backup and restore
+
+**State:** Open
+
+Paused downloads are persistent queue records and are displayed in the active
+Downloads screen alongside active/post-processing rows. The backup category
+list, default all-category backup, and `RestoreAppDataItem` have categories for
+queued, scheduled, cancelled, errored, and saved downloads, but no paused
+category. `backupQueuedDownloads()` reads only the queued/waiting queue, while
+paused rows are exposed separately by `DownloadRepository`. A user who creates
+an all-category backup while downloads are paused therefore receives a
+success-labelled backup that cannot reconstruct those paused jobs.
+
+Required result:
+
+- include paused download rows in the backup format, with an explicit restore
+  status contract that does not unexpectedly auto-start them;
+- preserve their configuration, operation/retry metadata, and safe queue order;
+- define backward compatibility for older backup versions that lack the paused
+  category;
+- add all-category round-trip tests containing paused, queued, and scheduled
+  rows simultaneously.
+
+### P2 — BUG-BACKUP-06 — Remap or reject every imported numeric reference
+
+**State:** Open
+
+Restore correctly builds maps for several newly allocated database IDs, but
+some persisted numeric references still bypass those maps. In Youtuber-group
+restore, members and parent/child relations use `youtuberGroupIdMap`, while the
+`historyVisibleChildYoutuberGroups` preference is written back using the old
+backup IDs. Generic settings backup can likewise carry ID-valued group
+preferences. For History keyword assignments whose source type is
+`LEGACY_OBSERVE_SOURCE`, restore falls back to the old `sourceId` when no
+Observe Source mapping exists instead of proving that the old ID still denotes
+the same source. During merge restore, a reused numeric ID can therefore point
+at an unrelated live group/source; during reset restore it can point nowhere.
+This leaves UI visibility state and keyword provenance attached to the wrong
+persistent identity.
+
+Required result:
+
+- enumerate ID-bearing fields/preferences in the backup schema and give each an
+  explicit remap/validation rule;
+- remap visible/hidden Youtuber-group IDs through `youtuberGroupIdMap` before
+  committing preferences;
+- for legacy Observe Source assignments, use a restored mapping or validate a
+  stable source identity before retaining a live ID; otherwise drop/quarantine
+  the stale derived attribution rather than guessing by number;
+- add merge/reset tests with intentionally colliding old group/source IDs and
+  verify the restored references resolve to the intended entities only.
+
+### P2 — BUG-DUPLICATE-01 — Canonicalize media identity for config duplicate checks
+
+**State:** Open
+
+The `config` duplicate policy compares a `RequestConfiguration` that includes the
+raw URL string. Two requests for the same YouTube video can therefore compare as
+different when one uses `youtu.be/<id>` and another uses a canonical watch,
+mobile, or music URL even when the request-changing settings are otherwise the
+same. The normal queue History path also computes canonical-equivalent History
+candidates but then performs the config command comparison against the exact-URL
+History list. This is inconsistent with the URL/type duplicate mode and allows
+canonical-equivalent requests to bypass duplicate prevention and consume a
+second download/storage slot.
+
+Required result:
+
+- compare stable/canonical media identity separately from request-changing
+  configuration fields;
+- treat supported canonical-equivalent URLs for the same media as the same
+  source while keeping distinct media IDs distinct;
+- use the canonical-equivalent History candidate set consistently in config
+  duplicate checks;
+- add active-queue and History regressions covering youtu.be, watch, mobile,
+  and music URL variants.
+
+### P2 — BUG-CLEANUP-01 — Make automatic leftover cleanup actually recurring
+
+**State:** Open
+
+The cleanup preference exposes `daily`, `weekly`, and `monthly` cadences, but
+changing the preference enqueues a single `OneTimeWorkRequest` delayed until the
+next calculated date. `CleanUpLeftoverDownloads` performs one cleanup and
+returns `Result.success()` without scheduling the next occurrence. The selected
+cadence therefore silently stops after its first run. In addition, each enabled
+preference change uses a timestamp as a new unique-work name, so changing the
+cadence can leave an older delayed cleanup request scheduled alongside the new
+one instead of replacing a single logical cleanup schedule.
+
+Required result:
+
+- use a recurring WorkManager contract or explicitly schedule the next one-time
+  run after each successful execution;
+- use a stable unique-work identity for the cleanup schedule and replace/update
+  it when the cadence changes;
+- cancel the prior schedule when changing cadence or disabling cleanup;
+- add WorkManager tests proving repeated daily/weekly/monthly execution and
+  single-schedule behavior after preference changes/restarts.
+
+### P2 — BUG-LOCALADD-01 — Do not treat a bare filename stem as local-file identity
+
+**State:** Open
+
+`LocalAddWorker` first checks stronger tree/document/path identities, but it also
+builds a global `existingBaseNames` set and silently skips a candidate whenever
+its filename without extension is already present. The same set is updated after
+an item is accepted, so two distinct files selected in one batch from different
+directories but sharing a name such as `video.mp4` are collapsed even when their
+URIs/tree paths are different. A basename alone is not a stable file identity;
+legitimate local media can therefore be omitted from History without a conflict
+prompt or error.
+
+Required result:
+
+- use persisted tree/document/URI identity as the primary duplicate key;
+- never silently discard a distinct file solely because another History/batch
+  item has the same basename;
+- if a heuristic duplicate check is desired, require additional evidence such
+  as size/duration/hash and surface ambiguous cases for user choice;
+- add same-name/different-directory and same-name/same-batch regressions.
 
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
