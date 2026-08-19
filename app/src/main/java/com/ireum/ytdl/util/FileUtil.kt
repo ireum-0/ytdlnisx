@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.internal.closeQuietly
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
@@ -64,6 +65,19 @@ object FileUtil {
         ".env"
     )
 
+    private enum class StoredFileOperationFailure {
+        NOT_FOUND,
+        PERMISSION_REQUIRED,
+        INVALID_LOCATION,
+        UNSUPPORTED,
+        UNKNOWN
+    }
+
+    private data class PreparedStoredFile(
+        val uri: Uri? = null,
+        val failure: StoredFileOperationFailure? = null
+    )
+
     fun deleteFile(path: String){
         runCatching {
             val normalizedPath = path.trim()
@@ -83,7 +97,7 @@ object FileUtil {
             }
 
             if (!deleted) {
-                Log.w("FileUtil", "deleteFile fallback failed path=$normalizedPath")
+                Log.w("FileUtil", "deleteFile fallback failed target=${safeDiagnosticLocation(normalizedPath)}")
             }
         }
     }
@@ -97,6 +111,39 @@ object FileUtil {
         paths.forEach { path ->
             deleteFileWithZeroByteSiblings(path)
         }
+    }
+
+    fun cleanupDeletedRawFileArtifacts(path: String) {
+        cleanupDeletedRawFileArtifacts(listOf(path))
+    }
+
+    fun cleanupDeletedRawFileArtifacts(paths: Collection<String>) {
+        val normalizedPaths = paths.map(String::trim).filter(String::isNotBlank).distinct()
+        if (normalizedPaths.isEmpty()) return
+        normalizedPaths.forEach(::deleteFileFromMediaStore)
+
+        normalizedPaths
+            .map(::File)
+            .groupBy { file -> file.parentFile?.absolutePath.orEmpty() }
+            .filterKeys(String::isNotBlank)
+            .forEach { (parentPath, targets) ->
+                val parent = File(parentPath)
+                if (!parent.exists() || !parent.isDirectory) return@forEach
+                val targetPaths = targets.mapTo(hashSetOf()) { it.absolutePath.lowercase(Locale.US) }
+                val stems = targets.mapTo(hashSetOf()) { it.nameWithoutExtension }
+                parent.listFiles()
+                    ?.asSequence()
+                    ?.filter { candidate ->
+                        candidate.isFile &&
+                            candidate.length() == 0L &&
+                            candidate.nameWithoutExtension in stems &&
+                            candidate.extension.lowercase(Locale.US) in zeroByteSiblingMediaExtensions &&
+                            candidate.absolutePath.lowercase(Locale.US) !in targetPaths
+                    }
+                    ?.forEach { candidate ->
+                        if (candidate.delete()) deleteFileFromMediaStore(candidate.absolutePath)
+                    }
+            }
     }
 
     private fun deleteRawFilePath(path: String): Boolean {
@@ -123,7 +170,7 @@ object FileUtil {
 
     private fun deleteDocumentUri(uri: Uri): Boolean {
         if (DocumentsContract.isTreeUri(uri) && !DocumentsContract.isDocumentUri(App.instance, uri)) {
-            Log.w("FileUtil", "Refusing to delete tree uri=$uri")
+            Log.w("FileUtil", "Refusing to delete a SAF tree root")
             return false
         }
         val single = DocumentFile.fromSingleUri(App.instance, uri)
@@ -566,7 +613,7 @@ object FileUtil {
         return context.contentResolver.persistedUriPermissions
             .joinToString(separator = "; ") { perm ->
                 val docId = runCatching { DocumentsContract.getTreeDocumentId(perm.uri) }.getOrNull().orEmpty()
-                "uri=${perm.uri} read=${perm.isReadPermission} write=${perm.isWritePermission} treeId=$docId"
+                "authority=${perm.uri.authority.orEmpty()} read=${perm.isReadPermission} write=${perm.isWritePermission} treeConfigured=${docId.isNotBlank()}"
             }
             .ifBlank { "<none>" }
     }
@@ -840,7 +887,7 @@ object FileUtil {
     fun deleteCachePathIfAppOwned(context: Context): Boolean {
         val cacheDir = File(getCachePath(context))
         if (!isAppOwnedCachePath(context, cacheDir)) {
-            Log.w("FileUtil", "Refusing to recursively delete non app-owned cache path=${cacheDir.absolutePath}")
+            Log.w("FileUtil", "Refusing to recursively delete a non app-owned cache location")
             return false
         }
         return cacheDir.deleteRecursively()
@@ -931,18 +978,85 @@ object FileUtil {
     }
 
     fun prepareShareUri(context: Context, path: String): Uri? {
-        return runCatching {
-            val uri = Uri.parse(path)
-            if (uri.scheme.equals("content", ignoreCase = true)) {
-                DocumentFile.fromSingleUri(context, uri)
-                    ?.takeIf { document ->
-                        document.exists() && document.isFile && document.canRead()
-                    }
-                    ?.let { uri }
+        return prepareStoredFile(context, path).uri
+    }
+
+    private fun prepareStoredFile(context: Context, storedPath: String): PreparedStoredFile {
+        val path = storedPath.trim()
+        if (path.isBlank()) return PreparedStoredFile(failure = StoredFileOperationFailure.INVALID_LOCATION)
+        return try {
+            val parsed = Uri.parse(path)
+            if (parsed.scheme.equals("content", ignoreCase = true)) {
+                if (parsed.authority.isNullOrBlank()) {
+                    return PreparedStoredFile(failure = StoredFileOperationFailure.INVALID_LOCATION)
+                }
+                prepareContentStoredFile(context, parsed)
             } else {
-                prepareShareUri(context, File(path))
+                if (!parsed.scheme.isNullOrBlank() &&
+                    !parsed.scheme.equals("file", ignoreCase = true) &&
+                    path.contains("://")
+                ) {
+                    return PreparedStoredFile(failure = StoredFileOperationFailure.UNSUPPORTED)
+                }
+                val rawPath = if (parsed.scheme.equals("file", ignoreCase = true)) parsed.path.orEmpty() else path
+                if (rawPath.isBlank()) {
+                    return PreparedStoredFile(failure = StoredFileOperationFailure.INVALID_LOCATION)
+                }
+                val file = File(rawPath)
+                when {
+                    isBlockedShareFile(file) -> PreparedStoredFile(failure = StoredFileOperationFailure.UNSUPPORTED)
+                    else -> prepareRawStoredFile(context, file)
+                }
             }
-        }.getOrNull()
+        } catch (_: SecurityException) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.PERMISSION_REQUIRED)
+        } catch (_: Exception) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.UNKNOWN)
+        }
+    }
+
+    private fun prepareContentStoredFile(context: Context, uri: Uri): PreparedStoredFile {
+        return try {
+            if (context.contentResolver.getType(uri) == DocumentsContract.Document.MIME_TYPE_DIR) {
+                return PreparedStoredFile(failure = StoredFileOperationFailure.INVALID_LOCATION)
+            }
+            val descriptor = context.contentResolver.openFileDescriptor(uri, "r")
+                ?: return PreparedStoredFile(failure = StoredFileOperationFailure.UNKNOWN)
+            descriptor.use { }
+            PreparedStoredFile(uri = uri)
+        } catch (_: FileNotFoundException) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.NOT_FOUND)
+        } catch (_: SecurityException) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.PERMISSION_REQUIRED)
+        } catch (_: IllegalArgumentException) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.INVALID_LOCATION)
+        } catch (_: UnsupportedOperationException) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.UNSUPPORTED)
+        } catch (_: Exception) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.UNKNOWN)
+        }
+    }
+
+    private fun prepareRawStoredFile(context: Context, file: File): PreparedStoredFile {
+        if (file.isDirectory) {
+            return PreparedStoredFile(failure = StoredFileOperationFailure.INVALID_LOCATION)
+        }
+        val uri = prepareShareUriOptimistically(context, file)
+            ?: return PreparedStoredFile(failure = StoredFileOperationFailure.UNKNOWN)
+        return try {
+            val descriptor = context.contentResolver.openFileDescriptor(uri, "r")
+                ?: return PreparedStoredFile(failure = StoredFileOperationFailure.UNKNOWN)
+            descriptor.use { }
+            PreparedStoredFile(uri = uri)
+        } catch (_: FileNotFoundException) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.NOT_FOUND)
+        } catch (_: SecurityException) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.PERMISSION_REQUIRED)
+        } catch (_: IllegalArgumentException) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.INVALID_LOCATION)
+        } catch (_: Exception) {
+            PreparedStoredFile(failure = StoredFileOperationFailure.UNKNOWN)
+        }
     }
 
     fun describeStoredLocation(context: Context, storedPath: String): StoredLocation? {
@@ -1094,13 +1208,18 @@ object FileUtil {
 
     fun prepareShareUri(context: Context, file: File): Uri? {
         if (!file.exists() || !file.isFile || isBlockedShareFile(file)) return null
+        return prepareShareUriOptimistically(context, file)
+    }
+
+    private fun prepareShareUriOptimistically(context: Context, file: File): Uri? {
+        if (isBlockedShareFile(file)) return null
         findMediaStoreUri(context, file)?.let { return it }
         val providerFile = when {
             isInsideAllowedProviderRoot(context, file) -> file
             file.length() > MAX_SHARE_CACHE_COPY_BYTES -> {
                 Log.w(
                     "FileUtil",
-                    "Refusing to copy large file into share cache size=${file.length()} path=${file.absolutePath}"
+                    "Refusing to copy large file into share cache size=${file.length()} target=${file.name}"
                 )
                 return null
             }
@@ -1112,8 +1231,8 @@ object FileUtil {
                 context.packageName + ".fileprovider",
                 providerFile
             )
-        }.onFailure {
-            Log.w("FileUtil", "Failed to build FileProvider share uri path=${providerFile.absolutePath}", it)
+        }.onFailure { error ->
+            Log.w("FileUtil", "Failed to build FileProvider share uri target=${providerFile.name} reason=${error.javaClass.simpleName}")
         }.getOrNull()
     }
 
@@ -1136,8 +1255,8 @@ object FileUtil {
                     null
                 }
             }
-        }.onFailure {
-            Log.w("FileUtil", "Failed to query MediaStore share uri path=$canonicalPath", it)
+        }.onFailure { error ->
+            Log.w("FileUtil", "Failed to query MediaStore share uri target=${file.name} reason=${error.javaClass.simpleName}")
         }.getOrNull()
     }
 
@@ -1156,8 +1275,8 @@ object FileUtil {
             val target = File(sharedDir, uniqueShareFileName(file, safeName))
             file.copyTo(target, overwrite = true)
             target
-        }.onFailure {
-            Log.w("FileUtil", "Failed to copy file into share cache path=${file.absolutePath}", it)
+        }.onFailure { error ->
+            Log.w("FileUtil", "Failed to copy file into share cache target=${file.name} reason=${error.javaClass.simpleName}")
         }.getOrNull()
     }
 
@@ -1200,26 +1319,29 @@ object FileUtil {
 
 
     fun openFileIntent(context: Context, downloadPath: String) {
-        val uri = prepareShareUri(context, downloadPath)
+        val prepared = prepareStoredFile(context, downloadPath)
+        val uri = prepared.uri
 
         if (uri == null){
-            Toast.makeText(context, context.getString(R.string.error_opening_file), Toast.LENGTH_SHORT).show()
+            showStoredFileOperationFailure(context, prepared.failure)
         }else{
-            val ext = downloadPath.substringBefore('?').substringAfterLast('.', "").lowercase()
-            val mime = context.contentResolver.getType(uri)
-                ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
-                ?: "*/*"
-
-            val intent = Intent(Intent.ACTION_VIEW)
-                .setDataAndType(uri, mime)
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-
             try {
+                val ext = downloadPath.substringBefore('?').substringAfterLast('.', "").lowercase()
+                val mime = context.contentResolver.getType(uri)
+                    ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+                    ?: "*/*"
+                val intent = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, mime)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 context.startActivity(intent)
             } catch (_: ActivityNotFoundException) {
                 Toast.makeText(context, context.getString(R.string.error_opening_file), Toast.LENGTH_SHORT).show()
             } catch (_: SecurityException) {
                 Toast.makeText(context, context.getString(R.string.file_permission_required), Toast.LENGTH_SHORT).show()
+            } catch (_: IllegalArgumentException) {
+                Toast.makeText(context, context.getString(R.string.invalid_file_location), Toast.LENGTH_SHORT).show()
+            } catch (_: Exception) {
+                Toast.makeText(context, context.getString(R.string.file_access_failed), Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -1227,27 +1349,63 @@ object FileUtil {
 
     fun shareFileIntent(context: Context, paths: List<String>){
         val uris : ArrayList<Uri> = arrayListOf()
-        paths.runCatching {
-            this.forEach {path ->
-                val uri = prepareShareUri(context, path)
-                if (uri != null) uris.add(uri)
-            }
-
-        }
+        val failures = paths.map { path -> prepareStoredFile(context, path) }
+            .onEach { prepared -> prepared.uri?.let(uris::add) }
+            .mapNotNull(PreparedStoredFile::failure)
 
         if (uris.isEmpty()){
-            Toast.makeText(context, "Error sharing files!", Toast.LENGTH_SHORT).show()
+            showStoredFileOperationFailure(context, failures.firstOrNull())
         }else{
-            Intent().apply {
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                action = Intent.ACTION_SEND_MULTIPLE
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-                type = if (uris.size == 1) uris[0].let { context.contentResolver.getType(it) } ?: "media/*" else "*/*"
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            }.run{
-                context.startActivity(Intent.createChooser(this, context.getString(R.string.share)))
+            try {
+                val intent = Intent().apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    action = Intent.ACTION_SEND_MULTIPLE
+                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                    type = if (uris.size == 1) {
+                        context.contentResolver.getType(uris[0]) ?: "media/*"
+                    } else {
+                        "*/*"
+                    }
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                }
+                context.startActivity(Intent.createChooser(intent, context.getString(R.string.share)))
+                if (failures.isNotEmpty()) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.share_files_partial, uris.size, failures.size),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (_: ActivityNotFoundException) {
+                Toast.makeText(context, context.getString(R.string.no_compatible_share_app), Toast.LENGTH_SHORT).show()
+            } catch (_: SecurityException) {
+                Toast.makeText(context, context.getString(R.string.file_permission_required), Toast.LENGTH_SHORT).show()
+            } catch (_: IllegalArgumentException) {
+                Toast.makeText(context, context.getString(R.string.invalid_file_location), Toast.LENGTH_SHORT).show()
+            } catch (_: Exception) {
+                Toast.makeText(context, context.getString(R.string.file_access_failed), Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    private fun showStoredFileOperationFailure(context: Context, failure: StoredFileOperationFailure?) {
+        val message = when (failure) {
+            StoredFileOperationFailure.NOT_FOUND -> R.string.requested_file_not_found
+            StoredFileOperationFailure.PERMISSION_REQUIRED -> R.string.file_permission_required
+            StoredFileOperationFailure.INVALID_LOCATION -> R.string.invalid_file_location
+            StoredFileOperationFailure.UNSUPPORTED -> R.string.file_operation_unsupported
+            StoredFileOperationFailure.UNKNOWN,
+            null -> R.string.file_access_failed
+        }
+        Toast.makeText(context, context.getString(message), Toast.LENGTH_LONG).show()
+    }
+
+    private fun safeDiagnosticLocation(storedPath: String): String {
+        return if (storedPath.startsWith("content://", ignoreCase = true)) {
+            "content URI"
+        } else {
+            File(storedPath).name.ifBlank { "file" }
         }
     }
 

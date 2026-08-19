@@ -8,6 +8,7 @@ object DownloadIssueText {
         return resources.getString(
             when (code) {
                 DownloadIssueCode.NETWORK_TIMEOUT -> R.string.download_issue_network_timeout
+                DownloadIssueCode.MEMBERSHIP_REQUIRED -> R.string.download_issue_membership_required
                 DownloadIssueCode.AUTH_REQUIRED -> R.string.download_issue_auth_required
                 DownloadIssueCode.FORMAT_UNAVAILABLE -> R.string.download_issue_format_unavailable
                 DownloadIssueCode.STORAGE_FULL -> R.string.download_issue_storage_full

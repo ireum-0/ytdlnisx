@@ -110,19 +110,14 @@ class ObserveSourcesFragment : Fragment(), ObserveSourcesAdapter.OnItemClickList
         }
     }
 
-    private fun showDialog(url: String?){
+    private fun showDialog(item: ObserveSourcesItem?){
         lifecycleScope.launch {
             val bundle = Bundle()
             bundle.putSerializable("type", downloadViewModel.getDownloadType(
                 DownloadType.valueOf(preferences.getString("download_type", "auto")!!), "")
             )
 
-            if (url != null){
-                val item = withContext(Dispatchers.IO){
-                    observeSourcesViewModel.getByURL(url)
-                }
-                bundle.putParcelable("item", item)
-            }
+            item?.let { bundle.putParcelable("item", it) }
 
             findNavController().navigate(R.id.observeSourcesBottomSheetDialog, bundle)
         }
@@ -188,7 +183,7 @@ class ObserveSourcesFragment : Fragment(), ObserveSourcesAdapter.OnItemClickList
     }
 
     override fun onItemClick(item: ObserveSourcesItem) {
-        showDialog(item.url)
+        showDialog(item)
     }
 
     override fun onDelete(item: ObserveSourcesItem) {

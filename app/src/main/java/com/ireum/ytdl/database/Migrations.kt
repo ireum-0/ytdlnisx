@@ -7,6 +7,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.ireum.ytdl.database.models.Format
 import com.google.gson.Gson
+import java.util.Locale
 
 
 object Migrations {
@@ -207,6 +208,81 @@ object Migrations {
             database.execSQL("ALTER TABLE downloads ADD COLUMN retryStrategy TEXT NOT NULL DEFAULT 'ORIGINAL'")
             database.execSQL("ALTER TABLE downloads ADD COLUMN lastIssueCode TEXT NOT NULL DEFAULT ''")
             database.execSQL("ALTER TABLE downloads ADD COLUMN lastIssueStage TEXT NOT NULL DEFAULT ''")
+        },
+        Migration(51, 52) { database ->
+            database.execSQL("ALTER TABLE sources ADD COLUMN observationPurpose TEXT NOT NULL DEFAULT 'USER'")
+            database.execSQL("ALTER TABLE sources ADD COLUMN managedConditionKey TEXT NOT NULL DEFAULT ''")
+
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `automatic_keyword_rules` (" +
+                    "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                    "`conditionType` TEXT NOT NULL, `conditionValue` TEXT NOT NULL, " +
+                    "`conditionKey` TEXT NOT NULL, `playlistName` TEXT NOT NULL, " +
+                    "`enabled` INTEGER NOT NULL, `revision` INTEGER NOT NULL, " +
+                    "`baselineComplete` INTEGER NOT NULL, " +
+                    "`pendingApplyToExisting` INTEGER NOT NULL DEFAULT 0, " +
+                    "`manualSyncStatus` TEXT NOT NULL, " +
+                    "`manualSyncAt` INTEGER NOT NULL, `manualSyncError` TEXT NOT NULL, " +
+                    "`discoveryStatus` TEXT NOT NULL, `discoveryAt` INTEGER NOT NULL, " +
+                    "`discoveryError` TEXT NOT NULL)"
+            )
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_automatic_keyword_rules_conditionType_conditionKey` ON `automatic_keyword_rules` (`conditionType`, `conditionKey`)")
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_automatic_keyword_rules_enabled` ON `automatic_keyword_rules` (`enabled`)")
+
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `automatic_keyword_rule_keywords` (" +
+                    "`ruleId` INTEGER NOT NULL, `normalizedKeyword` TEXT NOT NULL, " +
+                    "`keyword` TEXT NOT NULL, `position` INTEGER NOT NULL, " +
+                    "PRIMARY KEY(`ruleId`, `normalizedKeyword`), " +
+                    "FOREIGN KEY(`ruleId`) REFERENCES `automatic_keyword_rules`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)"
+            )
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_automatic_keyword_rule_keywords_ruleId` ON `automatic_keyword_rule_keywords` (`ruleId`)")
+
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `automatic_keyword_rule_video_matches` (" +
+                    "`ruleId` INTEGER NOT NULL, `videoKey` TEXT NOT NULL, `videoUrl` TEXT NOT NULL, " +
+                    "`eligibleForAssignment` INTEGER NOT NULL, `firstSeenAt` INTEGER NOT NULL, " +
+                    "PRIMARY KEY(`ruleId`, `videoKey`), " +
+                    "FOREIGN KEY(`ruleId`) REFERENCES `automatic_keyword_rules`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)"
+            )
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_automatic_keyword_rule_video_matches_ruleId` ON `automatic_keyword_rule_video_matches` (`ruleId`)")
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_automatic_keyword_rule_video_matches_videoKey` ON `automatic_keyword_rule_video_matches` (`videoKey`)")
+
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `history_keyword_assignments` (" +
+                    "`historyItemId` INTEGER NOT NULL, `normalizedKeyword` TEXT NOT NULL, " +
+                    "`keyword` TEXT NOT NULL, `sourceType` TEXT NOT NULL, `sourceId` INTEGER NOT NULL, " +
+                    "`position` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                    "PRIMARY KEY(`historyItemId`, `normalizedKeyword`, `sourceType`, `sourceId`), " +
+                    "FOREIGN KEY(`historyItemId`) REFERENCES `history`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)"
+            )
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_history_keyword_assignments_historyItemId` ON `history_keyword_assignments` (`historyItemId`)")
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_history_keyword_assignments_sourceType_sourceId` ON `history_keyword_assignments` (`sourceType`, `sourceId`)")
+
+            val now = System.currentTimeMillis()
+            database.query("SELECT id, keywords FROM history WHERE keywords != ''").use { cursor ->
+                val idColumn = cursor.getColumnIndex("id")
+                val keywordColumn = cursor.getColumnIndex("keywords")
+                while (cursor.moveToNext()) {
+                    val historyId = cursor.getLong(idColumn)
+                    val seen = linkedSetOf<String>()
+                    cursor.getString(keywordColumn).orEmpty()
+                        .split(',', '\n', '，')
+                        .map { it.trim().replace(Regex("\\s+"), " ") }
+                        .filter(String::isNotBlank)
+                        .forEachIndexed { position, keyword ->
+                            val normalized = keyword.lowercase(Locale.ROOT)
+                            if (seen.add(normalized)) {
+                                database.execSQL(
+                                    "INSERT OR IGNORE INTO history_keyword_assignments " +
+                                        "(historyItemId, normalizedKeyword, keyword, sourceType, sourceId, position, createdAt) " +
+                                        "VALUES (?, ?, ?, 'MANUAL', 0, ?, ?)",
+                                    arrayOf<Any>(historyId, normalized, keyword, position, now)
+                                )
+                            }
+                        }
+                }
+            }
         }
     )
 

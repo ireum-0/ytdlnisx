@@ -85,16 +85,23 @@ class VideoQueueAdapter(
             meta.text = listOf(author, item.duration).filter { it.isNotBlank() }.joinToString(" ")
             val hideThumb = sharedPreferences.getStringSet("hide_thumbnails", emptySet())!!.contains("downloads")
             val preview = if (item.customThumb.isNotBlank()) item.customThumb else item.thumb
+            val fallback = item.thumb.takeIf { item.customThumb.isNotBlank() }.orEmpty()
             val resolved = when {
                 preview.startsWith("content://") || preview.startsWith("file://") -> preview
                 preview.startsWith("http://") || preview.startsWith("https://") -> preview
                 preview.isNotBlank() -> java.io.File(preview).toURI().toString()
                 else -> preview
             }
-            val thumbKey = "$hideThumb|$resolved"
+            val thumbKey = "$hideThumb|$resolved|$fallback"
             if (thumb.tag != thumbKey) {
                 thumb.tag = thumbKey
-                thumb.loadThumbnail(hideThumb, resolved, reqWidth = 240, reqHeight = 136)
+                thumb.loadThumbnail(
+                    hideThumb,
+                    resolved,
+                    reqWidth = 240,
+                    reqHeight = 136,
+                    fallbackImageURL = fallback
+                )
             }
             updateSelection(isCurrent)
             itemView.setOnClickListener { onItemClick(item) }

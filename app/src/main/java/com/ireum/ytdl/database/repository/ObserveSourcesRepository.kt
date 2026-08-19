@@ -49,6 +49,10 @@ class ObserveSourcesRepository(private val observeSourcesDao: ObserveSourcesDao,
         return observeSourcesDao.getByID(id)
     }
 
+    fun getByIDOrNull(id: Long): ObserveSourcesItem? {
+        return observeSourcesDao.getByIDOrNull(id)
+    }
+
 
     suspend fun insert(item: ObserveSourcesItem) : Long{
         if (!observeSourcesDao.checkIfExistsWithSameURL(item.url)){
@@ -57,17 +61,22 @@ class ObserveSourcesRepository(private val observeSourcesDao: ObserveSourcesDao,
         return -1
     }
 
-    suspend fun delete(item: ObserveSourcesItem){
-        observeSourcesDao.delete(item.id)
+    suspend fun delete(item: ObserveSourcesItem): List<Long> {
+        return observeSourcesDao.deleteAndCancelWaiting(item.id)
     }
 
 
-    suspend fun deleteAll(){
-        observeSourcesDao.deleteAll()
+    suspend fun deleteAll(): List<Long> {
+        return observeSourcesDao.deleteAllAndCancelWaiting()
     }
 
-    suspend fun update(item: ObserveSourcesItem){
-        observeSourcesDao.update(item)
+    suspend fun update(item: ObserveSourcesItem): List<Long> {
+        return if (item.status == SourceStatus.STOPPED) {
+            observeSourcesDao.updateAndCancelWaiting(item)
+        } else {
+            observeSourcesDao.update(item)
+            emptyList()
+        }
     }
 
     fun cancelObservationTaskByID(id: Long){

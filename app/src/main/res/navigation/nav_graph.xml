@@ -196,6 +196,10 @@
             android:id="@+id/action_observeSourcesFragment_to_observeSourcesBottomSheetDialog"
             app:destination="@id/observeSourcesBottomSheetDialog" />
     </fragment>
+    <fragment
+        android:id="@+id/automaticKeywordRulesFragment"
+        android:name="com.ireum.ytdl.ui.more.AutomaticKeywordRulesFragment"
+        android:label="@string/automatic_keyword_rules" />
     <dialog
         android:id="@+id/observeSourcesBottomSheetDialog"
         android:name="com.ireum.ytdl.ui.downloadcard.ObserveSourcesBottomSheetDialog"

@@ -96,7 +96,10 @@ import com.ireum.ytdl.util.NavbarUtil
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.util.Extensions.updateMenuItemBadge
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
-import com.ireum.ytdl.util.storage.FileAccessState
+import com.ireum.ytdl.util.storage.HistoryDeletionSummary
+import com.ireum.ytdl.util.storage.HistoryDeletionDialogState
+import com.ireum.ytdl.util.storage.HistoryDeletionValidation
+import com.ireum.ytdl.util.storage.HistoryDeletionTargetParser
 import com.ireum.ytdl.util.LocalAddCandidateDto
 import com.ireum.ytdl.util.LocalAddMatchDto
 import androidx.work.OneTimeWorkRequestBuilder
@@ -527,6 +530,28 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
     }
 
+    private fun maybePromptPlaybackAccessFailure() {
+        val itemId = VideoPlayerActivity.consumePlaybackAccessFailureId() ?: return
+        lifecycleScope.launch {
+            val item = withContext(Dispatchers.IO) {
+                runCatching { historyViewModel.getByID(itemId) }.getOrNull()
+            } ?: return@launch
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(getString(R.string.reconnect_download_file))
+                .setMessage(
+                    getString(
+                        R.string.reconnect_after_playback_failure_desc,
+                        item.title.ifBlank { item.url }
+                    )
+                )
+                .setPositiveButton(getString(R.string.choose_file)) { _, _ ->
+                    launchReconnectFilePicker(item)
+                }
+                .setNegativeButton(getString(R.string.cancel), null)
+                .show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pendingReconnectHistoryItemId = savedInstanceState
@@ -623,15 +648,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             isEnabled = true
         }
         historyViewModel = ViewModelProvider(this)[HistoryViewModel::class.java]
-        historyAdapter = HistoryPaginatedAdapter(this, requireActivity()) { item ->
-            historyViewModel.requestFileAccessState(item)
-        }
+        historyAdapter = HistoryPaginatedAdapter(this, requireActivity())
         recyclerView = view.findViewById(R.id.recyclerviewhistorys)
-        viewLifecycleOwner.lifecycleScope.launch {
-            historyViewModel.fileAccessStates
-                .flowWithLifecycle(viewLifecycleOwner.lifecycle, Lifecycle.State.STARTED)
-                .collectLatest(historyAdapter::setFileAccessStates)
-        }
         applyPendingDirectRestoreVisibility()
 
         val preferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
@@ -1159,6 +1177,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             showLocalAddSnackbar()
         }
         maybeOpenPendingLocalAdd()
+        maybePromptPlaybackAccessFailure()
         consumePendingStoredScrollRestore()
         applyPendingDirectRestoreVisibility()
         if (pendingDirectScrollRestore != null) {
@@ -1535,7 +1554,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 localTreeUri = updatedTreeMeta.first,
                                 localTreePath = updatedTreeMeta.second
                             )
-                            db.historyDao.insert(item)
+                            com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                                .insertHistory(item)
                             remaining.removeAll { it.uri == candidate.uri.toString() }
                             return@forEach
                         }
@@ -1570,7 +1590,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             localTreeUri = candidate.treeUri?.toString().orEmpty(),
                             localTreePath = buildTreeMeta(candidate.treeUri, candidate.uri).second
                         )
-                        db.historyDao.insert(item)
+                        com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                            .insertHistory(item)
                     }
                     LocalMatchChoice.MANUAL -> {
                         val manual = selection.manualMetadata ?: withContext(Dispatchers.Main) {
@@ -1621,7 +1642,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             localTreeUri = updatedTreeMeta.first,
                             localTreePath = updatedTreeMeta.second
                         )
-                        db.historyDao.insert(item)
+                        com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                            .insertHistory(item)
                         val baseName = candidate.title.ifBlank { candidate.uri.lastPathSegment ?: "" }
                         val baseKey = baseName.lowercase(Locale.getDefault())
                         if (baseName.isNotBlank()) {
@@ -2449,15 +2471,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         topAppBar.setOnMenuItemClickListener { m: MenuItem ->
             when (m.itemId) {
                 R.id.search_history -> showSearchDialog()
-                R.id.refresh_file_status -> {
-                    val visibleItems = historyAdapter.visibleHistoryItems()
-                    historyViewModel.refreshVisibleFileAccessStates(visibleItems)
-                    Snackbar.make(
-                        recyclerView,
-                        getString(R.string.refreshing_visible_file_status),
-                        Snackbar.LENGTH_SHORT
-                    ).show()
-                }
                 R.id.add_local_video -> {
                     val options = arrayOf(
                         getString(R.string.add_local_video),
@@ -2495,35 +2508,18 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     if (authorList.isEmpty()) {
                         Toast.makeText(context, R.string.history_is_empty, Toast.LENGTH_SHORT).show()
                     } else {
-                        val deleteFile = booleanArrayOf(false)
-                        val deleteDialog = MaterialAlertDialogBuilder(fragmentContext!!)
-                        deleteDialog.setTitle(getString(R.string.you_are_going_to_delete_multiple_items))
-                        deleteDialog.setMultiChoiceItems(
-                            arrayOf(getString(R.string.delete_files_too)),
-                            booleanArrayOf(false)
-                        ) { _: DialogInterface?, _: Int, b: Boolean -> deleteFile[0] = b }
-                        deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
-                        deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
-                            historyViewModel.deleteAll(deleteFile[0])
+                        lifecycleScope.launch {
+                            val count = historyViewModel.getAllHistoryCount()
+                            showHistoryDeletionDialog(
+                                title = getString(R.string.delete_history_items_title, count),
+                                deleteAll = true
+                            )
                         }
-                        deleteDialog.show()
                     }
                 }
                 R.id.download_queue -> {
                     resetToAllOnResumeFromQueue = true
                     findNavController().navigate(R.id.downloadQueueMainFragment)
-                }
-                R.id.remove_deleted_history -> {
-                    if (authorList.isEmpty()) {
-                        Toast.makeText(context, R.string.history_is_empty, Toast.LENGTH_SHORT).show()
-                    } else {
-                        val deleteDialog = MaterialAlertDialogBuilder(fragmentContext!!)
-                        deleteDialog.setTitle(getString(R.string.confirm_delete_history))
-                        deleteDialog.setMessage(getString(R.string.confirm_delete_history_desc))
-                        deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
-                        deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int -> historyViewModel.clearDeleted() }
-                        deleteDialog.show()
-                    }
                 }
                 R.id.remove_duplicates -> {
                     if (authorList.isEmpty()) {
@@ -2663,7 +2659,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 localTreeUri = updatedTreeMeta.first,
                 localTreePath = updatedTreeMeta.second
             )
-            db.historyDao.insert(item)
+            com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                .insertHistory(item)
             val baseName = candidate.title.ifBlank { candidate.uri.lastPathSegment ?: "" }
             val baseKey = baseName.lowercase(Locale.getDefault())
             if (baseName.isNotBlank()) {
@@ -2741,7 +2738,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 localTreeUri = updatedTreeMeta.first,
                                 localTreePath = updatedTreeMeta.second
                             )
-                            db.historyDao.insert(item)
+                            com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                                .insertHistory(item)
                             if (baseName.isNotBlank()) {
                                 existingBaseNames.add(baseKey)
                             }
@@ -3988,7 +3986,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
     }
 
-    private fun showEditHistoryItemDialog(item: HistoryItem) {
+    private fun showEditHistoryItemDialog(
+        item: HistoryItem,
+        operationPaths: List<String> = item.downloadPath
+    ) {
         val view = layoutinflater.inflate(R.layout.history_item_edit_dialog, null)
         val titleInput = view.findViewById<TextInputEditText>(R.id.edit_title)
         val authorInput = view.findViewById<MultiAutoCompleteTextView>(R.id.edit_author)
@@ -4064,7 +4065,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         removeThumb.isVisible = editedCustomThumb.isNotBlank()
 
         selectThumb.setOnClickListener {
-            pendingThumbItem = item
+            pendingThumbItem = item.copy(downloadPath = operationPaths)
             pendingThumbCallback = { path ->
                 if (editedCustomThumb.isNotBlank() && editedCustomThumb != path) {
                     deleteCustomThumb(editedCustomThumb)
@@ -4077,7 +4078,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
 
         captureThumb.setOnClickListener {
-            showCustomThumbPicker(item) { saved ->
+            showCustomThumbPicker(item.copy(downloadPath = operationPaths)) { saved ->
                 if (saved.isNullOrBlank()) {
                     Toast.makeText(requireContext(), R.string.error_saving_thumbnail, Toast.LENGTH_SHORT).show()
                 } else {
@@ -4231,9 +4232,15 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     customThumb = editedCustomThumb,
                     website = editedWebsite
                 )
-                val updateJob = historyViewModel.update(updated)
                 lifecycleScope.launch {
-                    updateJob.join()
+                    val protectedCount = historyViewModel.updateWithKeywordNotice(updated)
+                    if (protectedCount > 0) {
+                        Toast.makeText(
+                            requireContext(),
+                            R.string.automatic_keyword_automatic_preserved,
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                     historyAdapter.refresh()
                 }
                 dialog.dismiss()
@@ -5148,7 +5155,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val bitmap = lastBitmap
                 lifecycleScope.launch(Dispatchers.IO) {
-                    val saved = if (bitmap != null) saveCustomThumbFromBitmap(item, bitmap) else null
+                    val saved = if (bitmap != null) saveCustomThumbFromBitmap(item, bitmap, path) else null
                     withContext(Dispatchers.Main) {
                         onSaved(saved)
                         dialog.dismiss()
@@ -5227,13 +5234,19 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private fun saveCustomThumbFromUri(item: HistoryItem, uri: Uri): String? {
         val stream = requireContext().contentResolver.openInputStream(uri) ?: return null
         val bitmap = stream.use { BitmapFactory.decodeStream(it) } ?: return null
-        return saveCustomThumbFromBitmap(item, bitmap)
+        val mediaPath = item.downloadPath.firstOrNull(::canReadPath)
+            ?: item.downloadPath.firstOrNull()
+        return saveCustomThumbFromBitmap(item, bitmap, mediaPath)
     }
 
-    private fun saveCustomThumbFromBitmap(item: HistoryItem, bitmap: Bitmap): String? {
-        val dir = resolveCustomThumbDirectory(item) ?: return null
+    private fun saveCustomThumbFromBitmap(
+        item: HistoryItem,
+        bitmap: Bitmap,
+        mediaPath: String? = null
+    ): String? {
+        val dir = resolveCustomThumbDirectory(mediaPath) ?: return null
         if (!dir.exists()) dir.mkdirs()
-        val baseName = resolveCustomThumbBaseName(item)
+        val baseName = resolveCustomThumbBaseName(item, mediaPath)
         val file = File(dir, "${baseName}_custom_thumb.jpg")
         var out: OutputStream? = null
         return runCatching {
@@ -5248,10 +5261,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
     }
 
-    private fun resolveCustomThumbDirectory(item: HistoryItem): File? {
-        val path = item.downloadPath.firstOrNull { FileUtil.exists(it) }
-            ?: item.downloadPath.firstOrNull()
-            ?: return null
+    private fun resolveCustomThumbDirectory(path: String?): File? {
+        path ?: return null
         return when {
             path.startsWith("file://") -> {
                 val filePath = Uri.parse(path).path ?: return null
@@ -5265,10 +5276,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
     }
 
-    private fun resolveCustomThumbBaseName(item: HistoryItem): String {
-        val path = item.downloadPath.firstOrNull { FileUtil.exists(it) }
-            ?: item.downloadPath.firstOrNull()
-            ?: return sanitizeLocalFileName(item.title.ifBlank { "video" })
+    private fun resolveCustomThumbBaseName(item: HistoryItem, path: String?): String {
+        path ?: return sanitizeLocalFileName(item.title.ifBlank { "video" })
         return when {
             path.startsWith("file://") -> {
                 val filePath = Uri.parse(path).path ?: return sanitizeLocalFileName(item.title.ifBlank { "video" })
@@ -5421,15 +5430,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         filterSheet.requestWindowFeature(Window.FEATURE_NO_TITLE)
         filterSheet.setContentView(R.layout.history_other_filters_sheet)
 
-        val notDeleted = filterSheet.findViewById<TextView>(R.id.not_deleted)!!
-        val deleted = filterSheet.findViewById<TextView>(R.id.deleted)!!
         val missingThumbnail = filterSheet.findViewById<TextView>(R.id.missing_thumbnail)!!
         val customThumbnailOnly = filterSheet.findViewById<TextView>(R.id.custom_thumbnail_only)!!
         val hardSubDoneOnly = filterSheet.findViewById<TextView>(R.id.hardsub_done_only)!!
         val hardSubScanTargetOnly = filterSheet.findViewById<TextView>(R.id.hardsub_scan_target_only)!!
         updateStatusIcons(
-            notDeleted,
-            deleted,
             missingThumbnail,
             customThumbnailOnly,
             hardSubDoneOnly,
@@ -5437,35 +5442,25 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             historyViewModel.statusFilter.value
         )
 
-        notDeleted.setOnClickListener {
-            val newStatus = cycleStatusOnNotDeleted(historyViewModel.statusFilter.value)
-            historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
-        }
-        deleted.setOnClickListener {
-            val newStatus = cycleStatusOnDeleted(historyViewModel.statusFilter.value)
-            historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
-        }
         missingThumbnail.setOnClickListener {
             val newStatus = cycleStatusOnMissingThumbnail(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
+            updateStatusIcons(missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
         customThumbnailOnly.setOnClickListener {
             val newStatus = cycleStatusOnCustomThumbnail(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
+            updateStatusIcons(missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
         hardSubDoneOnly.setOnClickListener {
             val newStatus = cycleStatusOnHardSubDone(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
+            updateStatusIcons(missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
         hardSubScanTargetOnly.setOnClickListener {
             val newStatus = cycleStatusOnHardSubScanTarget(historyViewModel.statusFilter.value)
             historyViewModel.setStatusFilter(newStatus)
-            updateStatusIcons(notDeleted, deleted, missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
+            updateStatusIcons(missingThumbnail, customThumbnailOnly, hardSubDoneOnly, hardSubScanTargetOnly, newStatus)
         }
 
         val typeGroup = filterSheet.findViewById<ChipGroup>(R.id.typeChipGroup)
@@ -5580,8 +5575,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     }
 
     private fun updateStatusIcons(
-        notDeleted: TextView,
-        deleted: TextView,
         missingThumbnail: TextView,
         customThumbnailOnly: TextView,
         hardSubDoneOnly: TextView,
@@ -5592,56 +5585,30 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val emptyIcon = R.drawable.empty
         when (status) {
             HistoryViewModel.HistoryStatus.ALL -> {
-                notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
-                deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
-                missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-            }
-            HistoryViewModel.HistoryStatus.DELETED -> {
-                notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
-                missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-            }
-            HistoryViewModel.HistoryStatus.NOT_DELETED -> {
-                notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
-                deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.MISSING_THUMBNAIL -> {
-                notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.CUSTOM_THUMBNAIL -> {
-                notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.HARDSUB_DONE -> {
-                notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(checkIcon, 0, 0, 0)
                 hardSubScanTargetOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
             }
             HistoryViewModel.HistoryStatus.HARDSUB_SCAN_TARGET -> {
-                notDeleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
-                deleted.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 missingThumbnail.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 customThumbnailOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
                 hardSubDoneOnly.setCompoundDrawablesRelativeWithIntrinsicBounds(emptyIcon, 0, 0, 0)
@@ -5868,24 +5835,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         return entry.anchorScreenTop?.let { screenTop ->
             scrollOffsetForScreenTop(screenTop)
         } ?: entry.anchorTop ?: entry.scroll.offset
-    }
-
-    private fun cycleStatusOnNotDeleted(status: HistoryViewModel.HistoryStatus): HistoryViewModel.HistoryStatus {
-        return when (status) {
-            HistoryViewModel.HistoryStatus.ALL -> HistoryViewModel.HistoryStatus.DELETED
-            HistoryViewModel.HistoryStatus.NOT_DELETED -> HistoryViewModel.HistoryStatus.UNSET
-            HistoryViewModel.HistoryStatus.DELETED -> HistoryViewModel.HistoryStatus.ALL
-            else -> HistoryViewModel.HistoryStatus.NOT_DELETED
-        }
-    }
-
-    private fun cycleStatusOnDeleted(status: HistoryViewModel.HistoryStatus): HistoryViewModel.HistoryStatus {
-        return when (status) {
-            HistoryViewModel.HistoryStatus.ALL -> HistoryViewModel.HistoryStatus.NOT_DELETED
-            HistoryViewModel.HistoryStatus.NOT_DELETED -> HistoryViewModel.HistoryStatus.ALL
-            HistoryViewModel.HistoryStatus.DELETED -> HistoryViewModel.HistoryStatus.UNSET
-            else -> HistoryViewModel.HistoryStatus.DELETED
-        }
     }
 
     private fun cycleStatusOnMissingThumbnail(status: HistoryViewModel.HistoryStatus): HistoryViewModel.HistoryStatus {
@@ -6254,9 +6203,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 .firstOrNull { candidate ->
                     val newItem = runCatching { db.historyDao.getItem(candidate.newHistoryId) }.getOrNull()
                     val existingItem = runCatching { db.historyDao.getItem(candidate.existingHistoryId) }.getOrNull()
-                    newItem != null && existingItem != null &&
-                        newItem.downloadPath.any { FileUtil.exists(it) } &&
-                        existingItem.downloadPath.any { FileUtil.exists(it) }
+                    newItem != null && existingItem != null
                 }
 
             if (pair == null) {
@@ -6289,12 +6236,54 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 )
             )
             .setPositiveButton(getString(R.string.connect_to_existing_card)) { _, _ ->
-                lifecycleScope.launch(Dispatchers.IO) {
-                    mergeDuplicateDownloadedHistory(pair, newItem, existingItem)
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(requireContext(), getString(R.string.duplicate_download_connected), Toast.LENGTH_SHORT).show()
-                        historyAdapter.refresh()
+                val appContext = requireContext().applicationContext
+                lifecycleScope.launch {
+                    val currentItems = withContext(Dispatchers.IO) {
+                        val historyDao = DBManager.getInstance(appContext).historyDao
+                        val currentNewItem = runCatching { historyDao.getItem(newItem.id) }.getOrNull()
+                        val currentExistingItem = runCatching { historyDao.getItem(existingItem.id) }.getOrNull()
+                        currentNewItem?.let { new -> currentExistingItem?.let { existing -> new to existing } }
+                    } ?: return@launch
+                    val currentNewItem = currentItems.first
+                    val currentExistingItem = currentItems.second
+                    val retainedTargetKeys = currentExistingItem.downloadPath
+                        .map(::historyDeletionTargetComparisonKey)
+                        .toSet()
+                    val pathsToDelete = currentNewItem.downloadPath.filter { path ->
+                        historyDeletionTargetComparisonKey(path) !in retainedTargetKeys
                     }
+                    val validation = historyViewModel.prepareHistoryFileDeletionTargets(
+                        recordId = currentNewItem.id,
+                        storedTargets = pathsToDelete,
+                        recordStoredTargetSnapshot = currentNewItem.downloadPath
+                    )
+                    if (pathsToDelete.isEmpty()) {
+                        if (!mergeDuplicateDownloadedHistoryMetadata(currentNewItem, currentExistingItem)) {
+                            Toast.makeText(
+                                requireContext(),
+                                R.string.history_metadata_update_failed,
+                                Toast.LENGTH_LONG
+                            ).show()
+                            return@launch
+                        }
+                        val result = historyViewModel.executePreparedHistoryFileDeletion(validation)
+                        if (currentNewItem.id in result.removableRecordIds) {
+                            finishConnectedDuplicate(pair)
+                        }
+                        return@launch
+                    }
+                    showValidatedHistoryFileDeletionDialog(
+                        validation = validation,
+                        beforeExecute = {
+                            mergeDuplicateDownloadedHistoryMetadata(currentNewItem, currentExistingItem)
+                        },
+                        onComplete = { result ->
+                            if (currentNewItem.id !in result.removableRecordIds) {
+                                return@showValidatedHistoryFileDeletionDialog
+                            }
+                            finishConnectedDuplicate(pair)
+                        }
+                    )
                 }
             }
             .setNegativeButton(getString(R.string.keep_new_download)) { _, _ ->
@@ -6307,97 +6296,54 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             .show()
     }
 
-    private suspend fun mergeDuplicateDownloadedHistory(
-        pair: PendingDuplicateDownload,
-        newItem: HistoryItem,
-        existingItem: HistoryItem
-    ) {
-        val db = DBManager.getInstance(requireContext())
-        val mergedKeywords = mergeHistoryKeywords(existingItem.keywords, newItem.keywords)
-        if (mergedKeywords != existingItem.keywords) {
-            db.historyDao.update(existingItem.copy(keywords = mergedKeywords))
-        }
-        val retainedPaths = existingItem.downloadPath
-            .map(::normalizeHistoryMediaPathForComparison)
-            .toSet()
-        val pathsToDelete = newItem.downloadPath.filter { path ->
-            normalizeHistoryMediaPathForComparison(path) !in retainedPaths
-        }
-        FileUtil.deleteFilesWithZeroByteSiblings(pathsToDelete)
-        db.playlistDao.deletePlaylistItemsByHistoryIds(listOf(newItem.id))
-        db.historyDao.delete(newItem)
-        removePendingDuplicateDownload(pair.key)
+    private fun historyDeletionTargetComparisonKey(path: String): String {
+        return HistoryDeletionTargetParser.deduplicationKey(path) ?: "stored:${path.trim()}"
     }
 
-    private fun normalizeHistoryMediaPathForComparison(path: String): String {
-        val trimmed = path.trim()
-        if (trimmed.startsWith("content://")) {
-            return runCatching { Uri.parse(trimmed).normalizeScheme().toString() }.getOrDefault(trimmed)
+    private fun finishConnectedDuplicate(pair: PendingDuplicateDownload) {
+        removePendingDuplicateDownload(pair.key)
+        Toast.makeText(
+            requireContext(),
+            getString(R.string.duplicate_download_connected),
+            Toast.LENGTH_SHORT
+        ).show()
+        historyAdapter.refresh()
+    }
+
+    private suspend fun mergeDuplicateDownloadedHistoryMetadata(
+        newItem: HistoryItem,
+        existingItem: HistoryItem
+    ): Boolean {
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val db = DBManager.getInstance(requireContext())
+                val currentExistingItem = db.historyDao.getItem(existingItem.id)
+                com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                    .mergeHistoryAssignments(newItem.id, currentExistingItem.id)
+                true
+            }.getOrDefault(false)
         }
-        val rawPath = if (trimmed.startsWith("file://")) {
-            runCatching { Uri.parse(trimmed).path.orEmpty() }.getOrDefault(trimmed)
-        } else {
-            trimmed
-        }
-        return runCatching { File(rawPath).canonicalPath }.getOrDefault(rawPath)
+    }
+
+    private fun showHistoryMetadataUpdateFailure() {
+        Toast.makeText(
+            requireContext(),
+            R.string.history_metadata_update_failed,
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun removePendingDuplicateDownload(key: String) {
         PendingDuplicateDownloadStore.remove(sharedPreferences, key)
     }
 
-    private fun showMissingDownloadItemDialog(item: HistoryItem) {
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(getString(R.string.reconnect_download_file))
-            .setMessage(getString(R.string.reconnect_download_file_desc, item.title.ifBlank { item.url }))
-            .setPositiveButton(getString(R.string.choose_file)) { _, _ ->
-                launchReconnectFilePicker(item)
-            }
-            .setNegativeButton(getString(R.string.details)) { _, _ ->
-                showHistoryDetailsCard(item, FileAccessState.MISSING)
-            }
-            .setNeutralButton(getString(R.string.cancel), null)
-            .show()
-    }
-
-    private fun showFilePermissionRequiredDialog(item: HistoryItem) {
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(getString(R.string.file_permission_required))
-            .setMessage(getString(R.string.file_permission_required_desc))
-            .setPositiveButton(getString(R.string.choose_file)) { _, _ ->
-                launchReconnectFilePicker(item)
-            }
-            .setNegativeButton(getString(R.string.details)) { _, _ ->
-                showHistoryDetailsCard(item, FileAccessState.PERMISSION_REQUIRED)
-            }
-            .setNeutralButton(getString(R.string.refresh_file_status)) { _, _ ->
-                historyViewModel.requestFileAccessState(item, force = true)
-            }
-            .show()
-    }
-
-    private fun showUnknownFileStateDialog(item: HistoryItem) {
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(getString(R.string.file_status_unknown))
-            .setMessage(getString(R.string.file_status_unknown_desc))
-            .setPositiveButton(getString(R.string.refresh_file_status)) { _, _ ->
-                historyViewModel.requestFileAccessState(item, force = true)
-            }
-            .setNegativeButton(getString(R.string.details)) { _, _ ->
-                showHistoryDetailsCard(item, FileAccessState.UNKNOWN)
-            }
-            .setNeutralButton(getString(R.string.cancel), null)
-            .show()
-    }
-
-    private fun showHistoryDetailsCard(item: HistoryItem, fileState: FileAccessState) {
+    private fun showHistoryDetailsCard(item: HistoryItem, operationPaths: List<String>) {
         UiUtil.showHistoryItemDetailsCard(
             item,
             requireActivity(),
-            fileState == FileAccessState.EXISTS,
             sharedPreferences,
             removeItem = { historyItem, deleteFile ->
-                historyViewModel.delete(historyItem, deleteFile)
+                performHistoryDeletion(listOf(historyItem.id), deleteFile)
             },
             redownloadItem = { historyItem ->
                 lifecycleScope.launch {
@@ -6425,10 +6371,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     )
                 )
             },
-            fileAccessState = fileState,
-            refreshFileAccessState = {
-                historyViewModel.requestFileAccessState(item, force = true)
-            }
+            operationPaths = operationPaths
         )
     }
 
@@ -6470,32 +6413,20 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         )
     }
 
-    private fun mergeHistoryKeywords(existing: String, appended: String): String {
-        if (appended.isBlank()) return existing.trim()
-        val merged = linkedSetOf<String>()
-        val seen = hashSetOf<String>()
-        fun add(raw: String) {
-            val token = raw.trim()
-            if (token.isBlank()) return
-            val key = token.lowercase(Locale.getDefault())
-            if (seen.add(key)) merged.add(token)
-        }
-        existing.split(',').forEach { add(it) }
-        appended.split(',').forEach { add(it) }
-        return merged.joinToString(", ")
-    }
-
-    override fun onCardClick(itemID: Long, fileState: FileAccessState) {
+    override fun onCardClick(itemID: Long) {
         lifecycleScope.launch {
             val item = withContext(Dispatchers.IO) {
                 runCatching { historyViewModel.getByID(itemID) }.getOrNull()
             } ?: return@launch
             if (
-                (item.type == DownloadType.video || item.type == DownloadType.audio) &&
-                fileState == FileAccessState.EXISTS
+                item.type == DownloadType.video || item.type == DownloadType.audio
             ) {
-                val path = item.downloadPath.firstOrNull()
-                if (path.isNullOrBlank()) return@launch
+                val playbackPaths = historyViewModel.getPlaybackPaths(item)
+                val path = playbackPaths.firstOrNull()
+                if (path.isNullOrBlank()) {
+                    Toast.makeText(requireContext(), R.string.invalid_file_location, Toast.LENGTH_LONG).show()
+                    return@launch
+                }
                 val currentEntry = captureNavigationEntry()
                 val currentState = currentEntry.state
                 val currentScroll = currentEntry.scroll
@@ -6512,6 +6443,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 restoreScrollOnNextResume = true
                 val intent = Intent(activity, VideoPlayerActivity::class.java)
                 intent.putExtra("video_path", path)
+                val fallbackPaths = playbackPaths.drop(1).filter(String::isNotBlank)
+                if (fallbackPaths.isNotEmpty()) {
+                    intent.putStringArrayListExtra(
+                        VideoPlayerActivity.EXTRA_PLAYBACK_FALLBACK_PATHS,
+                        ArrayList(fallbackPaths)
+                    )
+                }
                 intent.putExtra("history_id", item.id)
                 intent.putExtra("playback_position_ms", item.playbackPositionMs)
                 intent.putExtra(VideoPlayerActivity.EXTRA_RETURN_DESTINATION, "Downloads")
@@ -6568,23 +6506,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     intent.putExtra("context_youtuber_group_id", youtuberGroupId)
                 }
                 startActivity(intent)
-            } else if (
-                (item.type == DownloadType.video || item.type == DownloadType.audio) &&
-                fileState == FileAccessState.MISSING
-            ) {
-                showMissingDownloadItemDialog(item)
-            } else if (fileState == FileAccessState.PERMISSION_REQUIRED) {
-                showFilePermissionRequiredDialog(item)
-            } else if (fileState == FileAccessState.UNKNOWN) {
-                showUnknownFileStateDialog(item)
-            } else if (fileState == FileAccessState.CHECKING) {
-                Snackbar.make(
-                    recyclerView,
-                    getString(R.string.checking_files),
-                    Snackbar.LENGTH_SHORT
-                ).show()
             } else {
-                showHistoryDetailsCard(item, fileState)
+                val operationPaths = withContext(Dispatchers.IO) {
+                    historyViewModel.getOperationPaths(item)
+                }
+                showHistoryDetailsCard(item, operationPaths)
             }
         }
     }
@@ -6811,16 +6737,105 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         return location[1]
     }
 
-    override fun onButtonClick(itemID: Long, fileState: FileAccessState) {
-        if (fileState == FileAccessState.EXISTS) {
-            lifecycleScope.launch {
-                val item = withContext(Dispatchers.IO) {
-                    runCatching { historyViewModel.getByID(itemID) }.getOrNull()
-                } ?: return@launch
-                FileUtil.shareFileIntent(requireContext(), item.downloadPath)
+    private fun showHistoryDeletionDialog(
+        title: String,
+        ids: List<Long> = emptyList(),
+        deleteAll: Boolean = false,
+        onComplete: () -> Unit = {}
+    ) {
+        val owner = viewLifecycleOwnerLiveData.value ?: return
+        val options = HistoryDeletionDialogState()
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(title)
+            .setMessage(getString(R.string.delete_associated_files_warning))
+            .setMultiChoiceItems(
+                arrayOf(getString(R.string.delete_associated_files)),
+                booleanArrayOf(true)
+            ) { _, _, checked -> options.deleteAssociatedFiles = checked }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton(getString(R.string.delete)) { _, _ ->
+                owner.lifecycleScope.launch {
+                    if (!options.deleteAssociatedFiles) {
+                        val result = if (deleteAll) {
+                            historyViewModel.deleteAllHistory(deleteAssociatedFiles = false)
+                        } else {
+                            historyViewModel.deleteHistoryItems(ids, deleteAssociatedFiles = false)
+                        }
+                        showHistoryDeletionResult(result)
+                        onComplete()
+                    } else {
+                        val validation = if (deleteAll) {
+                            historyViewModel.prepareAllHistoryFileDeletion()
+                        } else {
+                            historyViewModel.prepareHistoryFileDeletion(ids)
+                        }
+                        showValidatedHistoryFileDeletionDialog(validation) { onComplete() }
+                    }
+                }
             }
-        } else {
-            onCardClick(itemID, fileState)
+            .show()
+    }
+
+    private fun showValidatedHistoryFileDeletionDialog(
+        validation: HistoryDeletionValidation,
+        beforeExecute: suspend () -> Boolean = { true },
+        onComplete: (HistoryDeletionSummary) -> Unit = {}
+    ) {
+        val owner = viewLifecycleOwnerLiveData.value ?: return
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.delete_validated_files_title, validation.filesReady))
+            .setMessage(getString(R.string.delete_validated_files_warning))
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton(getString(R.string.delete)) { _, _ ->
+                owner.lifecycleScope.launch {
+                    if (!beforeExecute()) {
+                        showHistoryMetadataUpdateFailure()
+                        return@launch
+                    }
+                    val result = historyViewModel.executePreparedHistoryFileDeletion(validation)
+                    showHistoryDeletionResult(result)
+                    onComplete(result)
+                }
+            }
+            .show()
+    }
+
+    private fun performHistoryDeletion(ids: List<Long>, deleteAssociatedFiles: Boolean) {
+        val owner = viewLifecycleOwnerLiveData.value ?: return
+        if (!deleteAssociatedFiles) {
+            owner.lifecycleScope.launch {
+                val result = historyViewModel.deleteHistoryItems(ids, deleteAssociatedFiles = false)
+                showHistoryDeletionResult(result)
+            }
+            return
+        }
+        owner.lifecycleScope.launch {
+            val validation = historyViewModel.prepareHistoryFileDeletion(ids)
+            showValidatedHistoryFileDeletionDialog(validation)
+        }
+    }
+
+    private fun showHistoryDeletionResult(result: HistoryDeletionSummary) {
+        val summary = getString(
+            R.string.history_deletion_result,
+            result.recordsRemoved,
+            result.filesDeleted,
+            result.filesAlreadyAbsent,
+            result.filesSkipped,
+            result.filesPermissionDenied + result.filesFailed
+        )
+        val message = result.problemDisplayNames.takeIf { it.isNotEmpty() }?.let { names ->
+            "$summary\n${getString(R.string.history_files_not_deleted, names.take(3).joinToString(", "))}"
+        } ?: summary
+        Snackbar.make(recyclerView, message, Snackbar.LENGTH_LONG).show()
+    }
+
+    override fun onButtonClick(itemID: Long) {
+        lifecycleScope.launch {
+            val paths = withContext(Dispatchers.IO) {
+                historyViewModel.getDownloadPathsFromIDs(listOf(itemID)).flatten()
+            }
+            FileUtil.shareFileIntent(requireContext(), paths)
         }
     }
 
@@ -6901,20 +6916,17 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     true
                 }
                 R.id.delete_results -> {
-                    val deleteFile = booleanArrayOf(false)
-                    val deleteDialog = MaterialAlertDialogBuilder(fragmentContext!!)
-                    deleteDialog.setTitle(getString(R.string.you_are_going_to_delete_multiple_items))
-                    deleteDialog.setMultiChoiceItems(arrayOf(getString(R.string.delete_files_too)), booleanArrayOf(false)) { _, _, b -> deleteFile[0] = b }
-                    deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface, _ -> dialogInterface.cancel() }
-                    deleteDialog.setPositiveButton(getString(R.string.ok)) { _, _ ->
-                        lifecycleScope.launch {
-                            val selectedObjects = getSelectedIDs()
-                            historyAdapter.clearCheckedItems()
-                            historyViewModel.deleteAllWithIDs(selectedObjects, deleteFile[0])
-                            actionMode?.finish()
-                        }
+                    lifecycleScope.launch {
+                        val selectedObjects = getSelectedIDs()
+                        showHistoryDeletionDialog(
+                            title = getString(R.string.delete_history_items_title, selectedObjects.size),
+                            ids = selectedObjects,
+                            onComplete = {
+                                historyAdapter.clearCheckedItems()
+                                actionMode?.finish()
+                            }
+                        )
                     }
-                    deleteDialog.show()
                     true
                 }
                 R.id.share -> {
@@ -6969,15 +6981,18 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             Toast.makeText(context, getString(R.string.select_single_item), Toast.LENGTH_SHORT).show()
                             return@launch
                         }
-                        val item = withContext(Dispatchers.IO) {
-                            runCatching { historyViewModel.getByID(selectedObjects.first()) }.getOrNull()
+                        val itemAndPaths = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val item = historyViewModel.getByID(selectedObjects.first())
+                                item to historyViewModel.getOperationPaths(item)
+                            }.getOrNull()
                         }
-                        if (item == null) {
+                        if (itemAndPaths == null) {
                             Toast.makeText(context, getString(R.string.no_match_found), Toast.LENGTH_SHORT).show()
                             actionMode?.finish()
                             return@launch
                         }
-                        showEditHistoryItemDialog(item)
+                        showEditHistoryItemDialog(itemAndPaths.first, itemAndPaths.second)
                         actionMode?.finish()
                     }
                     true
@@ -7444,11 +7459,21 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             historyAdapter.refreshVisibleItem(position)
                             if (deletedItem == null) return@launch
                             UiUtil.showRemoveHistoryItemDialog(deletedItem, requireActivity(), delete = { item, deleteFile ->
-                                lifecycleScope.launch {
-                                    withContext(Dispatchers.IO) { historyViewModel.delete(item, deleteFile) }
-                                    if (!deleteFile) {
+                                if (deleteFile) {
+                                    performHistoryDeletion(listOf(item.id), deleteAssociatedFiles = true)
+                                } else {
+                                    lifecycleScope.launch {
+                                        val assignmentSnapshot =
+                                            historyViewModel.getKeywordAssignmentSnapshot(item.id)
+                                        val result = historyViewModel.deleteHistoryItems(listOf(item.id), deleteAssociatedFiles = false)
+                                        showHistoryDeletionResult(result)
                                         Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
-                                            .setAction(getString(R.string.undo)) { historyViewModel.insert(deletedItem) }
+                                            .setAction(getString(R.string.undo)) {
+                                                historyViewModel.restoreHistory(
+                                                    deletedItem,
+                                                    assignmentSnapshot
+                                                )
+                                            }
                                             .show()
                                     }
                                 }

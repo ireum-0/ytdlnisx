@@ -693,6 +693,38 @@ class NotificationUtil(var context: Context) {
 
     }
 
+    @SuppressLint("MissingPermission")
+    fun createMembershipWaiting(id: Long, title: String?, res: Resources) {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            action = Intent.ACTION_VIEW
+            putExtra("destination", "Queue")
+            putExtra("tab", "queued")
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            id.toInt(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val message = res.getString(R.string.membership_waiting_auto)
+        val notification = getBuilder(DOWNLOAD_WORKER_CHANNEL_ID)
+            .setContentTitle(title?.ifBlank { res.getString(R.string.membership_required_title) }
+                ?: res.getString(R.string.membership_required_title))
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setSmallIcon(R.drawable.baseline_access_alarm_24)
+            .setContentIntent(pendingIntent)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setAutoCancel(true)
+            .build()
+        notificationManager.notify(MEMBERSHIP_WAITING_NOTIFICATION_TAG, id.toInt(), notification)
+    }
+
+    fun cancelMembershipWaitingNotification(id: Long) {
+        notificationManager.cancel(MEMBERSHIP_WAITING_NOTIFICATION_TAG, id.toInt())
+    }
+
 
     @SuppressLint("MissingPermission")
     fun notify(id: Int, notification: Notification){
@@ -856,7 +888,7 @@ class NotificationUtil(var context: Context) {
 
     fun createYTDLUpdateNotification() : Notification{
         val notificationBuilder = getBuilder(DOWNLOAD_MISC_CHANNEL_ID)
-        notificationBuilder.setContentTitle("Updating YT-DLP...")
+        notificationBuilder.setContentTitle(resources.getString(R.string.updating_ytdlp))
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_EVENT)
             .setSmallIcon(android.R.drawable.stat_sys_download)
@@ -1077,6 +1109,8 @@ class NotificationUtil(var context: Context) {
         const val DOWNLOAD_TERMINAL_RUNNING_NOTIFICATION_ID =   99000
         const val PLAYBACK_NOTIFICATION_ID =                    91000
         private const val OBSERVE_RETRY_NOTIFICATION_ID_BASE =  120000
+        private const val MEMBERSHIP_WAITING_NOTIFICATION_TAG =
+            "membership_waiting"
         private const val ACTION_RESUME_DOWNLOAD = "com.ireum.ytdl.action.RESUME_DOWNLOAD"
         private const val ACTION_RETRY_DOWNLOAD = "com.ireum.ytdl.action.RETRY_DOWNLOAD"
 

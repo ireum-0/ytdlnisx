@@ -11,6 +11,10 @@ class DownloadIssueClassifierTest {
     fun classifiesEveryInitialCodeFromHighConfidenceInput() {
         val cases = listOf(
             DownloadIssueClassifier.Input(
+                stage = DownloadIssueStage.EXTRACT,
+                output = "ERROR: This video is available to this channel's members"
+            ) to DownloadIssueCode.MEMBERSHIP_REQUIRED,
+            DownloadIssueClassifier.Input(
                 stage = DownloadIssueStage.DOWNLOAD,
                 exceptionClassName = "java.net.SocketTimeoutException",
                 message = "request failed"
@@ -48,6 +52,60 @@ class DownloadIssueClassifierTest {
                 DownloadIssueClassifier.classify(input).any { it.code == expected }
             )
         }
+    }
+
+    @Test
+    fun membershipAccessTakesPriorityOverGenericAuthenticationAndIsNotRetryable() {
+        val issue = DownloadIssueClassifier.classify(
+            DownloadIssueClassifier.Input(
+                stage = DownloadIssueStage.EXTRACT,
+                output = "Login required. Join this channel to get access to members-only content."
+            )
+        ).single()
+
+        assertEquals(DownloadIssueCode.MEMBERSHIP_REQUIRED, issue.code)
+        assertFalse(issue.retryable)
+        assertFalse(DownloadSuggestedAction.RETRY in issue.suggestedActions)
+        assertTrue(DownloadSuggestedAction.OPEN_AUTH_SETTINGS in issue.suggestedActions)
+    }
+
+    @Test
+    fun plainForbiddenResponseIsNotMisclassifiedAsMembershipOnly() {
+        val issue = DownloadIssueClassifier.classify(
+            DownloadIssueClassifier.Input(
+                stage = DownloadIssueStage.DOWNLOAD,
+                output = "HTTP Error 403: Forbidden"
+            )
+        ).single()
+
+        assertEquals(DownloadIssueCode.UNKNOWN, issue.code)
+    }
+
+    @Test
+    fun subscriberOnlyAvailabilityIsClassifiedExplicitly() {
+        val issue = DownloadIssueClassifier.classify(
+            DownloadIssueClassifier.Input(
+                stage = DownloadIssueStage.EXTRACT,
+                output = """{"availability":"subscriber_only"}"""
+            )
+        ).single()
+
+        assertEquals(DownloadIssueCode.MEMBERSHIP_REQUIRED, issue.code)
+    }
+
+    @Test
+    fun membershipWordsInDestinationFilenameDoNotTriggerAccessWaiting() {
+        val issue = DownloadIssueClassifier.classify(
+            DownloadIssueClassifier.Input(
+                stage = DownloadIssueStage.DOWNLOAD,
+                output = """
+                    [download] Destination: Members Only.webm
+                    ERROR: unable to download video data: HTTP Error 403: Forbidden
+                """.trimIndent()
+            )
+        ).single()
+
+        assertEquals(DownloadIssueCode.UNKNOWN, issue.code)
     }
 
     @Test

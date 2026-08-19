@@ -53,6 +53,15 @@ data class ObserveSourcesItem(
     @ColumnInfo(defaultValue = "[]")
     var retryPromptedLinks: MutableList<String> = mutableListOf(),
     @ColumnInfo(defaultValue = "[]")
-    var observedLinks: MutableList<String> = mutableListOf()
+    var observedLinks: MutableList<String> = mutableListOf(),
+    @ColumnInfo(defaultValue = "USER")
+    var observationPurpose: String = ObservationPurposes.USER,
+    @ColumnInfo(defaultValue = "")
+    var managedConditionKey: String = ""
 ) : Parcelable
+
+object ObservationPurposes {
+    const val USER = "USER"
+    const val KEYWORD_DISCOVERY = "KEYWORD_DISCOVERY"
+}
 

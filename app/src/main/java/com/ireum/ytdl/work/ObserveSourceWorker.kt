@@ -18,10 +18,17 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.App
+import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
+import com.ireum.ytdl.database.models.AutomaticKeywordSyncError
+import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
+import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
+import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
+import com.ireum.ytdl.database.repository.AutomaticKeywordCoveragePolicy
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
@@ -30,10 +37,17 @@ import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
 import com.ireum.ytdl.util.Extensions.calculateNextTimeForObserving
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.LinkUtil
+import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
-import com.google.gson.Gson
+import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.HistoryDeletionRecord
+import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
+import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.referencesSameFile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -55,6 +69,31 @@ class ObserveSourceWorker(
 
     private fun canonicalUrl(url: String): String {
         return LinkUtil.canonicalYoutubeVideoUrlOrSelf(url)
+    }
+
+    private fun deletionTargets(
+        item: HistoryItem,
+        gateway: HistoryFileDeletionGateway
+    ): List<String> {
+        return (item.downloadPath + trustedResolvedTreeTargets(item, gateway))
+            .filter(String::isNotBlank)
+            .distinct()
+    }
+
+    private fun trustedResolvedTreeTargets(
+        item: HistoryItem,
+        gateway: HistoryFileDeletionGateway
+    ): List<String> {
+        val resolvedTreeTarget = if (item.localTreeUri.isNotBlank() && item.localTreePath.isNotBlank()) {
+            FileUtil.resolveTreeDocumentUri(item.localTreeUri, item.localTreePath)?.toString()
+        } else {
+            null
+        }
+        return listOfNotNull(resolvedTreeTarget).filter { treeTarget ->
+            item.downloadPath.any { storedTarget ->
+                gateway.referencesSameFile(treeTarget, storedTarget)
+            }
+        }
     }
 
     private fun areSameSourceUrl(a: String, b: String): Boolean {
@@ -137,7 +176,11 @@ class ObserveSourceWorker(
         if (isFinished) {
             item.status = ObserveSourcesRepository.SourceStatus.STOPPED
             withContext(Dispatchers.IO) {
-                repo.update(item)
+                val cancelledIds = repo.update(item)
+                AutomaticKeywordObservationCoverage(context).reconcile()
+                cancelledIds
+            }.forEach {
+                NotificationUtil(context).cancelMembershipWaitingNotification(it)
             }
             return Result.success()
         }
@@ -173,6 +216,47 @@ class ObserveSourceWorker(
     }
 
     override suspend fun doWork(): Result {
+        return try {
+            runSourceWork()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Log.e("ObserveSourceWorker", "Auto Download run failed", error)
+            recoverFailedRun(error)
+        }
+    }
+
+    private suspend fun recoverFailedRun(error: Exception): Result {
+        val sourceID = inputData.getLong(INPUT_SOURCE_ID, 0L)
+        if (sourceID == 0L) return Result.failure()
+        return try {
+            val dbManager = DBManager.getInstance(context)
+            val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
+            val repo = ObserveSourcesRepository(
+                dbManager.observeSourcesDao,
+                WorkManager.getInstance(context),
+                sharedPreferences
+            )
+            val item = withContext(Dispatchers.IO) {
+                dbManager.observeSourcesDao.getByIDOrNull(sourceID)
+            } ?: return Result.success()
+            finishRunAndSchedule(
+                repo = repo,
+                sharedPreferences = sharedPreferences,
+                sourceID = sourceID,
+                item = item,
+                message = context.getString(com.ireum.ytdl.R.string.observe_log_run_failed),
+                detail = error.javaClass.simpleName,
+                countRun = false
+            )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            Result.retry()
+        }
+    }
+
+    private suspend fun runSourceWork(): Result {
         val sourceID = inputData.getLong(INPUT_SOURCE_ID, 0)
         if (sourceID == 0L) return Result.success()
         val confirmedCanonicalUrl = inputData.getString(INPUT_CONFIRMED_URL)?.let(::canonicalUrl)
@@ -195,6 +279,46 @@ class ObserveSourceWorker(
             return Result.success()
         }
 
+        if (confirmedCanonicalUrl == null && confirmationDecision.isBlank()) {
+            val requeuedIds = withContext(Dispatchers.IO) {
+                dbManager.observeSourcesDao.requeueMembershipWaiting(sourceID)
+            }
+            if (requeuedIds.isNotEmpty()) {
+                try {
+                    val requeuedItems = withContext(Dispatchers.IO) {
+                        downloadRepo.getAllItemsByIDs(requeuedIds)
+                            .filter {
+                                it.status == DownloadRepository.Status.Queued.toString()
+                            }
+                    }
+                    if (requeuedItems.isNotEmpty()) {
+                        val alarmScheduler = AlarmScheduler(context)
+                        val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
+                        if (
+                            useScheduler &&
+                            !alarmScheduler.isDuringTheScheduledTime() &&
+                            alarmScheduler.canSchedule()
+                        ) {
+                            alarmScheduler.schedule()
+                        } else {
+                            downloadRepo.startDownloadWorker(requeuedItems, context)
+                        }
+                    }
+                } catch (error: Exception) {
+                    withContext(Dispatchers.IO + NonCancellable) {
+                        dbManager.observeSourcesDao.restoreMembershipWaitingIds(
+                            sourceID,
+                            requeuedIds
+                        )
+                    }
+                    throw error
+                }
+                requeuedIds.forEach {
+                    notificationUtil.cancelMembershipWaitingNotification(it)
+                }
+            }
+        }
+
         val workerID = System.currentTimeMillis().toInt()
         val notification = notificationUtil.createObserveSourcesNotification(item.name)
         if (Build.VERSION.SDK_INT >= 33) {
@@ -213,12 +337,30 @@ class ObserveSourceWorker(
         )
 
         val sourceResult = kotlin.runCatching {
-            resultRepository.getResultsFromSource(item.url, resetResults = false, addToResults = false, singleItem = false)
+            resultRepository.getResultsFromSource(
+                AutomaticKeywordNormalizer.canonicalPlaylistUrl(item.url) ?: item.url,
+                resetResults = false,
+                addToResults = false,
+                singleItem = false
+            )
         }.onFailure {
             Log.e("observe", it.toString())
         }
         if (sourceResult.isFailure) {
             val error = sourceResult.exceptionOrNull()
+            val conditionKey = item.managedConditionKey.ifBlank {
+                AutomaticKeywordNormalizer.playlistConditionKey(item.url).orEmpty()
+            }
+            if (conditionKey.isNotBlank()) {
+                dbManager.automaticKeywordRuleDao.getEnabledRulesForConditionKey(conditionKey).forEach { rule ->
+                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatus(
+                        rule.id,
+                        AutomaticKeywordSyncStatus.FAILED,
+                        System.currentTimeMillis(),
+                        automaticKeywordError(error)
+                    )
+                }
+            }
             return finishRunAndSchedule(
                 repo = repo,
                 sharedPreferences = sharedPreferences,
@@ -230,6 +372,41 @@ class ObserveSourceWorker(
             )
         }
         val list = sourceResult.getOrThrow()
+        val sourceDiscoveryKeys = buildSet {
+            item.managedConditionKey.takeIf(String::isNotBlank)?.let(::add)
+            AutomaticKeywordNormalizer.playlistConditionKey(item.url)?.let(::add)
+        }
+        val discoveriesByKey = mutableMapOf<String, MutableList<ResultItem>>()
+        sourceDiscoveryKeys.forEach { key ->
+            discoveriesByKey.getOrPut(key, ::mutableListOf).addAll(list)
+        }
+        list.forEach { video ->
+            AutomaticKeywordNormalizer.playlistConditionKey(video.playlistURL.orEmpty())?.let { key ->
+                discoveriesByKey.getOrPut(key, ::mutableListOf).add(video)
+            }
+        }
+        if (discoveriesByKey.isNotEmpty()) {
+            val discoveryResult =
+                AutomaticKeywordRuleEngine(dbManager).recordDiscovery(discoveriesByKey)
+            dbManager.automaticKeywordRuleDao
+                .getEnabledRulesForConditionKeys(discoveriesByKey.keys.toList())
+                .forEach { rule ->
+                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatus(
+                        rule.id,
+                        if (discoveryResult.failed == 0) {
+                            AutomaticKeywordSyncStatus.SUCCESS
+                        } else {
+                            AutomaticKeywordSyncStatus.PARTIAL
+                        },
+                        System.currentTimeMillis(),
+                        if (discoveryResult.failed == 0) {
+                            AutomaticKeywordSyncError.NONE
+                        } else {
+                            AutomaticKeywordSyncError.DATABASE_PARTIAL
+                        }
+                    )
+                }
+        }
         val previouslyObservedCanonicalUrls = item.observedLinks
             .asSequence()
             .map(::canonicalUrl)
@@ -241,6 +418,17 @@ class ObserveSourceWorker(
             .filter { observedCanonicalUrls.add(it) }
             .forEach { item.observedLinks.add(it) }
 
+        if (!AutomaticKeywordCoveragePolicy.mayQueueDownloads(item.observationPurpose)) {
+            return finishRunAndSchedule(
+                repo = repo,
+                sharedPreferences = sharedPreferences,
+                sourceID = sourceID,
+                item = item,
+                message = context.getString(com.ireum.ytdl.R.string.automatic_keyword_discovery_complete),
+                countRun = true
+            )
+        }
+
         //delete downloaded items not present in source if sync is enabled
         if (item.syncWithSource && item.alreadyProcessedLinks.isNotEmpty()){
             val processedLinks = item.alreadyProcessedLinks
@@ -251,15 +439,47 @@ class ObserveSourceWorker(
             )
 
             val linksNotPresentAnymore = processedLinks.filter { !incomingLinks.contains(canonicalUrl(it)) }
-            linksNotPresentAnymore.forEach {
-                val historyItems = getHistoryByEquivalentUrl(historyRepo, it)
+            val historyItemsToRemove = linksNotPresentAnymore.flatMap { missingLink ->
+                val historyItems = getHistoryByEquivalentUrl(historyRepo, missingLink)
                 Log.d(
                     OBS_DUP_LOG_TAG,
-                    "sync remove check sourceId=$sourceID url=$it canonical=${canonicalUrl(it)} historyMatches=${historyItems.size} type=${item.downloadItemTemplate.type}"
+                    "sync remove check sourceId=$sourceID historyMatches=${historyItems.size} type=${item.downloadItemTemplate.type}"
                 )
-                historyItems.filter { h -> h.type == item.downloadItemTemplate.type }.forEach { h ->
-                    historyRepo.delete(h, true)
+                historyItems.filter { history -> history.type == item.downloadItemTemplate.type }
+            }.distinctBy { history -> history.id }
+
+            if (historyItemsToRemove.isNotEmpty()) {
+                val deletionGateway = AndroidHistoryFileDeletionGateway(context)
+                val selectedIds = historyItemsToRemove.mapTo(hashSetOf()) { history -> history.id }
+                val retainedTargets = historyRepo.getDeletionReferenceRecords()
+                    .asSequence()
+                    .filterNot { history -> history.id in selectedIds }
+                    .flatMap { history -> history.downloadPath.asSequence() }
+                val deletionRecords = historyItemsToRemove.map { history ->
+                    val trustedDocumentTargets = trustedResolvedTreeTargets(history, deletionGateway)
+                    HistoryDeletionRecord(
+                        id = history.id,
+                        storedTargets = (history.downloadPath + trustedDocumentTargets).distinct(),
+                        trustedDocumentTargets = trustedDocumentTargets.toSet()
+                    )
                 }
+                val deletionResult = HistoryFileDeletionEngine(
+                    deletionGateway
+                ).let { engine ->
+                    val validation = engine.excludeTargetsReferencedBy(
+                        validation = engine.validate(deletionRecords),
+                        retainedStoredTargets = retainedTargets
+                    )
+                    engine.execute(validation)
+                }
+                val removableIds = deletionResult.removableRecordIds
+                historyRepo.deleteRecords(removableIds.toList())
+                Log.d(
+                    OBS_DUP_LOG_TAG,
+                    "sync remove result sourceId=$sourceID records=${removableIds.size} " +
+                        "deleted=${deletionResult.filesDeleted} absent=${deletionResult.filesAlreadyAbsent} " +
+                        "skipped=${deletionResult.filesSkipped} failed=${deletionResult.filesPermissionDenied + deletionResult.filesFailed}"
+                )
             }
         }
 
@@ -460,10 +680,11 @@ class ObserveSourceWorker(
             runDetail = candidate.url
         }
         val downloadItems = mutableListOf<DownloadItem>()
+        val converter = Converters()
         var confirmedRetryHandled = false
         toProcess.forEach {
-            val string = Gson().toJson(item.downloadItemTemplate, DownloadItem::class.java)
-            val downloadItem = Gson().fromJson(string, DownloadItem::class.java)
+            val string = converter.downloadItemToString(item.downloadItemTemplate)
+            val downloadItem = converter.stringToDownloadItem(string)
             downloadItem.title = it.title
 //            downloadItem.author = it.author DONT ADD IT, can conflict with playlist uploader album artist etc etc
             downloadItem.duration = it.duration
@@ -678,6 +899,22 @@ class ObserveSourceWorker(
         }
 
         return result
+    }
+
+    private fun automaticKeywordError(error: Throwable?): String {
+        val message = error?.message.orEmpty().lowercase()
+        return when {
+            "login" in message || "sign in" in message || "authentication" in message ->
+                AutomaticKeywordSyncError.AUTH_REQUIRED
+            "private" in message -> AutomaticKeywordSyncError.PRIVATE_PLAYLIST
+            "unavailable" in message || "not available" in message ->
+                AutomaticKeywordSyncError.UNAVAILABLE
+            "network" in message || "timeout" in message || "connection" in message ->
+                AutomaticKeywordSyncError.NETWORK
+            "extract" in message || "yt-dlp" in message ->
+                AutomaticKeywordSyncError.EXTRACTION
+            else -> AutomaticKeywordSyncError.UNKNOWN
+        }
     }
 
 }

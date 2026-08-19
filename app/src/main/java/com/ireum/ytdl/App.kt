@@ -10,6 +10,7 @@ import androidx.core.content.edit
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.ThemeUtil
+import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.yausername.aria2c.Aria2c
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
@@ -46,10 +47,18 @@ class App : Application() {
                 }
             }catch (e: Exception){
                 Looper.prepare().runCatching {
-                    Toast.makeText(this@App, e.message, Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@App,
+                        R.string.runtime_initialization_failed,
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
                 e.printStackTrace()
             }
+        }
+        applicationScope.launch(Dispatchers.IO) {
+            runCatching { AutomaticKeywordObservationCoverage(this@App).reconcile() }
+                .onFailure { Log.w(TAG, "Automatic keyword observation coverage reconciliation failed", it) }
         }
         ThemeUtil.init(this)
     }

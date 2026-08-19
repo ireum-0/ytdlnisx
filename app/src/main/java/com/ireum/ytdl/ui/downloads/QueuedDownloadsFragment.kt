@@ -130,7 +130,12 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
             }
         }
 
-        downloadViewModel.getTotalSize(listOf(DownloadRepository.Status.Queued)).observe(viewLifecycleOwner){
+        downloadViewModel.getTotalSize(
+            listOf(
+                DownloadRepository.Status.Queued,
+                DownloadRepository.Status.WaitingForMembership
+            )
+        ).observe(viewLifecycleOwner){
             totalSize = it
             noResults.isVisible = it == 0
             dragHandleToggle.isVisible = it > 1
@@ -150,7 +155,10 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
             deleteDialog.setTitle(getString(R.string.you_are_going_to_delete) + " \"" + item.title.ifEmpty { item.url } + "\"!")
             deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
             deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
+                val wasWaitingForMembership =
+                    item.status == DownloadRepository.Status.WaitingForMembership.toString()
                 item.status = DownloadRepository.Status.Cancelled.toString()
+                downloadViewModel.cancelDownloadOnly(item.id)
                 lifecycleScope.launch(Dispatchers.IO){
                     downloadViewModel.updateDownload(item)
                 }
@@ -158,8 +166,12 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                 Snackbar.make(queuedRecyclerView, getString(R.string.cancelled) + ": " + item.title.ifEmpty { item.url }, Snackbar.LENGTH_INDEFINITE)
                     .setAction(getString(R.string.undo)) {
                         lifecycleScope.launch(Dispatchers.IO) {
-                            downloadViewModel.deleteDownload(item.id)
-                            downloadViewModel.queueDownloads(listOf(item))
+                            if (wasWaitingForMembership) {
+                                downloadViewModel.restoreMembershipWaiting(item)
+                            } else {
+                                downloadViewModel.deleteDownload(item.id)
+                                downloadViewModel.queueDownloads(listOf(item))
+                            }
                         }
                     }.show()
             }
@@ -278,8 +290,13 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
         suspend fun getSelectedIDs() : List<Long>{
             return if (adapter.inverted || adapter.checkedItems.isEmpty()){
                 withContext(Dispatchers.IO){
-                    downloadViewModel.getItemIDsNotPresentIn(adapter.checkedItems.toList(), listOf(
-                        DownloadRepository.Status.Queued))
+                    downloadViewModel.getItemIDsNotPresentIn(
+                        adapter.checkedItems.toList(),
+                        listOf(
+                            DownloadRepository.Status.Queued,
+                            DownloadRepository.Status.WaitingForMembership
+                        )
+                    )
                 }
             }else{
                 adapter.checkedItems.toList()
@@ -367,6 +384,14 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
             ): Boolean {
                 val fromPosition = viewHolder.bindingAdapterPosition
                 val toPosition = target.bindingAdapterPosition
+                if (
+                    fromPosition == RecyclerView.NO_POSITION ||
+                    toPosition == RecyclerView.NO_POSITION ||
+                    adapter.isWaitingForMembership(fromPosition) ||
+                    adapter.isWaitingForMembership(toPosition)
+                ) {
+                    return false
+                }
                 val targetId = target.itemView.tag?.toString()?.toLongOrNull() ?: return false
                 movedToNewPositionID = targetId
                 adapter.notifyItemMoved(fromPosition, toPosition)
@@ -382,6 +407,8 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
             ) {
                 super.onSelectedChanged(viewHolder, actionState)
                 if (ItemTouchHelper.ACTION_STATE_DRAG == actionState) {
+                    movedToNewPositionID =
+                        viewHolder?.itemView?.tag?.toString()?.toLongOrNull() ?: 0L
                     /**
                      * Change alpha, scale and elevation on drag.
                      */
@@ -424,7 +451,10 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                 }
 
                 val sourceId = viewHolder.itemView.tag?.toString()?.toLongOrNull() ?: return
-                downloadViewModel.putAtPosition(sourceId, movedToNewPositionID)
+                if (movedToNewPositionID > 0L && sourceId != movedToNewPositionID) {
+                    downloadViewModel.putAtPosition(sourceId, movedToNewPositionID)
+                }
+                movedToNewPositionID = 0L
             }
 
             override fun isLongPressDragEnabled(): Boolean {

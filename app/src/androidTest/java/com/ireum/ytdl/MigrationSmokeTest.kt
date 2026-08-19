@@ -110,7 +110,7 @@ class MigrationSmokeTest {
     }
 
     @Test
-    fun migrateFromVersion37To51PreservesPopulatedHistoryPlaybackFields() {
+    fun migrateFromVersion37To52PreservesHistoryAndBackfillsManualKeywordAssignments() {
         helper.createDatabase(TEST_DB, 37).apply {
             execSQL(
                 """
@@ -134,7 +134,7 @@ class MigrationSmokeTest {
 
         val db = helper.runMigrationsAndValidate(
             TEST_DB,
-            51,
+            52,
             true,
             *Migrations.migrationList
         )
@@ -169,6 +169,50 @@ class MigrationSmokeTest {
                 ),
                 tableIndices(it, "history")
             )
+            it.query(
+                """
+                SELECT normalizedKeyword, keyword, sourceType, sourceId
+                FROM history_keyword_assignments
+                WHERE historyItemId = 11
+                ORDER BY position
+                """.trimIndent()
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("one", cursor.getString(0))
+                assertEquals("one", cursor.getString(1))
+                assertEquals("MANUAL", cursor.getString(2))
+                assertEquals(0L, cursor.getLong(3))
+                assertTrue(cursor.moveToNext())
+                assertEquals("two", cursor.getString(0))
+            }
+        }
+    }
+
+    @Test
+    fun migrateFromVersion51To52AddsRuleTablesAndManagedSourceColumns() {
+        helper.createDatabase(TEST_DB, 51).close()
+
+        val db = helper.runMigrationsAndValidate(
+            TEST_DB,
+            52,
+            true,
+            *Migrations.migrationList
+        )
+
+        db.use {
+            val sourceDefaults = tableColumnDefaults(it, "sources")
+            assertEquals("'USER'", sourceDefaults["observationPurpose"])
+            assertEquals("''", sourceDefaults["managedConditionKey"])
+            val ruleDefaults = tableColumnDefaults(it, "automatic_keyword_rules")
+            assertEquals("0", ruleDefaults["pendingApplyToExisting"])
+            val tables = linkedSetOf<String>()
+            it.query("SELECT name FROM sqlite_master WHERE type = 'table'").use { cursor ->
+                while (cursor.moveToNext()) tables += cursor.getString(0)
+            }
+            assertTrue(tables.contains("automatic_keyword_rules"))
+            assertTrue(tables.contains("automatic_keyword_rule_keywords"))
+            assertTrue(tables.contains("automatic_keyword_rule_video_matches"))
+            assertTrue(tables.contains("history_keyword_assignments"))
         }
     }
 

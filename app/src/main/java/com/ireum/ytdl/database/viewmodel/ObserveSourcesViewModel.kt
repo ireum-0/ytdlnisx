@@ -16,6 +16,7 @@ import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
+import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.ObserveSourceWorker
 import kotlinx.coroutines.Dispatchers
@@ -53,28 +54,32 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
     suspend fun insertUpdate(item: ObserveSourcesItem) : Long {
         if (item.id > 0) {
             notificationUtil.cancelObserveRetryConfirmation(item.id)
-            repository.update(item)
+            repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
             repository.observeTask(item)
+            AutomaticKeywordObservationCoverage(application).reconcile()
             return item.id
         }
 
         val id = repository.insert(item)
         item.id = id
         if (id > 0) repository.observeTask(item)
+        AutomaticKeywordObservationCoverage(application).reconcile()
         return id
     }
 
     suspend fun stopObserving(item: ObserveSourcesItem) {
         notificationUtil.cancelObserveRetryConfirmation(item.id)
         item.status = ObserveSourcesRepository.SourceStatus.STOPPED
-        repository.update(item)
+        repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
         repository.cancelObservationTaskByID(item.id)
+        AutomaticKeywordObservationCoverage(application).reconcile()
     }
 
     fun delete(item: ObserveSourcesItem) = viewModelScope.launch(Dispatchers.IO) {
         notificationUtil.cancelObserveRetryConfirmation(item.id)
         runCatching { repository.cancelObservationTaskByID(item.id) }
-        repository.delete(item)
+        repository.delete(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
+        AutomaticKeywordObservationCoverage(application).reconcile()
     }
 
     fun deleteAll() = viewModelScope.launch(Dispatchers.IO) {
@@ -83,10 +88,12 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
             runCatching { repository.cancelObservationTaskByID(it.id) }
         }
 
-        repository.deleteAll()
+        repository.deleteAll().forEach(notificationUtil::cancelMembershipWaitingNotification)
+        AutomaticKeywordObservationCoverage(application).reconcile()
     }
 
     suspend fun update(item: ObserveSourcesItem) {
-        repository.update(item)
+        repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
+        AutomaticKeywordObservationCoverage(application).reconcile()
     }
 }

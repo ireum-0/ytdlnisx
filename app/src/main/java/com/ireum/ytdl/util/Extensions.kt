@@ -63,6 +63,7 @@ import com.neoutils.highlight.view.extension.removeAllSpans
 import com.neoutils.highlight.view.extension.toSpannedString
 import com.neoutils.highlight.view.text.HighlightTextWatcher
 import com.squareup.picasso.Picasso
+import com.squareup.picasso.Callback
 import jp.wasabeef.picasso.transformations.BlurTransformation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -409,7 +410,13 @@ object Extensions {
         }.joinToString("\n")
     }
 
-    fun ImageView.loadThumbnail(hideThumb: Boolean, imageURL: String, reqWidth: Int = 1280, reqHeight: Int = 0){
+    fun ImageView.loadThumbnail(
+        hideThumb: Boolean,
+        imageURL: String,
+        reqWidth: Int = 1280,
+        reqHeight: Int = 0,
+        fallbackImageURL: String = ""
+    ) {
         Picasso.get().cancelRequest(this)
         if (hideThumb || imageURL.isEmpty()) {
             Picasso.get().load(R.color.black).noFade().into(this)
@@ -418,7 +425,7 @@ object Extensions {
         val resolvedImageUrl = when {
             imageURL.startsWith("content://") || imageURL.startsWith("file://") -> imageURL
             imageURL.startsWith("http://") || imageURL.startsWith("https://") -> imageURL
-            FileUtil.exists(imageURL) -> File(imageURL).toURI().toString()
+            File(imageURL).isAbsolute -> File(imageURL).toURI().toString()
             else -> imageURL
         }
         val request = Picasso.get()
@@ -430,7 +437,15 @@ object Extensions {
         } else {
             request.resize(reqWidth, 0).onlyScaleDown()
         }
-        request.into(this)
+        request.into(this, object : Callback {
+            override fun onSuccess() = Unit
+
+            override fun onError(error: Exception?) {
+                if (fallbackImageURL.isNotBlank() && fallbackImageURL != imageURL) {
+                    loadThumbnail(hideThumb, fallbackImageURL, reqWidth, reqHeight)
+                }
+            }
+        })
     }
 
     fun ImageView.loadBlurryThumbnail(context: Context, hideThumb: Boolean, imageURL: String) {
@@ -440,7 +455,7 @@ object Extensions {
                 val resolvedImageUrl = when {
                     imageURL.startsWith("content://") || imageURL.startsWith("file://") -> imageURL
                     imageURL.startsWith("http://") || imageURL.startsWith("https://") -> imageURL
-                    FileUtil.exists(imageURL) -> File(imageURL).toURI().toString()
+                    File(imageURL).isAbsolute -> File(imageURL).toURI().toString()
                     else -> imageURL
                 }
                 Picasso.get()

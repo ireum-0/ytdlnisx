@@ -26,6 +26,17 @@ object DownloadIssueClassifier {
 
         val issues = linkedMapOf<DownloadIssueCode, DownloadIssue>()
 
+        if (MembershipAccessDetector.isMembershipRequired(details)) {
+            return listOf(
+                issueFor(
+                    DownloadIssueCode.MEMBERSHIP_REQUIRED,
+                    input.stage,
+                    details,
+                    DownloadIssueSource.OUTPUT_PATTERN
+                )
+            )
+        }
+
         val typedTimeout = input.exceptionClassName.endsWith("SocketTimeoutException") ||
             input.exceptionClassName.endsWith("TimeoutCancellationException")
         val patternedTimeout = input.stage in setOf(DownloadIssueStage.EXTRACT, DownloadIssueStage.DOWNLOAD) &&
@@ -121,6 +132,10 @@ object DownloadIssueClassifier {
             add(DownloadSuggestedAction.COPY_SUMMARY)
             if (retryable) add(DownloadSuggestedAction.RETRY)
             when (code) {
+                DownloadIssueCode.MEMBERSHIP_REQUIRED -> {
+                    add(DownloadSuggestedAction.OPEN_AUTH_SETTINGS)
+                    add(DownloadSuggestedAction.RECONFIGURE)
+                }
                 DownloadIssueCode.AUTH_REQUIRED -> {
                     add(DownloadSuggestedAction.OPEN_AUTH_SETTINGS)
                     add(DownloadSuggestedAction.RECONFIGURE)

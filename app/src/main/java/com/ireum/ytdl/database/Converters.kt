@@ -12,6 +12,7 @@ import com.ireum.ytdl.database.models.observeSources.ObserveSourcesMonthlyConfig
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesWeeklyConfig
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 
 
 @ProvidedTypeConverter
@@ -74,7 +75,9 @@ class Converters {
     }
 
     @TypeConverter
-    fun stringToDownloadItem(s: String) = gson.fromJson(s, DownloadItem::class.java)
+    fun stringToDownloadItem(s: String): DownloadItem {
+        return gson.fromJson(normalizeDownloadItemJson(s), DownloadItem::class.java)
+    }
 
     @TypeConverter
     fun mutableListOfStringsToString(s: MutableList<String>) = gson.toJson(s)
@@ -94,4 +97,25 @@ class Converters {
     @TypeConverter
     fun stringToObserveSourcesMonthlyConfig(s: String) = gson.fromJson(s, ObserveSourcesMonthlyConfig::class.java)
 
+}
+
+internal fun normalizeDownloadItemJson(value: String): String {
+    val item = runCatching { JsonParser.parseString(value).asJsonObject }.getOrNull() ?: return value
+
+    fun putStringDefault(name: String, defaultValue: String) {
+        if (!item.has(name) || item[name].isJsonNull) item.addProperty(name, defaultValue)
+    }
+
+    fun putIntDefault(name: String, defaultValue: Int) {
+        if (!item.has(name) || item[name].isJsonNull) item.addProperty(name, defaultValue)
+    }
+
+    // Gson does not apply Kotlin constructor defaults to fields absent from older
+    // Auto Download templates. Keep those templates valid as DownloadItem evolves.
+    putStringDefault("operationId", "")
+    putIntDefault("retryAttempt", 0)
+    putStringDefault("retryStrategy", "ORIGINAL")
+    putStringDefault("lastIssueCode", "")
+    putStringDefault("lastIssueStage", "")
+    return item.toString()
 }

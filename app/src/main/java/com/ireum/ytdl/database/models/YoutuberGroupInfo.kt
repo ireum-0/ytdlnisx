@@ -5,5 +5,6 @@ data class YoutuberGroupInfo(
     val name: String,
     val memberCount: Int,
     val videoCount: Int,
-    val thumbnail: String?
+    val thumbnail: String?,
+    val fallbackThumbnail: String? = null
 )

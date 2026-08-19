@@ -26,6 +26,10 @@ data class RestoreAppDataItem(
     var shortcuts: List<TemplateShortcut>? = null,
     var searchHistory: List<SearchHistoryItem>? = null,
     var observeSources: List<ObserveSourcesItem>? = null,
+    var automaticKeywordRules: List<AutomaticKeywordRule>? = null,
+    var automaticKeywordRuleKeywords: List<AutomaticKeywordRuleKeyword>? = null,
+    var automaticKeywordRuleVideoMatches: List<AutomaticKeywordRuleVideoMatch>? = null,
+    var historyKeywordAssignments: List<HistoryKeywordAssignment>? = null,
 )
 
 data class BackupSettingsItem(
