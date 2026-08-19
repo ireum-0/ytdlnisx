@@ -9,6 +9,13 @@ The active correctness defects below were revalidated against
 on 2026-08-19. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
+## Defect priority
+
+- **P1:** correctness or data-integrity risk that should be fixed before relying
+  on the affected workflow or merging it as production-ready behavior.
+- **P2:** significant correctness/reliability defect with narrower impact or a
+  less destructive failure mode; fix after P1 items.
+
 ## Status values
 
 - **Implemented:** the intended capability is present in the current code.
@@ -22,11 +29,9 @@ priority, and complexity.
 
 ## Active correctness defects
 
-### BUG-BACKUP-01 — Remap History replacement markers during restore
+### P1 — BUG-BACKUP-01 — Remap History replacement markers during restore
 
-**State:** Open  
-**Priority:** P0  
-**Severity:** Blocker
+**State:** Open
 
 Backup restore inserts History rows with newly generated IDs and builds
 `importedHistoryIdMap`, but restored download rows do not remap History
@@ -47,11 +52,9 @@ Required result:
 - cover reset restore, merge restore, ID collision, missing target, regular
   marker, and quality marker cases.
 
-### BUG-KEYWORD-01 — Require an authoritative automatic-keyword baseline
+### P1 — BUG-KEYWORD-01 — Require an authoritative automatic-keyword baseline
 
-**State:** Open  
-**Priority:** P0  
-**Severity:** High
+**State:** Open
 
 Automatic keyword synchronization carries only `List<ResultItem>` from the
 extractor into the rule engine. `recordBaseline()` completes the baseline when
@@ -70,11 +73,9 @@ Required result:
   baseline state;
 - add empty/incomplete -> later nonempty regression coverage.
 
-### BUG-KEYWORD-02 — Recompute derived RULE assignments on History Undo
+### P2 — BUG-KEYWORD-02 — Recompute derived RULE assignments on History Undo
 
-**State:** Open  
-**Priority:** P1  
-**Severity:** Medium
+**State:** Open
 
 History delete Undo snapshots keyword assignment rows. `restoreHistory()`
 restores RULE assignments whenever the same numeric rule ID still exists, but
@@ -91,11 +92,9 @@ Required result:
 - add Undo coverage where a rule is edited or replaced while the History row is
   deleted.
 
-### BUG-METADATA-01 — Prevent stale full-row metadata writes
+### P2 — BUG-METADATA-01 — Prevent stale full-row metadata writes
 
-**State:** Open  
-**Priority:** P1  
-**Severity:** Medium
+**State:** Open
 
 `UpdateMultipleDownloadsDataWorker` loads a download row, performs potentially
 slow metadata enrichment, then reloads only the current `status` before writing
@@ -112,11 +111,9 @@ Required result:
 - add a regression test that mutates a download row while metadata lookup is in
   progress.
 
-### BUG-DATE-01 — Preserve extractor failure instead of ambiguous NO_DATE
+### P2 — BUG-DATE-01 — Preserve extractor failure instead of ambiguous NO_DATE
 
-**State:** Open  
-**Priority:** P1  
-**Severity:** Medium
+**State:** Open
 
 History publication-date resolution catches a failed minimal lookup and falls
 back to the compatibility path. The compatibility path uses the generic
@@ -136,11 +133,9 @@ Required result:
   prevent that conclusion;
 - add coverage for minimal failure + compatibility empty/ignored-error cases.
 
-### BUG-DATE-02 — Do not mark a date-fetch operation COMPLETED with failed items
+### P2 — BUG-DATE-02 — Do not mark a date-fetch operation COMPLETED with failed items
 
-**State:** Open  
-**Priority:** P1  
-**Severity:** Medium
+**State:** Open
 
 Individual History date-fetch items can correctly enter `FAILED`, but
 `finalizeWorkerRun()` marks the parent operation `COMPLETED` whenever there are
