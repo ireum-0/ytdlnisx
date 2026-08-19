@@ -368,6 +368,32 @@ Required result:
 - add merge/reset tests with intentionally colliding old group/source IDs and
   verify the restored references resolve to the intended entities only.
 
+### P2 — BUG-BACKUP-07 — Preserve playlists and playlist groups in app-data backup
+
+**State:** Open
+
+The default app-data backup includes settings, History, keyword/youtuber data,
+download queues, cookies, templates, shortcuts, search history, and Observe
+Sources, but it has no category or serializer for `Playlist`,
+`PlaylistItemCrossRef`, `PlaylistGroup`, or `PlaylistGroupMember`. The restore
+model likewise has no fields for those tables, and `restoreData()` only recreates
+History rows with newly allocated IDs; it does not rebuild playlist membership
+or playlist-group membership from those restored rows. A success-labelled
+all-category backup therefore cannot reconstruct user-created playlists, their
+History membership, or playlist grouping after a reset/restore.
+
+Required result:
+
+- include playlists, playlist-to-History cross references, playlist groups, and
+  playlist-group memberships in the backup format and default all-category
+  selection;
+- restore playlist IDs and History IDs through explicit old-to-new mappings
+  before inserting cross references and group memberships;
+- define merge semantics for same-name playlists/groups and reject ambiguous
+  numeric-ID fallback;
+- add reset and merge round-trip tests with one History item in multiple
+  playlists and playlists belonging to multiple groups.
+
 ### P2 — BUG-DUPLICATE-01 — Canonicalize media identity for config duplicate checks
 
 **State:** Open
