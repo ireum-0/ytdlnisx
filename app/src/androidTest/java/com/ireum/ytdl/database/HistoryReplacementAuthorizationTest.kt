@@ -62,6 +62,27 @@ class HistoryReplacementAuthorizationTest {
     }
 
     @Test
+    fun mismatchedReplacementLeavesExistingHistoryMediaUntouched() = runBlocking {
+        val historyId = insertHistory()
+        val before = db.historyDao.getItem(historyId)
+
+        assertEquals(
+            HistoryReplacementOutcome.SourceMismatch,
+            repository().replaceHistoryPreservingAssignmentsAuthorized(
+                historyId = historyId,
+                expectedSourceUrl = "https://youtu.be/$OTHER_VIDEO_ID",
+                expectedType = DownloadType.video,
+            ) { current ->
+                current.copy(downloadPath = listOf("/tmp/unrelated-replacement.mp4"))
+            }
+        )
+
+        val after = db.historyDao.getItem(historyId)
+        assertEquals(before.downloadPath, after.downloadPath)
+        assertEquals(before.title, after.title)
+    }
+
+    @Test
     fun incompatibleReplacementTypeIsRejected() = runBlocking {
         val historyId = insertHistory()
 

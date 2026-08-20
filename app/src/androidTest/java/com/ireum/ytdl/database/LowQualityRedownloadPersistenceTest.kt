@@ -17,6 +17,7 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.ui.downloads.shouldPresentLowQualitySelection
 import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.dispatchLowQualityRedownloadRecovery
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -785,6 +786,35 @@ class LowQualityRedownloadPersistenceTest {
         assertEquals(DownloadRepository.REASON_HISTORY_TARGET_DELETED, child.reasonCode)
         assertEquals(
             LowQualityRedownloadOperationState.COMPLETED,
+            repository.getOperation(operation.operationId)?.stateValue
+        )
+    }
+
+    @Test
+    fun unauthorizedHistoryReplacementFailsLinkedItemAndPreservesQueueRow() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 102, DownloadRepository.Status.Active)
+        val issueCode = DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED.name
+
+        database.downloadDao.setStatus(linkedId, DownloadRepository.Status.Error.name)
+        assertEquals(
+            operation.operationId,
+            repository.markDownloadState(
+                linkedId,
+                LowQualityRedownloadItemState.FAILED,
+                issueCode
+            )
+        )
+
+        assertEquals(
+            DownloadRepository.Status.Error.name,
+            database.downloadDao.getNullableDownloadById(linkedId)?.status
+        )
+        val child = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.FAILED, child.stateValue)
+        assertEquals(issueCode, child.reasonCode)
+        assertEquals(
+            LowQualityRedownloadOperationState.FAILED,
             repository.getOperation(operation.operationId)?.stateValue
         )
     }

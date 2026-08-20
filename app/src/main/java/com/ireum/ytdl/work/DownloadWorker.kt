@@ -33,6 +33,8 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementAuthorization
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcome
+import com.ireum.ytdl.database.repository.HistoryReplacementOutcomePolicy
+import com.ireum.ytdl.database.repository.HistoryReplacementTerminalAction
 import com.ireum.ytdl.database.repository.LogRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
@@ -387,6 +389,7 @@ class DownloadWorker(
                     var currentIssueStage = DownloadIssueStage.PREFLIGHT
                     var createdOutputPaths: List<String> = emptyList()
                     var preserveQueueRecord = false
+                    var historyReplacementFailureIssue: DownloadIssue? = null
                     var downloadOutcome: DownloadOutcome? = null
                     fun recordCreatedOutputs(paths: List<String>) {
                         createdOutputPaths = (createdOutputPaths + paths)
@@ -1218,9 +1221,12 @@ class DownloadWorker(
                                         null
                                     }
                                     val persistedHistoryId = if (replacedHistoryId > 0L) {
-                                        when (val replacement = replacementOutcome!!) {
-                                            is HistoryReplacementOutcome.Updated -> replacement.previousTarget.id
-                                            HistoryReplacementOutcome.TargetMissing -> {
+                                        val replacement = replacementOutcome!!
+                                        when (HistoryReplacementOutcomePolicy.terminalAction(replacement)) {
+                                            HistoryReplacementTerminalAction.COMPLETE ->
+                                                (replacement as HistoryReplacementOutcome.Updated)
+                                                    .previousTarget.id
+                                            HistoryReplacementTerminalAction.TARGET_DELETED -> {
                                                 historyTargetDeleted = true
                                                 completionIssues += DownloadIssue.create(
                                                     stage = DownloadIssueStage.HISTORY,
@@ -1235,27 +1241,17 @@ class DownloadWorker(
                                                 )
                                                 null
                                             }
-                                            HistoryReplacementOutcome.SourceMismatch,
-                                            HistoryReplacementOutcome.TypeMismatch -> {
-                                                historyTargetDeleted = true
-                                                completionIssues += DownloadIssue.create(
-                                                    stage = DownloadIssueStage.HISTORY,
-                                                    code = DownloadIssueCode.HISTORY_TARGET_DELETED,
-                                                    severity = DownloadIssueSeverity.WARNING,
-                                                    suggestedActions = setOf(
-                                                        DownloadSuggestedAction.VIEW_LOG,
-                                                        DownloadSuggestedAction.COPY_SUMMARY,
-                                                    ),
+                                            HistoryReplacementTerminalAction.PRESERVE_FAILED -> {
+                                                throw HistoryReplacementNotAuthorizedException(
                                                     details = when (replacement) {
                                                         HistoryReplacementOutcome.SourceMismatch ->
-                                                            "History target source no longer matches the download"
+                                                            "History target source no longer matches the replacement download"
                                                         HistoryReplacementOutcome.TypeMismatch ->
-                                                            "History target media type no longer matches the download"
-                                                        else -> "History replacement target is not authorized"
-                                                    },
-                                                    source = DownloadIssueSource.EXPLICIT_STATE,
+                                                            "History target media type no longer matches the replacement download"
+                                                        else ->
+                                                            "History replacement target is not authorized"
+                                                    }
                                                 )
-                                                null
                                             }
                                         }
                                     } else {
@@ -1298,7 +1294,37 @@ class DownloadWorker(
                             if (historyError is CancellationException) throw historyError
                             preserveQueueRecord = true
                             downloadItem.status = DownloadRepository.Status.Error.toString()
-                            downloadItem.lastIssueCode = DownloadIssueCode.HISTORY_WRITE_FAILED.name
+                            val historyIssue = if (
+                                historyError is HistoryReplacementNotAuthorizedException
+                            ) {
+                                DownloadIssue.create(
+                                    stage = DownloadIssueStage.HISTORY,
+                                    code = DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
+                                    severity = DownloadIssueSeverity.ERROR,
+                                    retryable = false,
+                                    suggestedActions = setOf(
+                                        DownloadSuggestedAction.VIEW_LOG,
+                                        DownloadSuggestedAction.COPY_SUMMARY
+                                    ),
+                                    details = historyError.details,
+                                    source = DownloadIssueSource.EXPLICIT_STATE
+                                ).also { issue ->
+                                    historyReplacementFailureIssue = issue
+                                }
+                            } else {
+                                DownloadIssue.create(
+                                    stage = DownloadIssueStage.HISTORY,
+                                    code = DownloadIssueCode.HISTORY_WRITE_FAILED,
+                                    severity = DownloadIssueSeverity.WARNING,
+                                    suggestedActions = setOf(
+                                        DownloadSuggestedAction.VIEW_LOG,
+                                        DownloadSuggestedAction.COPY_SUMMARY
+                                    ),
+                                    details = historyError.message.orEmpty(),
+                                    source = DownloadIssueSource.TYPED_EXCEPTION
+                                )
+                            }
+                            downloadItem.lastIssueCode = historyIssue.code.name
                             downloadItem.lastIssueStage = DownloadIssueStage.HISTORY.name
                             try {
                                 dao.update(downloadItem)
@@ -1307,7 +1333,7 @@ class DownloadWorker(
                                         context,
                                         downloadItem.id,
                                         com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
-                                        DownloadIssueCode.HISTORY_WRITE_FAILED.name
+                                        historyIssue.code.name
                                     )
                                 }
                             } catch (cancelled: CancellationException) {
@@ -1319,17 +1345,6 @@ class DownloadWorker(
                                     queueError
                                 )
                             }
-                            val historyIssue = DownloadIssue.create(
-                                stage = DownloadIssueStage.HISTORY,
-                                code = DownloadIssueCode.HISTORY_WRITE_FAILED,
-                                severity = DownloadIssueSeverity.WARNING,
-                                suggestedActions = setOf(
-                                    DownloadSuggestedAction.VIEW_LOG,
-                                    DownloadSuggestedAction.COPY_SUMMARY
-                                ),
-                                details = historyError.message.orEmpty(),
-                                source = DownloadIssueSource.TYPED_EXCEPTION
-                            )
                             completionIssues += historyIssue
                             Log.e(TAG, "History update failed after file creation id=${downloadItem.id}", historyError)
                         }
@@ -1339,20 +1354,39 @@ class DownloadWorker(
                             updateHardSubWorkerNotification(notificationUtil)
                         }
                         currentIssueStage = DownloadIssueStage.NOTIFICATION
-                        val warningBeforeNotification = completionIssues.firstOrNull()?.let { issue ->
+                        val terminalOutcome = historyReplacementFailureIssue?.let { issue ->
+                            DownloadOutcome.failed(issue)
+                        } ?: DownloadOutcome.completed(
+                            createdFileCount = createdOutputPaths.size,
+                            issues = completionIssues
+                        )
+                        downloadOutcome = terminalOutcome
+                        val warningBeforeNotification = terminalOutcome.issues.firstOrNull()?.let { issue ->
                             DownloadIssueText.formatted(resources, issue)
                         }
                         try {
                             withContext(Dispatchers.Main) {
                                 notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
-                                notificationUtil.createDownloadFinished(
-                                    downloadItem.id,
-                                    notificationTitle,
-                                    downloadItem.type,
-                                    if (finalPaths.isEmpty()) null else finalPaths,
-                                    resources,
-                                    warningBeforeNotification
-                                )
+                                if (historyReplacementFailureIssue == null) {
+                                    notificationUtil.createDownloadFinished(
+                                        downloadItem.id,
+                                        notificationTitle,
+                                        downloadItem.type,
+                                        if (finalPaths.isEmpty()) null else finalPaths,
+                                        resources,
+                                        warningBeforeNotification
+                                    )
+                                } else {
+                                    notificationUtil.createDownloadErrored(
+                                        downloadItem.id,
+                                        notificationTitle,
+                                        warningBeforeNotification.orEmpty(),
+                                        downloadItem.logID,
+                                        resources,
+                                        retryable = false,
+                                        allowReconfigure = false
+                                    )
+                                }
                             }
                         } catch (notificationError: Exception) {
                             if (notificationError is CancellationException) throw notificationError
@@ -1366,12 +1400,7 @@ class DownloadWorker(
                             )
                             Log.e(TAG, "Finished notification failed after file creation id=${downloadItem.id}", notificationError)
                         }
-                        val completedOutcome = DownloadOutcome.completed(
-                            createdFileCount = createdOutputPaths.size,
-                            issues = completionIssues
-                        )
-                        downloadOutcome = completedOutcome
-                        val outcomeSummary = completedOutcome.issues
+                        val outcomeSummary = terminalOutcome.issues
                             .joinToString(separator = "\n") { issue ->
                                 DownloadIssueText.formatted(resources, issue)
                             }
@@ -1409,7 +1438,7 @@ class DownloadWorker(
 
                         if (ytdlpPhase.state.logging.enabled){
                             val structuredOutcomeLog = outcomeSummary?.let {
-                                "\nStructured outcome: ${completedOutcome.status}\n$it\n"
+                                "\nStructured outcome: ${terminalOutcome.status}\n$it\n"
                             }.orEmpty()
                             logRepo.update(
                                 ytdlpPhase.state.logging.initialDetails +
@@ -1868,6 +1897,10 @@ class DownloadWorker(
     )
 
     private class YtdlpQualityRejectedException(message: String) : IOException(message)
+
+    private class HistoryReplacementNotAuthorizedException(
+        val details: String
+    ) : IOException(details)
 
     private sealed interface CompletedYtdlpQualityOutcome {
         data class Accept(val result: YtdlpAttemptsResult) : CompletedYtdlpQualityOutcome
