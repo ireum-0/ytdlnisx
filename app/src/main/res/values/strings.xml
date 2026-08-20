@@ -813,6 +813,8 @@
     <string name="download_issue_destination_not_writable">The destination is not writable</string>
     <string name="download_issue_ffmpeg_failed">Media processing failed</string>
     <string name="download_issue_history_failed">The file was created, but History could not be updated</string>
+    <string name="download_issue_history_source_mismatch">History replacement rejected: the current target source does not match the replacement download</string>
+    <string name="download_issue_history_type_mismatch">History replacement rejected: the current target media type does not match the replacement download</string>
     <string name="download_issue_notification_failed">The file was created, but its notification could not be shown</string>
     <string name="download_issue_unknown">The cause could not be identified</string>
     <string name="download_stage_preflight">Preflight</string>

@@ -809,6 +809,8 @@
     <string name="download_issue_destination_not_writable">저장 위치에 파일을 쓸 수 없습니다</string>
     <string name="download_issue_ffmpeg_failed">미디어 처리에 실패했습니다</string>
     <string name="download_issue_history_failed">파일은 생성되었지만 기록을 업데이트하지 못했습니다</string>
+    <string name="download_issue_history_source_mismatch">기록 교체가 거부되었습니다: 현재 대상 소스가 교체 다운로드와 일치하지 않습니다</string>
+    <string name="download_issue_history_type_mismatch">기록 교체가 거부되었습니다: 현재 대상 미디어 유형이 교체 다운로드와 일치하지 않습니다</string>
     <string name="download_issue_notification_failed">파일은 생성되었지만 알림을 표시하지 못했습니다</string>
     <string name="download_issue_unknown">원인을 확인할 수 없습니다</string>
     <string name="download_stage_preflight">사전 확인</string>
