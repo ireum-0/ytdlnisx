@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **25 active correctness defects** in this checkpoint. The previous
+There are **26 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -614,6 +614,40 @@ Required result:
 - add a deterministic race where a queued row becomes `Active` after the cleanup
   zero-count check but before temp enumeration/deletion, plus a
   `PostProcessing` ownership regression, proving live temp files are preserved.
+
+### P2 — BUG-CACHE-01 — Do not move live download temp files during cache migration
+
+**State:** Open
+
+**Failure path:** the production Folder settings screen exposes
+`move_temporary_files` and its click handler immediately enqueues
+`MoveCacheFilesWorker`; unlike clear-cache and default-video-folder migration,
+this path does not call `hasActiveDownloads()` or otherwise establish exclusive
+cache ownership. `MoveCacheFilesWorker` walks the entire
+`FileUtil.getCachePath(context)` tree and moves every file it encounters into
+public `Downloads/YTDLnisx/CACHE_IMPORT`. `DownloadWorker` concurrently uses a
+per-download child of that exact cache root as its live yt-dlp/post-processing
+temp directory. A user can therefore start cache migration while a download is
+active and the migration can move files out from underneath the running worker.
+
+**Why this is a defect:** a maintenance action can steal live temp artifacts
+from an in-progress download, causing extraction/post-processing failure and
+moving partial/intermediate media into a user-visible recovery directory as if
+it were leftover cache. The worker reports success after traversing the cache
+without proving that the files were unowned.
+
+Required result:
+
+- gate cache migration on an authoritative live-work ownership contract that
+  covers `Active` and `PostProcessing` downloads and prevents new cache owners
+  from starting until migration completes;
+- preferably migrate only explicitly unowned per-download cache directories
+  instead of walking the whole shared cache tree;
+- preserve unrelated/nested cache categories according to the same ownership
+  policy used by `AppCacheManager` rather than assuming every entry is movable;
+- add deterministic active-download and post-processing races proving live temp
+  files are never moved, plus an idle-leftover regression proving intended cache
+  recovery still works.
 
 ### P2 — BUG-LOCALADD-01 — Do not treat a bare filename stem as local-file identity
 
