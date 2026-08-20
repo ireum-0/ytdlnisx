@@ -26,6 +26,29 @@ object HistoryReplacementOutcomePolicy {
                 HistoryReplacementTerminalAction.PRESERVE_FAILED
         }
 
+    fun terminalAction(cleanupAction: HistoryReplacementCleanupAction): HistoryReplacementTerminalAction =
+        when (cleanupAction) {
+            HistoryReplacementCleanupAction.AUTHORIZED_CLEANUP ->
+                HistoryReplacementTerminalAction.COMPLETE
+            HistoryReplacementCleanupAction.TARGET_MISSING ->
+                HistoryReplacementTerminalAction.TARGET_DELETED
+            HistoryReplacementCleanupAction.PRESERVE_FAILED ->
+                HistoryReplacementTerminalAction.PRESERVE_FAILED
+        }
+
+    fun mergeTerminalAction(
+        current: HistoryReplacementTerminalAction?,
+        next: HistoryReplacementTerminalAction,
+    ): HistoryReplacementTerminalAction = when {
+        current == HistoryReplacementTerminalAction.PRESERVE_FAILED ||
+            next == HistoryReplacementTerminalAction.PRESERVE_FAILED ->
+            HistoryReplacementTerminalAction.PRESERVE_FAILED
+        current == HistoryReplacementTerminalAction.TARGET_DELETED ||
+            next == HistoryReplacementTerminalAction.TARGET_DELETED ->
+            HistoryReplacementTerminalAction.TARGET_DELETED
+        else -> HistoryReplacementTerminalAction.COMPLETE
+    }
+
     fun cleanupAction(
         authorization: HistoryReplacementAuthorization
     ): HistoryReplacementCleanupAction = when (authorization) {
@@ -40,6 +63,10 @@ object HistoryReplacementOutcomePolicy {
 
     fun allowsPartialSuccess(
         hasCreatedOutputs: Boolean,
-        cleanupAction: HistoryReplacementCleanupAction?
-    ): Boolean = hasCreatedOutputs && cleanupAction != HistoryReplacementCleanupAction.PRESERVE_FAILED
+        cleanupAction: HistoryReplacementCleanupAction?,
+        authoritativeAction: HistoryReplacementTerminalAction? =
+            cleanupAction?.let { cleanup -> terminalAction(cleanup) },
+    ): Boolean = hasCreatedOutputs &&
+        (authoritativeAction == null || authoritativeAction == HistoryReplacementTerminalAction.COMPLETE) &&
+        cleanupAction != HistoryReplacementCleanupAction.PRESERVE_FAILED
 }

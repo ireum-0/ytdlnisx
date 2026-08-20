@@ -58,9 +58,21 @@ class HistoryReplacementOutcomePolicyTest {
             )
         )
         assertEquals(
+            HistoryReplacementTerminalAction.COMPLETE,
+            HistoryReplacementOutcomePolicy.terminalAction(
+                HistoryReplacementCleanupAction.AUTHORIZED_CLEANUP
+            )
+        )
+        assertEquals(
             HistoryReplacementCleanupAction.TARGET_MISSING,
             HistoryReplacementOutcomePolicy.cleanupAction(
                 HistoryReplacementAuthorization.TargetMissing
+            )
+        )
+        assertEquals(
+            HistoryReplacementTerminalAction.TARGET_DELETED,
+            HistoryReplacementOutcomePolicy.terminalAction(
+                HistoryReplacementCleanupAction.TARGET_MISSING
             )
         )
         assertEquals(
@@ -73,6 +85,12 @@ class HistoryReplacementOutcomePolicyTest {
             HistoryReplacementCleanupAction.PRESERVE_FAILED,
             HistoryReplacementOutcomePolicy.cleanupAction(
                 HistoryReplacementAuthorization.TypeMismatch
+            )
+        )
+        assertEquals(
+            HistoryReplacementTerminalAction.PRESERVE_FAILED,
+            HistoryReplacementOutcomePolicy.terminalAction(
+                HistoryReplacementCleanupAction.PRESERVE_FAILED
             )
         )
     }
@@ -96,9 +114,15 @@ class HistoryReplacementOutcomePolicyTest {
                 cleanupAction = HistoryReplacementCleanupAction.AUTHORIZED_CLEANUP,
             )
         )
-        assertTrue(
+        assertFalse(
             HistoryReplacementOutcomePolicy.allowsPartialSuccess(
                 hasCreatedOutputs = true,
+                cleanupAction = HistoryReplacementCleanupAction.TARGET_MISSING,
+            )
+        )
+        assertFalse(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = false,
                 cleanupAction = HistoryReplacementCleanupAction.TARGET_MISSING,
             )
         )
@@ -110,8 +134,50 @@ class HistoryReplacementOutcomePolicyTest {
         )
         assertFalse(
             HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = null,
+                authoritativeAction = HistoryReplacementTerminalAction.PRESERVE_FAILED,
+            )
+        )
+        assertFalse(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = null,
+                authoritativeAction = HistoryReplacementTerminalAction.TARGET_DELETED,
+            )
+        )
+        assertFalse(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
                 hasCreatedOutputs = false,
                 cleanupAction = null,
+            )
+        )
+    }
+
+    @Test
+    fun establishedHistoryFailureCannotBeDowngradedByLaterCleanupDisposition() {
+        assertEquals(
+            HistoryReplacementTerminalAction.PRESERVE_FAILED,
+            HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                HistoryReplacementTerminalAction.PRESERVE_FAILED,
+                HistoryReplacementTerminalAction.COMPLETE
+            )
+        )
+        assertEquals(
+            HistoryReplacementTerminalAction.PRESERVE_FAILED,
+            HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                HistoryReplacementTerminalAction.COMPLETE,
+                HistoryReplacementTerminalAction.PRESERVE_FAILED
+            )
+        )
+        assertFalse(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = null,
+                authoritativeAction = HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                    HistoryReplacementTerminalAction.PRESERVE_FAILED,
+                    HistoryReplacementTerminalAction.COMPLETE
+                ),
             )
         )
     }

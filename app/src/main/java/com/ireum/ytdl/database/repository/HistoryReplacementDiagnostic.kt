@@ -53,4 +53,16 @@ object HistoryReplacementDiagnostic {
         details = details(kind),
         source = DownloadIssueSource.EXPLICIT_STATE,
     )
+
+    fun targetDeletedIssue(): DownloadIssue = DownloadIssue.create(
+        stage = DownloadIssueStage.HISTORY,
+        code = DownloadIssueCode.HISTORY_TARGET_DELETED,
+        severity = DownloadIssueSeverity.WARNING,
+        suggestedActions = setOf(
+            DownloadSuggestedAction.VIEW_LOG,
+            DownloadSuggestedAction.COPY_SUMMARY,
+        ),
+        details = "History target was deleted before replacement persistence",
+        source = DownloadIssueSource.EXPLICIT_STATE,
+    )
 }

@@ -83,4 +83,12 @@ class HistoryReplacementDiagnosticTest {
             summaryResourceId(DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH)
         )
     }
+
+    @Test
+    fun targetDeletedDiagnosticRemainsAHistoryWarning() {
+        val issue = HistoryReplacementDiagnostic.targetDeletedIssue()
+
+        assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED, issue.code)
+        assertEquals(DownloadIssueStage.HISTORY, issue.stage)
+    }
 }

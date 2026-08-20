@@ -394,6 +394,7 @@ class DownloadWorker(
                     var createdOutputPaths: List<String> = emptyList()
                     var preserveQueueRecord = false
                     var historyReplacementFailureIssue: DownloadIssue? = null
+                    var historyReplacementTerminalAction: HistoryReplacementTerminalAction? = null
                     var downloadOutcome: DownloadOutcome? = null
                     fun recordCreatedOutputs(paths: List<String>) {
                         createdOutputPaths = (createdOutputPaths + paths)
@@ -412,7 +413,7 @@ class DownloadWorker(
                     try {
                     if (isHardSubRedownload(downloadItem)) {
                         registerHardSubTarget(downloadItem.id)
-                        updateHardSubWorkerNotification(notificationUtil)
+                        updateHardSubWorkerNotificationSafely(notificationUtil)
                     }
                     val notificationTitle = SensitiveTextRedactor.redactOutput(
                         downloadItem.title.ifEmpty { downloadItem.url }
@@ -1103,7 +1104,6 @@ class DownloadWorker(
                         }
                         recordCreatedOutputs(finalPaths)
                         val completionIssues = mutableListOf<DownloadIssue>()
-                        var historyTargetDeleted = false
                         ytdlpPhase.result.qualityWarning?.let { mismatch ->
                             completionIssues += DownloadIssue.create(
                                 stage = DownloadIssueStage.DOWNLOAD,
@@ -1226,23 +1226,20 @@ class DownloadWorker(
                                     }
                                     val persistedHistoryId = if (replacedHistoryId > 0L) {
                                         val replacement = replacementOutcome!!
-                                        when (HistoryReplacementOutcomePolicy.terminalAction(replacement)) {
+                                        val replacementTerminalAction =
+                                            HistoryReplacementOutcomePolicy.terminalAction(replacement)
+                                        historyReplacementTerminalAction =
+                                            HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                                                historyReplacementTerminalAction,
+                                                replacementTerminalAction
+                                            )
+                                        when (replacementTerminalAction) {
                                             HistoryReplacementTerminalAction.COMPLETE ->
                                                 (replacement as HistoryReplacementOutcome.Updated)
                                                     .previousTarget.id
                                             HistoryReplacementTerminalAction.TARGET_DELETED -> {
-                                                historyTargetDeleted = true
-                                                completionIssues += DownloadIssue.create(
-                                                    stage = DownloadIssueStage.HISTORY,
-                                                    code = DownloadIssueCode.HISTORY_TARGET_DELETED,
-                                                    severity = DownloadIssueSeverity.WARNING,
-                                                    suggestedActions = setOf(
-                                                        DownloadSuggestedAction.VIEW_LOG,
-                                                        DownloadSuggestedAction.COPY_SUMMARY,
-                                                    ),
-                                                    details = "History target was deleted before replacement persistence",
-                                                    source = DownloadIssueSource.EXPLICIT_STATE,
-                                                )
+                                                completionIssues +=
+                                                    HistoryReplacementDiagnostic.targetDeletedIssue()
                                                 null
                                             }
                                             HistoryReplacementTerminalAction.PRESERVE_FAILED -> {
@@ -1295,6 +1292,11 @@ class DownloadWorker(
                             val historyIssue = if (
                                 historyError is HistoryReplacementNotAuthorizedException
                             ) {
+                                historyReplacementTerminalAction =
+                                    HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                                        historyReplacementTerminalAction,
+                                        HistoryReplacementTerminalAction.PRESERVE_FAILED
+                                    )
                                 HistoryReplacementDiagnostic.issue(historyError.mismatch).also { issue ->
                                     historyReplacementFailureIssue = issue
                                 }
@@ -1338,7 +1340,7 @@ class DownloadWorker(
 
                         if (isHardSubRedownload(downloadItem)) {
                             markHardSubProcessed(downloadItem.id)
-                            updateHardSubWorkerNotification(notificationUtil)
+                            updateHardSubWorkerNotificationSafely(notificationUtil)
                         }
                         currentIssueStage = DownloadIssueStage.NOTIFICATION
                         val notificationIssue = historyReplacementFailureIssue
@@ -1414,7 +1416,10 @@ class DownloadWorker(
 
                         if (!preserveQueueRecord) {
                             val downloadRepository = DownloadRepository(dbManager)
-                            val affectedOperations = if (historyTargetDeleted) {
+                            val affectedOperations = if (
+                                historyReplacementTerminalAction ==
+                                    HistoryReplacementTerminalAction.TARGET_DELETED
+                            ) {
                                 downloadRepository.completeHistoryTargetDeletedAndDelete(downloadItem.id)
                             } else {
                                 downloadRepository.completeAndDelete(downloadItem.id)
@@ -1491,28 +1496,38 @@ class DownloadWorker(
                         val failedQualityMarker = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
                             ?.takeIf { marker -> marker.isQualityReplacement }
                         if (failedQualityMarker != null) {
-                            val cleanupAuthorization = deleteRejectedQualityReplacementOutputs(
-                                historyId = failedQualityMarker.historyId,
-                                candidatePaths = createdOutputPaths,
-                                historyDao = historyDao,
-                                historyKeywordAssignments = historyKeywordAssignments,
-                                downloadItem = downloadItem,
-                            )
-                            qualityCleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(
-                                cleanupAuthorization
-                            )
-                            when (cleanupAuthorization) {
-                                is HistoryReplacementAuthorization.Authorized ->
-                                    createdOutputPaths = emptyList()
-                                HistoryReplacementAuthorization.TargetMissing -> Unit
-                                HistoryReplacementAuthorization.SourceMismatch,
-                                HistoryReplacementAuthorization.TypeMismatch -> {
-                                    val mismatchKind = HistoryReplacementDiagnostic.mismatchKind(
-                                        cleanupAuthorization
-                                    ) ?: error("Missing mismatch kind for refused quality cleanup")
-                                    val mismatchIssue = HistoryReplacementDiagnostic.issue(mismatchKind)
-                                    historyReplacementFailureIssue = mismatchIssue
-                                    primaryIssue = mismatchIssue
+                            if (historyReplacementFailureIssue == null) {
+                                val cleanupAuthorization = deleteRejectedQualityReplacementOutputs(
+                                    historyId = failedQualityMarker.historyId,
+                                    candidatePaths = createdOutputPaths,
+                                    historyDao = historyDao,
+                                    historyKeywordAssignments = historyKeywordAssignments,
+                                    downloadItem = downloadItem,
+                                )
+                                val cleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(
+                                    cleanupAuthorization
+                                )
+                                qualityCleanupAction = cleanupAction
+                                historyReplacementTerminalAction =
+                                    HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                                        historyReplacementTerminalAction,
+                                        HistoryReplacementOutcomePolicy.terminalAction(cleanupAction)
+                                    )
+                                when (cleanupAuthorization) {
+                                    is HistoryReplacementAuthorization.Authorized ->
+                                        createdOutputPaths = emptyList()
+                                    HistoryReplacementAuthorization.TargetMissing -> {
+                                        primaryIssue = HistoryReplacementDiagnostic.targetDeletedIssue()
+                                    }
+                                    HistoryReplacementAuthorization.SourceMismatch,
+                                    HistoryReplacementAuthorization.TypeMismatch -> {
+                                        val mismatchKind = HistoryReplacementDiagnostic.mismatchKind(
+                                            cleanupAuthorization
+                                        ) ?: error("Missing mismatch kind for refused quality cleanup")
+                                        val mismatchIssue = HistoryReplacementDiagnostic.issue(mismatchKind)
+                                        historyReplacementFailureIssue = mismatchIssue
+                                        primaryIssue = mismatchIssue
+                                    }
                                 }
                             }
                             runCatching {
@@ -1537,26 +1552,40 @@ class DownloadWorker(
                         primaryIssue = historyReplacementFailureIssue ?: primaryIssue
                         val failureIssues = historyReplacementFailureIssue?.let { issue ->
                             listOf(issue) + classifiedIssues
-                        } ?: classifiedIssues
+                        } ?: if (
+                            historyReplacementTerminalAction ==
+                                HistoryReplacementTerminalAction.TARGET_DELETED
+                        ) {
+                            listOf(primaryIssue) + classifiedIssues
+                        } else {
+                            classifiedIssues
+                        }
                         val structuredFailureSummary = failureIssues.joinToString("\n") { issue ->
                             DownloadIssueText.formatted(resources, issue)
                         }
-                        if (HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                        val targetDeleted = historyReplacementTerminalAction ==
+                            HistoryReplacementTerminalAction.TARGET_DELETED
+                        if (targetDeleted || HistoryReplacementOutcomePolicy.allowsPartialSuccess(
                                 hasCreatedOutputs = createdOutputPaths.isNotEmpty(),
                                 cleanupAction = qualityCleanupAction,
+                                authoritativeAction = historyReplacementTerminalAction,
                             )
                         ) {
-                            val warningIssue = DownloadIssue.create(
-                                stage = primaryIssue.stage,
-                                code = primaryIssue.code,
-                                severity = DownloadIssueSeverity.WARNING,
-                                suggestedActions = setOf(
-                                    DownloadSuggestedAction.VIEW_LOG,
-                                    DownloadSuggestedAction.COPY_SUMMARY
-                                ),
-                                details = primaryIssue.redactedDetails,
-                                source = primaryIssue.source
-                            )
+                            val warningIssue = if (targetDeleted) {
+                                HistoryReplacementDiagnostic.targetDeletedIssue()
+                            } else {
+                                DownloadIssue.create(
+                                    stage = primaryIssue.stage,
+                                    code = primaryIssue.code,
+                                    severity = DownloadIssueSeverity.WARNING,
+                                    suggestedActions = setOf(
+                                        DownloadSuggestedAction.VIEW_LOG,
+                                        DownloadSuggestedAction.COPY_SUMMARY
+                                    ),
+                                    details = primaryIssue.redactedDetails,
+                                    source = primaryIssue.source
+                                )
+                            }
                             val partialOutcome = DownloadOutcome.completed(
                                 createdFileCount = createdOutputPaths.size,
                                 issues = listOf(warningIssue)
@@ -1572,10 +1601,16 @@ class DownloadWorker(
                             if (!preserveQueueRecord) {
                                 try {
                                     val affectedOperations = DownloadRepository(dbManager)
-                                        .completeAndDelete(
-                                            downloadItem.id,
-                                            "SUCCESS_WITH_WARNINGS"
-                                        )
+                                        .let { repository ->
+                                            if (targetDeleted) {
+                                                repository.completeHistoryTargetDeletedAndDelete(downloadItem.id)
+                                            } else {
+                                                repository.completeAndDelete(
+                                                    downloadItem.id,
+                                                    "SUCCESS_WITH_WARNINGS"
+                                                )
+                                            }
+                                        }
                                     runCatching {
                                         LowQualityRedownloadLedger.refresh(
                                             context,
@@ -1727,7 +1762,7 @@ class DownloadWorker(
                         }
                         if (isHardSubRedownload(downloadItem)) {
                             markHardSubProcessed(downloadItem.id)
-                            updateHardSubWorkerNotification(notificationUtil)
+                            updateHardSubWorkerNotificationSafely(notificationUtil)
                         }
 
                         val retryMetadata = DownloadRetryMetadata(
@@ -3030,6 +3065,16 @@ class DownloadWorker(
             notificationUtil.notify(1000000000, notificationUtil.createDefaultWorkerNotification())
         } else {
             notificationUtil.notify(1000000000, notificationUtil.createHardSubWorkerNotification(status))
+        }
+    }
+
+    private fun updateHardSubWorkerNotificationSafely(notificationUtil: NotificationUtil) {
+        try {
+            updateHardSubWorkerNotification(notificationUtil)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (notificationError: Exception) {
+            Log.w(TAG, "Failed to update hard-sub worker notification", notificationError)
         }
     }
 
