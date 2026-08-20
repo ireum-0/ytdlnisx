@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **29 active correctness defects** in this checkpoint. The previous
+There are **30 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -892,6 +892,50 @@ Required result:
   the same authoritative window decision;
 - add same-day and 23:00→05:00 boundary tests plus multi-day, no-new-user-action,
   restart/re-arm, and queued-work-survives-end regressions.
+
+### P2 — BUG-HARDSUB-01 — Preserve ambiguous subtitle lookup failures instead of excluding scan candidates
+
+**State:** Open
+
+**Failure path:** `HardSubScanWorker` scans History rows whose
+`hardSubScanRemoved = 0` and `hardSubDone = 0`. For each candidate it calls
+`ResultRepository.getResultsFromSource(..., singleItem = true)`, takes
+`firstOrNull()?.availableSubtitles`, and collapses a missing result to
+`emptyList()`. A thrown lookup exception is treated as a failure and left
+retryable, but a non-throwing empty result is treated exactly like an
+authoritative result with no requested subtitle language: the worker persists
+`hardSubScanRemoved = true, hardSubDone = false` and moves on.
+
+That empty result is not authoritative. The YouTube-video path falls back to
+`YTDLPUtil.getFromYTDL()`, whose metadata request applies `--ignore-errors` and
+can therefore complete without throwing while producing no parsed `ResultItem`;
+`getYoutubeVideo()` returns that empty list to the scan. The worker's rescan
+reset does not repair these rows: `resetHardSubDoneForRescan()` only resets rows
+where `hardSubDone = 1`, while the ambiguous-empty branch stores
+`hardSubDone = 0`. The automatic candidate query consequently excludes the row
+on subsequent scans unless a separate user action explicitly changes its scan
+state.
+
+**Why this is a defect:** a transient extractor/authentication/item failure can
+be converted into durable evidence that the History item is not a hard-sub scan
+target. Unlike the exception path, the ambiguous-empty path is not counted as a
+failed lookup and does not participate in the worker's bounded retry behavior,
+so eligible media can be silently omitted from future automatic hard-sub scans.
+
+Required result:
+
+- carry an explicit lookup success/completeness outcome instead of reducing an
+  absent `ResultItem` to an empty subtitle list;
+- set `hardSubScanRemoved = true` only after an authoritative successful lookup
+  establishes that no requested manual subtitle exists (or another deliberate
+  exclusion rule applies);
+- keep empty/ignored-error/ambiguous lookups retryable under the same bounded
+  policy as thrown lookup failures and preserve the candidate when retries are
+  exhausted;
+- distinguish a successfully fetched item with an authoritative empty subtitle
+  set from a fetch that produced no item at all;
+- add ignored-error empty-result, thrown-failure, authoritative-no-subtitle,
+  requested-subtitle, retry-exhaustion, and subsequent-rescan regressions.
 
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
