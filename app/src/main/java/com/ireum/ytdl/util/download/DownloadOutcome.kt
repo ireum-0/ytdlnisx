@@ -145,3 +145,25 @@ data class DownloadOutcome(
         fun canceled(): DownloadOutcome = DownloadOutcome(DownloadOutcomeStatus.CANCELED)
     }
 }
+
+/**
+ * Builds the immutable outcome after all completion-stage diagnostics, including
+ * notification failures, have been collected.
+ */
+fun composeCompletionOutcome(
+    createdFileCount: Int,
+    issues: List<DownloadIssue>,
+    forceFailure: Boolean,
+): DownloadOutcome {
+    if (!forceFailure) {
+        return DownloadOutcome.completed(
+            createdFileCount = createdFileCount,
+            issues = issues.toList(),
+        )
+    }
+    require(issues.isNotEmpty()) { "A forced failure must retain its diagnostic issue" }
+    return DownloadOutcome(
+        status = DownloadOutcomeStatus.FINAL_FAILURE,
+        issues = issues.toList(),
+    )
+}

@@ -2,6 +2,7 @@ package com.ireum.ytdl.util.download
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DownloadOutcomeTest {
@@ -39,5 +40,92 @@ class DownloadOutcomeTest {
 
         assertFalse(issue.redactedDetails.contains("secret"))
         assertEquals(8_000, issue.redactedDetails.length)
+    }
+
+    @Test
+    fun completionWithoutIssues_isSuccess() {
+        val outcome = composeCompletionOutcome(
+            createdFileCount = 1,
+            issues = emptyList(),
+            forceFailure = false,
+        )
+
+        assertEquals(DownloadOutcomeStatus.SUCCESS, outcome.status)
+        assertTrue(outcome.issues.isEmpty())
+    }
+
+    @Test
+    fun notificationFailure_isRetainedAsSuccessWithWarnings() {
+        val notificationIssue = DownloadIssue.create(
+            stage = DownloadIssueStage.NOTIFICATION,
+            code = DownloadIssueCode.NOTIFICATION_FAILED,
+            severity = DownloadIssueSeverity.WARNING,
+            details = "Notification creation failed"
+        )
+
+        val outcome = composeCompletionOutcome(
+            createdFileCount = 1,
+            issues = listOf(notificationIssue),
+            forceFailure = false,
+        )
+
+        assertEquals(DownloadOutcomeStatus.SUCCESS_WITH_WARNINGS, outcome.status)
+        assertEquals(
+            listOf(DownloadIssueCode.NOTIFICATION_FAILED),
+            outcome.issues.map(DownloadIssue::code)
+        )
+    }
+
+    @Test
+    fun unauthorizedHistoryReplacement_isFinalFailure() {
+        val historyIssue = DownloadIssue.create(
+            stage = DownloadIssueStage.HISTORY,
+            code = DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
+            severity = DownloadIssueSeverity.ERROR,
+            details = "History target source mismatch"
+        )
+
+        val outcome = composeCompletionOutcome(
+            createdFileCount = 1,
+            issues = listOf(historyIssue),
+            forceFailure = true,
+        )
+
+        assertEquals(DownloadOutcomeStatus.FINAL_FAILURE, outcome.status)
+        assertEquals(
+            listOf(DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED),
+            outcome.issues.map(DownloadIssue::code)
+        )
+    }
+
+    @Test
+    fun unauthorizedReplacementWithNotificationFailure_remainsFinalFailureWithBothDiagnostics() {
+        val historyIssue = DownloadIssue.create(
+            stage = DownloadIssueStage.HISTORY,
+            code = DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
+            severity = DownloadIssueSeverity.ERROR,
+            details = "History target type mismatch"
+        )
+        val notificationIssue = DownloadIssue.create(
+            stage = DownloadIssueStage.NOTIFICATION,
+            code = DownloadIssueCode.NOTIFICATION_FAILED,
+            severity = DownloadIssueSeverity.WARNING,
+            details = "Error notification creation failed"
+        )
+
+        val outcome = composeCompletionOutcome(
+            createdFileCount = 1,
+            issues = listOf(historyIssue, notificationIssue),
+            forceFailure = true,
+        )
+
+        assertEquals(DownloadOutcomeStatus.FINAL_FAILURE, outcome.status)
+        assertEquals(
+            setOf(
+                DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
+                DownloadIssueCode.NOTIFICATION_FAILED,
+            ),
+            outcome.issues.map(DownloadIssue::code).toSet()
+        )
     }
 }

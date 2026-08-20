@@ -68,6 +68,7 @@ import com.ireum.ytdl.util.download.DownloadIssueStage
 import com.ireum.ytdl.util.download.DownloadIssueStageTracker
 import com.ireum.ytdl.util.download.DownloadIssueText
 import com.ireum.ytdl.util.download.DownloadOutcome
+import com.ireum.ytdl.util.download.composeCompletionOutcome
 import com.ireum.ytdl.util.download.DownloadRetryMetadata
 import com.ireum.ytdl.util.download.DownloadRetryPolicy
 import com.ireum.ytdl.util.download.DownloadRetryStrategy
@@ -1354,14 +1355,9 @@ class DownloadWorker(
                             updateHardSubWorkerNotification(notificationUtil)
                         }
                         currentIssueStage = DownloadIssueStage.NOTIFICATION
-                        val terminalOutcome = historyReplacementFailureIssue?.let { issue ->
-                            DownloadOutcome.failed(issue)
-                        } ?: DownloadOutcome.completed(
-                            createdFileCount = createdOutputPaths.size,
-                            issues = completionIssues
-                        )
-                        downloadOutcome = terminalOutcome
-                        val warningBeforeNotification = terminalOutcome.issues.firstOrNull()?.let { issue ->
+                        val notificationIssue = historyReplacementFailureIssue
+                            ?: completionIssues.firstOrNull()
+                        val notificationMessage = notificationIssue?.let { issue ->
                             DownloadIssueText.formatted(resources, issue)
                         }
                         try {
@@ -1374,13 +1370,13 @@ class DownloadWorker(
                                         downloadItem.type,
                                         if (finalPaths.isEmpty()) null else finalPaths,
                                         resources,
-                                        warningBeforeNotification
+                                        notificationMessage
                                     )
                                 } else {
                                     notificationUtil.createDownloadErrored(
                                         downloadItem.id,
                                         notificationTitle,
-                                        warningBeforeNotification.orEmpty(),
+                                        notificationMessage.orEmpty(),
                                         downloadItem.logID,
                                         resources,
                                         retryable = false,
@@ -1400,6 +1396,12 @@ class DownloadWorker(
                             )
                             Log.e(TAG, "Finished notification failed after file creation id=${downloadItem.id}", notificationError)
                         }
+                        val terminalOutcome = composeCompletionOutcome(
+                            createdFileCount = createdOutputPaths.size,
+                            issues = completionIssues,
+                            forceFailure = historyReplacementFailureIssue != null,
+                        )
+                        downloadOutcome = terminalOutcome
                         val outcomeSummary = terminalOutcome.issues
                             .joinToString(separator = "\n") { issue ->
                                 DownloadIssueText.formatted(resources, issue)
