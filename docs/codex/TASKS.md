@@ -13,8 +13,8 @@ There are **33 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
-previous claim that merge restore passes backed-up primary keys directly into the
-repositories therefore does not describe the production restore path.
+previous claim that merge restore passes backed-up primary keys directly into
+the repositories therefore does not describe the production restore path.
 Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
@@ -1112,7 +1112,7 @@ Required result:
 | `PLAYER-01` | Partial | `PlaybackQueueState` centralizes queue data, but lifecycle, Media3, subtitle, PiP, URI, and navigation behavior remains concentrated in `VideoPlayerActivity`. |
 | `TERM-01` | Implemented | Terminal command planning includes a dry-run/preview path and argument policy. |
 
-## newly implemented capability
+## Newly implemented capability
 
 The current branch also stores media source-publication time through result,
 download, and history records; reads provider-specific dates; displays and
