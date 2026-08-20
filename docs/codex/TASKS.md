@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **27 active correctness defects** in this checkpoint. The previous
+There are **28 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -804,6 +804,49 @@ Required result:
   success;
 - add fault-injection regressions for format extraction, Result-row write,
   Download-row write, cancellation, and mixed-success batches.
+
+### P2 — BUG-TERMINATE-01 — Requeue active work before no-confirmation app termination
+
+**State:** Open
+
+**Failure path:** the navigation-drawer terminate action has two production
+paths. While `ask_terminate_app` is true, the confirmation branch loads both
+`Active` and `PostProcessing` rows, rewrites them to `Queued`, persists those
+changes, and only then calls `exitProcess(0)`. If the user checks the dialog's
+"do not show again" option, that preference becomes false. On every later
+terminate action the no-confirmation branch calls `finishAndRemoveTask()` and
+`exitProcess(0)` immediately without performing the same durable requeue.
+
+`DownloadWorker` normally repairs interrupted `Active`/`PostProcessing` rows in
+`cleanupStoppedWorker()`, but that repair lives in the worker's `finally` block
+and is conditioned on `isStopped`. A direct process exit is not a durable
+shutdown protocol and cannot be relied on to execute coroutine/finally cleanup.
+On a subsequent worker start, persisted `Active` rows are explicitly loaded into
+`runningYTDLInstances` and counted as already-running work before candidate
+selection. After the old process has been killed there is no corresponding live
+yt-dlp owner, so such stale `Active` rows can consume concurrency slots and keep
+the queue from restarting them; stale `PostProcessing` rows can likewise remain
+represented as live state without their previous post-processing owner.
+
+**Why this is a defect:** choosing "do not show again" changes not only the
+confirmation UI but the state-preservation semantics of app termination. A
+normal user-facing terminate action can leave durable download rows in
+`Active`/`PostProcessing` even though their process was killed, producing ghost
+activity and potentially blocking queued work after restart.
+
+Required result:
+
+- route both terminate branches through one durable shutdown operation that
+  requeues or otherwise terminalizes every app-owned `Active` and
+  `PostProcessing` row before process exit;
+- do not rely on WorkManager/coroutine cancellation callbacks after
+  `exitProcess()` for persistent-state repair;
+- on startup or worker acquisition, reconcile stale live-status rows against
+  actual worker/process ownership so a prior abrupt process death cannot strand
+  the queue;
+- add regressions for first confirmed termination, the subsequent
+  no-confirmation path, process death between UI shutdown steps, and restart
+  with stale `Active`/`PostProcessing` rows.
 
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
