@@ -12,6 +12,24 @@ enum class HistoryReplacementCleanupAction {
     PRESERVE_FAILED,
 }
 
+sealed interface HistoryReplacementCleanupResult {
+    val authorization: HistoryReplacementAuthorization
+    val cleanupCompleted: Boolean
+
+    data class Completed(
+        override val authorization: HistoryReplacementAuthorization,
+    ) : HistoryReplacementCleanupResult {
+        override val cleanupCompleted: Boolean = true
+    }
+
+    data class Failed(
+        override val authorization: HistoryReplacementAuthorization,
+        val error: Exception,
+    ) : HistoryReplacementCleanupResult {
+        override val cleanupCompleted: Boolean = false
+    }
+}
+
 /**
  * Keeps replacement persistence outcomes separate from the worker's terminal policy.
  * A live target that fails authorization is a failed commit, not a deleted target.
@@ -66,7 +84,9 @@ object HistoryReplacementOutcomePolicy {
         cleanupAction: HistoryReplacementCleanupAction?,
         authoritativeAction: HistoryReplacementTerminalAction? =
             cleanupAction?.let { cleanup -> terminalAction(cleanup) },
+        cleanupCompleted: Boolean = true,
     ): Boolean = hasCreatedOutputs &&
+        cleanupCompleted &&
         (authoritativeAction == null || authoritativeAction == HistoryReplacementTerminalAction.COMPLETE) &&
         cleanupAction != HistoryReplacementCleanupAction.PRESERVE_FAILED
 }

@@ -211,6 +211,81 @@ class HistoryReplacementOutcomePolicyTest {
         )
     }
 
+    @Test
+    fun cleanupFailureCarriesTheFirstSourceMismatchAuthorization() {
+        val result = HistoryReplacementCleanupResult.Failed(
+            authorization = HistoryReplacementAuthorization.SourceMismatch,
+            error = IllegalStateException("cleanup failed"),
+        )
+
+        assertEquals(
+            HistoryReplacementAuthorization.SourceMismatch,
+            result.authorization,
+        )
+        assertFalse(result.cleanupCompleted)
+        assertFalse(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(result.authorization),
+                cleanupCompleted = result.cleanupCompleted,
+            )
+        )
+    }
+
+    @Test
+    fun cleanupFailureCarriesTheFirstTypeMismatchAuthorization() {
+        val result = HistoryReplacementCleanupResult.Failed(
+            authorization = HistoryReplacementAuthorization.TypeMismatch,
+            error = IllegalStateException("cleanup failed"),
+        )
+
+        assertEquals(
+            HistoryReplacementAuthorization.TypeMismatch,
+            result.authorization,
+        )
+        assertFalse(result.cleanupCompleted)
+        assertFalse(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(result.authorization),
+                cleanupCompleted = result.cleanupCompleted,
+            )
+        )
+    }
+
+    @Test
+    fun authorizedCleanupFailureCannotBecomePartialSuccess() {
+        val result = HistoryReplacementCleanupResult.Failed(
+            authorization = HistoryReplacementAuthorization.Authorized(historyItem()),
+            error = IllegalStateException("cleanup failed"),
+        )
+
+        assertTrue(result.authorization is HistoryReplacementAuthorization.Authorized)
+        assertFalse(result.cleanupCompleted)
+        assertFalse(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(result.authorization),
+                cleanupCompleted = result.cleanupCompleted,
+            )
+        )
+    }
+
+    @Test
+    fun targetMissingCleanupResultRemainsTargetDeleted() {
+        val result = HistoryReplacementCleanupResult.Completed(
+            HistoryReplacementAuthorization.TargetMissing
+        )
+
+        assertEquals(
+            HistoryReplacementTerminalAction.TARGET_DELETED,
+            HistoryReplacementOutcomePolicy.terminalAction(
+                HistoryReplacementOutcomePolicy.cleanupAction(result.authorization)
+            )
+        )
+        assertTrue(result.cleanupCompleted)
+    }
+
     private fun historyItem() = HistoryItem(
         id = 1L,
         url = "https://example.com/video",

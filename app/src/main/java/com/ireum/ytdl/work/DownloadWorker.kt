@@ -33,6 +33,7 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementAuthorization
 import com.ireum.ytdl.database.repository.HistoryReplacementCleanupAction
+import com.ireum.ytdl.database.repository.HistoryReplacementCleanupResult
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcome
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcomePolicy
@@ -1493,14 +1494,16 @@ class DownloadWorker(
                         )
                         var primaryIssue = classifiedIssues.first()
                         var qualityCleanupAction: HistoryReplacementCleanupAction? = null
-                        val carriedQualityCleanupAuthorization =
-                            (it as? QualityReplacementValidationException)?.cleanupAuthorization
+                        var qualityCleanupCompleted = true
+                        val qualityValidationException = it as? QualityReplacementValidationException
+                        qualityValidationException?.candidatePaths?.let(::recordCreatedOutputs)
+                        val carriedQualityCleanupResult = qualityValidationException?.cleanupResult
 
                         val failedQualityMarker = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
                             ?.takeIf { marker -> marker.isQualityReplacement }
                         if (failedQualityMarker != null) {
                             if (historyReplacementFailureIssue == null) {
-                                val cleanupAuthorization = carriedQualityCleanupAuthorization
+                                val cleanupResult = carriedQualityCleanupResult
                                     ?: deleteRejectedQualityReplacementOutputs(
                                         historyId = failedQualityMarker.historyId,
                                         candidatePaths = createdOutputPaths,
@@ -1508,6 +1511,8 @@ class DownloadWorker(
                                         historyKeywordAssignments = historyKeywordAssignments,
                                         downloadItem = downloadItem,
                                     )
+                                qualityCleanupCompleted = cleanupResult.cleanupCompleted
+                                val cleanupAuthorization = cleanupResult.authorization
                                 val cleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(
                                     cleanupAuthorization
                                 )
@@ -1519,7 +1524,9 @@ class DownloadWorker(
                                     )
                                 when (cleanupAuthorization) {
                                     is HistoryReplacementAuthorization.Authorized ->
-                                        createdOutputPaths = emptyList()
+                                        if (cleanupResult.cleanupCompleted) {
+                                            createdOutputPaths = emptyList()
+                                        }
                                     HistoryReplacementAuthorization.TargetMissing -> {
                                         primaryIssue = HistoryReplacementDiagnostic.targetDeletedIssue()
                                     }
@@ -1573,6 +1580,7 @@ class DownloadWorker(
                                 hasCreatedOutputs = createdOutputPaths.isNotEmpty(),
                                 cleanupAction = qualityCleanupAction,
                                 authoritativeAction = historyReplacementTerminalAction,
+                                cleanupCompleted = qualityCleanupCompleted,
                             )
                         ) {
                             val warningIssue = if (targetDeleted) {
@@ -1949,7 +1957,8 @@ class DownloadWorker(
     private class YtdlpQualityRejectedException(message: String) : IOException(message)
 
     private class QualityReplacementValidationException(
-        val cleanupAuthorization: HistoryReplacementAuthorization,
+        val cleanupResult: HistoryReplacementCleanupResult,
+        val candidatePaths: List<String>,
         message: String,
     ) : IOException(message)
 
@@ -4623,7 +4632,7 @@ class DownloadWorker(
             return
         }
 
-        val cleanupAuthorization = deleteRejectedQualityReplacementOutputs(
+        val cleanupResult = deleteRejectedQualityReplacementOutputs(
             historyId = marker.historyId,
             candidatePaths = finalPaths,
             historyDao = historyDao,
@@ -4631,7 +4640,8 @@ class DownloadWorker(
             downloadItem = downloadItem,
         )
         throw QualityReplacementValidationException(
-            cleanupAuthorization = cleanupAuthorization,
+            cleanupResult = cleanupResult,
+            candidatePaths = finalPaths,
             message = "Quality replacement was not committed because the moved output failed validation " +
                 "(expected=${expectedHeight}p, actual=${quality.resolutionHeight}p, state=${quality.state})"
         )
@@ -4643,7 +4653,7 @@ class DownloadWorker(
         historyDao: com.ireum.ytdl.database.dao.HistoryDao,
         historyKeywordAssignments: HistoryKeywordAssignmentRepository,
         downloadItem: DownloadItem,
-    ): HistoryReplacementAuthorization {
+    ): HistoryReplacementCleanupResult {
         val authorization = historyKeywordAssignments.authorizeHistoryReplacementBlocking(
             historyId = historyId,
             expectedSourceUrl = downloadItem.url,
@@ -4651,20 +4661,31 @@ class DownloadWorker(
         )
         val previous = when (authorization) {
             is HistoryReplacementAuthorization.Authorized -> authorization.target
-            else -> return authorization
+            else -> return HistoryReplacementCleanupResult.Completed(authorization)
         }
-        val rejectedPaths = HistoryReplacementFilePolicy.rejectedPathsToDelete(
-            previousPaths = previous.downloadPath,
-            candidatePaths = candidatePaths
-        )
-        deleteValidatedReplacementPaths(
-            historyId = historyId,
-            paths = rejectedPaths,
-            historyDao = historyDao,
-            logLabel = "Rejected quality replacement cleanup",
-            trustedHistoryItem = previous,
-        )
-        return authorization
+        return try {
+            val rejectedPaths = HistoryReplacementFilePolicy.rejectedPathsToDelete(
+                previousPaths = previous.downloadPath,
+                candidatePaths = candidatePaths
+            )
+            deleteValidatedReplacementPaths(
+                historyId = historyId,
+                paths = rejectedPaths,
+                historyDao = historyDao,
+                logLabel = "Rejected quality replacement cleanup",
+                trustedHistoryItem = previous,
+            )
+            HistoryReplacementCleanupResult.Completed(authorization)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (cleanupError: Exception) {
+            Log.w(
+                TAG,
+                "Rejected quality replacement cleanup failed id=${downloadItem.id}",
+                cleanupError
+            )
+            HistoryReplacementCleanupResult.Failed(authorization, cleanupError)
+        }
     }
 
     private fun deleteValidatedReplacementPaths(
