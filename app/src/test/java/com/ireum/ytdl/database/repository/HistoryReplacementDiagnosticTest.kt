@@ -58,6 +58,14 @@ class HistoryReplacementDiagnosticTest {
         assertNull(
             HistoryReplacementDiagnostic.mismatchKind(HistoryReplacementOutcome.TargetMissing)
         )
+        assertEquals(
+            HistoryReplacementMismatchKind.SOURCE,
+            HistoryReplacementDiagnostic.mismatchKind(HistoryReplacementAuthorization.SourceMismatch)
+        )
+        assertEquals(
+            HistoryReplacementMismatchKind.TYPE,
+            HistoryReplacementDiagnostic.mismatchKind(HistoryReplacementAuthorization.TypeMismatch)
+        )
     }
 
     @Test

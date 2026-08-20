@@ -21,6 +21,14 @@ object HistoryReplacementDiagnostic {
             HistoryReplacementOutcome.TargetMissing -> null
         }
 
+    fun mismatchKind(authorization: HistoryReplacementAuthorization): HistoryReplacementMismatchKind? =
+        when (authorization) {
+            HistoryReplacementAuthorization.SourceMismatch -> HistoryReplacementMismatchKind.SOURCE
+            HistoryReplacementAuthorization.TypeMismatch -> HistoryReplacementMismatchKind.TYPE
+            is HistoryReplacementAuthorization.Authorized,
+            HistoryReplacementAuthorization.TargetMissing -> null
+        }
+
     fun issueCode(kind: HistoryReplacementMismatchKind): DownloadIssueCode = when (kind) {
         HistoryReplacementMismatchKind.SOURCE -> DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH
         HistoryReplacementMismatchKind.TYPE -> DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH

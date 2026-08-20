@@ -4,6 +4,8 @@ import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HistoryReplacementOutcomePolicyTest {
@@ -43,6 +45,73 @@ class HistoryReplacementOutcomePolicyTest {
             HistoryReplacementTerminalAction.PRESERVE_FAILED,
             HistoryReplacementOutcomePolicy.terminalAction(
                 HistoryReplacementOutcome.TypeMismatch
+            )
+        )
+    }
+
+    @Test
+    fun qualityCleanupAuthorizationKeepsMismatchFailureDistinctFromTargetMissing() {
+        assertEquals(
+            HistoryReplacementCleanupAction.AUTHORIZED_CLEANUP,
+            HistoryReplacementOutcomePolicy.cleanupAction(
+                HistoryReplacementAuthorization.Authorized(historyItem())
+            )
+        )
+        assertEquals(
+            HistoryReplacementCleanupAction.TARGET_MISSING,
+            HistoryReplacementOutcomePolicy.cleanupAction(
+                HistoryReplacementAuthorization.TargetMissing
+            )
+        )
+        assertEquals(
+            HistoryReplacementCleanupAction.PRESERVE_FAILED,
+            HistoryReplacementOutcomePolicy.cleanupAction(
+                HistoryReplacementAuthorization.SourceMismatch
+            )
+        )
+        assertEquals(
+            HistoryReplacementCleanupAction.PRESERVE_FAILED,
+            HistoryReplacementOutcomePolicy.cleanupAction(
+                HistoryReplacementAuthorization.TypeMismatch
+            )
+        )
+    }
+
+    @Test
+    fun refusedQualityCleanupCannotBecomePartialSuccess() {
+        listOf(
+            HistoryReplacementAuthorization.SourceMismatch,
+            HistoryReplacementAuthorization.TypeMismatch,
+        ).forEach { authorization ->
+            assertFalse(
+                HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                    hasCreatedOutputs = true,
+                    cleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(authorization),
+                )
+            )
+        }
+        assertTrue(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = HistoryReplacementCleanupAction.AUTHORIZED_CLEANUP,
+            )
+        )
+        assertTrue(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = HistoryReplacementCleanupAction.TARGET_MISSING,
+            )
+        )
+        assertTrue(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = null,
+            )
+        )
+        assertFalse(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = false,
+                cleanupAction = null,
             )
         )
     }
