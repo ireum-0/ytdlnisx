@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **26 active correctness defects** in this checkpoint. The previous
+There are **27 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -768,6 +768,42 @@ Required result:
   notification/row cleanup after both direct-destination and cache-move output,
   proving committed output remains a success and does not invite duplicate
   retry.
+
+### P2 — BUG-FORMAT-01 — Do not commit or report partial bulk format refresh as success
+
+**State:** Open
+
+**Failure path:** the production bulk-format flow enters through
+`DownloadViewModel.continueUpdatingFormatsOnBackground()`, which moves the
+current `Processing` rows to `Saved` and enqueues
+`UpdateMultipleDownloadsFormatsWorker`. For each requested row whose
+`allFormats` is empty, the worker wraps format extraction, format selection,
+`ResultItem` persistence, and `DownloadItem` persistence in one `runCatching`
+but ignores the resulting `Result`. It writes the cached Result row first and
+the Download row second. An extractor or database exception is therefore
+silently swallowed; if the Result write succeeds and the Download write fails,
+the two persistent representations can also diverge. The worker still increments
+its completed count, continues the batch, returns `Result.success()`, and its
+`finally` path calls `showFormatsUpdatedNotification()` for the requested IDs.
+
+**Why this is a defect:** a failed or partially persisted format refresh is
+collapsed into the same terminal state and success notification as a completed
+refresh. Users can be told that formats were updated while the Saved download
+still has missing/stale format data, and a mid-persistence failure can leave the
+Result cache disagreeing with the Download row.
+
+Required result:
+
+- preserve a typed per-item success/failure outcome instead of discarding the
+  `runCatching` result, and rethrow coroutine cancellation;
+- make Result/Download format persistence atomic or define a compensating
+  consistency contract so a failed second write cannot leave a success-labelled
+  split state;
+- represent mixed/all-failed batches explicitly and make WorkManager result and
+  user notification reflect those failures rather than always announcing
+  success;
+- add fault-injection regressions for format extraction, Result-row write,
+  Download-row write, cancellation, and mixed-success batches.
 
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
