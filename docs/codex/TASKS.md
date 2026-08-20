@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **28 active correctness defects** in this checkpoint. The previous
+There are **29 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -847,6 +847,51 @@ Required result:
 - add regressions for first confirmed termination, the subsequent
   no-confirmation path, process death between UI shutdown steps, and restart
   with stale `Active`/`PostProcessing` rows.
+
+### P2 — BUG-SCHEDULER-01 — Keep download scheduling recurrent and correct across midnight
+
+**State:** Open
+
+**Failure path:** enabling the download scheduler or adding/requeuing work outside
+the allowed window calls `AlarmScheduler.schedule()`. That method uses
+`AlarmManager.setExactAndAllowWhileIdle()` to arm one start alarm and one end
+alarm. Both are one-shot exact alarms. `ScheduleAlarmReceiver` only enqueues a
+`DownloadWorker`, and `CancelScheduleAlarmReceiver` only enqueues
+`CancelScheduledDownloadWorker`; neither receiver re-arms the next day's start
+or end alarm. If queued work survives the first end boundary, the cancel worker
+returns active rows to `Queued`, but no next-day start alarm is guaranteed until
+another user/queue action happens to call `schedule()` again.
+
+The same scheduler also misclassifies overnight windows. For a window such as
+23:00→05:00, `isDuringTheScheduledTime()` converts the end hour to `29` but
+leaves a post-midnight `currentHour` such as `1` unchanged, so `1 in 23..29` is
+false. `DownloadWorker` uses that result to cancel itself when the scheduler is
+enabled and there is no individually timed item or priority work;
+`DownloadViewModel` and Observe Source requeue paths likewise treat the same
+post-midnight period as outside the window and schedule an alarm instead of
+starting eligible queued work.
+
+**Why this is a defect:** a persistent scheduler setting does not reliably
+represent a persistent daily execution window. Downloads can stop after the
+first scheduled cycle and remain queued on later days, while valid work during
+the post-midnight half of an overnight window can be incorrectly suppressed.
+The failure is production-reachable through the normal scheduler setting and
+queue/Observe Source paths without malformed state or external corruption.
+
+Required result:
+
+- represent daily time-window membership in a form that correctly handles both
+  same-day and overnight intervals, including exact start/end boundary rules;
+- re-arm the next start/end pair after each scheduled transition, or use another
+  persistent scheduling contract that survives repeated daily cycles without
+  requiring a later queue/settings mutation;
+- ensure settings changes replace/cancel the prior logical schedule rather than
+  leaving stale boundaries, and define/recover the schedule after process/device
+  restart where platform alarms are no longer present;
+- make `DownloadWorker`, queue insertion/requeue, and Observe Source dispatch use
+  the same authoritative window decision;
+- add same-day and 23:00→05:00 boundary tests plus multi-day, no-new-user-action,
+  restart/re-arm, and queued-work-survives-end regressions.
 
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
