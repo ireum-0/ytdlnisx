@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **31 active correctness defects** in this checkpoint. The previous
+There are **32 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -978,6 +978,57 @@ Required result:
   set from a fetch that produced no item at all;
 - add ignored-error empty-result, thrown-failure, authoritative-no-subtitle,
   requested-subtitle, retry-exhaustion, and subsequent-rescan regressions.
+
+### P2 — BUG-CANCEL-01 — Persist cancel/requeue intent before terminating live work
+
+**State:** Open
+
+**Failure path:** the per-download notification Cancel action is wired directly
+to `CancelDownloadNotificationReceiver`. The receiver attempts
+`DownloadRepository.cancelByUser(id)` inside an inner `runCatching`, discards
+that failure, and then unconditionally destroys the yt-dlp processes, cancels
+post-processing, and removes the download notification. `cancelByUser()` is the
+authoritative Room transaction that changes the Download row to `Cancelled` and
+terminalizes any linked low-quality ledger children. If that transaction throws,
+the process is still killed while the durable row can remain `Active` or
+`PostProcessing` and the ledger can remain nonterminal.
+
+The scheduler end-boundary path has the inverse ordering problem in
+`CancelScheduledDownloadWorker`: it cancels download work and destroys each
+running yt-dlp process before rewriting that row to `Queued`. A throwing DAO
+update after process destruction can therefore leave the dead job persisted as
+`Active`. `DownloadWorker` does not make these paths safe after the fact: its
+canceled-exception branch treats `YoutubeDL.CanceledException` itself as a
+canceled outcome even when the latest DB status is still live, and stopped-worker
+requeue cleanup is best-effort rather than a durable prerequisite for either
+external cancellation path.
+
+**Why this is a defect:** both production cancellation entry points can cross the
+irreversible process/post-processing termination boundary before the intended
+terminal/requeue state is durably established. A transient Room failure can
+therefore leave ghost `Active`/`PostProcessing` rows with no live owner, stale
+low-quality operation state, or queue slots that appear occupied after restart.
+The user-visible notification path is especially problematic because the
+persistence failure is explicitly swallowed and the action still appears to
+have completed.
+
+Required result:
+
+- make user cancellation atomically persist the Download terminal state and
+  linked-ledger transition before any yt-dlp/post-processing termination, and do
+  not continue with destructive cancellation if that authoritative transaction
+  fails;
+- make scheduler stop persist or reserve an authoritative `Queued` transition
+  before terminating the corresponding process, under an ownership protocol
+  that prevents the live worker from committing conflicting state;
+- preserve typed persistence failure instead of swallowing it, and keep the
+  notification/action retryable when durable cancellation could not commit;
+- make worker canceled-exception handling reconcile against authoritative DB
+  state rather than treating process cancellation alone as proof that the
+  requested persistent transition succeeded;
+- add fault-injection regressions for `cancelByUser()`, linked-ledger update, and
+  scheduler requeue writes, plus restart tests proving no killed job remains as
+  ghost `Active`/`PostProcessing` work.
 
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
