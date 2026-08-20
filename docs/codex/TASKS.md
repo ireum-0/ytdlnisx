@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **33 active correctness defects** in this checkpoint. The previous
+There are **34 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -1029,6 +1029,44 @@ Required result:
 - add fault-injection regressions for `cancelByUser()`, linked-ledger update, and
   scheduler requeue writes, plus restart tests proving no killed job remains as
   ghost `Active`/`PostProcessing` work.
+
+### P2 — BUG-UPDATER-01 — Preserve custom yt-dlp update failure instead of reporting success
+
+**State:** Open
+
+**Failure path:** the production Updating settings screen lets the user create
+and select an arbitrary custom yt-dlp source string. Selecting that source stores
+it in `ytdlp_source` and immediately calls `UpdateUtil.updateYoutubeDL(source)`;
+startup auto-update later calls the same method with the stored source. For any
+source other than `stable`, `nightly`, or `master`, `updateYoutubeDL()` executes
+yt-dlp with `--update-to <source>@latest` and inspects the final nonblank output
+line. If that line contains `ERROR`, the function constructs an
+`YTDLPUpdateResponse(ERROR, out)` but discards that value because there is no
+`return` or `else`. Control then reaches a second independent `if`: unless the
+same line also contains `yt-dlp is up to date`, its `else` returns
+`YTDLPUpdateResponse(DONE, out)`. The settings UI therefore takes the success
+branch and refreshes the displayed version, while startup auto-update can show a
+success Snackbar for the same failed update.
+
+**Why this is a defect:** an authoritative updater failure is observed and then
+lost by control-flow fallthrough, so a real production update failure is
+reinterpreted as success. The user can reasonably believe a requested runtime
+update was applied when the installed yt-dlp binary was not updated, obscuring
+the failure and any remediation needed for subsequent downloads.
+
+Required result:
+
+- make updater output classification mutually exclusive and return the typed
+  `ERROR` result immediately when authoritative error output is detected;
+- prefer the updater process/exit-status contract over fragile final-line text
+  matching where the library exposes it, while preserving explicit
+  `ALREADY_UP_TO_DATE` and `DONE` states;
+- ensure manual settings updates, source changes, startup auto-update, and any
+  WorkManager updater path propagate the same typed failure semantics and never
+  display success for a failed update;
+- add regressions for custom-source error output, already-up-to-date output,
+  successful output, thrown execution failure, and an error line containing
+  unrelated success-like text.
 
 ### P3 — BUG-LOCALADD-02 — Persist local-add session input before durable worker enqueue
 
