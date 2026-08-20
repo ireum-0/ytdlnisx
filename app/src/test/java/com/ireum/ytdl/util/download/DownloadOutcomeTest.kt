@@ -1,5 +1,7 @@
 package com.ireum.ytdl.util.download
 
+import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
+import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -78,12 +80,7 @@ class DownloadOutcomeTest {
 
     @Test
     fun unauthorizedHistoryReplacement_isFinalFailure() {
-        val historyIssue = DownloadIssue.create(
-            stage = DownloadIssueStage.HISTORY,
-            code = DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
-            severity = DownloadIssueSeverity.ERROR,
-            details = "History target source mismatch"
-        )
+        val historyIssue = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
 
         val outcome = composeCompletionOutcome(
             createdFileCount = 1,
@@ -93,19 +90,14 @@ class DownloadOutcomeTest {
 
         assertEquals(DownloadOutcomeStatus.FINAL_FAILURE, outcome.status)
         assertEquals(
-            listOf(DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED),
+            listOf(DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH),
             outcome.issues.map(DownloadIssue::code)
         )
     }
 
     @Test
     fun unauthorizedReplacementWithNotificationFailure_remainsFinalFailureWithBothDiagnostics() {
-        val historyIssue = DownloadIssue.create(
-            stage = DownloadIssueStage.HISTORY,
-            code = DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
-            severity = DownloadIssueSeverity.ERROR,
-            details = "History target type mismatch"
-        )
+        val historyIssue = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.TYPE)
         val notificationIssue = DownloadIssue.create(
             stage = DownloadIssueStage.NOTIFICATION,
             code = DownloadIssueCode.NOTIFICATION_FAILED,
@@ -122,7 +114,7 @@ class DownloadOutcomeTest {
         assertEquals(DownloadOutcomeStatus.FINAL_FAILURE, outcome.status)
         assertEquals(
             setOf(
-                DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
+                DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH,
                 DownloadIssueCode.NOTIFICATION_FAILED,
             ),
             outcome.issues.map(DownloadIssue::code).toSet()

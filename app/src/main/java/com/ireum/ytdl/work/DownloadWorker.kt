@@ -35,6 +35,8 @@ import com.ireum.ytdl.database.repository.HistoryReplacementAuthorization
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcome
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcomePolicy
 import com.ireum.ytdl.database.repository.HistoryReplacementTerminalAction
+import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
+import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.LogRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
@@ -1244,14 +1246,8 @@ class DownloadWorker(
                                             }
                                             HistoryReplacementTerminalAction.PRESERVE_FAILED -> {
                                                 throw HistoryReplacementNotAuthorizedException(
-                                                    details = when (replacement) {
-                                                        HistoryReplacementOutcome.SourceMismatch ->
-                                                            "History target source no longer matches the replacement download"
-                                                        HistoryReplacementOutcome.TypeMismatch ->
-                                                            "History target media type no longer matches the replacement download"
-                                                        else ->
-                                                            "History replacement target is not authorized"
-                                                    }
+                                                    mismatch = HistoryReplacementDiagnostic.mismatchKind(replacement)
+                                                        ?: error("Missing mismatch kind for unauthorized replacement")
                                                 )
                                             }
                                         }
@@ -1298,18 +1294,7 @@ class DownloadWorker(
                             val historyIssue = if (
                                 historyError is HistoryReplacementNotAuthorizedException
                             ) {
-                                DownloadIssue.create(
-                                    stage = DownloadIssueStage.HISTORY,
-                                    code = DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
-                                    severity = DownloadIssueSeverity.ERROR,
-                                    retryable = false,
-                                    suggestedActions = setOf(
-                                        DownloadSuggestedAction.VIEW_LOG,
-                                        DownloadSuggestedAction.COPY_SUMMARY
-                                    ),
-                                    details = historyError.details,
-                                    source = DownloadIssueSource.EXPLICIT_STATE
-                                ).also { issue ->
+                                HistoryReplacementDiagnostic.issue(historyError.mismatch).also { issue ->
                                     historyReplacementFailureIssue = issue
                                 }
                             } else {
@@ -1901,8 +1886,8 @@ class DownloadWorker(
     private class YtdlpQualityRejectedException(message: String) : IOException(message)
 
     private class HistoryReplacementNotAuthorizedException(
-        val details: String
-    ) : IOException(details)
+        val mismatch: HistoryReplacementMismatchKind
+    ) : IOException(HistoryReplacementDiagnostic.details(mismatch))
 
     private sealed interface CompletedYtdlpQualityOutcome {
         data class Accept(val result: YtdlpAttemptsResult) : CompletedYtdlpQualityOutcome
