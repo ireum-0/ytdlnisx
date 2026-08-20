@@ -78,6 +78,7 @@ import com.ireum.ytdl.util.download.DownloadRetryStrategy
 import com.ireum.ytdl.util.download.DownloadSuggestedAction
 import com.ireum.ytdl.util.download.MembershipAccessDetector
 import com.ireum.ytdl.util.download.MembershipAccessPolicy
+import com.ireum.ytdl.util.download.runNonAuthoritativeNotificationSideEffect
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeMediaAccessPolicy
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeMediaAccessProfile
@@ -1458,8 +1459,8 @@ class DownloadWorker(
                             downloadOutcome = DownloadOutcome.canceled()
                             throw it
                         }
-                        withContext(Dispatchers.Main){
-                            notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
+                        withContext(Dispatchers.Main) {
+                            cancelDownloadNotificationSafely(notificationUtil, downloadItem.id)
                         }
                         val latestStatus = runCatching { dao.checkStatus(downloadItem.id) }.getOrNull()
                         if (
@@ -1706,7 +1707,7 @@ class DownloadWorker(
                             "${context.getString(R.string.failed_download)} id=${downloadItem.id} type=${it.javaClass.simpleName}",
                             it
                         )
-                        notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
+                        cancelDownloadNotificationSafely(notificationUtil, downloadItem.id)
 
                         val membershipDecision = MembershipAccessPolicy.decide(
                             observeSourceId = downloadItem.observeSourceId,
@@ -3084,6 +3085,22 @@ class DownloadWorker(
         } catch (notificationError: Exception) {
             Log.w(TAG, "Failed to update hard-sub worker notification", notificationError)
         }
+    }
+
+    private fun cancelDownloadNotificationSafely(
+        notificationUtil: NotificationUtil,
+        downloadId: Long,
+    ) {
+        runNonAuthoritativeNotificationSideEffect(
+            action = { notificationUtil.cancelDownloadNotification(downloadId.toInt()) },
+            onFailure = { notificationError ->
+                Log.w(
+                    TAG,
+                    "Failed to cancel download notification id=$downloadId",
+                    notificationError
+                )
+            }
+        )
     }
 
     private fun validateSubtitleFilesForUse(
