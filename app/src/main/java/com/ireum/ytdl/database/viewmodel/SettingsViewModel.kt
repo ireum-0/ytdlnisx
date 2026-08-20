@@ -38,8 +38,11 @@ import com.ireum.ytdl.database.repository.SearchHistoryRepository
 import com.ireum.ytdl.util.BackupSettingsUtil
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
+import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.util.download.DownloadIssueStage
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
@@ -539,22 +542,25 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             fun remapRestoredDownload(item: com.ireum.ytdl.database.models.DownloadItem) :
                 com.ireum.ytdl.database.models.DownloadItem {
                 val oldSourceId = item.observeSourceId
-                if (oldSourceId <= 0L) return item.copy(id = 0L)
-
-                val restoredSourceId = restoredObserveSourceIdMap[oldSourceId]
-                    ?: if (data.observeSources == null) {
-                        if (liveObserveSourceIdCache.containsKey(oldSourceId)) {
-                            liveObserveSourceIdCache[oldSourceId]
-                        } else {
-                            observeSourcesRepository.getByIDOrNull(oldSourceId)?.id.also {
-                                liveObserveSourceIdCache[oldSourceId] = it
+                val restoredSourceId = if (oldSourceId <= 0L) {
+                    0L
+                } else {
+                    restoredObserveSourceIdMap[oldSourceId]
+                        ?: if (data.observeSources == null) {
+                            if (liveObserveSourceIdCache.containsKey(oldSourceId)) {
+                                liveObserveSourceIdCache[oldSourceId]
+                            } else {
+                                observeSourcesRepository.getByIDOrNull(oldSourceId)?.id.also {
+                                    liveObserveSourceIdCache[oldSourceId] = it
+                                }
                             }
+                        } else {
+                            null
                         }
-                    } else {
-                        null
-                    }
+                }
                 val restoredStatus =
                     if (
+                        oldSourceId > 0L &&
                         restoredSourceId == null &&
                         item.status == DownloadRepository.Status.WaitingForMembership.toString()
                     ) {
@@ -562,11 +568,26 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     } else {
                         item.status
                     }
-                return item.copy(
+                val remappedItem = item.copy(
                     id = 0L,
                     observeSourceId = restoredSourceId ?: 0L,
                     status = restoredStatus
                 )
+                return when (val marker = HistoryRedownloadMarker.remap(
+                    remappedItem.playlistURL,
+                    importedHistoryIdMap
+                )) {
+                    com.ireum.ytdl.util.RestoreRemapResult.NotMarker -> remappedItem
+                    is com.ireum.ytdl.util.RestoreRemapResult.Mapped -> remappedItem.copy(
+                        playlistURL = marker.encodedMarker
+                    )
+                    com.ireum.ytdl.util.RestoreRemapResult.Unmappable -> remappedItem.copy(
+                        playlistURL = "",
+                        status = DownloadRepository.Status.Error.toString(),
+                        lastIssueCode = DownloadIssueCode.HISTORY_TARGET_DELETED.name,
+                        lastIssueStage = DownloadIssueStage.HISTORY.name
+                    )
+                }
             }
 
             data.queued?.let { queued ->

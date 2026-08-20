@@ -30,7 +30,9 @@ import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.LogItem
 import com.ireum.ytdl.database.repository.DownloadRepository
-import com.ireum.ytdl.database.repository.HistoryReplacementResult
+import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementAuthorization
+import com.ireum.ytdl.database.repository.HistoryReplacementOutcome
 import com.ireum.ytdl.database.repository.LogRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
@@ -218,6 +220,7 @@ class DownloadWorker(
         val historyDao = dbManager.historyDao
         val observeSourcesDao = dbManager.observeSourcesDao
         val commandTemplateDao = dbManager.commandTemplateDao
+        val historyKeywordAssignments = HistoryKeywordAssignmentRepository(dbManager)
         val logRepo = LogRepository(dbManager.logDao)
         val resultRepo = ResultRepository(dbManager.resultDao, commandTemplateDao, context)
         val ytdlpUtil = YTDLPUtil(context, commandTemplateDao)
@@ -532,7 +535,10 @@ class DownloadWorker(
                                 ext !in setOf("ass", "srv3", "json3", "ttml", "vtt", "srt")
                             }
                             if (!preMoveHasMedia) {
-                                val recoveredMedia = resolvePreviousHistoryMediaPaths(downloadItem, historyDao)
+                                val recoveredMedia = resolvePreviousHistoryMediaPaths(
+                                    downloadItem = downloadItem,
+                                    historyKeywordAssignments = historyKeywordAssignments
+                                )
                                 if (recoveredMedia.isNotEmpty()) {
                                     preMoveBurnPaths.addAll(recoveredMedia)
                                     Log.w(
@@ -836,7 +842,8 @@ class DownloadWorker(
                         validateMovedQualityReplacement(
                             downloadItem = downloadItem,
                             finalPaths = finalPaths,
-                            historyDao = historyDao
+                            historyDao = historyDao,
+                            historyKeywordAssignments = historyKeywordAssignments
                         )
                         recordCreatedOutputs(finalPaths)
 
@@ -889,7 +896,10 @@ class DownloadWorker(
                                 }
                             }
                             if (postMoveBurnPaths.isEmpty()) {
-                                val recoveredHistoryMedia = resolvePreviousHistoryMediaPaths(downloadItem, historyDao)
+                                val recoveredHistoryMedia = resolvePreviousHistoryMediaPaths(
+                                    downloadItem = downloadItem,
+                                    historyKeywordAssignments = historyKeywordAssignments
+                                )
                                     .filter { path ->
                                         val file = File(path)
                                         file.exists() && file.isFile
@@ -1128,11 +1138,7 @@ class DownloadWorker(
                                         ?.historyId ?: 0L
                                     val isHistoryRedownload = replacedHistoryId > 0L
 
-                                    val previousHistoryItem = if (replacedHistoryId > 0L) {
-                                        runCatching { historyDao.getItem(replacedHistoryId) }.getOrNull()
-                                    } else null
                                     val completedHardSub = hardSubBurned
-                                    val restoredPlaybackPositionMs = if (completedHardSub) 0 else (previousHistoryItem?.playbackPositionMs ?: 0)
                                     val observeKeyword = if (downloadItem.observeSourceId > 0L) {
                                         runCatching { observeSourcesDao.getByID(downloadItem.observeSourceId).autoAddKeyword.trim() }.getOrDefault("")
                                     } else {
@@ -1150,38 +1156,71 @@ class DownloadWorker(
                                         url = downloadItem.url,
                                         title = downloadItem.title,
                                         author = downloadItem.author,
-                                        artist = previousHistoryItem?.artist ?: "",
+                                        artist = "",
                                         duration = downloadItem.duration,
                                         durationSeconds = downloadItem.duration.toDurationSeconds(),
                                         thumb = preferredThumbPath,
                                         type = downloadItem.type,
                                         time = unixTime,
-                                        lastWatched = previousHistoryItem?.lastWatched ?: 0,
+                                        lastWatched = 0,
                                         downloadPath = finalPaths,
                                         website = downloadItem.website,
                                         format = downloadItem.format,
                                         filesize = downloadItem.format.filesize,
                                         downloadId = downloadItem.id,
                                         command = ytdlpPhase.state.initialCommand,
-                                        playbackPositionMs = restoredPlaybackPositionMs,
-                                        localTreeUri = if (isHistoryRedownload) "" else (previousHistoryItem?.localTreeUri ?: ""),
-                                        localTreePath = if (isHistoryRedownload) "" else (previousHistoryItem?.localTreePath ?: ""),
-                                        keywords = previousHistoryItem?.keywords.orEmpty(),
-                                        customThumb = previousHistoryItem?.customThumb ?: "",
-                                        hardSubScanRemoved = if (completedHardSub) true else previousHistoryItem?.hardSubScanRemoved ?: false,
-                                        hardSubDone = if (completedHardSub) true else previousHistoryItem?.hardSubDone ?: false,
+                                        playbackPositionMs = 0,
+                                        localTreeUri = "",
+                                        localTreePath = "",
+                                        keywords = "",
+                                        customThumb = "",
+                                        hardSubScanRemoved = completedHardSub,
+                                        hardSubDone = completedHardSub,
                                         mediaPublishedAt = downloadItem.mediaPublishedAt.takeIf(MediaPublishedDate::isPresent)
-                                            ?: previousHistoryItem?.mediaPublishedAt
                                             ?: 0L
                                     )
-                                    val keywordAssignments =
-                                        com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(dbManager)
+                                    val replacementOutcome = if (replacedHistoryId > 0L) {
+                                        historyKeywordAssignments
+                                            .replaceHistoryPreservingAssignmentsAuthorizedBlocking(
+                                                historyId = replacedHistoryId,
+                                                expectedSourceUrl = downloadItem.url,
+                                                expectedType = downloadItem.type,
+                                            ) { previous ->
+                                                historyItem.copy(
+                                                    id = previous.id,
+                                                    artist = previous.artist,
+                                                    lastWatched = previous.lastWatched,
+                                                    playbackPositionMs = if (completedHardSub) {
+                                                        0L
+                                                    } else {
+                                                        previous.playbackPositionMs
+                                                    },
+                                                    localTreeUri = "",
+                                                    localTreePath = "",
+                                                    keywords = previous.keywords,
+                                                    customThumb = previous.customThumb,
+                                                    hardSubScanRemoved = if (completedHardSub) {
+                                                        true
+                                                    } else {
+                                                        previous.hardSubScanRemoved
+                                                    },
+                                                    hardSubDone = if (completedHardSub) {
+                                                        true
+                                                    } else {
+                                                        previous.hardSubDone
+                                                    },
+                                                    mediaPublishedAt = downloadItem.mediaPublishedAt
+                                                        .takeIf(MediaPublishedDate::isPresent)
+                                                        ?: previous.mediaPublishedAt
+                                                )
+                                            }
+                                    } else {
+                                        null
+                                    }
                                     val persistedHistoryId = if (replacedHistoryId > 0L) {
-                                        when (
-                                            keywordAssignments.replaceHistoryPreservingAssignments(historyItem)
-                                        ) {
-                                            HistoryReplacementResult.UPDATED -> replacedHistoryId
-                                            HistoryReplacementResult.TARGET_MISSING -> {
+                                        when (val replacement = replacementOutcome!!) {
+                                            is HistoryReplacementOutcome.Updated -> replacement.previousTarget.id
+                                            HistoryReplacementOutcome.TargetMissing -> {
                                                 historyTargetDeleted = true
                                                 completionIssues += DownloadIssue.create(
                                                     stage = DownloadIssueStage.HISTORY,
@@ -1196,9 +1235,31 @@ class DownloadWorker(
                                                 )
                                                 null
                                             }
+                                            HistoryReplacementOutcome.SourceMismatch,
+                                            HistoryReplacementOutcome.TypeMismatch -> {
+                                                historyTargetDeleted = true
+                                                completionIssues += DownloadIssue.create(
+                                                    stage = DownloadIssueStage.HISTORY,
+                                                    code = DownloadIssueCode.HISTORY_TARGET_DELETED,
+                                                    severity = DownloadIssueSeverity.WARNING,
+                                                    suggestedActions = setOf(
+                                                        DownloadSuggestedAction.VIEW_LOG,
+                                                        DownloadSuggestedAction.COPY_SUMMARY,
+                                                    ),
+                                                    details = when (replacement) {
+                                                        HistoryReplacementOutcome.SourceMismatch ->
+                                                            "History target source no longer matches the download"
+                                                        HistoryReplacementOutcome.TypeMismatch ->
+                                                            "History target media type no longer matches the download"
+                                                        else -> "History replacement target is not authorized"
+                                                    },
+                                                    source = DownloadIssueSource.EXPLICIT_STATE,
+                                                )
+                                                null
+                                            }
                                         }
                                     } else {
-                                        keywordAssignments.insertHistory(historyItem)
+                                        historyKeywordAssignments.insertHistory(historyItem)
                                     }
                                     persistedHistoryId?.let { historyId ->
                                         com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(dbManager)
@@ -1210,7 +1271,12 @@ class DownloadWorker(
                                             )
                                     }
                                     if (replacedHistoryId > 0L && persistedHistoryId != null) {
-                                        deleteReplacedHistoryMedia(previousHistoryItem, finalPaths)
+                                        deleteReplacedHistoryMedia(
+                                            previousHistoryItem =
+                                                (replacementOutcome as? HistoryReplacementOutcome.Updated)
+                                                    ?.previousTarget,
+                                            finalPaths = finalPaths
+                                        )
                                     } else if (
                                         replacedHistoryId == 0L &&
                                         existingDuplicateHistoryItem != null &&
@@ -1410,12 +1476,16 @@ class DownloadWorker(
                         val failedQualityMarker = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
                             ?.takeIf { marker -> marker.isQualityReplacement }
                         if (failedQualityMarker != null) {
-                            deleteRejectedQualityReplacementOutputs(
+                            val qualityCleanupAuthorized = deleteRejectedQualityReplacementOutputs(
                                 historyId = failedQualityMarker.historyId,
                                 candidatePaths = createdOutputPaths,
-                                historyDao = historyDao
+                                historyDao = historyDao,
+                                historyKeywordAssignments = historyKeywordAssignments,
+                                downloadItem = downloadItem,
                             )
-                            createdOutputPaths = emptyList()
+                            if (qualityCleanupAuthorized) {
+                                createdOutputPaths = emptyList()
+                            }
                             runCatching {
                                 resetYtdlpTempDirectory(
                                     rawTempDirectory = rawTempFileDir,
@@ -4377,11 +4447,21 @@ class DownloadWorker(
 
     private fun resolvePreviousHistoryMediaPaths(
         downloadItem: DownloadItem,
-        historyDao: com.ireum.ytdl.database.dao.HistoryDao
+        historyKeywordAssignments: HistoryKeywordAssignmentRepository,
     ): List<String> {
         val historyId = HistoryRedownloadMarker.parse(downloadItem.playlistURL)?.historyId
             ?: return emptyList()
-        val previous = runCatching { historyDao.getItem(historyId) }.getOrNull() ?: return emptyList()
+        val previous = when (
+            val authorization = historyKeywordAssignments.authorizeHistoryReplacementBlocking(
+                historyId = historyId,
+                expectedSourceUrl = downloadItem.url,
+                expectedType = downloadItem.type,
+            )
+        ) {
+            is HistoryReplacementAuthorization.Authorized ->
+                authorization.target
+            else -> return emptyList()
+        }
         return previous.downloadPath
             .asSequence()
             .map { it.trim() }
@@ -4414,7 +4494,8 @@ class DownloadWorker(
     private fun validateMovedQualityReplacement(
         downloadItem: DownloadItem,
         finalPaths: List<String>,
-        historyDao: com.ireum.ytdl.database.dao.HistoryDao
+        historyDao: com.ireum.ytdl.database.dao.HistoryDao,
+        historyKeywordAssignments: HistoryKeywordAssignmentRepository,
     ) {
         val marker = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
             ?.takeIf { it.isQualityReplacement }
@@ -4428,7 +4509,13 @@ class DownloadWorker(
             return
         }
 
-        deleteRejectedQualityReplacementOutputs(marker.historyId, finalPaths, historyDao)
+        deleteRejectedQualityReplacementOutputs(
+            historyId = marker.historyId,
+            candidatePaths = finalPaths,
+            historyDao = historyDao,
+            historyKeywordAssignments = historyKeywordAssignments,
+            downloadItem = downloadItem,
+        )
         throw IOException(
             "Quality replacement was not committed because the moved output failed validation " +
                 "(expected=${expectedHeight}p, actual=${quality.resolutionHeight}p, state=${quality.state})"
@@ -4438,9 +4525,21 @@ class DownloadWorker(
     private fun deleteRejectedQualityReplacementOutputs(
         historyId: Long,
         candidatePaths: List<String>,
-        historyDao: com.ireum.ytdl.database.dao.HistoryDao
-    ) {
-        val previous = runCatching { historyDao.getItem(historyId) }.getOrNull() ?: return
+        historyDao: com.ireum.ytdl.database.dao.HistoryDao,
+        historyKeywordAssignments: HistoryKeywordAssignmentRepository,
+        downloadItem: DownloadItem,
+    ): Boolean {
+        val previous = when (
+            val authorization = historyKeywordAssignments.authorizeHistoryReplacementBlocking(
+                historyId = historyId,
+                expectedSourceUrl = downloadItem.url,
+                expectedType = downloadItem.type,
+            )
+        ) {
+            is HistoryReplacementAuthorization.Authorized ->
+                authorization.target
+            else -> return false
+        }
         val rejectedPaths = HistoryReplacementFilePolicy.rejectedPathsToDelete(
             previousPaths = previous.downloadPath,
             candidatePaths = candidatePaths
@@ -4449,8 +4548,10 @@ class DownloadWorker(
             historyId = historyId,
             paths = rejectedPaths,
             historyDao = historyDao,
-            logLabel = "Rejected quality replacement cleanup"
+            logLabel = "Rejected quality replacement cleanup",
+            trustedHistoryItem = previous,
         )
+        return true
     }
 
     private fun deleteValidatedReplacementPaths(

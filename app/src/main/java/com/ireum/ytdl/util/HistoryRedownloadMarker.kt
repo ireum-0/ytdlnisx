@@ -27,6 +27,26 @@ data class HistoryRedownloadMarker(
         fun quality(historyId: Long, expectedMinimumHeight: Int): String =
             HistoryRedownloadMarker(historyId, expectedMinimumHeight).encode()
 
+        /**
+         * Resolves a serialized replacement marker against the IDs allocated by a
+         * restore.  A parsed marker is never allowed to retain its backup-local ID.
+         */
+        fun remap(
+            value: String?,
+            importedHistoryIdMap: Map<Long, Long>
+        ): RestoreRemapResult {
+            val marker = parse(value) ?: return RestoreRemapResult.NotMarker
+            val restoredHistoryId = importedHistoryIdMap[marker.historyId]
+                ?.takeIf { it > 0L }
+                ?: return RestoreRemapResult.Unmappable
+            return RestoreRemapResult.Mapped(
+                HistoryRedownloadMarker(
+                    historyId = restoredHistoryId,
+                    expectedMinimumHeight = marker.expectedMinimumHeight
+                ).encode()
+            )
+        }
+
         fun parse(value: String?): HistoryRedownloadMarker? {
             val suffix = value?.takeIf { it.startsWith(PREFIX) }?.removePrefix(PREFIX) ?: return null
             val parts = suffix.split(':')
@@ -41,6 +61,12 @@ data class HistoryRedownloadMarker(
             }
         }
     }
+}
+
+sealed interface RestoreRemapResult {
+    data object NotMarker : RestoreRemapResult
+    data object Unmappable : RestoreRemapResult
+    data class Mapped(val encodedMarker: String) : RestoreRemapResult
 }
 
 object HistoryReplacementFilePolicy {

@@ -27,6 +27,60 @@ class HistoryRedownloadMarkerTest {
     }
 
     @Test
+    fun mergeRestoreRemapsRegularMarkerToTheAllocatedDestinationId() {
+        val result = HistoryRedownloadMarker.remap(
+            HistoryRedownloadMarker.regular(42L),
+            mapOf(42L to 9001L)
+        )
+
+        assertEquals(
+            RestoreRemapResult.Mapped("history-redownload:9001"),
+            result
+        )
+    }
+
+    @Test
+    fun resetRestoreRemapsQualityMarkerWithoutChangingItsHeight() {
+        val result = HistoryRedownloadMarker.remap(
+            HistoryRedownloadMarker.quality(42L, 1080),
+            mapOf(42L to 9001L)
+        )
+
+        assertEquals(
+            RestoreRemapResult.Mapped("history-redownload:9001:quality:1080"),
+            result
+        )
+    }
+
+    @Test
+    fun restoreNeverLeavesAnUnmappableMarkerExecutable() {
+        assertEquals(
+            RestoreRemapResult.Unmappable,
+            HistoryRedownloadMarker.remap(
+                HistoryRedownloadMarker.regular(42L),
+                emptyMap()
+            )
+        )
+    }
+
+    @Test
+    fun restoreUsesImportedMappingEvenWhenTheBackupIdExistsInTheLiveDatabase() {
+        val result = HistoryRedownloadMarker.remap(
+            HistoryRedownloadMarker.regular(42L),
+            mapOf(42L to 9001L)
+        )
+
+        assertEquals(
+            RestoreRemapResult.Mapped("history-redownload:9001"),
+            result
+        )
+        assertTrue(
+            HistoryRedownloadMarker.parse((result as RestoreRemapResult.Mapped).encodedMarker)
+                ?.historyId != 42L
+        )
+    }
+
+    @Test
     fun malformedMarkersAreRejected() {
         assertNull(HistoryRedownloadMarker.parse(null))
         assertNull(HistoryRedownloadMarker.parse("history-redownload:0"))
