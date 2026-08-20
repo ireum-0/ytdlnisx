@@ -1492,18 +1492,21 @@ class DownloadWorker(
                         )
                         var primaryIssue = classifiedIssues.first()
                         var qualityCleanupAction: HistoryReplacementCleanupAction? = null
+                        val carriedQualityCleanupAuthorization =
+                            (it as? QualityReplacementValidationException)?.cleanupAuthorization
 
                         val failedQualityMarker = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
                             ?.takeIf { marker -> marker.isQualityReplacement }
                         if (failedQualityMarker != null) {
                             if (historyReplacementFailureIssue == null) {
-                                val cleanupAuthorization = deleteRejectedQualityReplacementOutputs(
-                                    historyId = failedQualityMarker.historyId,
-                                    candidatePaths = createdOutputPaths,
-                                    historyDao = historyDao,
-                                    historyKeywordAssignments = historyKeywordAssignments,
-                                    downloadItem = downloadItem,
-                                )
+                                val cleanupAuthorization = carriedQualityCleanupAuthorization
+                                    ?: deleteRejectedQualityReplacementOutputs(
+                                        historyId = failedQualityMarker.historyId,
+                                        candidatePaths = createdOutputPaths,
+                                        historyDao = historyDao,
+                                        historyKeywordAssignments = historyKeywordAssignments,
+                                        downloadItem = downloadItem,
+                                    )
                                 val cleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(
                                     cleanupAuthorization
                                 )
@@ -1943,6 +1946,11 @@ class DownloadWorker(
     )
 
     private class YtdlpQualityRejectedException(message: String) : IOException(message)
+
+    private class QualityReplacementValidationException(
+        val cleanupAuthorization: HistoryReplacementAuthorization,
+        message: String,
+    ) : IOException(message)
 
     private class HistoryReplacementNotAuthorizedException(
         val mismatch: HistoryReplacementMismatchKind
@@ -4598,15 +4606,16 @@ class DownloadWorker(
             return
         }
 
-        deleteRejectedQualityReplacementOutputs(
+        val cleanupAuthorization = deleteRejectedQualityReplacementOutputs(
             historyId = marker.historyId,
             candidatePaths = finalPaths,
             historyDao = historyDao,
             historyKeywordAssignments = historyKeywordAssignments,
             downloadItem = downloadItem,
         )
-        throw IOException(
-            "Quality replacement was not committed because the moved output failed validation " +
+        throw QualityReplacementValidationException(
+            cleanupAuthorization = cleanupAuthorization,
+            message = "Quality replacement was not committed because the moved output failed validation " +
                 "(expected=${expectedHeight}p, actual=${quality.resolutionHeight}p, state=${quality.state})"
         )
     }

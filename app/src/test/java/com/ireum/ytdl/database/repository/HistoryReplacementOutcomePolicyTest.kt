@@ -156,6 +156,21 @@ class HistoryReplacementOutcomePolicyTest {
 
     @Test
     fun establishedHistoryFailureCannotBeDowngradedByLaterCleanupDisposition() {
+        val firstSourceMismatch = HistoryReplacementOutcomePolicy.terminalAction(
+            HistoryReplacementOutcomePolicy.cleanupAction(
+                HistoryReplacementAuthorization.SourceMismatch
+            )
+        )
+        val firstTypeMismatch = HistoryReplacementOutcomePolicy.terminalAction(
+            HistoryReplacementOutcomePolicy.cleanupAction(
+                HistoryReplacementAuthorization.TypeMismatch
+            )
+        )
+        val laterTargetMissing = HistoryReplacementOutcomePolicy.terminalAction(
+            HistoryReplacementOutcomePolicy.cleanupAction(
+                HistoryReplacementAuthorization.TargetMissing
+            )
+        )
         assertEquals(
             HistoryReplacementTerminalAction.PRESERVE_FAILED,
             HistoryReplacementOutcomePolicy.mergeTerminalAction(
@@ -168,6 +183,20 @@ class HistoryReplacementOutcomePolicyTest {
             HistoryReplacementOutcomePolicy.mergeTerminalAction(
                 HistoryReplacementTerminalAction.COMPLETE,
                 HistoryReplacementTerminalAction.PRESERVE_FAILED
+            )
+        )
+        assertEquals(
+            HistoryReplacementTerminalAction.PRESERVE_FAILED,
+            HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                firstSourceMismatch,
+                laterTargetMissing
+            )
+        )
+        assertEquals(
+            HistoryReplacementTerminalAction.PRESERVE_FAILED,
+            HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                firstTypeMismatch,
+                HistoryReplacementTerminalAction.COMPLETE
             )
         )
         assertFalse(
