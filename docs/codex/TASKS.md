@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **30 active correctness defects** in this checkpoint. The previous
+There are **31 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -704,6 +704,48 @@ Required result:
   primitive;
 - test multi-playlist Undo and an injected failure between relationship and
   History mutation.
+
+### P2 — BUG-HISTORY-03 — Do not reclassify a committed History write as download failure
+
+**State:** Open
+
+**Failure path:** after yt-dlp output has been produced and validated,
+`DownloadWorker` enters its History stage. For an ordinary non-incognito
+completion it first calls `HistoryKeywordAssignmentRepository.insertHistory()`.
+That method commits the new History row together with manual/RULE keyword
+projection in its own Room transaction and returns the newly allocated History
+ID. `DownloadWorker` then performs a separate
+`AutomaticKeywordRuleEngine.applyToHistory()` call for legacy Observe Source
+keywords/current rule assignments. Replacement downloads have the same ordering:
+the authorized History replacement commits first, then `applyToHistory()` runs.
+
+If that later derived-keyword call throws, the surrounding History `catch`
+treats the whole stage as `HISTORY_WRITE_FAILED`, sets `preserveQueueRecord =
+true`, and moves the Download row to `Error`. The already committed History
+mutation is not rolled back. For a new download, the media and History row can
+therefore be present while the queue still advertises a failed job; for a
+replacement, the History row may already point at the replacement output while
+the old-media cleanup has not yet run. A user retry can then repeat work against
+a state that already crossed the authoritative History commit boundary.
+
+**Why this is a defect:** a non-authoritative derived-keyword failure after the
+History commit changes the semantic result from completed media/History
+persistence to download failure. This violates the post-commit barrier and can
+invite duplicate redownloads or repeated History replacement while durable
+success state already exists.
+
+Required result:
+
+- define the History insert/replacement commit as an authoritative completion
+  boundary for the media-to-History mutation;
+- make follow-up derived keyword/provenance assignment part of the same atomic
+  transaction when it must gate completion, or persist/report its failure
+  separately without reclassifying the committed download as failed;
+- ensure replacement old-media cleanup and terminal queue/ledger state use an
+  explicit recovery contract if post-commit enrichment fails;
+- add fault-injection regressions for legacy Observe Source assignment and RULE
+  assignment after both new-History insert and authorized replacement, proving a
+  committed History mutation is never exposed as a retryable download failure.
 
 ### P2 — BUG-PLAYER-01 — Serialize playback-position persistence by History item
 
