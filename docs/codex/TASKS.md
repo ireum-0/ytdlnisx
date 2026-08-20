@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **24 active correctness defects** in this checkpoint. The previous
+There are **25 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -578,6 +578,42 @@ Required result:
   or cleanup is disabled;
 - test repeated cadence execution, preference changes, and restart recovery with
   exactly one active logical schedule.
+
+### P2 — BUG-CLEANUP-02 — Prevent leftover cleanup from deleting live download temp files
+
+**State:** Open
+
+**Failure path:** `CleanUpLeftoverDownloads` reads
+`DownloadRepository.getActiveDownloadsCount()` once and, when that snapshot is
+zero, immediately calls `AppCacheManager.delete(DOWNLOAD_TEMP)`. The count
+covers `Active` and `PostProcessing`, but there is no shared ownership barrier
+between this cleanup worker and `DownloadWorker`. A queued download can be
+selected concurrently after the zero-count snapshot: `DownloadWorker` marks the
+row `Active` and uses `File(FileUtil.getCachePath(context), downloadItem.id)` as
+its live temp directory. `AppCacheManager` then enumerates and deletes entries
+under that same download-temp root. If the new worker creates or starts writing
+its per-download directory before cleanup enumeration/deletion reaches it, the
+cleanup treats live artifacts as leftovers and removes them.
+
+**Why this is a defect:** a production-scheduled cleanup can delete temporary
+media belonging to a download that became active after the stale count check,
+causing extraction/post-processing failure or destroying otherwise recoverable
+partial output. The cleanup contract is intended to remove leftovers, not files
+owned by live work.
+
+Required result:
+
+- coordinate cleanup and download startup with an ownership/serialization
+  barrier so no new live temp owner can appear after cleanup authorization and
+  before destructive deletion completes;
+- preserve both `Active` and `PostProcessing` temp ownership at the destructive
+  boundary rather than relying on one earlier aggregate count;
+- if cleanup is made per-directory, prove each directory is unowned immediately
+  before deletion under a protocol that prevents ownership from being acquired
+  until that deletion commits;
+- add a deterministic race where a queued row becomes `Active` after the cleanup
+  zero-count check but before temp enumeration/deletion, plus a
+  `PostProcessing` ownership regression, proving live temp files are preserved.
 
 ### P2 — BUG-LOCALADD-01 — Do not treat a bare filename stem as local-file identity
 
