@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **22 active correctness defects** in this checkpoint. The previous
+There are **23 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -179,6 +179,43 @@ Required result:
 - add focused hard-sub and History-replacement recovery tests containing
   unrelated recent destination files; normal-download cases should remain as
   non-regression coverage for any future use of the same fallback.
+
+### P0 — BUG-HISTORY-02 — Close retained-reference TOCTOU before History file deletion
+
+**State:** Open
+
+**Failure path:** user-facing History deletion with `deleteAssociatedFiles`
+prepares a `HistoryDeletionValidation`, then `executePreparedHistoryFileDeletion()`
+revalidates the selected records and calls `retainedStoredTargets(selectedIds)`
+once to protect files referenced by other History rows. It immediately passes
+that snapshot through `excludeTargetsReferencedBy()` and then calls
+`HistoryFileDeletionEngine.execute()`, which invokes the filesystem/provider
+delete. After deletion the code revalidates only the selected records' own
+stored-target snapshots before removing their History rows; it does not prove
+that the retained-reference set is still unchanged. `ObserveSourceWorker` uses
+the same snapshot-then-execute pattern for sync-driven History/media deletion.
+
+**Why this is a defect:** another download/import/History mutation can create a
+new reference to one of the candidate paths after the retained-reference query
+but before the actual delete. The selected record can remain unchanged, so the
+post-delete selected-record check still passes even though the file has become
+shared. A file currently referenced by an unrelated live History row can
+therefore be deleted through a production-reachable race.
+
+Required result:
+
+- make reference protection authoritative at the destructive boundary rather
+  than relying on a stale retained-reference snapshot;
+- serialize/transactionally coordinate reference acquisition and deletion where
+  possible, or recheck all relevant live references immediately before each
+  destructive filesystem/provider mutation under an ownership protocol that
+  prevents a new reference from appearing until deletion commits;
+- apply the same contract to user-driven and Observe Source deletion paths;
+- continue revalidating the selected record's own target snapshot in addition
+  to retained references;
+- add deterministic races where another History row begins referencing the same
+  raw path or canonical-equivalent content/document target between validation
+  and deletion, proving the shared file is preserved.
 
 ### P1 — BUG-BACKUP-04 — Fail backup creation when a selected category cannot be captured
 
