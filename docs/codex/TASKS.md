@@ -9,12 +9,12 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **32 active correctness defects** in this checkpoint. The previous
+There are **33 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
-previous claim that merge restore passes backed-up primary keys directly into
-the repositories therefore does not describe the production restore path.
+previous claim that merge restore passes backed-up primary keys directly into the
+repositories therefore does not describe the production restore path.
 Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
@@ -1030,6 +1030,42 @@ Required result:
   scheduler requeue writes, plus restart tests proving no killed job remains as
   ghost `Active`/`PostProcessing` work.
 
+### P3 — BUG-LOCALADD-02 — Persist local-add session input before durable worker enqueue
+
+**State:** Open
+
+**Failure path:** the History local-add flow expands the selected URIs, serializes
+them through `LocalAddStorage.saveEntries()`, and immediately enqueues a
+`LocalAddWorker` whose only durable input is the generated session ID.
+`saveEntries()` stores the actual URI list with `SharedPreferences.Editor.apply()`,
+which updates process memory immediately but commits the file asynchronously.
+The WorkManager request is persisted independently. If the process dies after
+the WorkManager request becomes durable but before the SharedPreferences disk
+write completes, a later worker process can retain the session ID while
+`LocalAddStorage.loadEntries()` observes no entry payload and returns
+`emptyList()`. `LocalAddWorker` treats an empty list as normal completion, clears
+the progress snapshot, and returns `Result.success()` rather than preserving the
+missing-session distinction.
+
+**Why this is a defect:** the durable work record can outlive the non-durable
+payload that gives it meaning. An abrupt process death in this window silently
+turns a user-selected local import into a successful no-op, so WorkManager will
+not retry and the user receives no indication that the selected files were
+never processed.
+
+Required result:
+
+- persist local-add request payload and worker ownership under one durable
+  ordering contract before enqueue can survive process death;
+- do not use asynchronous SharedPreferences persistence as the sole backing
+  store for input required by durable WorkManager work; use durable database/file
+  state or otherwise prove the payload commit completed before enqueue;
+- distinguish an intentionally empty request from a missing/corrupt session and
+  return a retryable or explicit failure outcome instead of `Result.success()`;
+- add a deterministic process-death regression between payload persistence and
+  WorkManager execution, plus missing-session, corrupt-session, and normal
+  local-add completion coverage.
+
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
 **State:** Open
@@ -1076,7 +1112,7 @@ Required result:
 | `PLAYER-01` | Partial | `PlaybackQueueState` centralizes queue data, but lifecycle, Media3, subtitle, PiP, URI, and navigation behavior remains concentrated in `VideoPlayerActivity`. |
 | `TERM-01` | Implemented | Terminal command planning includes a dry-run/preview path and argument policy. |
 
-## Newly implemented capability
+## newly implemented capability
 
 The current branch also stores media source-publication time through result,
 download, and history records; reads provider-specific dates; displays and
