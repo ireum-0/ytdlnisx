@@ -62,6 +62,53 @@ class HistoryReplacementAuthorizationTest {
     }
 
     @Test
+    fun genericHttpToHttpsTargetIsRejected() = runBlocking {
+        val historyId = repository().insertHistory(
+            history().copy(url = "http://example.com/video")
+        )
+
+        assertEquals(
+            HistoryReplacementAuthorization.SourceMismatch,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = "https://example.com/video",
+                expectedType = DownloadType.video,
+            )
+        )
+    }
+
+    @Test
+    fun schemeSpecificPortMismatchIsRejected() = runBlocking {
+        val historyId = repository().insertHistory(
+            history().copy(url = "http://example.com:443/video")
+        )
+
+        assertEquals(
+            HistoryReplacementAuthorization.SourceMismatch,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = "https://example.com/video",
+                expectedType = DownloadType.video,
+            )
+        )
+    }
+
+    @Test
+    fun schemeSpecificDefaultPortRemainsAuthorized() = runBlocking {
+        val historyId = repository().insertHistory(
+            history().copy(url = "http://example.com:80/video")
+        )
+
+        assertTrue(
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = "http://example.com/video",
+                expectedType = DownloadType.video,
+            ) is HistoryReplacementAuthorization.Authorized
+        )
+    }
+
+    @Test
     fun mismatchedReplacementLeavesExistingHistoryMediaUntouched() = runBlocking {
         val historyId = insertHistory()
         val before = db.historyDao.getItem(historyId)
@@ -128,6 +175,43 @@ class HistoryReplacementAuthorizationTest {
         )
         assertEquals("https://youtu.be/$OTHER_VIDEO_ID", db.historyDao.getItem(historyId).url)
         assertEquals("Video", db.historyDao.getItem(historyId).title)
+    }
+
+    @Test
+    fun targetChangedFromHttpToHttpsIsRejectedAndNotOverwritten() = runBlocking {
+        val historyId = repository().insertHistory(
+            history().copy(url = "http://example.com/video")
+        )
+        val workerSnapshot = db.historyDao.getItem(historyId)
+        db.historyDao.update(workerSnapshot.copy(url = "https://example.com/video"))
+
+        assertEquals(
+            HistoryReplacementOutcome.SourceMismatch,
+            repository().replaceHistoryPreservingAssignmentsAuthorized(
+                historyId = historyId,
+                expectedSourceUrl = "http://example.com/video",
+                expectedType = DownloadType.video,
+            ) { current -> current.copy(title = "stale-worker-write") }
+        )
+        assertEquals("https://example.com/video", db.historyDao.getItem(historyId).url)
+        assertEquals("Video", db.historyDao.getItem(historyId).title)
+    }
+
+    @Test
+    fun replacementFactoryUsesTheSameStrictSourceIdentity() = runBlocking {
+        val historyId = repository().insertHistory(
+            history().copy(url = "http://example.com/video")
+        )
+
+        assertEquals(
+            HistoryReplacementOutcome.SourceMismatch,
+            repository().replaceHistoryPreservingAssignmentsAuthorized(
+                historyId = historyId,
+                expectedSourceUrl = "http://example.com/video",
+                expectedType = DownloadType.video,
+            ) { current -> current.copy(url = "https://example.com/video") }
+        )
+        assertEquals("http://example.com/video", db.historyDao.getItem(historyId).url)
     }
 
     @Test

@@ -89,19 +89,42 @@ object WebUrlInput {
         return sourceKey(value, dropNonIdentifyingParameters = true)
     }
 
+    /**
+     * Produces a destructive-comparison key that keeps HTTP and HTTPS as
+     * distinct endpoint schemes while retaining the normal canonicalization.
+     */
+    fun strictSourceIdentityKey(value: String): String? {
+        return sourceKey(
+            value,
+            dropNonIdentifyingParameters = true,
+            strictSchemeIdentity = true,
+        )
+    }
+
     private fun sourceKey(
         value: String,
         dropNonIdentifyingParameters: Boolean,
+        strictSchemeIdentity: Boolean = false,
     ): String? {
         val trimmed = value.trim()
         if (trimmed.isBlank() || trimmed.any(Char::isWhitespace)) return null
         val schemeLess = !explicitScheme.containsMatchIn(trimmed)
         val parsed = parse(trimmed, schemeLess) ?: return null
-        val family = if (parsed.scheme == "ftp") "ftp" else "web"
+        val family = when {
+            parsed.scheme == "ftp" -> "ftp"
+            strictSchemeIdentity -> parsed.scheme
+            else -> "web"
+        }
+        val defaultPort = when {
+            family == "ftp" -> 21
+            strictSchemeIdentity && parsed.scheme == "http" -> 80
+            strictSchemeIdentity && parsed.scheme == "https" -> 443
+            else -> null
+        }
         val port = parsed.port.takeIf { port ->
             port >= 0 &&
-                !(family == "web" && port in setOf(80, 443)) &&
-                !(family == "ftp" && port == 21)
+                port != defaultPort &&
+                !(family == "web" && port in setOf(80, 443))
         }
         val path = parsed.rawPath.orEmpty().ifBlank { "/" }
         val rawQuery = if (dropNonIdentifyingParameters) {

@@ -7,7 +7,7 @@ import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
-import com.ireum.ytdl.util.MediaPublishedDateSource
+import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import kotlinx.coroutines.runBlocking
 
 enum class HistoryReplacementResult {
@@ -391,7 +391,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                     )
                     if (
                         replacement.url.isBlank() ||
-                        !MediaPublishedDateSource.matches(expectedSourceUrl, replacement.url)
+                        !HistoryReplacementSourceIdentity.matches(expectedSourceUrl, replacement.url)
                     ) {
                         HistoryReplacementOutcome.SourceMismatch
                     } else if (replacement.type != expectedType) {
@@ -453,7 +453,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             ?: return HistoryReplacementAuthorization.TargetMissing
         if (
             expectedSourceUrl.isBlank() ||
-            !MediaPublishedDateSource.matches(expectedSourceUrl, existingHistory.url)
+            !HistoryReplacementSourceIdentity.matches(expectedSourceUrl, existingHistory.url)
         ) {
             return HistoryReplacementAuthorization.SourceMismatch
         }
