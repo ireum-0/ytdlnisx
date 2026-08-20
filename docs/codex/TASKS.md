@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **22 active correctness defects** in this checkpoint. The previous
+There are **34 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -179,6 +179,43 @@ Required result:
 - add focused hard-sub and History-replacement recovery tests containing
   unrelated recent destination files; normal-download cases should remain as
   non-regression coverage for any future use of the same fallback.
+
+### P0 — BUG-HISTORY-02 — Close retained-reference TOCTOU before History file deletion
+
+**State:** Open
+
+**Failure path:** user-facing History deletion with `deleteAssociatedFiles`
+prepares a `HistoryDeletionValidation`, then `executePreparedHistoryFileDeletion()`
+revalidates the selected records and calls `retainedStoredTargets(selectedIds)`
+once to protect files referenced by other History rows. It immediately passes
+that snapshot through `excludeTargetsReferencedBy()` and then calls
+`HistoryFileDeletionEngine.execute()`, which invokes the filesystem/provider
+delete. After deletion the code revalidates only the selected records' own
+stored-target snapshots before removing their History rows; it does not prove
+that the retained-reference set is still unchanged. `ObserveSourceWorker` uses
+the same snapshot-then-execute pattern for sync-driven History/media deletion.
+
+**Why this is a defect:** another download/import/History mutation can create a
+new reference to one of the candidate paths after the retained-reference query
+but before the actual delete. The selected record can remain unchanged, so the
+post-delete selected-record check still passes even though the file has become
+shared. A file currently referenced by an unrelated live History row can
+therefore be deleted through a production-reachable race.
+
+Required result:
+
+- make reference protection authoritative at the destructive boundary rather
+  than relying on a stale retained-reference snapshot;
+- serialize/transactionally coordinate reference acquisition and deletion where
+  possible, or recheck all relevant live references immediately before each
+  destructive filesystem/provider mutation under an ownership protocol that
+  prevents a new reference from appearing until deletion commits;
+- apply the same contract to user-driven and Observe Source deletion paths;
+- continue revalidating the selected record's own target snapshot in addition
+  to retained references;
+- add deterministic races where another History row begins referencing the same
+  raw path or canonical-equivalent content/document target between validation
+  and deletion, proving the shared file is preserved.
 
 ### P1 — BUG-BACKUP-04 — Fail backup creation when a selected category cannot be captured
 
@@ -542,6 +579,76 @@ Required result:
 - test repeated cadence execution, preference changes, and restart recovery with
   exactly one active logical schedule.
 
+### P2 — BUG-CLEANUP-02 — Prevent leftover cleanup from deleting live download temp files
+
+**State:** Open
+
+**Failure path:** `CleanUpLeftoverDownloads` reads
+`DownloadRepository.getActiveDownloadsCount()` once and, when that snapshot is
+zero, immediately calls `AppCacheManager.delete(DOWNLOAD_TEMP)`. The count
+covers `Active` and `PostProcessing`, but there is no shared ownership barrier
+between this cleanup worker and `DownloadWorker`. A queued download can be
+selected concurrently after the zero-count snapshot: `DownloadWorker` marks the
+row `Active` and uses `File(FileUtil.getCachePath(context), downloadItem.id)` as
+its live temp directory. `AppCacheManager` then enumerates and deletes entries
+under that same download-temp root. If the new worker creates or starts writing
+its per-download directory before cleanup enumeration/deletion reaches it, the
+cleanup treats live artifacts as leftovers and removes them.
+
+**Why this is a defect:** a production-scheduled cleanup can delete temporary
+media belonging to a download that became active after the stale count check,
+causing extraction/post-processing failure or destroying otherwise recoverable
+partial output. The cleanup contract is intended to remove leftovers, not files
+owned by live work.
+
+Required result:
+
+- coordinate cleanup and download startup with an ownership/serialization
+  barrier so no new live temp owner can appear after cleanup authorization and
+  before destructive deletion completes;
+- preserve both `Active` and `PostProcessing` temp ownership at the destructive
+  boundary rather than relying on one earlier aggregate count;
+- if cleanup is made per-directory, prove each directory is unowned immediately
+  before deletion under a protocol that prevents ownership from being acquired
+  until that deletion commits;
+- add a deterministic race where a queued row becomes `Active` after the cleanup
+  zero-count check but before temp enumeration/deletion, plus a
+  `PostProcessing` ownership regression, proving live temp files are preserved.
+
+### P2 — BUG-CACHE-01 — Do not move live download temp files during cache migration
+
+**State:** Open
+
+**Failure path:** the production Folder settings screen exposes
+`move_temporary_files` and its click handler immediately enqueues
+`MoveCacheFilesWorker`; unlike clear-cache and default-video-folder migration,
+this path does not call `hasActiveDownloads()` or otherwise establish exclusive
+cache ownership. `MoveCacheFilesWorker` walks the entire
+`FileUtil.getCachePath(context)` tree and moves every file it encounters into
+public `Downloads/YTDLnisx/CACHE_IMPORT`. `DownloadWorker` concurrently uses a
+per-download child of that exact cache root as its live yt-dlp/post-processing
+temp directory. A user can therefore start cache migration while a download is
+active and the migration can move files out from underneath the running worker.
+
+**Why this is a defect:** a maintenance action can steal live temp artifacts
+from an in-progress download, causing extraction/post-processing failure and
+moving partial/intermediate media into a user-visible recovery directory as if
+it were leftover cache. The worker reports success after traversing the cache
+without proving that the files were unowned.
+
+Required result:
+
+- gate cache migration on an authoritative live-work ownership contract that
+  covers `Active` and `PostProcessing` downloads and prevents new cache owners
+  from starting until migration completes;
+- preferably migrate only explicitly unowned per-download cache directories
+  instead of walking the whole shared cache tree;
+- preserve unrelated/nested cache categories according to the same ownership
+  policy used by `AppCacheManager` rather than assuming every entry is movable;
+- add deterministic active-download and post-processing races proving live temp
+  files are never moved, plus an idle-leftover regression proving intended cache
+  recovery still works.
+
 ### P2 — BUG-LOCALADD-01 — Do not treat a bare filename stem as local-file identity
 
 **State:** Open
@@ -598,6 +705,48 @@ Required result:
 - test multi-playlist Undo and an injected failure between relationship and
   History mutation.
 
+### P2 — BUG-HISTORY-03 — Do not reclassify a committed History write as download failure
+
+**State:** Open
+
+**Failure path:** after yt-dlp output has been produced and validated,
+`DownloadWorker` enters its History stage. For an ordinary non-incognito
+completion it first calls `HistoryKeywordAssignmentRepository.insertHistory()`.
+That method commits the new History row together with manual/RULE keyword
+projection in its own Room transaction and returns the newly allocated History
+ID. `DownloadWorker` then performs a separate
+`AutomaticKeywordRuleEngine.applyToHistory()` call for legacy Observe Source
+keywords/current rule assignments. Replacement downloads have the same ordering:
+the authorized History replacement commits first, then `applyToHistory()` runs.
+
+If that later derived-keyword call throws, the surrounding History `catch`
+treats the whole stage as `HISTORY_WRITE_FAILED`, sets `preserveQueueRecord =
+true`, and moves the Download row to `Error`. The already committed History
+mutation is not rolled back. For a new download, the media and History row can
+therefore be present while the queue still advertises a failed job; for a
+replacement, the History row may already point at the replacement output while
+the old-media cleanup has not yet run. A user retry can then repeat work against
+a state that already crossed the authoritative History commit boundary.
+
+**Why this is a defect:** a non-authoritative derived-keyword failure after the
+History commit changes the semantic result from completed media/History
+persistence to download failure. This violates the post-commit barrier and can
+invite duplicate redownloads or repeated History replacement while durable
+success state already exists.
+
+Required result:
+
+- define the History insert/replacement commit as an authoritative completion
+  boundary for the media-to-History mutation;
+- make follow-up derived keyword/provenance assignment part of the same atomic
+  transaction when it must gate completion, or persist/report its failure
+  separately without reclassifying the committed download as failed;
+- ensure replacement old-media cleanup and terminal queue/ledger state use an
+  explicit recovery contract if post-commit enrichment fails;
+- add fault-injection regressions for legacy Observe Source assignment and RULE
+  assignment after both new-History insert and authorized replacement, proving a
+  committed History mutation is never exposed as a retryable download failure.
+
 ### P2 — BUG-PLAYER-01 — Serialize playback-position persistence by History item
 
 **State:** Open
@@ -623,6 +772,337 @@ Required result:
 - keep cache and Room under one ordering contract;
 - add deterministic delayed-write tests for completion, seek, pause/stop,
   destruction, and queue transitions.
+
+### P2 — BUG-TERMINAL-01 — Do not reclassify completed terminal output as failure
+
+**State:** Open
+
+**Failure path:** the production terminal UI schedules `TerminalDownloadWorker`
+through `TerminalViewModel`. After yt-dlp returns successfully, the worker either
+already has output in the user-selected destination (`noCache`) or synchronously
+moves the app-cache output there with `FileUtil.moveFile()`. The output mutation
+is therefore complete before the remaining log/notification cleanup runs. The
+same outer `try` then calls `TerminalDao.updateLog()` directly, cancels the
+notification, delays, and deletes the terminal row. If one of those post-output
+operations throws, the broad outer `catch` handles it as a download failure,
+shows the failure path, removes the terminal task, and returns
+`Result.failure()` even though the requested output was already committed.
+
+`LogRepository.update()` itself is best-effort, but the direct
+`TerminalDao.updateLog()` after output completion is not wrapped and remains a
+concrete throwing persistence step on this path.
+
+**Why this is a defect:** non-authoritative bookkeeping after successful output
+creation can change the semantic result from success to failure. The user can be
+told that a completed terminal download failed and may retry it, producing a
+duplicate output while the original file remains in the destination.
+
+Required result:
+
+- establish an authoritative completion boundary once destination output has
+  been successfully produced/moved;
+- make logging, notification cancellation, and terminal-row cleanup after that
+  boundary best-effort or persist their failures separately without flipping the
+  completed download outcome;
+- preserve a recoverable terminal-row/cleanup state if required bookkeeping
+  cannot finish, rather than representing the media transfer itself as failed;
+- add fault-injection regressions for terminal-log persistence and post-success
+  notification/row cleanup after both direct-destination and cache-move output,
+  proving committed output remains a success and does not invite duplicate
+  retry.
+
+### P2 — BUG-FORMAT-01 — Do not commit or report partial bulk format refresh as success
+
+**State:** Open
+
+**Failure path:** the production bulk-format flow enters through
+`DownloadViewModel.continueUpdatingFormatsOnBackground()`, which moves the
+current `Processing` rows to `Saved` and enqueues
+`UpdateMultipleDownloadsFormatsWorker`. For each requested row whose
+`allFormats` is empty, the worker wraps format extraction, format selection,
+`ResultItem` persistence, and `DownloadItem` persistence in one `runCatching`
+but ignores the resulting `Result`. It writes the cached Result row first and
+the Download row second. An extractor or database exception is therefore
+silently swallowed; if the Result write succeeds and the Download write fails,
+the two persistent representations can also diverge. The worker still increments
+its completed count, continues the batch, returns `Result.success()`, and its
+`finally` path calls `showFormatsUpdatedNotification()` for the requested IDs.
+
+**Why this is a defect:** a failed or partially persisted format refresh is
+collapsed into the same terminal state and success notification as a completed
+refresh. Users can be told that formats were updated while the Saved download
+still has missing/stale format data, and a mid-persistence failure can leave the
+Result cache disagreeing with the Download row.
+
+Required result:
+
+- preserve a typed per-item success/failure outcome instead of discarding the
+  `runCatching` result, and rethrow coroutine cancellation;
+- make Result/Download format persistence atomic or define a compensating
+  consistency contract so a failed second write cannot leave a success-labelled
+  split state;
+- represent mixed/all-failed batches explicitly and make WorkManager result and
+  user notification reflect those failures rather than always announcing
+  success;
+- add fault-injection regressions for format extraction, Result-row write,
+  Download-row write, cancellation, and mixed-success batches.
+
+### P2 — BUG-TERMINATE-01 — Requeue active work before no-confirmation app termination
+
+**State:** Open
+
+**Failure path:** the navigation-drawer terminate action has two production
+paths. While `ask_terminate_app` is true, the confirmation branch loads both
+`Active` and `PostProcessing` rows, rewrites them to `Queued`, persists those
+changes, and only then calls `exitProcess(0)`. If the user checks the dialog's
+"do not show again" option, that preference becomes false. On every later
+terminate action the no-confirmation branch calls `finishAndRemoveTask()` and
+`exitProcess(0)` immediately without performing the same durable requeue.
+
+`DownloadWorker` normally repairs interrupted `Active`/`PostProcessing` rows in
+`cleanupStoppedWorker()`, but that repair lives in the worker's `finally` block
+and is conditioned on `isStopped`. A direct process exit is not a durable
+shutdown protocol and cannot be relied on to execute coroutine/finally cleanup.
+On a subsequent worker start, persisted `Active` rows are explicitly loaded into
+`runningYTDLInstances` and counted as already-running work before candidate
+selection. After the old process has been killed there is no corresponding live
+yt-dlp owner, so such stale `Active` rows can consume concurrency slots and keep
+the queue from restarting them; stale `PostProcessing` rows can likewise remain
+represented as live state without their previous post-processing owner.
+
+**Why this is a defect:** choosing "do not show again" changes not only the
+confirmation UI but the state-preservation semantics of app termination. A
+normal user-facing terminate action can leave durable download rows in
+`Active`/`PostProcessing` even though their process was killed, producing ghost
+activity and potentially blocking queued work after restart.
+
+Required result:
+
+- route both terminate branches through one durable shutdown operation that
+  requeues or otherwise terminalizes every app-owned `Active` and
+  `PostProcessing` row before process exit;
+- do not rely on WorkManager/coroutine cancellation callbacks after
+  `exitProcess()` for persistent-state repair;
+- on startup or worker acquisition, reconcile stale live-status rows against
+  actual worker/process ownership so a prior abrupt process death cannot strand
+  the queue;
+- add regressions for first confirmed termination, the subsequent
+  no-confirmation path, process death between UI shutdown steps, and restart
+  with stale `Active`/`PostProcessing` rows.
+
+### P2 — BUG-SCHEDULER-01 — Keep download scheduling recurrent and correct across midnight
+
+**State:** Open
+
+**Failure path:** enabling the download scheduler or adding/requeuing work outside
+the allowed window calls `AlarmScheduler.schedule()`. That method uses
+`AlarmManager.setExactAndAllowWhileIdle()` to arm one start alarm and one end
+alarm. Both are one-shot exact alarms. `ScheduleAlarmReceiver` only enqueues a
+`DownloadWorker`, and `CancelScheduleAlarmReceiver` only enqueues
+`CancelScheduledDownloadWorker`; neither receiver re-arms the next day's start
+or end alarm. If queued work survives the first end boundary, the cancel worker
+returns active rows to `Queued`, but no next-day start alarm is guaranteed until
+another user/queue action happens to call `schedule()` again.
+
+The same scheduler also misclassifies overnight windows. For a window such as
+23:00→05:00, `isDuringTheScheduledTime()` converts the end hour to `29` but
+leaves a post-midnight `currentHour` such as `1` unchanged, so `1 in 23..29` is
+false. `DownloadWorker` uses that result to cancel itself when the scheduler is
+enabled and there is no individually timed item or priority work;
+`DownloadViewModel` and Observe Source requeue paths likewise treat the same
+post-midnight period as outside the window and schedule an alarm instead of
+starting eligible queued work.
+
+**Why this is a defect:** a persistent scheduler setting does not reliably
+represent a persistent daily execution window. Downloads can stop after the
+first scheduled cycle and remain queued on later days, while valid work during
+the post-midnight half of an overnight window can be incorrectly suppressed.
+The failure is production-reachable through the normal scheduler setting and
+queue/Observe Source paths without malformed state or external corruption.
+
+Required result:
+
+- represent daily time-window membership in a form that correctly handles both
+  same-day and overnight intervals, including exact start/end boundary rules;
+- re-arm the next start/end pair after each scheduled transition, or use another
+  persistent scheduling contract that survives repeated daily cycles without
+  requiring a later queue/settings mutation;
+- ensure settings changes replace/cancel the prior logical schedule rather than
+  leaving stale boundaries, and define/recover the schedule after process/device
+  restart where platform alarms are no longer present;
+- make `DownloadWorker`, queue insertion/requeue, and Observe Source dispatch use
+  the same authoritative window decision;
+- add same-day and 23:00→05:00 boundary tests plus multi-day, no-new-user-action,
+  restart/re-arm, and queued-work-survives-end regressions.
+
+### P2 — BUG-HARDSUB-01 — Preserve ambiguous subtitle lookup failures instead of excluding scan candidates
+
+**State:** Open
+
+**Failure path:** `HardSubScanWorker` scans History rows whose
+`hardSubScanRemoved = 0` and `hardSubDone = 0`. For each candidate it calls
+`ResultRepository.getResultsFromSource(..., singleItem = true)`, takes
+`firstOrNull()?.availableSubtitles`, and collapses a missing result to
+`emptyList()`. A thrown lookup exception is treated as a failure and left
+retryable, but a non-throwing empty result is treated exactly like an
+authoritative result with no requested subtitle language: the worker persists
+`hardSubScanRemoved = true, hardSubDone = false` and moves on.
+
+That empty result is not authoritative. The YouTube-video path falls back to
+`YTDLPUtil.getFromYTDL()`, whose metadata request applies `--ignore-errors` and
+can therefore complete without throwing while producing no parsed `ResultItem`;
+`getYoutubeVideo()` returns that empty list to the scan. The worker's rescan
+reset does not repair these rows: `resetHardSubDoneForRescan()` only resets rows
+where `hardSubDone = 1`, while the ambiguous-empty branch stores
+`hardSubDone = 0`. The automatic candidate query consequently excludes the row
+on subsequent scans unless a separate user action explicitly changes its scan
+state.
+
+**Why this is a defect:** a transient extractor/authentication/item failure can
+be converted into durable evidence that the History item is not a hard-sub scan
+target. Unlike the exception path, the ambiguous-empty path is not counted as a
+failed lookup and does not participate in the worker's bounded retry behavior,
+so eligible media can be silently omitted from future automatic hard-sub scans.
+
+Required result:
+
+- carry an explicit lookup success/completeness outcome instead of reducing an
+  absent `ResultItem` to an empty subtitle list;
+- set `hardSubScanRemoved = true` only after an authoritative successful lookup
+  establishes that no requested manual subtitle exists (or another deliberate
+  exclusion rule applies);
+- keep empty/ignored-error/ambiguous lookups retryable under the same bounded
+  policy as thrown lookup failures and preserve the candidate when retries are
+  exhausted;
+- distinguish a successfully fetched item with an authoritative empty subtitle
+  set from a fetch that produced no item at all;
+- add ignored-error empty-result, thrown-failure, authoritative-no-subtitle,
+  requested-subtitle, retry-exhaustion, and subsequent-rescan regressions.
+
+### P2 — BUG-CANCEL-01 — Persist cancel/requeue intent before terminating live work
+
+**State:** Open
+
+**Failure path:** the per-download notification Cancel action is wired directly
+to `CancelDownloadNotificationReceiver`. The receiver attempts
+`DownloadRepository.cancelByUser(id)` inside an inner `runCatching`, discards
+that failure, and then unconditionally destroys the yt-dlp processes, cancels
+post-processing, and removes the download notification. `cancelByUser()` is the
+authoritative Room transaction that changes the Download row to `Cancelled` and
+terminalizes any linked low-quality ledger children. If that transaction throws,
+the process is still killed while the durable row can remain `Active` or
+`PostProcessing` and the ledger can remain nonterminal.
+
+The scheduler end-boundary path has the inverse ordering problem in
+`CancelScheduledDownloadWorker`: it cancels download work and destroys each
+running yt-dlp process before rewriting that row to `Queued`. A throwing DAO
+update after process destruction can therefore leave the dead job persisted as
+`Active`. `DownloadWorker` does not make these paths safe after the fact: its
+canceled-exception branch treats `YoutubeDL.CanceledException` itself as a
+canceled outcome even when the latest DB status is still live, and stopped-worker
+requeue cleanup is best-effort rather than a durable prerequisite for either
+external cancellation path.
+
+**Why this is a defect:** both production cancellation entry points can cross the
+irreversible process/post-processing termination boundary before the intended
+terminal/requeue state is durably established. A transient Room failure can
+therefore leave ghost `Active`/`PostProcessing` rows with no live owner, stale
+low-quality operation state, or queue slots that appear occupied after restart.
+The user-visible notification path is especially problematic because the
+persistence failure is explicitly swallowed and the action still appears to
+have completed.
+
+Required result:
+
+- make user cancellation atomically persist the Download terminal state and
+  linked-ledger transition before any yt-dlp/post-processing termination, and do
+  not continue with destructive cancellation if that authoritative transaction
+  fails;
+- make scheduler stop persist or reserve an authoritative `Queued` transition
+  before terminating the corresponding process, under an ownership protocol
+  that prevents the live worker from committing conflicting state;
+- preserve typed persistence failure instead of swallowing it, and keep the
+  notification/action retryable when durable cancellation could not commit;
+- make worker canceled-exception handling reconcile against authoritative DB
+  state rather than treating process cancellation alone as proof that the
+  requested persistent transition succeeded;
+- add fault-injection regressions for `cancelByUser()`, linked-ledger update, and
+  scheduler requeue writes, plus restart tests proving no killed job remains as
+  ghost `Active`/`PostProcessing` work.
+
+### P2 — BUG-UPDATER-01 — Preserve custom yt-dlp update failure instead of reporting success
+
+**State:** Open
+
+**Failure path:** the production Updating settings screen lets the user create
+and select an arbitrary custom yt-dlp source string. Selecting that source stores
+it in `ytdlp_source` and immediately calls `UpdateUtil.updateYoutubeDL(source)`;
+startup auto-update later calls the same method with the stored source. For any
+source other than `stable`, `nightly`, or `master`, `updateYoutubeDL()` executes
+yt-dlp with `--update-to <source>@latest` and inspects the final nonblank output
+line. If that line contains `ERROR`, the function constructs an
+`YTDLPUpdateResponse(ERROR, out)` but discards that value because there is no
+`return` or `else`. Control then reaches a second independent `if`: unless the
+same line also contains `yt-dlp is up to date`, its `else` returns
+`YTDLPUpdateResponse(DONE, out)`. The settings UI therefore takes the success
+branch and refreshes the displayed version, while startup auto-update can show a
+success Snackbar for the same failed update.
+
+**Why this is a defect:** an authoritative updater failure is observed and then
+lost by control-flow fallthrough, so a real production update failure is
+reinterpreted as success. The user can reasonably believe a requested runtime
+update was applied when the installed yt-dlp binary was not updated, obscuring
+the failure and any remediation needed for subsequent downloads.
+
+Required result:
+
+- make updater output classification mutually exclusive and return the typed
+  `ERROR` result immediately when authoritative error output is detected;
+- prefer the updater process/exit-status contract over fragile final-line text
+  matching where the library exposes it, while preserving explicit
+  `ALREADY_UP_TO_DATE` and `DONE` states;
+- ensure manual settings updates, source changes, startup auto-update, and any
+  WorkManager updater path propagate the same typed failure semantics and never
+  display success for a failed update;
+- add regressions for custom-source error output, already-up-to-date output,
+  successful output, thrown execution failure, and an error line containing
+  unrelated success-like text.
+
+### P3 — BUG-LOCALADD-02 — Persist local-add session input before durable worker enqueue
+
+**State:** Open
+
+**Failure path:** the History local-add flow expands the selected URIs, serializes
+them through `LocalAddStorage.saveEntries()`, and immediately enqueues a
+`LocalAddWorker` whose only durable input is the generated session ID.
+`saveEntries()` stores the actual URI list with `SharedPreferences.Editor.apply()`,
+which updates process memory immediately but commits the file asynchronously.
+The WorkManager request is persisted independently. If the process dies after
+the WorkManager request becomes durable but before the SharedPreferences disk
+write completes, a later worker process can retain the session ID while
+`LocalAddStorage.loadEntries()` observes no entry payload and returns
+`emptyList()`. `LocalAddWorker` treats an empty list as normal completion, clears
+the progress snapshot, and returns `Result.success()` rather than preserving the
+missing-session distinction.
+
+**Why this is a defect:** the durable work record can outlive the non-durable
+payload that gives it meaning. An abrupt process death in this window silently
+turns a user-selected local import into a successful no-op, so WorkManager will
+not retry and the user receives no indication that the selected files were
+never processed.
+
+Required result:
+
+- persist local-add request payload and worker ownership under one durable
+  ordering contract before enqueue can survive process death;
+- do not use asynchronous SharedPreferences persistence as the sole backing
+  store for input required by durable WorkManager work; use durable database/file
+  state or otherwise prove the payload commit completed before enqueue;
+- distinguish an intentionally empty request from a missing/corrupt session and
+  return a retryable or explicit failure outcome instead of `Result.success()`;
+- add a deterministic process-death regression between payload persistence and
+  WorkManager execution, plus missing-session, corrupt-session, and normal
+  local-add completion coverage.
 
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
