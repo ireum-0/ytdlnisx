@@ -6,8 +6,18 @@ additional work.
 
 The active correctness defects below were revalidated against
 `checkpoint/pre-baseline-review@73d3836665f5f2e6e232e327eef1d968054d0539`
-on 2026-08-19. This defect list intentionally excludes repository settings,
+on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
+
+There are **22 active correctness defects** in this checkpoint. The previous
+`BUG-BACKUP-09` entry was removed during revalidation because the user-facing
+restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
+`TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
+previous claim that merge restore passes backed-up primary keys directly into
+the repositories therefore does not describe the production restore path.
+Defense-in-depth normalization at the `restoreData()` boundary may still be a
+hardening improvement, but it is not an active correctness defect at this
+checkpoint.
 
 ## Defect priority
 
@@ -40,564 +50,603 @@ priority, and complexity.
 
 **State:** Open
 
-Backup restore inserts History rows with newly generated IDs and builds
-`importedHistoryIdMap`, but restored download rows do not remap History
-replacement markers stored in `playlistURL`. This affects both regular
-`history-redownload:<id>` markers and quality-replacement
-`history-redownload:<id>:quality:<height>` markers. `DownloadWorker` later
-parses the embedded numeric History ID and uses it as the replacement target.
-After reset restore the target can be missing; after merge restore the stale ID
-can collide with an unrelated live History row and cause the wrong record/media
-to be replaced or deleted.
+**Failure path:** app-data restore inserts History rows with newly generated
+primary keys and records those mappings in `importedHistoryIdMap`. Download rows
+are restored separately. Their `playlistURL` can contain durable replacement
+markers such as `history-redownload:<oldHistoryId>` or
+`history-redownload:<oldHistoryId>:quality:<height>`, but those embedded History
+IDs are not remapped through `importedHistoryIdMap`. Later,
+`DownloadWorker` parses `HistoryRedownloadMarker` from `playlistURL`, takes the
+embedded numeric ID as the History replacement target, loads that row, and can
+replace the row and delete the previous media after the replacement succeeds.
+
+**Why this is a defect:** after reset restore the old ID can refer to no row; in
+merge restore the same number can already belong to an unrelated live History
+row. Numeric equality across independent databases is not stable identity. A
+stale marker can therefore target the wrong History row and its media.
 
 Required result:
 
 - parse and remap replacement markers through `importedHistoryIdMap` while
-  restoring queued, scheduled, cancelled, errored, and saved downloads;
+  restoring every download category that can contain them;
 - reject or neutralize an unmappable marker instead of preserving a stale ID;
-- validate source identity/URL before destructive History replacement;
-- cover reset restore, merge restore, ID collision, missing target, regular
-  marker, and quality marker cases.
+- validate the intended source/media identity before any destructive History
+  replacement or previous-media deletion;
+- add reset, merge, ID-collision, missing-target, regular-marker, and
+  quality-marker regressions.
 
 ### P0 — BUG-BACKUP-03 — Make reset restore fail-safe instead of destructively partial
 
 **State:** Open
 
-`restoreData(..., resetData = true)` performs a long sequence of irreversible
-mutations across SharedPreferences, History, keyword/group tables, Observe
-Sources, download queues, cookies, templates, and other state. The sequence is
-wrapped only in an outer `runCatching`; it is not staged or transactionally
-rolled back as a restore operation. Several reset branches delete existing live
-data before later categories are parsed/inserted, and restored queued work can
-be started before the remaining restore stages finish. If any later database,
-filesystem, preference, or scheduling operation throws, the function returns
-failure while earlier live data can already be deleted or partially replaced.
-The restore UI then reports only a generic failure and has no rollback path.
-The parser also does not require the backup `app` marker or a supported
-`backup_format_version` before offering the destructive Reset action.
+**Failure path:** the restore UI parses the selected JSON categories into a
+`RestoreAppDataItem` before invoking `restoreData()`. The defect is therefore
+not that later categories are still being JSON-parsed after destructive work
+starts. The actual problem is that `restoreData(..., resetData = true)` then
+performs a long sequence of live mutations across SharedPreferences, History,
+keyword/group tables, Observe Sources, download queues, cookies, templates,
+filesystem-backed thumbnails, and WorkManager side effects. The sequence is
+wrapped in `runCatching`, but it is not one atomic restore transaction and has
+no rollback plan. Earlier categories can be deleted/replaced before later
+categories are applied, inserted, or scheduled. Restored queued work can also
+be started before all restore stages have committed.
+
+The UI-side parser also does not require a valid backup `app` marker and a
+supported `backup_format_version` before presenting/performing the destructive
+Reset path, so syntactically parseable input is not the same as a validated
+backup contract.
+
+**Why this is a defect:** an exception in a later database, filesystem,
+preference, or scheduling step can return a restore failure after earlier live
+state has already been removed or replaced. The user receives a generic failure
+without the pre-restore state being restored.
 
 Required result:
 
-- fully parse and validate the backup manifest, supported format version,
-  category payloads, and required references before mutating live state;
-- stage restored files such as custom thumbnails before committing references;
-- apply related Room reset/restore mutations through a transaction or an
-  explicit rollback-capable restore plan;
-- defer WorkManager scheduling and preference replacement until the database
-  portion has committed, or compensate those side effects on failure;
-- quiesce or otherwise isolate conflicting live workers while a reset restore
-  is committing;
-- add injected-failure tests after early, middle, and late restore stages and
-  prove that a reported failure leaves the pre-restore live state intact.
+- fully parse and then **semantically validate** the backup manifest, supported
+  format version, category payloads, and cross-row references before mutating
+  live state;
+- stage filesystem artifacts before committing references to them;
+- apply related Room reset/restore mutations transactionally, or implement an
+  explicit rollback-capable restore plan where one Room transaction is not
+  possible;
+- defer WorkManager scheduling and preference replacement until the durable
+  database portion has committed, or provide compensating rollback;
+- quiesce or isolate conflicting live workers while the reset restore commits;
+- inject failures at early, middle, and late commit stages and prove that a
+  reported failure does not leave a destructively partial restore.
 
 ### P0 — BUG-OBSERVE-01 — Require authoritative source snapshots before sync deletion
 
 **State:** Open
 
-Observe Sources treats a source fetch as usable for destructive `syncWithSource`
-reconciliation whenever the fetch returns normally. It compares the returned
-URLs with `alreadyProcessedLinks`, then deletes matching History rows and their
-associated files for processed URLs missing from that returned list. The source
-fetch contract does not prove that the returned list is complete. The yt-dlp
-metadata request uses `--ignore-errors`, so per-item extraction failures can
-produce a partial list without failing the overall call; NewPipe paging can also
-return a successful accumulated list when a page yields no usable items. A
-partial snapshot can therefore make media that is still present at the source
-look removed and trigger destructive local History/media deletion.
+**Failure path:** `ObserveSourceWorker` obtains a plain `List<ResultItem>` from
+`ResultRepository.getResultsFromSource()`. When `syncWithSource` is enabled, it
+canonicalizes URLs from that list, treats the set as the current source
+membership, finds previously processed URLs that are absent, resolves matching
+History rows, and can delete those History rows and their associated files.
+There is no accompanying result that proves the extraction represented the
+entire source.
+
+The yt-dlp metadata request includes `--ignore-errors`, so individual item
+failures can be skipped while the overall extraction still returns normally.
+NewPipe pagination can likewise return an accumulated successful list without a
+separate completeness proof. A non-throwing list is therefore not equivalent to
+an authoritative snapshot.
+
+**Why this is a defect:** a transient partial extraction can make still-present
+source media appear removed, turning an extraction-quality problem into local
+data/file deletion.
 
 Required result:
 
-- carry an explicit complete/authoritative source-snapshot state alongside the
-  returned items;
-- allow `syncWithSource` deletion only after a complete authoritative snapshot;
-- on partial, failed, or ambiguous fetches, preserve History/media and processed
-  membership state and retry/report the source failure;
-- add regressions for yt-dlp ignored item errors, incomplete NewPipe paging, and
-  empty/partial pages proving that no local record or file is deleted.
+- return explicit snapshot completeness/authority alongside extracted items;
+- permit destructive `syncWithSource` reconciliation only for a complete,
+  authoritative snapshot;
+- preserve History/media and previously processed membership on failed,
+  partial, or ambiguous fetches and retry/report the source failure instead;
+- add ignored-item-error, incomplete-paging, empty-partial-page, and transient
+  extractor-failure regressions proving that local media is not deleted.
 
 ### P0 — BUG-OUTPUT-01 — Do not adopt unrelated recent destination files as download outputs
 
 **State:** Open
 
-`DownloadWorker` falls back to `recoverPathsFromDirectory()` when parsed or
-moved output paths are unavailable. That helper recursively accepts every file
-in the destination whose modification time is newer than roughly two minutes
-before the current download started, without proving an expected filename,
-source identity, temp-origin mapping, or ownership by the current download.
-These broad candidates can become `finalPaths`. In History replacement flows a
-recovered file can pass only the media/quality checks, be persisted as the
-replacement History path, and then cause the prior History media to be deleted.
-Deferred hard-sub paths can likewise operate on recovered destination files.
-Thus an unrelated file modified concurrently in the same destination can be
-attached to, modified by, or substituted for the current download.
+**Failure path:** several hard-sub and output-recovery paths in `DownloadWorker`
+fall back to `recoverPathsFromDirectory()` when authoritative parsed/moved paths
+are unavailable. The helper recursively scans a bounded directory depth and
+accepts files whose `lastModified()` is newer than approximately two minutes
+before the current yt-dlp attempt started. The time window does not prove that a
+file was produced by this download. In some hard-sub/replacement recovery paths
+those candidates can flow into later burn-in, quality validation, `finalPaths`,
+History persistence, or previous-media cleanup.
+
+**Why this is a defect:** an unrelated file created or modified concurrently in
+the same destination can satisfy the time test and be treated as current-job
+output. This is especially dangerous for replacement flows because committing a
+wrong recovered path can be followed by deletion of the actual old media.
 
 Required result:
 
-- recover outputs only from provenance tied to the current operation, such as
-  exact move results, expected output names/manifests, or verified temp-origin
-  mappings;
-- never accept an arbitrary recent destination file merely because of mtime;
-- if output ownership cannot be proven, preserve recoverable temp artifacts and
-  fail safely instead of committing History replacement;
-- require verified output provenance before quality validation, hard-sub
-  mutation, History replacement, or old-media deletion;
-- add move-failure/output-resolution tests with unrelated recent destination
-  files for normal, hard-sub, and History replacement downloads.
+- recover only outputs with provenance tied to the current operation, such as
+  exact move results, verified expected names/manifests, or a proven temp-origin
+  mapping;
+- never use destination mtime alone as ownership evidence;
+- fail safely and preserve recoverable temp artifacts when ownership cannot be
+  established;
+- require verified output provenance before hard-sub mutation, quality
+  acceptance, History replacement, or old-media deletion;
+- add focused hard-sub and History-replacement recovery tests containing
+  unrelated recent destination files; normal-download cases should remain as
+  non-regression coverage for any future use of the same fallback.
 
 ### P1 — BUG-BACKUP-04 — Fail backup creation when a selected category cannot be captured
 
 **State:** Open
 
-The category helpers in `BackupSettingsUtil` catch their own read/serialization
-exceptions and return an empty JSON array. `SettingsViewModel.backup()` therefore
-cannot distinguish a legitimately empty category from a category whose database
-read or serialization failed. It can write that empty substitute into the file,
-move the file successfully, and let the UI report that the backup was created.
-A user can consequently keep an apparently successful backup that silently
-omits an entire selected data category and discover the loss only during a later
-restore.
+**Failure path:** category helpers in `BackupSettingsUtil` wrap their database
+read/serialization work in `runCatching` and return an empty `JsonArray` after a
+failure. `SettingsViewModel.backup()` therefore receives the same representation
+for a legitimately empty category and for a category that failed to read or
+serialize, writes the resulting JSON, and can still move the file and report
+backup success.
+
+**Why this is a defect:** the artifact can be labelled successful while silently
+omitting a selected category. The loss is only discovered when the backup is
+needed for restore.
 
 Required result:
 
-- propagate category capture failures through a typed `Result`/exception instead
-  of converting them to empty arrays;
-- abort a normal backup when any selected category cannot be captured, or mark
-  an explicitly incomplete artifact that destructive restore refuses to use;
-- capture interdependent database data from a consistent snapshot where cross-
-  table relationships matter;
-- add fault-injection tests for every selected category and prove that a failed
-  category cannot produce a success-labelled backup.
+- propagate category capture failure through a typed result or exception;
+- abort normal backup creation if any selected category cannot be captured, or
+  explicitly mark an incomplete artifact that destructive restore rejects;
+- capture interdependent tables from a consistent snapshot where relationship
+  integrity matters;
+- add per-category fault injection proving capture failure cannot produce a
+  success-labelled backup.
 
 ### P1 — BUG-KEYWORD-01 — Require an authoritative automatic-keyword baseline
 
 **State:** Open
 
-Automatic keyword synchronization carries only `List<ResultItem>` from the
-extractor into the rule engine. `recordBaseline()` completes the baseline when
-that list is empty as long as no database write failed. An empty result does
-not prove that extraction was complete or that the playlist was authoritatively
-empty, so a transient/incomplete empty fetch can mark the baseline complete.
-A later successful fetch can then classify pre-existing playlist items as newly
-discovered content when apply-existing is disabled.
+**Failure path:** automatic-keyword synchronization passes only a
+`List<ResultItem>` into `AutomaticKeywordRuleEngine`. In `recordBaseline()`, an
+empty list performs no per-video work, leaves `baselineCanComplete` true, and can
+therefore call `completeScheduledSyncIfCurrent()`. Other discovery paths have
+the same fundamental problem: completeness is not represented independently
+from item count.
+
+**Why this is a defect:** an empty result caused by an incomplete/transient
+extractor response can be recorded as a completed baseline. A later complete
+fetch can then classify old playlist members as newly discovered content when
+apply-existing is disabled.
 
 Required result:
 
-- carry fetch completeness separately from the result list, including a
-  trustworthy authoritative-empty state;
-- complete a baseline only from a complete/authoritative snapshot;
-- keep incomplete/failed/ambiguous empty fetches retryable without advancing
-  baseline state;
-- add empty/incomplete -> later nonempty regression coverage.
+- carry extractor completeness/authority separately from the returned list;
+- complete baseline state only from a complete authoritative snapshot,
+  including an explicitly authoritative-empty result;
+- leave incomplete/ambiguous empty fetches retryable without advancing baseline
+  state;
+- add empty-incomplete -> later-nonempty and authoritative-empty regressions.
 
 ### P1 — BUG-METADATA-01 — Prevent stale full-row metadata writes
 
 **State:** Open
 
-`UpdateMultipleDownloadsDataWorker` loads a download row, performs potentially
-slow metadata enrichment, then reloads only the current `status` before writing
-the enriched object with `updateWithoutUpsert()`. Other row fields changed
-concurrently while metadata is being fetched can therefore be overwritten by
-the stale pre-fetch object.
+**Failure path:** this is not limited to one worker. In
+`UpdateMultipleDownloadsDataWorker`, a `DownloadItem` is loaded, metadata
+lookup can take substantial time, only the current `status` is reloaded, and the
+resulting object is written back through a full-row update. `DownloadWorker`'s
+`persistDownloadMetadata()` also enriches an existing `DownloadItem` snapshot
+and later calls `dao.updateWithoutUpsert()` after checking only whether the row
+is still `Active`. Neither path establishes that unrelated mutable columns still
+match the snapshot used for enrichment.
+
+**Why this is a defect:** configuration, scheduling, path, queue metadata, retry
+state, or other fields changed concurrently can be replaced by stale values even
+though metadata enrichment does not own those fields.
 
 Required result:
 
-- update only metadata columns owned by the enrichment worker, or use a row
-  revision/compare-and-set merge contract;
-- preserve concurrent scheduling, configuration, path, and other user/workflow
-  edits;
-- add a regression test that mutates a download row while metadata lookup is in
+- define one metadata-owned column update/merge contract used by all metadata
+  writers, or add a row revision/CAS contract that rejects stale snapshots;
+- preserve concurrent non-metadata edits instead of copying an old full row over
+  them;
+- add deterministic concurrency tests for both background batch enrichment and
+  download-time enrichment, mutating non-metadata fields while lookup is in
   progress.
 
 ### P2 — BUG-KEYWORD-02 — Recompute derived RULE assignments on History Undo
 
 **State:** Open
 
-History delete Undo snapshots keyword assignment rows. `restoreHistory()`
-restores RULE assignments whenever the same numeric rule ID still exists, but
-it does not prove that the rule still has the same revision, condition, or
-keywords. If a rule is edited during the Undo window, the restored History row
-can receive assignments derived from the old rule definition.
+**Failure path:** record-only History deletion snapshots all keyword assignment
+rows before deleting the History item. Undo calls
+`HistoryKeywordAssignmentRepository.restoreHistory()`. For snapshot rows whose
+source is `RULE`, restore checks only whether a rule with the same numeric ID
+currently exists. It does not bind the snapshot to that rule's old revision,
+condition, or keyword set.
+
+**Why this is a defect:** if the rule is edited/deleted/recreated during the Undo
+window, the same numeric rule ID can represent a different derivation. Restoring
+the old RULE rows makes derived keyword state stale relative to the current rule.
 
 Required result:
 
 - restore user-owned/manual assignment state from the snapshot;
-- recompute current RULE-derived assignments from the current rule definition,
-  or persist and validate an immutable rule revision before restoring derived
-  rows;
-- add Undo coverage where a rule is edited or replaced while the History row is
-  deleted.
+- recompute RULE-derived assignments from the current rule definition, or prove
+  an immutable matching rule revision before restoring derived rows;
+- add Undo tests covering rule edit, deletion/recreation, and changed keyword
+  membership while the History row is absent.
 
 ### P2 — BUG-METADATA-02 — Validate source identity before applying download metadata
 
 **State:** Open
 
-`ResultRepository` has `getSingleMetadataFromUrl()` specifically to reject an
-extractor result whose trusted source identity does not match the requested
-URL. `updateDownloadItem()`, however, fetches fresh metadata through
-`getSingleMetadataFromSource()` and applies it directly; its cache-first path
-also permits a fresh result to participate in enrichment without first proving
-that it belongs to the download URL. If an extractor returns an unrelated item,
-metadata such as title/author/thumbnail, duration, website, formats, subtitles,
-or publication date can be merged into the wrong download row and later
-materialized into History.
+**Failure path:** `ResultRepository.getSingleMetadataFromUrl()` validates a
+fresh extractor result against the requested URL with trusted source identity.
+`updateDownloadItem()`, however, can fetch through
+`getSingleMetadataFromSource()` and apply that result without the same identity
+check; the fresh fallback participating in cache-first lookup has the same gap.
+`applyMetadata()` can then change title, author, playlist title, thumbnail,
+duration, website, and publication date on the requested download row.
+
+The previous task text incorrectly listed formats and subtitles as fields
+modified by this path. `applyMetadata()` does not update those fields in the
+checkpoint implementation.
+
+**Why this is a defect:** if an extractor/fallback returns a different media
+item, valid-looking metadata from that item can be persisted on the wrong
+Download and later flow into History.
 
 Required result:
 
-- validate every fresh metadata result against the requested download URL using
-  `ExtractorSourceIdentityPolicy` before merging or applying it;
-- reject a mismatched fresh result in both fresh-first and cache-first lookup
-  paths and do not combine it with a valid cached record;
-- preserve canonical-equivalent and explicitly supported provider redirects;
-- add regressions for accepted canonical equivalents and rejected unrelated
-  extractor results.
+- validate every fresh metadata candidate against the requested download source
+  before applying or combining it with cached data;
+- reject mismatched candidates in both fresh-first and cache-first paths;
+- continue accepting canonical-equivalent identities and deliberately supported
+  provider redirects;
+- add accepted-equivalent and unrelated-result regressions for every lookup
+  order.
 
 ### P2 — BUG-DATE-01 — Preserve extractor failure instead of ambiguous NO_DATE
 
 **State:** Open
 
-History publication-date resolution catches a failed minimal lookup and falls
-back to the compatibility path. The compatibility path uses the generic
-metadata fetch, whose yt-dlp request allows ignored item errors and can therefore
-produce an empty result without an exception. If that happens after the minimal
-lookup already failed, the resolver can return `NONE`, and the ledger persists
-`NO_DATE`. That makes a failed or incomplete extraction indistinguishable from
-a trustworthy result proving that no publication date exists.
+**Failure path:** `HistoryDateResolutionEngine.resolve()` catches a non-
+cancellation exception from `minimalLookup()` and converts it to `null`, then
+tries `compatibilityLookup()`. If compatibility lookup also yields no date
+without throwing, the resolver returns `HistoryDateLookupOrigin.NONE`.
+`HistoryDateFetchRepository.checkpointSourceGroup()` persists a non-present date
+with origin `NONE` as `NO_DATE`. The earlier extractor failure is therefore lost
+from the durable outcome.
+
+**Why this is a defect:** `NO_DATE` reads like a successful determination that
+no publication date exists, while this path can mean that lookup failed and the
+fallback produced ambiguous empty output.
 
 Required result:
 
-- carry success/completeness/failure state for each lookup path rather than
-  reducing it to nullable date values;
-- persist `NO_DATE` only after a successful authoritative lookup that actually
-  establishes absence of a date;
-- preserve failure/retry state when extractor errors or ambiguous empty output
-  prevent that conclusion;
-- add coverage for minimal failure + compatibility empty/ignored-error cases.
+- preserve success/completeness/failure state for each lookup attempt instead
+  of reducing failed attempts to nullable dates;
+- persist `NO_DATE` only after a successful authoritative lookup establishes
+  date absence;
+- keep extractor failure/ambiguous empty output retryable or explicitly failed;
+- add minimal-failure + compatibility-empty/ignored-error regressions.
 
 ### P2 — BUG-DATE-02 — Do not mark a date-fetch operation COMPLETED with failed items
 
 **State:** Open
 
-Individual History date-fetch items can correctly enter `FAILED`, but
-`finalizeWorkerRun()` marks the parent operation `COMPLETED` whenever there are
-no `PENDING` items. It does not check whether any child items failed. A run with
-one or many failed items can therefore present a successful completed operation
-and terminal notification even though the requested backfill did not fully
-succeed.
+**Failure path:** child ledgers can enter `HistoryDateFetchItemState.FAILED`.
+`HistoryDateFetchRepository.finalizeWorkerRun()` nevertheless marks the parent
+`COMPLETED` whenever the pending count reaches zero and cancellation was not
+requested; it does not check failed-child count. The worker can then emit a
+terminal completed notification and return `Result.success()`.
+
+There is a second consequence: child lookup failures that have already been
+converted into terminal `FAILED` item outcomes do not escape as coordinator
+exceptions. Because the worker still succeeds, WorkManager does not
+explicitly retry those failed items even when the underlying lookup failure was
+transient.
+
+**Why this is a defect:** parent state, notification state, and retry behavior
+can all claim completion while part or all of the requested backfill failed.
 
 Required result:
 
-- derive the terminal operation state from child outcomes, not only pending
-  count;
-- represent partial/all-failed runs explicitly as failure or partial-success
-  according to the operation-state contract;
-- make terminal UI/notification counts reflect failed items;
-- add mixed success/failure and all-failed finalization tests.
+- derive parent terminal state from the complete child-outcome distribution;
+- represent mixed/all-failed terminal outcomes according to an explicit
+  partial/failure contract;
+- keep retryable child failures unresolved while bounded retry budget remains
+  and return `Result.retry()` when that contract requires another attempt;
+- make terminal UI/notification counts expose failures;
+- add mixed success/failure, all-failed, retryable-failure, and exhausted-retry
+  tests.
 
 ### P2 — BUG-BACKUP-02 — Use collision-free custom-thumbnail paths during restore
 
 **State:** Open
 
-Custom thumbnails are restored before new History IDs are allocated and are
-written to `restored_<oldHistoryId>.<extension>`. The old ID comes from the
-backup rather than the live database, and `writeBytes()` overwrites an existing
-file at that path. During merge restore, two independent backups can legitimately
-contain different History rows with the same old numeric ID. Restoring the
-second backup then overwrites the thumbnail file still referenced by the first
-restored History row, silently changing or corrupting another record's custom
-thumbnail.
+**Failure path:** custom thumbnails are written before destination History IDs
+are allocated. The path is derived from the backup-local ID as
+`restored_<oldHistoryId>.<extension>`, and `writeBytes()` overwrites an existing
+file at that location. The later `importedHistoryIdMap` cannot repair a file
+that was already overwritten.
+
+**Why this is a defect:** two independent backups can legitimately contain
+different History records with the same source-local numeric ID. Restoring the
+second backup in merge mode can overwrite the thumbnail file still referenced
+by a record restored from the first backup.
 
 Required result:
 
-- allocate a unique restored-thumbnail path tied to the newly allocated History
-  identity or a collision-resistant generated token;
-- never overwrite a thumbnail path referenced by another History row;
-- clean up newly written thumbnail artifacts if the corresponding History
-  restore fails;
-- add merge-restore tests for two backups sharing an old History ID, repeated
-  restore, different extensions/content, and reset restore.
+- allocate thumbnail storage using the new History identity or a collision-
+  resistant generated token;
+- never overwrite a path referenced by another live History row;
+- remove newly staged thumbnail artifacts if their History restore fails;
+- test same-old-ID independent backups, repeated merge restore, differing
+  extensions/content, and reset restore.
 
 ### P2 — BUG-BACKUP-05 — Include paused downloads in backup and restore
 
 **State:** Open
 
-Paused downloads are persistent queue records and are displayed in the active
-Downloads screen alongside active/post-processing rows. The backup category
-list, default all-category backup, and `RestoreAppDataItem` have categories for
-queued, scheduled, cancelled, errored, and saved downloads, but no paused
-category. `backupQueuedDownloads()` reads only the queued/waiting queue, while
-paused rows are exposed separately by `DownloadRepository`. A user who creates
-an all-category backup while downloads are paused therefore receives a
-success-labelled backup that cannot reconstruct those paused jobs.
+**Failure path:** `Paused` is a persistent `DownloadRepository.Status`, is
+queried separately from queued rows, and is displayed with active download
+state. App-data backup/restore has categories and model fields for queued,
+scheduled, cancelled, errored, and saved downloads, but no paused category.
+`backupQueuedDownloads()` reads queued/waiting rows and does not implicitly
+capture paused rows.
+
+**Why this is a defect:** an all-category backup can report success while
+omitting paused jobs, so restoring that backup cannot reconstruct the queue
+state the user intentionally preserved.
 
 Required result:
 
-- include paused download rows in the backup format, with an explicit restore
-  status contract that does not unexpectedly auto-start them;
-- preserve their configuration, operation/retry metadata, and safe queue order;
-- define backward compatibility for older backup versions that lack the paused
-  category;
-- add all-category round-trip tests containing paused, queued, and scheduled
-  rows simultaneously.
+- include paused rows in the versioned backup schema and all-category selection;
+- restore them under an explicit contract that does not unexpectedly auto-start
+  them;
+- preserve their configuration, retry/operation metadata, and safe queue order;
+- define compatibility with older backup versions lacking paused data and add
+  paused+queued+scheduled round-trip coverage.
 
 ### P2 — BUG-BACKUP-06 — Remap or reject every imported numeric reference
 
 **State:** Open
 
-Restore correctly builds maps for several newly allocated database IDs, but
-some persisted numeric references still bypass those maps. In Youtuber-group
-restore, members and parent/child relations use `youtuberGroupIdMap`, while the
-`historyVisibleChildYoutuberGroups` preference is written back using the old
-backup IDs. Generic settings backup can likewise carry ID-valued group
-preferences. For History keyword assignments whose source type is
-`LEGACY_OBSERVE_SOURCE`, restore falls back to the old `sourceId` when no
-Observe Source mapping exists instead of proving that the old ID still denotes
-the same source. During merge restore, a reused numeric ID can therefore point
-at an unrelated live group/source; during reset restore it can point nowhere.
-This leaves UI visibility state and keyword provenance attached to the wrong
-persistent identity.
+**Failure path:** restore correctly remaps several newly allocated table IDs but
+not every persisted reference to them. Youtuber-group members and relations use
+`youtuberGroupIdMap`, while `historyVisibleChildYoutuberGroups` is written back
+from old backup IDs. Generic settings backup can also contain ID-bearing
+preferences. For `LEGACY_OBSERVE_SOURCE` keyword assignments, restore can retain
+the old `sourceId` when no Observe Source mapping is available instead of
+proving that the live ID represents the same source.
+
+**Why this is a defect:** numeric PKs are database-local. In merge restore an old
+ID can point to a different live entity; in reset restore it can point nowhere.
+The result is visibility/provenance state bound to the wrong identity.
 
 Required result:
 
-- enumerate ID-bearing fields/preferences in the backup schema and give each an
-  explicit remap/validation rule;
-- remap visible/hidden Youtuber-group IDs through `youtuberGroupIdMap` before
-  committing preferences;
-- for legacy Observe Source assignments, use a restored mapping or validate a
-  stable source identity before retaining a live ID; otherwise drop/quarantine
-  the stale derived attribution rather than guessing by number;
-- add merge/reset tests with intentionally colliding old group/source IDs and
-  verify the restored references resolve to the intended entities only.
+- inventory every ID-bearing backup field/preference and assign a remap or
+  validation rule;
+- remap Youtuber-group preference IDs through the same destination map used for
+  rows/relations;
+- require mapped or stable-source-validated Observe Source identity for legacy
+  assignments, otherwise drop/quarantine the stale derived attribution;
+- add merge/reset collision tests for group/source IDs.
 
 ### P2 — BUG-BACKUP-07 — Preserve playlists and playlist groups in app-data backup
 
 **State:** Open
 
-The default app-data backup includes settings, History, keyword/youtuber data,
-download queues, cookies, templates, shortcuts, search history, and Observe
-Sources, but it has no category or serializer for `Playlist`,
-`PlaylistItemCrossRef`, `PlaylistGroup`, or `PlaylistGroupMember`. The restore
-model likewise has no fields for those tables, and `restoreData()` only recreates
-History rows with newly allocated IDs; it does not rebuild playlist membership
-or playlist-group membership from those restored rows. A success-labelled
-all-category backup therefore cannot reconstruct user-created playlists, their
-History membership, or playlist grouping after a reset/restore.
+**Failure path:** Room persists `Playlist`, `PlaylistItemCrossRef`,
+`PlaylistGroup`, and `PlaylistGroupMember`, but the backup category list,
+`RestoreAppDataItem`, serializers, parser, and restore sequence contain no
+corresponding playlist/playlist-group payload. History is restored with newly
+allocated IDs without recreating those relationship tables.
+
+**Why this is a defect:** an all-category backup cannot reconstruct user-created
+playlists, History-to-playlist membership, or playlist grouping even though the
+backup reports success.
 
 Required result:
 
-- include playlists, playlist-to-History cross references, playlist groups, and
-  playlist-group memberships in the backup format and default all-category
-  selection;
-- restore playlist IDs and History IDs through explicit old-to-new mappings
-  before inserting cross references and group memberships;
-- define merge semantics for same-name playlists/groups and reject ambiguous
-  numeric-ID fallback;
-- add reset and merge round-trip tests with one History item in multiple
-  playlists and playlists belonging to multiple groups.
+- add playlist rows, History cross-references, playlist groups, and group
+  memberships to the versioned backup format/default selection;
+- remap both History and playlist IDs before inserting relationship rows;
+- define stable merge semantics for same-name or otherwise colliding entities
+  rather than falling back to numeric IDs;
+- add reset/merge round trips with multi-playlist History membership and
+  multi-group playlist membership.
 
 ### P2 — BUG-BACKUP-08 — Restore every supported SharedPreferences value type
 
 **State:** Open
 
-`BackupSettingsUtil.backupSettings()` serializes every preference in
-`SharedPreferences.all` and records the runtime type name, so `Long` and `Float`
-values are written to otherwise successful app-data backups. `restoreData()`,
-however, handles only `String`, `Boolean`, `Int`, and string-set values; every
-other type falls through the set branch and is silently ignored. The app
-currently persists real user/runtime state with the missing types: the player
-stores per-History playback-position cache entries with `putLong`, while
-subtitle text size, hold playback speed, and speed presets use `putFloat`.
-A reset restore clears preferences first and then cannot reconstruct those
-values; a merge restore silently leaves the destination device's old values
-instead of applying the backup. The backup can still report success in both
-cases.
+**Failure path:** `BackupSettingsUtil.backupSettings()` serializes the values it
+backs up from `SharedPreferences.all` and records each runtime type; it does
+explicitly exclude keys such as `app_language`, so the previous wording that it
+backs up literally every preference was too broad. Among the included values,
+`Long` and `Float` are serialized successfully. `restoreData()` handles
+`String`, `Boolean`, `Int`, and string-set values but has no corresponding
+`Long`/`Float` restore branch, so those values are silently not applied.
+
+The checkpoint uses real missing-type values: player playback-position cache
+entries are stored with `putLong`, and subtitle text size, hold speed, and speed
+presets use `putFloat`.
+
+**Why this is a defect:** reset restore clears preferences and cannot reconstruct
+those values; merge restore can silently keep destination-local values instead
+of applying the backup, while both operations can still report success.
 
 Required result:
 
-- restore `Long` and `Float` with the corresponding SharedPreferences editor
-  methods and reject unknown serialized types instead of silently ignoring them;
-- define whether transient ID-keyed caches such as player playback positions
-  belong in portable settings backup at all, and if retained, remap/validate
-  their History identity separately from value-type restoration;
-- preserve supported primitive types losslessly through backup/restore and
-  version the schema if type encoding changes;
-- add round-trip tests covering String, Boolean, Int, Long, Float, StringSet,
-  reset restore, merge restore, and malformed/unknown type names.
-
-### P2 — BUG-BACKUP-09 — Allocate fresh primary keys for merge-restored standalone rows
-
-**State:** Open
-
-Merge restore passes backed-up `CookieItem`, `CommandTemplate`, and
-`TemplateShortcut` rows directly back to their repositories without clearing
-their auto-generated primary keys. Those numeric IDs are database-local and are
-not stable identities across installations or independent backups. The DAO
-conflict behavior makes collisions silently destructive or lossy: cookies and
-command templates use `INSERT ... IGNORE`, so an imported row whose old ID is
-already occupied is silently dropped even when its content is unrelated;
-template shortcuts use `INSERT ... REPLACE`, so the imported shortcut can
-silently overwrite an unrelated live shortcut that merely has the same numeric
-ID. Reset restore avoids the live-row collision only because those tables are
-cleared first, but merge restore has no content/stable-identity check before the
-primary-key conflict policy is applied.
-
-Required result:
-
-- treat backup primary keys for standalone auto-generated rows as source-local
-  identifiers and allocate fresh destination IDs during merge restore;
-- define explicit semantic deduplication keys where desired (for example cookie
-  URL/description or exact shortcut content) instead of relying on numeric ID
-  equality;
-- never use `REPLACE` on a destination row solely because an imported backup
-  happens to carry the same old primary key;
-- add merge-restore regressions with deliberately colliding cookie, command
-  template, and shortcut IDs and verify that unrelated live rows are preserved
-  and intended imported rows are either inserted or explicitly deduplicated.
+- restore `Long` and `Float` through their matching SharedPreferences editor
+  methods and reject/diagnose unknown serialized types;
+- explicitly decide whether transient ID-keyed values such as playback-position
+  cache belong in portable settings backup; if retained, remap/validate their
+  referenced History identity separately;
+- preserve all supported value types losslessly and version the encoding if the
+  schema changes;
+- add String/Boolean/Int/Long/Float/StringSet reset+merge round trips and
+  malformed/unknown-type coverage.
 
 ### P2 — BUG-DUPLICATE-01 — Canonicalize media identity for config duplicate checks
 
 **State:** Open
 
-The `config` duplicate policy compares a `RequestConfiguration` that includes the
-raw URL string. Two requests for the same YouTube video can therefore compare as
-different when one uses `youtu.be/<id>` and another uses a canonical watch,
-mobile, or music URL even when the request-changing settings are otherwise the
-same. The normal queue History path also computes canonical-equivalent History
-candidates but then performs the config command comparison against the exact-URL
-History list. This is inconsistent with the URL/type duplicate mode and allows
-canonical-equivalent requests to bypass duplicate prevention and consume a
-second download/storage slot.
+**Failure path:** `DownloadConfigurationDuplicatePolicy` includes the raw URL in
+`RequestConfiguration` equality. Equivalent YouTube forms such as youtu.be,
+watch, mobile, or music URLs can therefore represent the same media but compare
+as different configurations. The queue/history duplicate path also constructs
+canonical-equivalent History candidates but performs command/config matching
+against the exact-URL History list in the relevant branch.
+
+**Why this is a defect:** URL spelling becomes part of duplicate identity, so a
+canonical-equivalent request can bypass duplicate prevention and create another
+download/storage copy despite otherwise identical request settings.
 
 Required result:
 
-- compare stable/canonical media identity separately from request-changing
-  configuration fields;
-- treat supported canonical-equivalent URLs for the same media as the same
-  source while keeping distinct media IDs distinct;
-- use the canonical-equivalent History candidate set consistently in config
-  duplicate checks;
-- add active-queue and History regressions covering youtu.be, watch, mobile,
-  and music URL variants.
+- separate canonical media identity from request-changing configuration fields;
+- treat supported equivalent URLs for one media ID as the same source while
+  preserving distinct media IDs;
+- use canonical-equivalent History candidates consistently for config duplicate
+  checks;
+- test active queue and History against youtu.be/watch/mobile/music variants.
 
 ### P2 — BUG-CLEANUP-01 — Make automatic leftover cleanup actually recurring
 
 **State:** Open
 
-The cleanup preference exposes `daily`, `weekly`, and `monthly` cadences, but
-changing the preference enqueues a single `OneTimeWorkRequest` delayed until the
-next calculated date. `CleanUpLeftoverDownloads` performs one cleanup and
-returns `Result.success()` without scheduling the next occurrence. The selected
-cadence therefore silently stops after its first run. In addition, each enabled
-preference change uses a timestamp as a new unique-work name, so changing the
-cadence can leave an older delayed cleanup request scheduled alongside the new
-one instead of replacing a single logical cleanup schedule.
+**Failure path:** selecting daily/weekly/monthly creates one delayed
+`OneTimeWorkRequest<CleanUpLeftoverDownloads>`. The worker performs cleanup and
+returns success without scheduling another run. Enabling/changing the setting
+also uses `System.currentTimeMillis().toString()` as the unique-work name, so a
+new cadence does not replace the previous logical cleanup schedule.
+
+**Why this is a defect:** the UI promises a cadence but execution stops after one
+run, and repeated preference changes can leave multiple delayed cleanup requests
+instead of one current schedule.
 
 Required result:
 
 - use a recurring WorkManager contract or explicitly schedule the next one-time
-  run after each successful execution;
-- use a stable unique-work identity for the cleanup schedule and replace/update
-  it when the cadence changes;
-- cancel the prior schedule when changing cadence or disabling cleanup;
-- add WorkManager tests proving repeated daily/weekly/monthly execution and
-  single-schedule behavior after preference changes/restarts.
+  execution after each run;
+- use one stable unique-work identity and replace/cancel it when cadence changes
+  or cleanup is disabled;
+- test repeated cadence execution, preference changes, and restart recovery with
+  exactly one active logical schedule.
 
 ### P2 — BUG-LOCALADD-01 — Do not treat a bare filename stem as local-file identity
 
 **State:** Open
 
-`LocalAddWorker` first checks stronger tree/document/path identities, but it also
-builds a global `existingBaseNames` set and silently skips a candidate whenever
-its filename without extension is already present. The same set is updated after
-an item is accepted, so two distinct files selected in one batch from different
-directories but sharing a name such as `video.mp4` are collapsed even when their
-URIs/tree paths are different. A basename alone is not a stable file identity;
-legitimate local media can therefore be omitted from History without a conflict
-prompt or error.
+**Failure path:** `LocalAddWorker` first checks stronger tree/document/path
+identities but also builds `existingBaseNames` from History and silently skips a
+candidate whose extensionless basename is already present. After an item is
+actually accepted into History, its basename is added to this set, so a later
+distinct same-name file in the same batch can also be skipped.
+
+The previous wording was too absolute: two same-name files selected in one batch
+are **not always** collapsed by this mechanism. If the earlier candidate remains
+unresolved/pending and is not accepted into History, its basename is not
+necessarily added to `existingBaseNames`.
+
+**Why this is a defect:** basename alone is not file identity. Distinct files in
+different directories/providers can legitimately share a name and can be
+silently omitted without a conflict prompt.
 
 Required result:
 
 - use persisted tree/document/URI identity as the primary duplicate key;
-- never silently discard a distinct file solely because another History/batch
-  item has the same basename;
-- if a heuristic duplicate check is desired, require additional evidence such
-  as size/duration/hash and surface ambiguous cases for user choice;
-- add same-name/different-directory and same-name/same-batch regressions.
+- never discard a distinct file solely because another History or already-
+  accepted batch item has the same basename;
+- if heuristic duplicate detection is desired, require stronger evidence such
+  as size/duration/hash and surface ambiguity to the user;
+- test same-name files already in History, same-name accepted earlier in one
+  batch, and same-name unresolved candidates.
 
 ### P2 — BUG-HISTORY-01 — Preserve playlist membership across History delete and Undo
 
 **State:** Open
 
-`HistoryRepository.deleteRecords()` deletes `PlaylistItemCrossRef` rows for the
-selected History IDs before deleting the History rows themselves. The single-item
-record-only delete flow offers Undo, but its snapshot contains only the
-`HistoryItem` and keyword assignments; `restoreHistory()` reinserts only that
-History row and those keyword assignments. Any playlist memberships that existed
-before deletion are therefore permanently lost even when the user immediately
-chooses Undo. The relationship delete and History delete are also separate DAO
-calls rather than one Room transaction, so an exception after the cross-reference
-delete but before the History delete can leave the History record present while
-silently stripping its playlist memberships.
+**Failure path:** `HistoryRepository.deleteRecords()` calls
+`playlistDao.deletePlaylistItemsByHistoryIds()` and then
+`historyDao.deleteWithIds()` as separate DAO operations; the repository method
+itself is not a Room transaction covering both. The record-only single-item Undo
+path snapshots the `HistoryItem` and keyword assignments, deletes the record,
+and later restores only the History row and assignment snapshot. Playlist
+cross-references are neither snapshotted nor restored.
+
+**Why this is a defect:** successful Undo permanently loses playlist membership.
+An exception between relationship deletion and History deletion can also leave
+the History row present while its playlist relationships are already gone.
 
 Required result:
 
-- snapshot all `PlaylistItemCrossRef` rows for a History item before offering
-  record-only delete Undo and restore those memberships with the History row;
-- perform playlist-membership deletion and History deletion in one database
-  transaction so either both commit or neither does;
-- make bulk/file-backed deletion paths use the same atomic relationship-removal
+- snapshot all playlist cross-references required for Undo;
+- delete playlist relationships and History rows in one Room transaction;
+- restore History, keyword assignments, and playlist membership under one
+  consistent restore contract;
+- route bulk/file-backed deletion through the same atomic relationship-removal
   primitive;
-- add regressions for a History item in multiple playlists, Undo, deletion
-  failure between relationship and History mutation, and repeated delete/restore.
+- test multi-playlist Undo and an injected failure between relationship and
+  History mutation.
 
 ### P2 — BUG-PLAYER-01 — Serialize playback-position persistence by History item
 
 **State:** Open
 
-`VideoPlayerActivity` saves playback position from several independent paths,
-including lifecycle callbacks, media-item transitions, explicit close, and
-playback completion. `savePlaybackPositionForHistoryId()` immediately updates
-in-memory/cache state but launches each Room `updatePlaybackPosition()` as a
-separate `lifecycleScope.launch(Dispatchers.IO)` coroutine. There is no per-item
-serialization, sequence number, or compare-and-set guard on the DAO update.
-Those database writes can therefore commit out of call order. In particular, a
-newer terminal save of `0` ms after playback completion can be overwritten by an
-older nonzero save that finishes later, causing a completed item to resume from
-a stale position on a later launch; rapid seeks/lifecycle transitions can
-similarly persist an older position than the latest observed state.
+**Failure path:** `VideoPlayerActivity.savePlaybackPositionForHistoryId()`
+updates in-memory queue/cache state immediately, then launches a new
+`lifecycleScope.launch(Dispatchers.IO)` for each
+`historyDao.updatePlaybackPosition(historyId, positionMs)`. Playback position is
+saved from multiple lifecycle, transition, seek, and completion paths. The DAO
+update has no sequence/revision guard, and the independent IO coroutines are not
+serialized per History ID.
+
+**Why this is a defect:** database commits can occur out of call order. A newer
+completion reset to `0` can be overwritten by an earlier nonzero save that
+finishes later; rapid transitions can similarly persist an older position than
+the latest state. SharedPreferences cache and Room can then disagree.
 
 Required result:
 
-- serialize playback-position database writes per History ID or attach a
-  monotonically increasing revision/timestamp and reject stale writes;
-- ensure the completion reset to `0` cannot be superseded by a previously
-  launched nonzero write;
-- keep SharedPreferences cache and Room state under the same ordering contract
-  instead of allowing the durable stores to disagree;
-- add deterministic concurrency tests that delay an earlier write past a later
-  write, including completion reset, rapid seek, pause/stop/destroy, and queue
-  transition cases.
+- serialize durable writes per History ID or attach a monotonically increasing
+  revision/timestamp that rejects stale writes;
+- ensure completion reset cannot be superseded by an older launched write;
+- keep cache and Room under one ordering contract;
+- add deterministic delayed-write tests for completion, seek, pause/stop,
+  destruction, and queue transitions.
 
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
 **State:** Open
 
-The queued screen displays and allows selection of both `Queued` and
-`WaitingForMembership` rows. Per-item move controls and drag handling correctly
-block membership-waiting rows, but the contextual multi-select Move Up/Move
-Down actions do not apply that restriction. Select-all and inverted selection
-explicitly include membership-waiting IDs, while the repository reorder
-implementation rewrites only `Queued` rows. A visible selection can therefore
-contain rows that the requested reorder silently ignores, producing a mismatch
-between the selected action and the resulting order.
+**Failure path:** the queued UI displays/selects both `Queued` and
+`WaitingForMembership` rows. `QueuedDownloadAdapter` disables drag and per-item
+move controls for waiting rows. Multi-select, select-all, and inverted selection
+can still include those rows, and contextual Move Up/Move Down passes the full
+selected ID set to reorder operations. `DownloadDao` constructs/re-writes queue
+order from rows whose status is exactly `Queued`, so selected waiting IDs are
+silently excluded from the reorder.
+
+**Why this is a defect:** the UI says the action applies to the visible selected
+set while the data layer applies it to a smaller hidden subset, making the
+result inconsistent with the user's selection.
 
 Required result:
 
-- hide/disable contextual reorder when the selected set contains a
-  membership-waiting row, or define and implement a consistent ordering contract
-  that includes those rows;
-- make direct, mixed, select-all, and inverted selections follow the same rule
-  as drag and per-item move controls;
-- add focused selection/reorder regressions for membership-waiting rows.
+- disable/hide contextual reorder when selection contains a waiting row, or
+  explicitly define and implement ordering that includes waiting rows;
+- make direct, mixed, select-all, and inverted selection obey the same rule as
+  drag/per-item controls;
+- add focused membership-waiting selection/reorder regressions.
 
 ## Current status
 
