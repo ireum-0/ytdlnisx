@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **23 active correctness defects** in this checkpoint. The previous
+There are **24 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -660,6 +660,44 @@ Required result:
 - keep cache and Room under one ordering contract;
 - add deterministic delayed-write tests for completion, seek, pause/stop,
   destruction, and queue transitions.
+
+### P2 — BUG-TERMINAL-01 — Do not reclassify completed terminal output as failure
+
+**State:** Open
+
+**Failure path:** the production terminal UI schedules `TerminalDownloadWorker`
+through `TerminalViewModel`. After yt-dlp returns successfully, the worker either
+already has output in the user-selected destination (`noCache`) or synchronously
+moves the app-cache output there with `FileUtil.moveFile()`. The output mutation
+is therefore complete before the remaining log/notification cleanup runs. The
+same outer `try` then calls `TerminalDao.updateLog()` directly, cancels the
+notification, delays, and deletes the terminal row. If one of those post-output
+operations throws, the broad outer `catch` handles it as a download failure,
+shows the failure path, removes the terminal task, and returns
+`Result.failure()` even though the requested output was already committed.
+
+`LogRepository.update()` itself is best-effort, but the direct
+`TerminalDao.updateLog()` after output completion is not wrapped and remains a
+concrete throwing persistence step on this path.
+
+**Why this is a defect:** non-authoritative bookkeeping after successful output
+creation can change the semantic result from success to failure. The user can be
+told that a completed terminal download failed and may retry it, producing a
+duplicate output while the original file remains in the destination.
+
+Required result:
+
+- establish an authoritative completion boundary once destination output has
+  been successfully produced/moved;
+- make logging, notification cancellation, and terminal-row cleanup after that
+  boundary best-effort or persist their failures separately without flipping the
+  completed download outcome;
+- preserve a recoverable terminal-row/cleanup state if required bookkeeping
+  cannot finish, rather than representing the media transfer itself as failed;
+- add fault-injection regressions for terminal-log persistence and post-success
+  notification/row cleanup after both direct-destination and cache-move output,
+  proving committed output remains a success and does not invite duplicate
+  retry.
 
 ### P3 — BUG-QUEUE-01 — Keep membership-waiting selections out of queue reorder actions
 
