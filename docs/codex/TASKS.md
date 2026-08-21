@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **40 active correctness defects** in this checkpoint. The previous
+There are **41 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 40-defect registry is intentionally retained here. The separate
+The broader 41-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 40-defect count unless they are explicitly promoted
+below do **not** change the 41-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-40-defect registry below.
+41-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 40 active defects
+### F1 remediation-discovered follow-up not counted in the 41 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1526,6 +1526,52 @@ Required result:
 - make direct, mixed, select-all, and inverted selection obey the same rule as
   drag/per-item controls;
 - add focused membership-waiting selection/reorder regressions.
+
+### P3 — BUG-METADATA-03 — Do not report failed Saved-item metadata enrichment as success
+
+**State:** Open
+
+**Failure path:** the production download card's Save for Later action calls
+`DownloadViewModel.putToSaved()`, which first persists the Download row as
+`Saved`. If title, author, or thumbnail is blank, the view model then enqueues a
+one-time `UpdateMultipleDownloadsDataWorker` for that durable row. The worker
+runs each requested ID through `MetadataBatchProcessor`. Non-cancellation
+exceptions while loading, checking, extracting, or persisting one item are
+caught inside the processor and reduced to `MetadataBatchResult.failed`; the
+worker only logs that count and still returns `Result.success()`.
+
+There is also a non-throwing loss path. `ResultRepository.updateDownloadItem()`
+returns `null` when no usable metadata candidate is available. The worker invokes
+it with `?.let { ... }`, so that `null` performs no persistence but returns from
+the per-item callback normally. `MetadataBatchProcessor` consequently counts the
+item as completed, and the worker again returns success. The Saved row can
+therefore retain the same missing metadata that caused background enrichment to
+be scheduled, while WorkManager records the one-time request as successfully
+finished.
+
+**Why this is a defect:** a production-requested repair of visibly incomplete
+Saved metadata can become a durable scheduler success even though no repair was
+committed. Transient extractor/database failures and ambiguous empty metadata no
+longer have a retry signal, and there is no durable failed/pending enrichment
+state for recovery after restart. This is distinct from `BUG-METADATA-01`, which
+covers stale full-row writes, and `BUG-METADATA-02`, which covers applying
+metadata from the wrong source identity.
+
+Required result:
+
+- return an explicit per-item enrichment outcome that distinguishes updated,
+  no-longer-needed, retryable lookup failure/ambiguous empty result, and durable
+  persistence failure instead of using nullable success semantics;
+- make the worker's WorkManager result reflect unresolved requested items under
+  a bounded retry/failure contract rather than returning success whenever the
+  outer loop completes;
+- treat a request as successful only after an authoritative re-read proves the
+  row no longer needs enrichment, or the intended metadata mutation commits;
+- preserve `CancellationException` as cancellation and avoid retrying already
+  completed items unnecessarily;
+- add single-item and mixed-batch regressions for empty metadata, extractor
+  exception, Download-row persistence failure, cancellation, process restart,
+  retry exhaustion, and successful enrichment.
 
 ## Current status
 
