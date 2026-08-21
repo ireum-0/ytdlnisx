@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **36 active correctness defects** in this checkpoint. The previous
+There are **38 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 36-defect registry is intentionally retained here. The separate
+The broader 38-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 36-defect count unless they are explicitly promoted
+below do **not** change the 38-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-36-defect registry below.
+38-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 36 active defects
+### F1 remediation-discovered follow-up not counted in the 38 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1229,6 +1229,95 @@ Required result:
   nonterminal linked low-quality child and no repaired child loses the exact authoritative
   terminal reason.
 
+### P2 — BUG-LOWQUALITY-02 — Preserve low-quality ledger ownership across Error reconfiguration
+
+**State:** Open
+
+**Failure path:** every low-quality re-download child is linked to its concrete
+Download row by `LowQualityRedownloadItem.downloadId`. If that Download reaches
+`Error`, it appears in the normal Errored Downloads UI. In the production bulk
+Redownload-with-card path, `turnDownloadItemsToProcessingDownloads()` loads the
+Error row, clears `item.id` to `0`, and inserts a new `Processing` clone after
+preparing reconfigured retry metadata. No ledger row is rebound to the newly
+allocated Download ID. When the user presses Download,
+`DownloadMultipleBottomSheetDialog` first calls
+`deleteAllWithID(currentDownloadIDs)` on the original Error IDs.
+`DownloadRepository.deleteKnownUserRemoval()` then transactionally changes any
+linked nonterminal low-quality child to `CANCELLED` with
+`REASON_USER_REMOVED`, may finalize the parent operation, and deletes the old
+Download. The Processing clone is subsequently queued under its different ID.
+All normal completion/failure ledger transitions look up ownership by Download
+ID, so that retry has no child link to update even though it is a continuation
+of the low-quality re-download attempt.
+
+**Why this is a defect:** a normal retry/reconfiguration action changes durable
+operation ownership into an apparent user removal. The low-quality operation can
+finish as cancelled/skipped while its replacement download is still queued or
+later succeeds, and the retried work's eventual success/failure is no longer
+represented by the operation that created it. Copying `operationId` on the
+Download does not repair this because ledger transitions are keyed through the
+child's `downloadId`.
+
+Required result:
+
+- preserve or atomically transfer the low-quality child ownership when an Error
+  download is reconfigured into a replacement Download ID, or reconfigure the
+  existing Download in place when that is safe;
+- do not run the original row through generic `USER_REMOVED` terminalization
+  when the user is semantically retrying the same low-quality child;
+- bind the replacement Download ID and retry metadata to the existing child
+  before the old Download can be deleted, under one transaction/ownership
+  protocol that cannot leave both IDs unowned or concurrently owned;
+- ensure completion, failure, save-for-later, cancellation, and startup
+  reconciliation all observe the transferred ownership consistently;
+- add production-path regressions for low-quality Error -> bulk reconfigure ->
+  queue -> success/failure, cancellation before queueing, and a fault between
+  replacement insertion, ownership transfer, and old-row deletion.
+
+### P2 — BUG-RETRY-01 — Require actual reconfiguration before bypassing same-settings retry policy
+
+**State:** Open
+
+**Failure path:** the normal Error-card retry path calls
+`DownloadViewModel.retryFailedDownload()`, which classifies the request as
+`SAME_SETTINGS` and correctly requires `lastIssueCode.supportsSameSettingsRetry()`.
+The user-facing bulk Redownload path takes a different production route when the
+download card is enabled. `ErroredDownloadsFragment` passes the selected Error
+IDs to `turnDownloadItemsToProcessingDownloads()`. Before the user changes any
+setting, that method calls `prepareRetryMetadata(..., RECONFIGURED,
+settingsConfirmed = true)`, applies the returned retry metadata, clears the row
+ID to create a Processing clone, and inserts it. `DownloadRetryPolicy` does not
+require `issueRetryable` for `RECONFIGURED`, so an issue deliberately blocked
+from same-settings retry can pass this branch. In
+`DownloadMultipleBottomSheetDialog`, pressing Download without changing any
+configuration deletes the original Error rows and calls
+`queueProcessingDownloads()`. The clones are already `Processing` with
+`retryStrategy = RECONFIGURED`, so `queueDownloads()` no longer performs the
+Error-state retry-policy check and queues the unchanged request.
+
+**Why this is a defect:** merely entering and confirming the reconfiguration UI
+is treated as proof that the request was actually reconfigured. A deterministic
+failure that the retry policy intentionally refuses to repeat with identical
+settings can therefore be retried unchanged, while the durable retry metadata
+claims a semantically different `RECONFIGURED` attempt. This also consumes the
+one reconfigured-attempt allowance and deletes the original Error row without
+preserving evidence that any configuration changed.
+
+Required result:
+
+- capture an authoritative retry-relevant configuration snapshot for the failed
+  request and compare it with the configuration being queued;
+- classify the attempt as `RECONFIGURED` only when a retry-relevant setting has
+  materially changed; otherwise route it through `SAME_SETTINGS` policy and
+  preserve `NOT_RETRYABLE`/attempt-limit blocking;
+- do not set `settingsConfirmed = true` merely because the configuration UI was
+  opened or its unchanged contents were submitted;
+- keep single-item, multi-item, schedule, save-for-later, and card-disabled
+  retry entry points under the same semantic retry contract;
+- add regressions for a non-retryable Error submitted unchanged through the
+  multi-card flow, a genuinely changed configuration, unchanged retryable
+  failures, attempt limits, and cancellation/dismissal before queueing.
+
 ### P2 — BUG-UPDATER-01 — Preserve custom yt-dlp update failure instead of reporting success
 
 **State:** Open
@@ -1338,7 +1427,7 @@ Required result:
 | `FAIL-01` | Implemented | Download outcome, issue, stage, and supporting policy types are present. |
 | `FAIL-02` | Implemented | High-confidence failures are classified. Unknown external messages deliberately remain unclassified. |
 | `FAIL-03` | Implemented | Structured issue information and safe user actions are exposed in relevant download/history flows. |
-| `RETRY-01` | Implemented | User-initiated retry is guarded by retry and ownership policies. It is not an automatic retry of every failure. |
+| `RETRY-01` | Partial | Same-settings retry is guarded, but the bulk card reconfiguration path can classify unchanged Error settings as `RECONFIGURED`; see `BUG-RETRY-01`. |
 | `FILE-01` | Implemented | Copy/open/share/location actions use URI and provider-aware fallbacks. Exact-folder support still varies by provider. |
 | `FILE-02` | Implemented | Present, missing, and inaccessible states are represented in history/file actions. |
 | `FILE-03` | Implemented | App-owned cache/storage cleanup is separated from user-owned deletion. Provider and permission limitations still apply. |
