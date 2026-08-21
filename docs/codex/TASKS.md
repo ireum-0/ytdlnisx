@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **42 active correctness defects** in this checkpoint. The previous
+There are **43 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 42-defect registry is intentionally retained here. The separate
+The broader 43-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 42-defect count unless they are explicitly promoted
+below do **not** change the 43-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-42-defect registry below.
+43-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 42 active defects
+### F1 remediation-discovered follow-up not counted in the 43 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -435,6 +435,48 @@ Required result:
   terminal start, normal start, progress updates, Terminal Cancel, normal
   Cancel/Pause, cleanup, and a linked low-quality Download, proving neither
   workflow mutates or terminates the other.
+
+### P2 — BUG-OBSERVE-02 — Preserve Observe Source runtime state across configuration edits
+
+**State:** Open
+
+**Failure path:** editing an existing Observe Source enters
+`ObserveSourcesBottomSheetDialog` with the current `ObserveSourcesItem`. On Save,
+the dialog does not update only the user-editable configuration fields. It builds
+a new `ObserveSourcesItem` with the same primary key, explicitly sets
+`runCount = 0`, conditionally copies the processed/ignored/retry/observed link
+lists, and omits `runHistory`, `runInProgress`, and `currentRunStatus`, so those
+fields take their constructor defaults. `ObserveSourcesViewModel.insertUpdate()`
+then passes this reconstructed item to `ObserveSourcesRepository.update()`, whose
+DAO uses a full-row `@Update`, and reschedules the observation.
+
+`runCount` is not cosmetic. `ObserveSourceWorker.finishRunAndSchedule()` increments
+it and stops a source with `endsAfterCount` only when the persisted count reaches
+the configured limit. For example, a source configured to stop after 10 runs
+with 8 already completed is reset to zero by editing an unrelated field and can
+run up to 10 more times. The same edit also silently clears the user-visible
+`runHistory`. The explicit Start action separately resets `runCount` to zero,
+so ordinary configuration Save is not the only lifecycle transition available
+to own restart semantics.
+
+**Why this is a defect:** a normal configuration edit rewrites worker-owned
+durable runtime/progress state that the edit does not semantically own. This
+changes the source's termination contract and loses recorded run history even
+when the user did not request a reset.
+
+Required result:
+
+- separate user-editable Observe Source configuration from worker-owned runtime
+  state, using partial updates or a transactional merge against the current row;
+- preserve `runCount`, `runHistory`, `runInProgress`, and `currentRunStatus`
+  across ordinary edits unless a dedicated reset action explicitly owns them;
+- make `resetProcessedLinks` affect only the documented processed/ignored/retry/
+  observed membership state, not run-count/history state;
+- ensure rescheduling uses the committed merged configuration without resetting
+  prior execution progress;
+- add regressions for editing name/cadence/template at nonzero `runCount`,
+  `endsAfterCount` near its terminal boundary, preserved `runHistory`, explicit
+  processed-link reset, and editing while a run is active.
 
 ### P2 — BUG-KEYWORD-02 — Recompute derived RULE assignments on History Undo
 
