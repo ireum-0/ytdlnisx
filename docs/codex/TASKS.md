@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **35 active correctness defects** in this checkpoint. The previous
+There are **36 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -555,6 +555,42 @@ Required result:
 - use canonical-equivalent History candidates consistently for config duplicate
   checks;
 - test active queue and History against youtu.be/watch/mobile/music variants.
+
+### P2 — BUG-DUPLICATE-02 — Match download-archive entries by exact media identity
+
+**State:** Open
+
+**Failure path:** when duplicate prevention is set to `download_archive`,
+`DownloadViewModel.detectAndMarkDuplicates()` reads each yt-dlp archive line,
+keeps only the second whitespace-delimited token, and then decides that a queued
+item is already downloaded when `item.url.contains(archiveId)` is true. This
+both discards the archive entry's extractor/source component and uses substring
+containment instead of an exact media-identity comparison. No upstream queue
+normalization repairs that loss: the normal production queue path reaches this
+branch with the request URL, and a match calls `markDuplicate()`, persists the
+Download row as `Duplicate`, and removes it from the set passed to the download
+worker. An archive entry such as `youtube abc123` can therefore block an
+unrelated request whose path or query merely contains `abc123`, and the same ID
+string from a different extractor can also collide.
+
+**Why this is a defect:** the archive is intended to prevent re-downloading the
+same archived media, but the current comparison can classify unrelated media as
+the same item and suppress a requested download. The decision is persisted and
+surfaced as a duplicate even though no authoritative source/media identity
+matched.
+
+Required result:
+
+- parse archive entries as source/extractor plus exact media ID according to the
+  yt-dlp archive identity contract instead of reducing them to bare substrings;
+- resolve the queued request to an authoritative canonical media identity before
+  comparing it with archive entries, while preserving deliberately supported
+  equivalent URL forms;
+- never treat an archive ID appearing only as a prefix, suffix, path fragment,
+  or query substring of another request as proof of duplication;
+- add queue-path regressions for an exact archived item, one ID contained in
+  another, an unrelated query/path containing an archived ID, the same bare ID
+  under different extractors, and canonical-equivalent YouTube URLs.
 
 ### P2 — BUG-CLEANUP-01 — Make automatic leftover cleanup actually recurring
 
