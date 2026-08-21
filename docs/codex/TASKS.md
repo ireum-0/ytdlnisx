@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **56 active correctness defects** in this checkpoint. The previous
+There are **58 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 56-defect registry is intentionally retained here. The separate
+The broader 58-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 56-defect count unless they are explicitly promoted
+below do **not** change the 58-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-56-defect registry below.
+58-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 56 active defects
+### F1 remediation-discovered follow-up not counted in the 58 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1097,6 +1097,56 @@ Required result:
   files are never moved, plus an idle-leftover regression proving intended cache
   recovery still works.
 
+### P2 — BUG-MOVE-01 — Preserve uncopied source files after partial SAF fallback
+
+**State:** Open
+
+**Failure path:** normal downloads and Terminal cache-output publication both use
+`FileUtil.moveFile()` to move an app-owned source directory into the selected
+destination. For a provider-backed destination, `moveFile()` first tries
+`DocumentFile.copyFolderTo()`. If that operation reports failure, its `onFailed`
+callback falls back to walking every source file and calling
+`moveFileInputStream()` individually. A per-file `createDocument()` or
+`openOutputStream()` failure makes `moveFileInputStream()` return `null`; the
+fallback simply skips that file and continues. It tracks only whether **any**
+file was copied. After the loop it unconditionally calls
+`sourceDir.deleteRecursively()` and reports the fallback as recovered whenever
+`copiedAny` is true.
+
+With a two-file output, for example, file A can copy successfully while file B
+fails to create/open at the provider. A makes `copiedAny = true`; B is silently
+skipped; then the entire source directory, including B's only recoverable cache
+copy, is deleted. Because the fallback returns success, `hasMoveFailure` is not
+set and `fileList` contains only the successfully copied subset. `moveFile()` can
+therefore return that subset as a successful move. `DownloadWorker` can accept
+it as `finalPaths` and continue toward History/terminal completion, while
+`TerminalDownloadWorker` can likewise continue as though cache publication
+completed.
+
+**Why this is a defect:** a provider-specific partial copy failure is converted
+into successful publication and destructive cleanup. Files that were never
+published are deleted from the only recoverable source copy, so a normal SAF
+output move can silently lose media or sidecars while downstream state describes
+the move as successful. This is distinct from `BUG-TERMINAL-03`, which concerns
+losing SAF authority before Terminal execution, and from `BUG-CACHE-01`, which
+concerns maintenance code moving files owned by a live download.
+
+Required result:
+
+- make fallback publication outcome authoritative per source file and do not
+  delete a source file until its corresponding destination copy is durably
+  verified;
+- never delete the whole source directory when any eligible source file failed
+  or remained unverified; preserve those files for retry/recovery;
+- surface a partial move as an explicit failed/partial outcome rather than a
+  success containing only the copied subset;
+- make DownloadWorker and Terminal commit only outputs proven published under
+  that move contract and preserve recoverable cache otherwise;
+- add deterministic SAF regressions where `copyFolderTo()` fails and the fallback
+  has all files succeed, first-succeeds/second-fails, first-fails/second-succeeds,
+  `createDocument()` failure, and `openOutputStream()` failure, proving uncopied
+  files remain recoverable and no success-labelled partial publication occurs.
+
 ### P2 — BUG-LOCALADD-01 — Do not treat a bare filename stem as local-file identity
 
 **State:** Open
@@ -1709,6 +1759,54 @@ Required result:
   subtitle discovery, prior `hardSubDone = true` with global embed disabled, and
   successful burn-in, proving old media is not deleted and flags are not falsely
   retained when the guarantee is not re-established.
+
+### P2 — BUG-HARDSUB-03 — Replace split-stream merge output without a delete-before-rename loss window
+
+**State:** Open
+
+**Failure path:** `DownloadWorker.burnSubtitlesInPlace()` prepares media for
+hard-sub burn-in by calling `mergeSeparatedVideoAudioIfNeeded()`. When yt-dlp has
+produced a video-only stream plus a matching audio-only stream and the current
+parent directory can create sibling output, that helper calls
+`mergeVideoAudioPairInDirectory()`. ffmpeg first writes a non-empty
+`<video>.muxed.<ext>` candidate. The publish step then deletes the original video
+**before** renaming the muxed candidate onto the original pathname. If
+`renameTo(primaryVideo)` returns false, the failure path deletes `mergedTemp`
+and returns `null`; its caller converts that into an IOException.
+
+A filesystem/provider/storage failure can therefore occur after the original
+video was successfully deleted but before the rename committed. In the explicit
+rename-failure path the code then deletes the only completed merged video as
+well, leaving neither the original video-only stream nor the merged candidate;
+the audio-only stream remains but cannot replace the lost video. A process death
+between original deletion and rename creates the same non-atomic publication
+window. This path is production-reachable whenever hard-sub processing receives
+split video/audio outputs; it occurs before subtitle burn-in and can run on the
+app cache or on a directly writable output directory.
+
+**Why this is a defect:** a helper whose job is to improve the current download's
+media layout uses destructive delete-before-publish ordering. A late rename or
+process failure can turn an otherwise completed yt-dlp video stream plus a
+successfully generated mux candidate into irreversible loss of the video output,
+rather than preserving either the prior stream or the candidate for recovery.
+This is distinct from `BUG-HARDSUB-02`, which concerns preserving an existing
+History hard-sub guarantee across replacement, and from `BUG-MOVE-01`, which
+concerns partial SAF destination publication.
+
+Required result:
+
+- publish the muxed candidate with a replacement protocol that never removes the
+  last valid video copy before the replacement is durably established;
+- preserve the original video or the completed mux candidate on rename/publish
+  failure and expose a recoverable failure rather than deleting both;
+- make process-death recovery able to distinguish and safely resume/clean an
+  interrupted split-stream merge without losing completed media;
+- delete the companion audio-only stream only after the replacement video is
+  authoritatively committed and validated;
+- add deterministic same-directory rename failure, process death between old-file
+  removal and replacement, cache-directory, direct-output, successful merge, and
+  already-audio-containing-video regressions proving at least one valid video
+  copy always survives a failed publish.
 
 ### P2 — BUG-CANCEL-01 — Persist cancel/requeue intent before terminating live work
 
@@ -2384,7 +2482,7 @@ Required result:
 | `PLAYER-01` | Partial | `PlaybackQueueState` centralizes queue data, but lifecycle, Media3, subtitle, PiP, URI, and navigation behavior remains concentrated in `VideoPlayerActivity`. |
 | `TERM-01` | Implemented | Terminal command planning includes a dry-run/preview path and argument policy. |
 
-## Newly implemented capability
+## newly implemented capability
 
 The current branch also stores media source-publication time through result,
 download, and history records; reads provider-specific dates; displays and
