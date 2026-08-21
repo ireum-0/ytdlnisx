@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **46 active correctness defects** in this checkpoint. The previous
+There are **47 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 46-defect registry is intentionally retained here. The separate
+The broader 47-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 46-defect count unless they are explicitly promoted
+below do **not** change the 47-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-46-defect registry below.
+47-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 46 active defects
+### F1 remediation-discovered follow-up not counted in the 47 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1648,6 +1648,54 @@ Required result:
 - add regressions for custom-source error output, already-up-to-date output,
   successful output, thrown execution failure, and an error line containing
   unrelated success-like text.
+
+### P2 — BUG-PLAYLIST-01 — Make playlist and playlist-group deletion atomic
+
+**State:** Open
+
+**Failure path:** the production History playlist UI confirms single- or
+multi-playlist deletion and calls `PlaylistViewModel.deletePlaylist()`, which
+launches `PlaylistRepository.deletePlaylist()`. That repository performs
+`playlistDao.deletePlaylistItemsByPlaylistId()`,
+`playlistDao.deletePlaylist()`, and
+`playlistGroupDao.deleteMembersByPlaylist()` as three independent DAO mutations
+without a Room transaction. `PlaylistGroupMember` has no foreign-key cascade
+tying its `playlistId` to `playlists`, so the final cleanup is not repaired
+automatically.
+
+If playlist-item deletion commits and the subsequent playlist-row delete throws,
+the playlist remains but its History membership has already been lost. If the
+playlist row is deleted and the final group-membership cleanup throws, stale
+`playlist_group_members` rows remain for a playlist that no longer exists. The
+production playlist-group Delete action has the same split boundary in
+`HistoryFragment`: for each selected group it calls `deleteMembersByGroup()` and
+then `deleteGroup()` separately, so a failure after the membership delete can
+leave the group present but emptied. The UI does not expose a recoverable
+partial-deletion state; selection/filter UI is closed or reset after the command
+is issued.
+
+**Why this is a defect:** one user-facing destructive action mutates one logical
+playlist/group relationship graph, but the durable state can commit only a
+prefix of that mutation. A transient Room failure or process death between
+statements can silently erase memberships, leave orphan group links, or leave an
+existing group/playlist with relationships already removed. This is separate
+from `BUG-HISTORY-01`, which covers deleting History rows and Undo, and from
+`BUG-BACKUP-07`, which covers backup/restore omission.
+
+Required result:
+
+- delete a playlist, its `PlaylistItemCrossRef` rows, and every
+  `PlaylistGroupMember` reference in one Room transaction, or enforce equivalent
+  foreign-key/cascade semantics under one authoritative repository operation;
+- delete each playlist group and its member rows atomically, and define whether
+  multi-selection deletion is all-or-nothing or returns an explicit per-item
+  partial result rather than silently mixing success and failure;
+- surface persistence failure without closing/resetting the UI as though the
+  relationship graph definitely committed;
+- add fault-injection/process-death regressions after playlist-item deletion,
+  after playlist-row deletion, and after group-member deletion, plus normal
+  single/multi playlist and playlist-group deletion tests proving no surviving
+  object loses membership and no orphan relation survives.
 
 ### P3 — BUG-LOCALADD-02 — Persist local-add session input before durable worker enqueue
 
