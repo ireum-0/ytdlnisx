@@ -255,6 +255,68 @@ persistence succeeds.  Add deterministic stale-intent races for Resume and
 scheduled "download now", plus pause-persistence failure coverage proving that
 no live process can be paired with a falsely requeued row or duplicate worker.
 
+## BUG-BACKUP-01-FOLLOWUP-04 — Make the authoritative mismatch barrier monotonic and crash-durable
+
+**State:** Discovered  
+**Severity:** P2 candidate  
+**Discovered during:** BUG-BACKUP-01 Finding A v4 review at `963ba9a936f4f3570a815bb00e39e00cd0124ca9`  
+**Ownership:** BUG-BACKUP-01 Finding A mismatch durability / queue-state concurrency  
+**Current remediation impact:** Blocking Finding A
+
+The current fix reconstructs a persisted SourceMismatch/TypeMismatch from
+`Download.lastIssueCode` and correctly blocks ordinary retry/reconfigure paths.
+That barrier is not yet monotonic against all concurrent state transitions or
+process death.
+
+Three concrete windows remain:
+
+1. **Recovery skipped after a concurrent state change.**  If the first terminal
+   mismatch `dao.update(Error + mismatch)` fails, the outer recovery writes the
+   mismatch only while the latest row is `Active` or `PostProcessing`.  If a
+   concurrent pause changes the row to `Paused` first, `recoveryResult` remains
+   null.  `unrecoverableHistoryReplacementPersistenceFailure(...)` treats null
+   as no unrecoverable mismatch persistence failure, so the worker can finish
+   without ever durably recording the authoritative mismatch.  A later resume
+   can then continue the privileged marker without the barrier.
+
+2. **A persisted barrier can be overwritten by a stale full-row writer.**
+   `PauseDownloadNotificationReceiver` reads a `DownloadItem`, changes only its
+   in-memory status to `Paused`, and later performs full-row `dao.update(item)`.
+   If the worker persists a mismatch Error between that read and write, the stale
+   pause object can overwrite the newer mismatch issue fields.  The worker claim
+   path has the same structural risk: multiple independently enqueued
+   `DownloadWorker`s observe Room queue snapshots, and selection marks a snapshot
+   `Active` with full-row `dao.updateMultiple(...)` rather than a status/ownership
+   CAS.  A delayed stale queued snapshot can therefore overwrite a newer Error +
+   mismatch record after another worker has terminalized the same ID.
+
+3. **The first authoritative mismatch is not crash-durable until a separate
+   Download write succeeds.**  History authorization/replacement returns
+   SourceMismatch/TypeMismatch in one Room transaction, while the Download Error
+   carrier is written afterward.  Process death in that gap leaves the durable
+   row without the mismatch barrier.  Subsequent recovery/pause/resume/requeue
+   can therefore revisit the same privileged marker as if no authoritative
+   mismatch had been established.
+
+These are Finding A issues because the same History replacement operation can
+lose a previously authoritative refusal and later be reauthorized from mutable
+or newly observed state.  The problem is not merely queue liveness or UI
+consistency.
+
+**Required eventual result:** make the mismatch barrier monotonic for the
+lifetime of the privileged History-replacement operation.  Stale/full-row queue
+writers must not be able to clear it; worker claim should use an expected-state
+ownership transition that preserves newer issue/marker fields; terminal recovery
+must not treat a skipped write as successful preservation when an authoritative
+mismatch exists; and the design must define a crash-durable carrier or immutable
+operation identity so process death between mismatch observation and terminal
+queue persistence cannot reopen destructive authority.  Preserve `Paused` or
+`Cancelled` user intent without erasing the mismatch semantic barrier.  Add
+fault/race coverage for first-write failure + concurrent pause, stale pause
+full-row write after mismatch persistence, stale multi-worker queue claim after
+mismatch persistence, and process death/restart before the first mismatch carrier
+write.
+
 ## Review checklist retained from Finding A misses
 
 The following checks should be applied to future remediation reviews even when a
