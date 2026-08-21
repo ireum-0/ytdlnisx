@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **58 active correctness defects** in this checkpoint. The previous
+There are **59 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 58-defect registry is intentionally retained here. The separate
+The broader 59-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 58-defect count unless they are explicitly promoted
+below do **not** change the 59-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-58-defect registry below.
+59-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 58 active defects
+### F1 remediation-discovered follow-up not counted in the 59 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2073,6 +2073,66 @@ Required result:
 - add production-path regressions for low-quality Error -> bulk reconfigure ->
   queue -> success/failure, cancellation before queueing, and a fault between
   replacement insertion, ownership transfer, and old-row deletion.
+
+### P2 — BUG-LOWQUALITY-03 — Preserve low-quality ledger semantics across same-settings retry
+
+**State:** Open
+
+**Failure path:** a normal low-quality re-download child is linked to its
+concrete Download row by `LowQualityRedownloadItem.downloadId`. When that
+Download fails, `DownloadWorker` can successfully persist the Download as
+`Error` and transition the linked child to `FAILED`; `markDownloadState()` then
+runs `finalizeIfReadyLocked()`, so once the selected children are terminal the
+parent operation can itself become terminal `FAILED` or `PARTIAL_FAILURE`.
+The Error Download row remains available in the normal Errored Downloads UI.
+
+Pressing the single-card Download action calls
+`DownloadViewModel.retryFailedDownload()`. For an issue that permits a
+same-settings retry, the view model applies new retry metadata to the **same
+Download ID**, changes that row from `Error` to `Queued`, and starts the normal
+worker. It does not reopen the linked terminal child, create a new child/attempt,
+or move an already-terminal low-quality parent back to a running state. The
+worker can therefore execute a new attempt while the durable ledger still says
+that this child — and potentially its parent operation — has already failed.
+
+If the retry succeeds, `DownloadRepository.completeAndDelete()` looks up the
+linked child but changes it to `SUCCEEDED` only when the current child is
+nonterminal. A child already terminalized as `FAILED` by the first attempt is
+skipped, after which the Download row is deleted as a successful completion.
+Startup reconciliation cannot repair the discrepancy: `reconcileLinkedDownloads()`
+explicitly filters to linked children whose state is nonterminal, and
+`finalizeIfReadyLocked()` preserves an already-terminal operation. The final
+durable state can therefore remain child=`FAILED` and parent=`FAILED` or
+`PARTIAL_FAILURE` even though the same low-quality Download retry later
+succeeded and its Download row was removed as success.
+
+**Why this is a defect:** the generic retry contract recognizes a newer attempt
+on the Download row, but the owning low-quality ledger treats the first attempt's
+terminal failure as permanently authoritative. A user can successfully repair
+the media through the normal supported same-settings retry while the operation
+that created and tracks that repair continues to report failure, with no restart
+reconciliation path capable of correcting it. This is distinct from
+`BUG-LOWQUALITY-02`, which loses ownership while creating a different Download
+ID through bulk reconfiguration; this path reuses the original Download ID and
+enters through the ordinary single-item `SAME_SETTINGS` retry.
+
+Required result:
+
+- represent retry attempts explicitly in the low-quality ledger or atomically
+  reopen/rebind the existing child and parent when an allowed retry is queued;
+- make the low-quality retry transition and Download `Error -> Queued` transition
+  one ownership transaction so a terminal child cannot remain `FAILED` while
+  the same logical child is running again;
+- on retry success, failure, cancellation, or save-for-later, commit the newer
+  attempt outcome into the owning child/parent and do not let
+  `completeAndDelete()` silently skip an older terminal child that owns the
+  current retry;
+- make startup reconciliation generation-aware so an old terminal attempt cannot
+  remain authoritative for a newer durable Download retry;
+- add production-path regressions for low-quality Error -> single-card
+  `SAME_SETTINGS` -> success/failure, mixed parent outcomes, cancellation,
+  process restart, and retry-attempt limits, with bulk `RECONFIGURED` ownership
+  transfer retained as separate coverage.
 
 ### P2 — BUG-RETRY-01 — Require actual reconfiguration before bypassing same-settings retry policy
 
