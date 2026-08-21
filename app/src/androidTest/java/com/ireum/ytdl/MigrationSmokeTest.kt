@@ -554,6 +554,28 @@ class MigrationSmokeTest {
         }
     }
 
+    @Test
+    fun migrateFromVersion56To57AddsAttemptOwnershipAndMismatchBarrierTable() {
+        helper.createDatabase(TEST_DB, 56).close()
+
+        val db = helper.runMigrationsAndValidate(
+            TEST_DB,
+            57,
+            true,
+            *Migrations.migrationList,
+        )
+
+        db.use {
+            val downloadColumns = tableColumnDefaults(it, "downloads")
+            assertEquals("''", downloadColumns["executionId"])
+            val tables = linkedSetOf<String>()
+            it.query("SELECT name FROM sqlite_master WHERE type = 'table'").use { cursor ->
+                while (cursor.moveToNext()) tables += cursor.getString(0)
+            }
+            assertTrue(tables.contains("history_replacement_barriers"))
+        }
+    }
+
     private fun tableColumnDefaults(
         db: SupportSQLiteDatabase,
         tableName: String

@@ -27,6 +27,7 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
 import com.ireum.ytdl.work.AlarmScheduler
+import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.DownloadWorker
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -138,12 +139,65 @@ class DownloadRepository(private val database: DBManager) {
     }
 
 
-    suspend fun setDownloadStatus(id: Long, status: Status){
-        downloadDao.setStatus(id, status.toString())
+    suspend fun setDownloadStatus(id: Long, status: Status) {
+        database.withTransaction {
+            val current = downloadDao.getNullableDownloadById(id)
+                ?: return@withTransaction
+            if (
+                status in setOf(Status.Paused, Status.Cancelled) &&
+                    current.executionId.isNotBlank()
+            ) {
+                val changed = if (status == Status.Paused) {
+                    downloadDao.pauseIfExecutionOwned(id, current.executionId)
+                } else {
+                    downloadDao.cancelIfExecutionOwned(id, current.executionId)
+                }
+                if (changed == 1) {
+                    DownloadCancellationRegistry.record(
+                        id,
+                        current.executionId,
+                        if (status == Status.Paused) {
+                            DownloadCancellationRegistry.Reason.PAUSED
+                        } else {
+                            DownloadCancellationRegistry.Reason.CANCELLED
+                        },
+                    )
+                }
+            } else {
+                downloadDao.setStatus(id, status.toString())
+            }
+        }
     }
 
     suspend fun setDownloadStatusMultiple(ids: List<Long>, status: Status) {
-        downloadDao.setStatusMultiple(ids, status.toString())
+        if (status != Status.Paused && status != Status.Cancelled) {
+            downloadDao.setStatusMultiple(ids, status.toString())
+            return
+        }
+        database.withTransaction {
+            ids.distinct().forEach { id ->
+                val current = downloadDao.getNullableDownloadById(id) ?: return@forEach
+                if (current.executionId.isBlank()) {
+                    downloadDao.setStatus(id, status.toString())
+                } else {
+                    val changed = if (status == Status.Paused) {
+                        downloadDao.pauseIfExecutionOwned(id, current.executionId)
+                    } else {
+                        downloadDao.cancelIfExecutionOwned(id, current.executionId)
+                    }
+                    if (changed != 1) return@forEach
+                    DownloadCancellationRegistry.record(
+                        id,
+                        current.executionId,
+                        if (status == Status.Paused) {
+                            DownloadCancellationRegistry.Reason.PAUSED
+                        } else {
+                            DownloadCancellationRegistry.Reason.CANCELLED
+                        },
+                    )
+                }
+            }
+        }
     }
 
     suspend fun saveForLater(item: DownloadItem): SavedDownloadResult = database.withTransaction {
@@ -276,7 +330,12 @@ class DownloadRepository(private val database: DBManager) {
 
     suspend fun deleteErrored(){
         val errored = getErroredDownloads()
-        downloadDao.deleteErrored()
+        database.withTransaction {
+            database.historyReplacementBarrierDao.deleteForDownloadIds(
+                errored.map(DownloadItem::id)
+            )
+            downloadDao.deleteErrored()
+        }
         deleteCache(errored)
     }
 
@@ -284,11 +343,23 @@ class DownloadRepository(private val database: DBManager) {
         deleteKnownUserRemoval(getQueuedDownloads())
 
     suspend fun deleteSaved(){
-        downloadDao.deleteSaved()
+        val saved = getSavedDownloads()
+        database.withTransaction {
+            database.historyReplacementBarrierDao.deleteForDownloadIds(
+                saved.map(DownloadItem::id)
+            )
+            downloadDao.deleteSaved()
+        }
     }
 
     suspend fun deleteProcessing(){
-        downloadDao.deleteProcessing()
+        val processing = getAllProcessingDownloads()
+        database.withTransaction {
+            database.historyReplacementBarrierDao.deleteForDownloadIds(
+                processing.map(DownloadItem::id)
+            )
+            downloadDao.deleteProcessing()
+        }
     }
 
     suspend fun deleteWithDuplicateStatus() {
@@ -300,7 +371,18 @@ class DownloadRepository(private val database: DBManager) {
 
     suspend fun cancelByUser(id: Long): Set<String> = database.withTransaction {
         val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction emptySet()
-        val changed = downloadDao.cancelByUser(item.id) == 1
+        val changed = if (item.executionId.isBlank()) {
+            downloadDao.cancelByUser(item.id) == 1
+        } else {
+            downloadDao.cancelIfExecutionOwned(item.id, item.executionId) == 1
+        }
+        if (changed) {
+            DownloadCancellationRegistry.record(
+                item.id,
+                item.executionId,
+                DownloadCancellationRegistry.Reason.CANCELLED,
+            )
+        }
         if (!changed && item.status != Status.Cancelled.name) {
             return@withTransaction emptySet()
         }
@@ -348,6 +430,7 @@ class DownloadRepository(private val database: DBManager) {
             }
             changedOperationIds += ledgerItem.operationId
         }
+        database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
         downloadDao.delete(id)
         changedOperationIds
     }
@@ -388,6 +471,7 @@ class DownloadRepository(private val database: DBManager) {
                 }
                 changedOperationIds += ledgerItem.operationId
             }
+            database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
             downloadDao.delete(id)
             changedOperationIds
         }
@@ -420,7 +504,18 @@ class DownloadRepository(private val database: DBManager) {
                 return@withTransaction UndoableCancellation(pendingToken = token)
             }
 
-            val changed = downloadDao.cancelByUser(id) == 1
+            val changed = if (item.executionId.isBlank()) {
+                downloadDao.cancelByUser(id) == 1
+            } else {
+                downloadDao.cancelIfExecutionOwned(id, item.executionId) == 1
+            }
+            if (changed) {
+                DownloadCancellationRegistry.record(
+                    item.id,
+                    item.executionId,
+                    DownloadCancellationRegistry.Reason.CANCELLED,
+                )
+            }
             if (!changed && item.status != Status.Cancelled.name) {
                 return@withTransaction UndoableCancellation()
             }
@@ -504,7 +599,20 @@ class DownloadRepository(private val database: DBManager) {
         }
         val download = downloadDao.getNullableDownloadById(id)
         if (download != null && download.status != Status.Cancelled.name) {
-            if (downloadDao.cancelByUser(id) != 1) return emptySet()
+            val changed = if (download.executionId.isBlank()) {
+                downloadDao.cancelByUser(id)
+            } else {
+                downloadDao.cancelIfExecutionOwned(id, download.executionId).also { affected ->
+                    if (affected == 1) {
+                        DownloadCancellationRegistry.record(
+                            download.id,
+                            download.executionId,
+                            DownloadCancellationRegistry.Reason.CANCELLED,
+                        )
+                    }
+                }
+            }
+            if (changed != 1) return emptySet()
         }
         if (
             ledgerDao.commitPendingUserCancellation(
@@ -540,6 +648,7 @@ class DownloadRepository(private val database: DBManager) {
         val operationIds = database.withTransaction {
             val now = System.currentTimeMillis()
             val affected = terminalizeLinkedChildren(ids, REASON_USER_REMOVED, now)
+            database.historyReplacementBarrierDao.deleteForDownloadIds(ids)
             downloadDao.deleteAllWithIDs(ids)
             affected
         }
@@ -584,7 +693,22 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun cancelActiveQueued(){
-        downloadDao.cancelActiveQueued()
+        database.withTransaction {
+            downloadDao.getActiveAndQueuedDownloadsList().forEach { item ->
+                val changed = if (item.executionId.isBlank()) {
+                    downloadDao.cancelByUser(item.id) == 1
+                } else {
+                    downloadDao.cancelIfExecutionOwned(item.id, item.executionId) == 1
+                }
+                if (changed) {
+                    DownloadCancellationRegistry.record(
+                        item.id,
+                        item.executionId,
+                        DownloadCancellationRegistry.Reason.CANCELLED,
+                    )
+                }
+            }
+        }
     }
 
     fun removeLogID(logID: Long){

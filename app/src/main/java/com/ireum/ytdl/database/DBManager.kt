@@ -13,6 +13,7 @@ import com.ireum.ytdl.database.dao.CookieDao
 import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.dao.HistoryDao
 import com.ireum.ytdl.database.dao.HistoryDateFetchDao
+import com.ireum.ytdl.database.dao.HistoryReplacementBarrierDao
 import com.ireum.ytdl.database.dao.KeywordGroupDao
 import com.ireum.ytdl.database.dao.LogDao
 import com.ireum.ytdl.database.dao.LowQualityRedownloadDao
@@ -34,6 +35,7 @@ import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryDateFetchItem
 import com.ireum.ytdl.database.models.HistoryDateFetchOperation
+import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.KeywordGroup
 import com.ireum.ytdl.database.models.KeywordGroupMember
 import com.ireum.ytdl.database.models.LogItem
@@ -83,9 +85,10 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         LowQualityRedownloadOperation::class,
         LowQualityRedownloadItem::class,
         HistoryDateFetchOperation::class,
-        HistoryDateFetchItem::class
+        HistoryDateFetchItem::class,
+        HistoryReplacementBarrier::class
     ],
-    version = 56,
+    version = 57,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),
@@ -135,6 +138,7 @@ abstract class DBManager : RoomDatabase(){
     abstract val automaticKeywordRuleDao: AutomaticKeywordRuleDao
     abstract val lowQualityRedownloadDao: LowQualityRedownloadDao
     abstract val historyDateFetchDao: HistoryDateFetchDao
+    abstract val historyReplacementBarrierDao: HistoryReplacementBarrierDao
 
     enum class SORTING{
         DESC, ASC

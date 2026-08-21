@@ -6,8 +6,11 @@ import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
+import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
+import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.util.download.DownloadIssueStage
 import kotlinx.coroutines.runBlocking
 
 enum class HistoryReplacementResult {
@@ -335,6 +338,8 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         historyId: Long,
         expectedSourceUrl: String,
         expectedType: DownloadType,
+        replacementDownloadId: Long = 0L,
+        replacementOperationId: String = "",
     ): HistoryReplacementAuthorization {
         require(historyId > 0L)
         return db.withTransaction {
@@ -342,6 +347,8 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 historyId = historyId,
                 expectedSourceUrl = expectedSourceUrl,
                 expectedType = expectedType,
+                replacementDownloadId = replacementDownloadId,
+                replacementOperationId = replacementOperationId,
             )
         }
     }
@@ -355,11 +362,15 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         historyId: Long,
         expectedSourceUrl: String,
         expectedType: DownloadType,
+        replacementDownloadId: Long = 0L,
+        replacementOperationId: String = "",
     ): HistoryReplacementAuthorization = runBlocking {
         authorizeHistoryReplacement(
             historyId = historyId,
             expectedSourceUrl = expectedSourceUrl,
             expectedType = expectedType,
+            replacementDownloadId = replacementDownloadId,
+            replacementOperationId = replacementOperationId,
         )
     }
 
@@ -372,15 +383,19 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         historyId: Long,
         expectedSourceUrl: String,
         expectedType: DownloadType,
+        replacementDownloadId: Long = 0L,
+        replacementOperationId: String = "",
         replacementFactory: (HistoryItem) -> HistoryItem,
     ): HistoryReplacementOutcome {
         require(historyId > 0L)
         return db.withTransaction {
-            when (
+            val outcome = when (
                 val authorization = authorizeHistoryReplacementInTransaction(
                     historyId = historyId,
                     expectedSourceUrl = expectedSourceUrl,
                     expectedType = expectedType,
+                    replacementDownloadId = replacementDownloadId,
+                    replacementOperationId = replacementOperationId,
                 )
             ) {
                 is HistoryReplacementAuthorization.Authorized -> {
@@ -427,6 +442,14 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 HistoryReplacementAuthorization.TypeMismatch ->
                     HistoryReplacementOutcome.TypeMismatch
             }
+            durableMismatchOutcome(
+                outcome = outcome,
+                historyId = historyId,
+                expectedSourceUrl = expectedSourceUrl,
+                expectedType = expectedType,
+                replacementDownloadId = replacementDownloadId,
+                replacementOperationId = replacementOperationId,
+            )
         }
     }
 
@@ -434,6 +457,8 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         historyId: Long,
         expectedSourceUrl: String,
         expectedType: DownloadType,
+        replacementDownloadId: Long = 0L,
+        replacementOperationId: String = "",
         replacementFactory: (HistoryItem) -> HistoryItem,
     ): HistoryReplacementOutcome = runBlocking {
         replaceHistoryPreservingAssignmentsAuthorized(
@@ -441,26 +466,124 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             expectedSourceUrl = expectedSourceUrl,
             expectedType = expectedType,
             replacementFactory = replacementFactory,
+            replacementDownloadId = replacementDownloadId,
+            replacementOperationId = replacementOperationId,
         )
     }
 
-    private fun authorizeHistoryReplacementInTransaction(
+    private suspend fun authorizeHistoryReplacementInTransaction(
         historyId: Long,
         expectedSourceUrl: String,
         expectedType: DownloadType,
+        replacementDownloadId: Long,
+        replacementOperationId: String,
     ): HistoryReplacementAuthorization {
+        if (replacementDownloadId > 0L) {
+            db.historyReplacementBarrierDao.getByDownloadId(replacementDownloadId)?.let { barrier ->
+                return when (barrier.issueCode) {
+                    DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
+                        HistoryReplacementAuthorization.SourceMismatch
+                    DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
+                        HistoryReplacementAuthorization.TypeMismatch
+                    else -> error("Invalid History replacement barrier issue ${barrier.issueCode}")
+                }
+            }
+        }
         val existingHistory = db.historyDao.getNullableItem(historyId)
             ?: return HistoryReplacementAuthorization.TargetMissing
         if (
             expectedSourceUrl.isBlank() ||
             !HistoryReplacementSourceIdentity.matches(expectedSourceUrl, existingHistory.url)
         ) {
-            return HistoryReplacementAuthorization.SourceMismatch
+            return durableMismatchAuthorization(
+                authorization = HistoryReplacementAuthorization.SourceMismatch,
+                historyId = historyId,
+                expectedSourceUrl = expectedSourceUrl,
+                expectedType = expectedType,
+                replacementDownloadId = replacementDownloadId,
+                replacementOperationId = replacementOperationId,
+            )
         }
         if (existingHistory.type != expectedType) {
-            return HistoryReplacementAuthorization.TypeMismatch
+            return durableMismatchAuthorization(
+                authorization = HistoryReplacementAuthorization.TypeMismatch,
+                historyId = historyId,
+                expectedSourceUrl = expectedSourceUrl,
+                expectedType = expectedType,
+                replacementDownloadId = replacementDownloadId,
+                replacementOperationId = replacementOperationId,
+            )
         }
         return HistoryReplacementAuthorization.Authorized(existingHistory)
+    }
+
+    private suspend fun durableMismatchAuthorization(
+        authorization: HistoryReplacementAuthorization,
+        historyId: Long,
+        expectedSourceUrl: String,
+        expectedType: DownloadType,
+        replacementDownloadId: Long,
+        replacementOperationId: String,
+    ): HistoryReplacementAuthorization {
+        if (replacementDownloadId <= 0L) return authorization
+        val kind = HistoryReplacementDiagnostic.mismatchKind(authorization)
+            ?: return authorization
+        val issueCode = HistoryReplacementDiagnostic.issueCode(kind).name
+        val barrierDao = db.historyReplacementBarrierDao
+        barrierDao.insertIfAbsent(
+            HistoryReplacementBarrier(
+                downloadId = replacementDownloadId,
+                operationId = replacementOperationId,
+                historyId = historyId,
+                expectedSourceUrl = expectedSourceUrl,
+                expectedType = expectedType.name,
+                issueCode = issueCode,
+                issueStage = DownloadIssueStage.HISTORY.name,
+                createdAt = System.currentTimeMillis(),
+            )
+        )
+        val persisted = barrierDao.getByDownloadId(replacementDownloadId)
+            ?: error("History replacement mismatch barrier was not durably recorded")
+        return when (persisted.issueCode) {
+            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
+                HistoryReplacementAuthorization.SourceMismatch
+            DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
+                HistoryReplacementAuthorization.TypeMismatch
+            else -> error("Invalid History replacement barrier issue ${persisted.issueCode}")
+        }
+    }
+
+    private suspend fun durableMismatchOutcome(
+        outcome: HistoryReplacementOutcome,
+        historyId: Long,
+        expectedSourceUrl: String,
+        expectedType: DownloadType,
+        replacementDownloadId: Long,
+        replacementOperationId: String,
+    ): HistoryReplacementOutcome {
+        if (replacementDownloadId <= 0L) return outcome
+        val kind = HistoryReplacementDiagnostic.mismatchKind(outcome)
+            ?: return outcome
+        val authorization = when (kind) {
+            HistoryReplacementMismatchKind.SOURCE -> HistoryReplacementAuthorization.SourceMismatch
+            HistoryReplacementMismatchKind.TYPE -> HistoryReplacementAuthorization.TypeMismatch
+        }
+        return when (
+            durableMismatchAuthorization(
+                authorization = authorization,
+                historyId = historyId,
+                expectedSourceUrl = expectedSourceUrl,
+                expectedType = expectedType,
+                replacementDownloadId = replacementDownloadId,
+                replacementOperationId = replacementOperationId,
+            )
+        ) {
+            HistoryReplacementAuthorization.SourceMismatch -> HistoryReplacementOutcome.SourceMismatch
+            HistoryReplacementAuthorization.TypeMismatch -> HistoryReplacementOutcome.TypeMismatch
+            is HistoryReplacementAuthorization.Authorized,
+            HistoryReplacementAuthorization.TargetMissing ->
+                error("Invalid non-mismatch History replacement barrier")
+        }
     }
 
     suspend fun materialize(historyItemId: Long) {

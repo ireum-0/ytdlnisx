@@ -59,7 +59,24 @@ class UpdateMultipleDownloadsFormatsWorker(
                         r?.formats = d.allFormats
 
                         r?.apply { resDao.update(this) }
-                        dao.update(d)
+                        val current = dao.getNullableDownloadById(it)
+                        if (current != null) {
+                            d.status = current.status
+                            d.executionId = current.executionId
+                            d.lastIssueCode = current.lastIssueCode
+                            d.lastIssueStage = current.lastIssueStage
+                            dbManager.historyReplacementBarrierDao
+                                .getByDownloadId(it)
+                                ?.let { barrier ->
+                                    d.lastIssueCode = barrier.issueCode
+                                    d.lastIssueStage = barrier.issueStage
+                                }
+                            if (current.executionId.isNotBlank()) {
+                                dao.updateIfExecutionOwned(d, current.executionId)
+                            } else {
+                                dao.updateWithoutUpsert(d)
+                            }
+                        }
                     }
 
 

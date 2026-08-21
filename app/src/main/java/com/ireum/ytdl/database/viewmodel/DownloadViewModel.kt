@@ -268,11 +268,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
         if (
             persistedItem != null &&
-            HistoryReplacementDiagnostic.isPersistedMismatch(persistedItem.lastIssueCode) &&
-            persistedItem.status !in setOf(
-                DownloadRepository.Status.Active.name,
-                DownloadRepository.Status.PostProcessing.name,
-            )
+            (
+                HistoryReplacementDiagnostic.isPersistedMismatch(persistedItem.lastIssueCode) ||
+                    dbManager.historyReplacementBarrierDao
+                        .getByDownloadIdBlocking(persistedItem.id) != null
+                )
         ) {
             return
         }
@@ -874,7 +874,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 itemIDs.forEach {
                     val item = repository.getItemByID(it)
                     if (processingItemsJob?.isCancelled == true) throw CancellationException()
-                    if (HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode)) {
+                    if (
+                        HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode) ||
+                            dbManager.historyReplacementBarrierDao
+                                .getByDownloadIdBlocking(item.id) != null
+                    ) {
                         throw IllegalStateException(
                             retryBlockedMessage(
                                 DownloadRetryDecision.Blocked(
@@ -1069,6 +1073,10 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         return dao.getActiveAndPostProcessingDownloadsList()
     }
 
+    suspend fun requeueActiveDownloadsForExit(ids: List<Long>) = withContext(Dispatchers.IO) {
+        dao.requeueActiveDownloads(ids)
+    }
+
     fun getActiveDownloadsCount() : Int {
         return repository.getActiveDownloadsCount()
     }
@@ -1174,7 +1182,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             hasValidOutput = hasValidOutput,
             settingsConfirmed = settingsConfirmed,
             historyReplacementMismatch =
-                HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode),
+                HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode) ||
+                    dbManager.historyReplacementBarrierDao
+                        .getByDownloadIdBlocking(item.id) != null,
             operationIdFactory = { UUID.randomUUID().toString() }
         )
     }
@@ -1295,6 +1305,10 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                             HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode)
                         }
                         .mapTo(hashSetOf<Long>(), DownloadItem::id)
+                        .also { mismatchIds ->
+                            mismatchIds += dbManager.historyReplacementBarrierDao
+                                .getDownloadIds(ids)
+                        }
                 }
                 .orEmpty()
         }
@@ -2063,7 +2077,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             }
             if (
                 persistedItem != null &&
-                HistoryReplacementDiagnostic.isPersistedMismatch(persistedItem.lastIssueCode)
+                (
+                    HistoryReplacementDiagnostic.isPersistedMismatch(persistedItem.lastIssueCode) ||
+                        dbManager.historyReplacementBarrierDao
+                            .getByDownloadIdBlocking(persistedItem.id) != null
+                    )
             ) {
                 return@runCatching
             }

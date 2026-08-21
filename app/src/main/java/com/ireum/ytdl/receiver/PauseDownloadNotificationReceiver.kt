@@ -29,8 +29,10 @@ class PauseDownloadNotificationReceiver : BroadcastReceiver() {
             CoroutineScope(Dispatchers.IO).launch{
                 try {
                     val item = dbManager.downloadDao.getDownloadById(id.toLong())
-                    item.status = DownloadRepository.Status.Paused.toString()
-                    dbManager.downloadDao.update(item)
+                    DownloadRepository(dbManager).setDownloadStatus(
+                        item.id,
+                        DownloadRepository.Status.Paused,
+                    )
                     notificationUtil.cancelDownloadNotification(id)
                     YoutubeDL.getInstance().destroyProcessById(id.toString())
                     YoutubeDLCompat.destroyProcessById(id.toString())

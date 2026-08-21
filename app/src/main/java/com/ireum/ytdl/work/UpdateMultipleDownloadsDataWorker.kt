@@ -56,7 +56,20 @@ class UpdateMultipleDownloadsDataWorker(private val context: Context,workerParam
                         val currentItem = dao.getNullableDownloadById(id)
                         if (currentItem != null) {
                             updatedItem.status = currentItem.status
-                            dao.updateWithoutUpsert(updatedItem)
+                            updatedItem.executionId = currentItem.executionId
+                            updatedItem.lastIssueCode = currentItem.lastIssueCode
+                            updatedItem.lastIssueStage = currentItem.lastIssueStage
+                            dbManager.historyReplacementBarrierDao
+                                .getByDownloadId(id)
+                                ?.let { barrier ->
+                                    updatedItem.lastIssueCode = barrier.issueCode
+                                    updatedItem.lastIssueStage = barrier.issueStage
+                                }
+                            if (currentItem.executionId.isNotBlank()) {
+                                dao.updateIfExecutionOwned(updatedItem, currentItem.executionId)
+                            } else {
+                                dao.updateWithoutUpsert(updatedItem)
+                            }
                         }
                     }
                 },

@@ -69,6 +69,9 @@ data class DownloadItem(
     var lastIssueCode: String = "",
     @ColumnInfo(defaultValue = "")
     var lastIssueStage: String = "",
+    /** Identifies the worker claim that owns the current execution attempt. */
+    @ColumnInfo(defaultValue = "")
+    var executionId: String = "",
     @ColumnInfo(defaultValue = "0")
     var mediaPublishedAt: Long = 0,
     @ColumnInfo(defaultValue = "0")

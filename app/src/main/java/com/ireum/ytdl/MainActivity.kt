@@ -34,7 +34,6 @@ import androidx.preference.PreferenceManager
 import com.anggrayudi.storage.file.getAbsolutePath
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
-import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.viewmodel.CookieViewModel
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.database.viewmodel.ResultViewModel
@@ -235,8 +234,11 @@ class MainActivity : BaseActivity() {
                         lifecycleScope.launch {
                             withContext(Dispatchers.IO) {
                                 val activeDownloads = downloadViewModel.getActiveAndPostProcessingDownloads().toMutableList()
-                                activeDownloads.map { it.status = DownloadRepository.Status.Queued.toString() }
-                                activeDownloads.forEach { downloadViewModel.updateDownload(it) }
+                                if (activeDownloads.isNotEmpty()) {
+                                    downloadViewModel.requeueActiveDownloadsForExit(
+                                        activeDownloads.map { it.id }
+                                    )
+                                }
                             }
                             if (doNotShowAgain){
                                 preferences.edit().putBoolean("ask_terminate_app", false).apply()

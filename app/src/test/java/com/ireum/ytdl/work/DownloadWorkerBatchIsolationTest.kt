@@ -101,4 +101,35 @@ class DownloadWorkerBatchIsolationTest {
         assertEquals(workerCancellation.message, thrown?.message)
         assertTrue(siblingWasCancelled.get())
     }
+
+    @Test
+    fun itemLocalCancellationOriginSurvivesRapidResumeOfTheSameDownload() = runBlocking {
+        data class Attempt(val id: Long, val executionId: String)
+
+        val oldAttempt = Attempt(901L, "old-attempt")
+        val statuses = ConcurrentHashMap<Long, String>()
+        DownloadCancellationRegistry.record(
+            oldAttempt.id,
+            oldAttempt.executionId,
+            DownloadCancellationRegistry.Reason.PAUSED,
+        )
+
+        runDownloadItemsIndependently(
+            items = listOf(oldAttempt, Attempt(902L, "sibling")),
+            isItemLocalCancellation = { item ->
+                DownloadCancellationRegistry.belongsTo(item.id, item.executionId)
+            },
+        ) { item ->
+            if (item.id == oldAttempt.id) {
+                // The new attempt is queued before the old child observes its
+                // cancellation.  The registry still identifies the old child.
+                statuses[item.id] = "Queued"
+                throw CancellationException("old item-local pause")
+            }
+            statuses[item.id] = "Queued"
+        }
+
+        assertEquals("Queued", statuses[oldAttempt.id])
+        assertEquals("Queued", statuses[902L])
+    }
 }

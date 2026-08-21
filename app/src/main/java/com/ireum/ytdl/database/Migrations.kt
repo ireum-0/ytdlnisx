@@ -410,6 +410,23 @@ object Migrations {
                 "CREATE INDEX IF NOT EXISTS `index_history_date_fetch_items_operationId_itemState` " +
                     "ON `history_date_fetch_items` (`operationId`, `itemState`)"
             )
+        },
+        Migration(56, 57) { database ->
+            database.execSQL(
+                "ALTER TABLE downloads ADD COLUMN executionId TEXT NOT NULL DEFAULT ''"
+            )
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `history_replacement_barriers` (" +
+                    "`downloadId` INTEGER NOT NULL, " +
+                    "`operationId` TEXT NOT NULL, " +
+                    "`historyId` INTEGER NOT NULL, " +
+                    "`expectedSourceUrl` TEXT NOT NULL, " +
+                    "`expectedType` TEXT NOT NULL, " +
+                    "`issueCode` TEXT NOT NULL, " +
+                    "`issueStage` TEXT NOT NULL, " +
+                    "`createdAt` INTEGER NOT NULL, " +
+                    "PRIMARY KEY(`downloadId`))"
+            )
         }
     )
 

@@ -26,8 +26,15 @@ class CancelScheduledDownloadWorker(
         runningDownloads.forEach {
             YoutubeDL.getInstance().destroyProcessById(it.id.toString())
             YoutubeDLCompat.destroyProcessById(it.id.toString())
-            it.status = DownloadRepository.Status.Queued.toString()
-            dao.update(it)
+            if (it.executionId.isNotBlank()) {
+                dao.requeueActiveDownload(it.id, it.executionId)
+            } else {
+                dao.setStatusMultipleFromStatus(
+                    listOf(it.id),
+                    DownloadRepository.Status.Active.toString(),
+                    DownloadRepository.Status.Queued.toString(),
+                )
+            }
         }
         return Result.success()
     }
