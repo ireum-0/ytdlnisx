@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **52 active correctness defects** in this checkpoint. The previous
+There are **53 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 52-defect registry is intentionally retained here. The separate
+The broader 53-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 52-defect count unless they are explicitly promoted
+below do **not** change the 53-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-52-defect registry below.
+53-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 52 active defects
+### F1 remediation-discovered follow-up not counted in the 53 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1594,6 +1594,60 @@ Required result:
   set from a fetch that produced no item at all;
 - add ignored-error empty-result, thrown-failure, authoritative-no-subtitle,
   requested-subtitle, retry-exhaustion, and subsequent-rescan regressions.
+
+### P2 — BUG-HARDSUB-02 — Preserve hard-sub guarantees across History re-download replacement
+
+**State:** Open
+
+**Failure path:** a normal History re-download is prepared with
+`DownloadViewModel.createDownloadItemFromHistory()` and later revalidated by
+`hydrateHistoryRedownloadBeforeQueue()`. For a video whose existing History row
+has `hardSubDone = true`, hydration deliberately sets `requiresHardSubLookup =
+true`, because replacing that row should not silently discard its established
+hard-sub state. The subtitle lookup nevertheless takes
+`firstOrNull()?.availableSubtitles.orEmpty()`. A thrown lookup exception blocks
+queueing when `requiresHardSubLookup` is true, but a non-throwing missing
+`ResultItem` is collapsed to an empty subtitle list and is treated as a valid
+lookup. This is production-reachable because the yt-dlp metadata path uses
+`--ignore-errors` and can return normally with no parsed item.
+
+If the global/current re-download configuration did not already request subtitle
+burn-in, that ambiguous empty result leaves `videoPreferences.embedSubs = false`
+and the re-download proceeds without burning subtitles. `DownloadWorker` then
+uses the regular `HistoryRedownloadMarker` to authorize replacement of the same
+History row. When `hardSubBurned` is false, the replacement factory does not set
+`hardSubDone`/`hardSubScanRemoved` from the newly produced media; instead it
+copies `previous.hardSubDone` and `previous.hardSubScanRemoved`. After the
+History replacement commits, `deleteReplacedHistoryMedia()` deletes the previous
+media. The new file can therefore be unburned while the durable History row still
+claims `hardSubDone = true` and may remain excluded from future hard-sub scans.
+
+**Why this is a defect:** a non-authoritative metadata-empty result can erase an
+already-established media property during a destructive replacement while the
+persistent state falsely says that property survived. The user can lose the old
+hard-subbed file, receive an unburned replacement, and have automatic recovery
+skip it because the stale `hardSubDone` flag was inherited. This is distinct
+from `BUG-HARDSUB-01`, which concerns excluding scan candidates before any
+History replacement occurs.
+
+Required result:
+
+- carry an explicit authoritative subtitle-lookup outcome through History
+  re-download preparation, distinguishing a successful empty subtitle set from
+  an ignored-error/absent-item result;
+- when the target History row has `hardSubDone = true` or the current request
+  otherwise requires hard-sub verification, keep ambiguous/failed lookup
+  retryable or block replacement rather than treating it as “no subtitles”;
+- derive replacement `hardSubDone` and `hardSubScanRemoved` from the newly
+  produced media/current burn result, never by inheriting a prior file's hard-sub
+  claim without proof that the replacement satisfies it;
+- preserve the previous History media until the replacement has authoritatively
+  re-established the required hard-sub property, and fail safely if it cannot;
+- add direct Download-now and multi-Processing queue regressions for ignored-error
+  empty lookup, thrown lookup failure, authoritative empty subtitles, requested
+  subtitle discovery, prior `hardSubDone = true` with global embed disabled, and
+  successful burn-in, proving old media is not deleted and flags are not falsely
+  retained when the guarantee is not re-established.
 
 ### P2 — BUG-CANCEL-01 — Persist cancel/requeue intent before terminating live work
 
