@@ -1318,23 +1318,31 @@ class DownloadWorker(
                             }
                             downloadItem.lastIssueCode = historyIssue.code.name
                             downloadItem.lastIssueStage = DownloadIssueStage.HISTORY.name
-                            try {
-                                dao.update(downloadItem)
-                                runCatching {
+                            val persistenceResult = persistHistoryReplacementTerminalState(
+                                issue = historyIssue,
+                                persistDownload = { dao.update(downloadItem) },
+                                transitionLinkedDownload = { reason ->
                                     LowQualityRedownloadLedger.transition(
                                         context,
                                         downloadItem.id,
                                         com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
-                                        historyIssue.code.name
+                                        reason
                                     )
-                                }
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (queueError: Exception) {
+                                },
+                            )
+                            val unrecoverableMismatch =
+                                unrecoverableHistoryReplacementPersistenceFailure(
+                                    historyReplacementFailureIssue,
+                                    persistenceResult,
+                                )
+                            if (unrecoverableMismatch != null) {
+                                throw unrecoverableMismatch
+                            }
+                            if (persistenceResult is HistoryReplacementPersistenceResult.Failed) {
                                 Log.e(
                                     TAG,
                                     "Failed to mark history recovery record id=${downloadItem.id}",
-                                    queueError
+                                    persistenceResult.error
                                 )
                             }
                             completionIssues += historyIssue
@@ -1764,14 +1772,20 @@ class DownloadWorker(
                         downloadItem.status = DownloadRepository.Status.Error.toString()
                         downloadItem.lastIssueCode = primaryIssue.code.name
                         downloadItem.lastIssueStage = primaryIssue.stage.name
-                        dao.update(downloadItem)
-                        runCatching {
-                            LowQualityRedownloadLedger.transition(
-                                context,
-                                downloadItem.id,
-                                com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
-                                primaryIssue.code.name
-                            )
+                        val terminalPersistence = persistHistoryReplacementTerminalState(
+                            issue = primaryIssue,
+                            persistDownload = { dao.update(downloadItem) },
+                            transitionLinkedDownload = { reason ->
+                                LowQualityRedownloadLedger.transition(
+                                    context,
+                                    downloadItem.id,
+                                    com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                    reason
+                                )
+                            },
+                        )
+                        if (terminalPersistence is HistoryReplacementPersistenceResult.Failed) {
+                            throw terminalPersistence.error
                         }
                         if (isHardSubRedownload(downloadItem)) {
                             markHardSubProcessed(downloadItem.id)
@@ -1816,15 +1830,20 @@ class DownloadWorker(
                     }
                     } catch (unexpected: Exception) {
                         if (unexpected is CancellationException) throw unexpected
-                        val issue = DownloadIssue.create(
+                        val fallbackIssue = DownloadIssue.create(
                             stage = currentIssueStage,
                             code = DownloadIssueCode.UNKNOWN,
                             details = unexpected.message.orEmpty(),
                             source = DownloadIssueSource.TYPED_EXCEPTION
                         )
+                        val issue = authoritativeDownloadIssue(
+                            establishedHistoryIssue = historyReplacementFailureIssue,
+                            fallbackIssue = fallbackIssue,
+                        )
                         downloadOutcome = DownloadOutcome.failed(issue)
                         withContext(Dispatchers.IO + NonCancellable) {
-                            runCatching {
+                            var recoveryResult: HistoryReplacementPersistenceResult? = null
+                            try {
                                 val latestStatus = dao.checkStatus(downloadItem.id)
                                 if (
                                     latestStatus == DownloadRepository.Status.Active ||
@@ -1833,24 +1852,33 @@ class DownloadWorker(
                                     downloadItem.status = DownloadRepository.Status.Error.toString()
                                     downloadItem.lastIssueCode = issue.code.name
                                     downloadItem.lastIssueStage = issue.stage.name
-                                    dao.update(downloadItem)
-                                    runCatching {
-                                        LowQualityRedownloadLedger.transition(
-                                            context,
-                                            downloadItem.id,
-                                            com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
-                                            issue.code.name
-                                        )
-                                    }
+                                    recoveryResult = persistHistoryReplacementTerminalState(
+                                        issue = issue,
+                                        persistDownload = { dao.update(downloadItem) },
+                                        transitionLinkedDownload = { reason ->
+                                            LowQualityRedownloadLedger.transition(
+                                                context,
+                                                downloadItem.id,
+                                                com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                                reason
+                                            )
+                                        },
+                                    )
                                 }
-                            }.onFailure { recoveryError ->
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (recoveryError: Exception) {
+                                recoveryResult = HistoryReplacementPersistenceResult.Failed(recoveryError)
+                            }
+                            val recoveryFailure = recoveryResult as? HistoryReplacementPersistenceResult.Failed
+                            if (recoveryFailure != null) {
                                 Log.e(
                                     TAG,
                                     "Failed to recover unexpected download error id=${downloadItem.id}",
-                                    recoveryError
+                                    recoveryFailure.error
                                 )
                             }
-                            runCatching {
+                            try {
                                 notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
                                 notificationUtil.createDownloadErrored(
                                     downloadItem.id,
@@ -1861,14 +1889,22 @@ class DownloadWorker(
                                     downloadItem.logID,
                                     resources,
                                     retryable = false,
-                                    allowReconfigure = true
+                                    allowReconfigure = historyReplacementFailureIssue == null
                                 )
-                            }.onFailure { notificationError ->
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (notificationError: Exception) {
                                 Log.w(
                                     TAG,
                                     "Failed to report unexpected download error id=${downloadItem.id}",
                                     notificationError
                                 )
+                            }
+                            unrecoverableHistoryReplacementPersistenceFailure(
+                                establishedHistoryIssue = historyReplacementFailureIssue,
+                                result = recoveryResult,
+                            )?.let { unrecoverableMismatch ->
+                                throw unrecoverableMismatch
                             }
                         }
                         Log.e(TAG, "Unexpected download failure id=${downloadItem.id}", unexpected)

@@ -14,11 +14,15 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
 import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
+import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.ui.downloads.shouldPresentLowQualitySelection
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.work.HistoryReplacementPersistenceResult
 import com.ireum.ytdl.work.dispatchLowQualityRedownloadRecovery
+import com.ireum.ytdl.work.persistHistoryReplacementTerminalState
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -181,6 +185,39 @@ class LowQualityRedownloadPersistenceTest {
             LowQualityRedownloadItemState.SUCCEEDED,
             repository.getItems(operation.operationId).single().stateValue
         )
+    }
+
+    @Test
+    fun historyMismatchPersistsDownloadErrorAndLinkedFailureReason() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 8, DownloadRepository.Status.Active)
+        val issue = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
+        val terminalItem = database.downloadDao.getDownloadById(linkedId).apply {
+            status = DownloadRepository.Status.Error.name
+            lastIssueCode = issue.code.name
+            lastIssueStage = issue.stage.name
+        }
+
+        val result = persistHistoryReplacementTerminalState(
+            issue = issue,
+            persistDownload = { database.downloadDao.update(terminalItem) },
+            transitionLinkedDownload = { reason ->
+                repository.markDownloadState(
+                    linkedId,
+                    LowQualityRedownloadItemState.FAILED,
+                    reason,
+                )
+            },
+        )
+
+        assertEquals(HistoryReplacementPersistenceResult.Persisted, result)
+        val persistedDownload = database.downloadDao.getDownloadById(linkedId)
+        assertEquals(DownloadRepository.Status.Error.name, persistedDownload.status)
+        assertEquals(issue.code.name, persistedDownload.lastIssueCode)
+        assertEquals(issue.stage.name, persistedDownload.lastIssueStage)
+        val child = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.FAILED, child.stateValue)
+        assertEquals(issue.code.name, child.reasonCode)
     }
 
     @Test
