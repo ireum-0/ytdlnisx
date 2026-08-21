@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **38 active correctness defects** in this checkpoint. The previous
+There are **40 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 38-defect registry is intentionally retained here. The separate
+The broader 40-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 38-defect count unless they are explicitly promoted
+below do **not** change the 40-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-38-defect registry below.
+40-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 38 active defects
+### F1 remediation-discovered follow-up not counted in the 40 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1169,6 +1169,117 @@ Required result:
 - add fault-injection regressions for `cancelByUser()`, linked-ledger update, and
   scheduler requeue writes, plus restart tests proving no killed job remains as
   ghost `Active`/`PostProcessing` work.
+
+### P2 — BUG-CANCEL-02 — Make persisted cancellation authoritative at the success commit boundary
+
+**State:** Open
+
+**Failure path:** during a normal `DownloadWorker` run, the last explicit
+`shouldStopForUserRequest()` status check occurs before the final success/History
+stage. Once that check has observed the row as worker-owned, the worker can
+continue through final output handling and into the History insert/replacement
+without another authoritative Download-status check at the commit boundary.
+Meanwhile the production notification Cancel action can successfully commit
+`DownloadRepository.cancelByUser(id)`, which changes the Download row to
+`Cancelled` and terminalizes a linked low-quality child, before it destroys the
+yt-dlp/post-processing process. If cancellation lands after the worker's last
+status check, yt-dlp may already have exited and the stale worker can still
+commit a new History row or an authorized History replacement after the durable
+`Cancelled` state was established.
+
+The terminal success repository call does not close this race.
+`DownloadRepository.completeAndDelete()` updates a linked low-quality child only
+when that child is still nonterminal, then deletes the Download row regardless
+of its current Download status. A cancellation-terminalized child is therefore
+left cancelled while the stale success path can still delete the already
+`Cancelled` Download. In a History replacement flow the same stale continuation
+can also reach replacement cleanup after cancellation, including deletion of the
+previous media under the otherwise-authorized replacement contract. Process
+termination after the cancellation transaction cannot prevent this when the
+worker is already in database/filesystem post-processing rather than an active
+yt-dlp call.
+
+**Why this is a defect:** a successful cancellation transaction is the first
+authoritative durable observation of the user's terminal intent, but a worker
+that passed an earlier status snapshot can subsequently commit success-side
+History/file mutations and erase the cancelled Download row. The result can be
+a user-cancelled operation with newly committed History/output, or a cancelled
+replacement that still mutates the History target and cleans up previous media.
+This is a distinct ownership/TOCTOU defect from `BUG-CANCEL-01`, which covers
+failure to durably persist cancellation before process termination, and from
+`BUG-HISTORY-03`, which covers cancellation observed only after an authoritative
+History commit.
+
+Required result:
+
+- make final History insert/replacement and terminal Download success conditional
+  on authoritative worker ownership that is validated at the same commit
+  boundary, using a transaction/CAS, ownership token, or generation that a
+  committed cancellation invalidates;
+- once `Cancelled`/`Paused` is durably established, prevent a stale worker from
+  inserting/replacing History, deleting the Download row as success, or
+  performing replacement old-media cleanup;
+- make `completeAndDelete()` and the target-deleted success variant reject a
+  Download whose current durable status no longer belongs to the worker, and
+  treat an already-terminal linked cancellation as a veto rather than merely
+  skipping the child-state update;
+- define an explicit cancelled/partial-output recovery contract when media
+  output already exists but cancellation wins before History commit, preserving
+  recoverable output without misrepresenting the cancelled request as success;
+- add deterministic ordinary-download, History-replacement, and linked
+  low-quality races where cancellation commits between the last status check and
+  History/terminal success commit, including cancellation after yt-dlp exit, and
+  prove no post-cancel History replacement, previous-media cleanup, or success
+  deletion can occur.
+
+### P2 — BUG-PAUSE-01 — Do not expose a failed pause as resumable state
+
+**State:** Open
+
+**Failure path:** the production Pause action enters
+`PauseDownloadNotificationReceiver`. It loads the active Download, changes the
+in-memory item status to `Paused`, and calls `downloadDao.update(item)` before
+cancelling the running notification or destroying yt-dlp/post-processing. If
+that authoritative Room write throws, control skips every process-termination
+step and the live worker can continue with its row still durably `Active` or
+`PostProcessing`. The coroutine's `finally` nevertheless always switches to the
+main dispatcher and calls `NotificationUtil.createResumeDownload()`, so the UI
+advertises a Resume action even though Pause never committed and the original
+worker still owns live work.
+
+That misleading action is not harmless. `ResumeActivity` calls
+`DownloadViewModel.reQueueDownloadItemsAndWait()`, whose DAO transition rewrites
+the selected row to `Queued` without requiring the expected current status to be
+`Paused`. If the user taps the erroneous Resume notification after the failed
+pause write, it can therefore change the still-live worker's `Active` or
+`PostProcessing` row to `Queued` and start the normal download worker again.
+Download-worker candidate ownership is reconstructed from durable live statuses,
+so the original live owner can disappear from the next DB ownership snapshot
+while it is still executing.
+
+**Why this is a defect:** a failed authoritative pause write is reinterpreted by
+a `finally` side effect as successful Pause, and the follow-up Resume path can
+then remove durable ownership from a genuinely running job. Besides false UI
+state, this creates a production-reachable path to duplicate/restarted work,
+conflicting terminal commits, or duplicate output while the original worker is
+still alive.
+
+Required result:
+
+- publish the Resume notification only after the `Paused` transition has
+  durably committed and the live worker/process has been brought under the
+  corresponding paused ownership contract;
+- if pause persistence fails, preserve the running notification/state and report
+  or retain a retryable pause failure instead of executing success-only UI side
+  effects from `finally`;
+- make Resume an expected-state transition that can change only a durably
+  `Paused` row to `Queued`; it must not rewrite `Active`, `PostProcessing`,
+  `Cancelled`, `Error`, or another terminal/owned state;
+- coordinate pause/resume with worker acquisition so a row cannot become queued
+  while an earlier worker still owns its process/post-processing work;
+- add fault-injection coverage for the pause Room write, notification creation,
+  and a Resume click after failed persistence, plus a deterministic concurrent
+  worker-selection test proving no duplicate owner can be created.
 
 ### P2 — BUG-LOWQUALITY-01 — Persist download failure and low-quality ledger failure atomically
 
