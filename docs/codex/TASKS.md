@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **47 active correctness defects** in this checkpoint. The previous
+There are **48 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 47-defect registry is intentionally retained here. The separate
+The broader 48-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 47-defect count unless they are explicitly promoted
+below do **not** change the 48-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-47-defect registry below.
+48-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 47 active defects
+### F1 remediation-discovered follow-up not counted in the 48 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1123,6 +1123,68 @@ Required result:
   success;
 - add fault-injection regressions for format extraction, Result-row write,
   Download-row write, cancellation, and mixed-success batches.
+
+### P2 — BUG-FORMAT-02 — Do not let stale format-update notifications overwrite live download ownership
+
+**State:** Open
+
+**Failure path:** continuing a multi-download format refresh in the background
+first moves the current `Processing` rows to durable `Saved` rows and enqueues
+`UpdateMultipleDownloadsFormatsWorker`. When that worker finishes, its
+`showFormatsUpdatedNotification()` PendingIntent deep-links to `HomeFragment`
+with the numeric Download IDs and `showDownloadsWithUpdatedFormats = true`.
+Those IDs are retained in the notification with no status, generation, or
+execution-owner snapshot and the notification can be opened later.
+
+Before the notification is tapped, the user can normally open one of those Saved
+rows and queue it. `DownloadWorker.claimDownloadForWorker()` can then
+transition that same ID to `Active` and install a fresh `executionId`. Tapping
+the older format-update notification afterward reaches `HomeFragment.onResume()`,
+which calls `turnDownloadItemsToProcessingDownloads(ids, deleteExisting = true)`.
+That method deletes any current Processing session, reloads each row only by
+numeric ID, retains the existing ID when `deleteExisting` is true, unconditionally
+sets `status = Processing`, and persists the full row through
+`DownloadRepository.update()`. It has no expected `Saved` status or execution-
+ownership predicate, so it can rewrite the live `Active`/`PostProcessing` row
+as `Processing` while the original worker still owns and executes the same
+attempt.
+
+The deep link immediately opens `DownloadMultipleBottomSheetDialog`. Its normal
+Download action queues the Processing rows, and the DAO path clears execution
+ownership when moving them to `Queued`. A second worker can therefore claim the
+same Download ID while the original execution is still downloading, moving, or
+post-processing. Even before that second queue action, the first worker's owner-
+guarded `Active`/`PostProcessing` writes can fail because the stale notification
+already changed the durable status out from under it. No notification parser or
+Home navigation validation rejects IDs whose state has advanced since the
+background-format operation completed.
+
+**Why this is a defect:** a completion notification is only a stale navigation
+hint, but it is treated as authority to reclassify current durable Download
+state. A normal Saved → Queued → Active progression can therefore have its live
+execution ownership revoked by tapping an older notification, allowing duplicate
+execution, conflicting output/terminal commits, or a false failure of the
+original worker. This is distinct from `BUG-FORMAT-01`, which concerns the
+format worker's own persistence/result semantics, and from scheduler/pause races
+whose stale commands enter through different state transitions.
+
+Required result:
+
+- treat format-update notification IDs as navigation hints only and revalidate
+  each row against the expected post-refresh state before any mutation;
+- allow notification-driven reconfiguration only for rows still durably owned by
+  the completed format-refresh flow (normally `Saved`) and never rewrite
+  `Queued`, `Active`, `PostProcessing`, `Paused`, `Cancelled`, `Error`, or an
+  unrelated current `Processing` session;
+- preserve `executionId` ownership by using an expected-state/CAS or generation
+  token that a later queue/worker transition invalidates;
+- do not delete an unrelated Processing configuration session merely because an
+  older format-update notification was opened; scope any replacement to the
+  notification-owned rows;
+- add deterministic regressions for Saved → Active before notification tap,
+  Saved → Queued, already-PostProcessing, unrelated Processing-session presence,
+  normal still-Saved reopening, and pressing Download after a stale notification,
+  proving no second execution owner can be created.
 
 ### P2 — BUG-TERMINATE-01 — Requeue active work before no-confirmation app termination
 
