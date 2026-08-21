@@ -317,6 +317,49 @@ full-row write after mismatch persistence, stale multi-worker queue claim after
 mismatch persistence, and process death/restart before the first mismatch carrier
 write.
 
+## BUG-BACKUP-01-FOLLOWUP-05 — Preserve hard-sub authorization failures as authoritative History semantics
+
+**State:** Discovered  
+**Severity:** P2 candidate  
+**Discovered during:** BUG-BACKUP-01 Finding A v4 review at `c64ddbc26a41d4bba8010d9e30f5ffb24b2336da`  
+**Ownership:** BUG-BACKUP-01 Finding A / hard-sub previous-media authorization propagation  
+**Current remediation impact:** Blocking Finding A
+
+`DownloadWorker.resolvePreviousHistoryMediaPaths(...)` now invokes the same
+source/type/current-target authorization required by Finding A before exposing
+previous History media.  However, the helper returns the authorized snapshot only
+for `Authorized` and collapses `TargetMissing`, `SourceMismatch`, and
+`TypeMismatch` alike to `emptyList()`.
+
+That loses the first authoritative semantic decision.  In the pre-move and
+post-move hard-sub fallback paths, an authorization mismatch can therefore be
+followed by a generic "no media" / hard-sub `IOException` before final History
+replacement is reached.  Because no `historyReplacementFailureIssue` is
+established, the generic failure can be persisted instead of the exact
+SourceMismatch/TypeMismatch, and retry/reconfigure logic may later treat the same
+privileged marker as an ordinary failure.  If execution does continue far enough
+to authorize again, a changed target can also replace the first refusal with a
+later `Authorized` result.  `TargetMissing` is similarly prevented from becoming
+the required `TARGET_DELETED` semantic at this first authoritative observation.
+
+This is distinct from `BUG-OUTPUT-01-FOLLOWUP-01`: that follow-up owns the
+**Authorized -> later destructive mutation** TOCTOU.  This entry owns loss of a
+**non-authorized result itself** before any previous-media authority is granted.
+The pre-F1 implementation read the History row directly by numeric ID; Finding A
+introduced typed source/type authorization here, so preserving those typed
+non-authorized results is part of the current remediation contract.
+
+**Required eventual result:** return or propagate a typed previous-media
+authorization result instead of reducing every refusal to an empty path list.
+The first SourceMismatch/TypeMismatch must immediately establish the same
+monotonic authoritative mismatch barrier used by final replacement, and later
+hard-sub errors, output recovery, or reauthorization must not downgrade or
+replace it.  TargetMissing must remain distinguishable and enter the defined
+`TARGET_DELETED` semantics.  Add focused pre-move and post-move hard-sub tests
+where source/type changes before previous-media fallback, including a generic
+hard-sub failure before final History replacement and a later target change that
+must not reauthorize the already-refused privileged operation.
+
 ## Review checklist retained from Finding A misses
 
 The following checks should be applied to future remediation reviews even when a
