@@ -3,6 +3,9 @@ package com.ireum.ytdl.database.repository
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.util.storage.HistoryDeletionSummary
+import com.ireum.ytdl.util.storage.HistoryFileDeletionOutcome
+import com.ireum.ytdl.util.storage.HistoryFileDeletionStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -285,6 +288,85 @@ class HistoryReplacementOutcomePolicyTest {
         )
         assertTrue(result.cleanupCompleted)
     }
+
+    @Test
+    fun nonThrowingPermissionOrFailureProducesIncompleteCleanup() {
+        val authorization = HistoryReplacementAuthorization.Authorized(historyItem())
+
+        listOf(
+            HistoryFileDeletionStatus.PERMISSION_REQUIRED,
+            HistoryFileDeletionStatus.FAILED,
+        ).forEach { status ->
+            val result = HistoryReplacementOutcomePolicy.cleanupResult(
+                authorization = authorization,
+                deletionSummary = deletionSummary(status),
+            )
+
+            assertTrue(result is HistoryReplacementCleanupResult.Incomplete)
+            assertEquals(authorization, result.authorization)
+            assertFalse(result.cleanupCompleted)
+            assertFalse(
+                HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                    hasCreatedOutputs = true,
+                    cleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(result.authorization),
+                    cleanupCompleted = result.cleanupCompleted,
+                )
+            )
+        }
+    }
+
+    @Test
+    fun partiallyCompletedDeletionRemainsIncompleteAndRetainsSummary() {
+        val result = HistoryReplacementOutcomePolicy.cleanupResult(
+            authorization = HistoryReplacementAuthorization.Authorized(historyItem()),
+            deletionSummary = deletionSummary(
+                HistoryFileDeletionStatus.DELETED,
+                HistoryFileDeletionStatus.FAILED,
+            ),
+        )
+
+        val incomplete = result as HistoryReplacementCleanupResult.Incomplete
+        assertFalse(incomplete.cleanupCompleted)
+        assertEquals(1, incomplete.deletionSummary.filesDeleted)
+        assertEquals(1, incomplete.deletionSummary.filesFailed)
+        assertEquals(
+            HistoryReplacementAuthorization.Authorized(historyItem()),
+            incomplete.authorization,
+        )
+    }
+
+    @Test
+    fun successfulDeletionRemainsComplete() {
+        val result = HistoryReplacementOutcomePolicy.cleanupResult(
+            authorization = HistoryReplacementAuthorization.Authorized(historyItem()),
+            deletionSummary = deletionSummary(HistoryFileDeletionStatus.DELETED),
+        )
+
+        assertTrue(result is HistoryReplacementCleanupResult.Completed)
+        assertTrue(result.cleanupCompleted)
+        assertTrue(
+            HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                hasCreatedOutputs = true,
+                cleanupAction = HistoryReplacementOutcomePolicy.cleanupAction(result.authorization),
+                cleanupCompleted = result.cleanupCompleted,
+            )
+        )
+    }
+
+    private fun deletionSummary(
+        vararg statuses: HistoryFileDeletionStatus,
+    ) = HistoryDeletionSummary(
+        recordsRequested = 1,
+        recordsRemoved = 0,
+        removableRecordIds = emptySet(),
+        outcomes = statuses.mapIndexed { index, status ->
+            HistoryFileDeletionOutcome(
+                key = "candidate-$index",
+                displayName = "candidate-$index.mp4",
+                status = status,
+            )
+        },
+    )
 
     private fun historyItem() = HistoryItem(
         id = 1L,

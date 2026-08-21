@@ -91,6 +91,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRetryLog
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
+import com.ireum.ytdl.util.storage.HistoryDeletionSummary
 import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
 import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.referencesSameFile
@@ -4668,14 +4669,17 @@ class DownloadWorker(
                 previousPaths = previous.downloadPath,
                 candidatePaths = candidatePaths
             )
-            deleteValidatedReplacementPaths(
+            val deletionSummary = deleteValidatedReplacementPaths(
                 historyId = historyId,
                 paths = rejectedPaths,
                 historyDao = historyDao,
                 logLabel = "Rejected quality replacement cleanup",
                 trustedHistoryItem = previous,
             )
-            HistoryReplacementCleanupResult.Completed(authorization)
+            HistoryReplacementOutcomePolicy.cleanupResult(
+                authorization = authorization,
+                deletionSummary = deletionSummary,
+            )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (cleanupError: Exception) {
@@ -4694,8 +4698,15 @@ class DownloadWorker(
         historyDao: com.ireum.ytdl.database.dao.HistoryDao,
         logLabel: String,
         trustedHistoryItem: HistoryItem? = null
-    ) {
-        if (paths.isEmpty()) return
+    ): HistoryDeletionSummary {
+        if (paths.isEmpty()) {
+            return HistoryDeletionSummary(
+                recordsRequested = 0,
+                recordsRemoved = 0,
+                removableRecordIds = emptySet(),
+                outcomes = emptyList(),
+            )
+        }
         val gateway = AndroidHistoryFileDeletionGateway(context)
         val engine = HistoryFileDeletionEngine(gateway)
         val trustedDocumentTargets: Set<String> = trustedHistoryItem
@@ -4723,6 +4734,7 @@ class DownloadWorker(
                 "skipped=${result.filesSkipped} permission=${result.filesPermissionDenied} " +
                 "failed=${result.filesFailed}"
         )
+        return result
     }
 
     private fun trustedResolvedTreeTargets(

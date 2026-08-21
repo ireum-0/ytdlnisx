@@ -1,5 +1,7 @@
 package com.ireum.ytdl.database.repository
 
+import com.ireum.ytdl.util.storage.HistoryDeletionSummary
+
 enum class HistoryReplacementTerminalAction {
     COMPLETE,
     TARGET_DELETED,
@@ -18,13 +20,22 @@ sealed interface HistoryReplacementCleanupResult {
 
     data class Completed(
         override val authorization: HistoryReplacementAuthorization,
+        val deletionSummary: HistoryDeletionSummary? = null,
     ) : HistoryReplacementCleanupResult {
         override val cleanupCompleted: Boolean = true
+    }
+
+    data class Incomplete(
+        override val authorization: HistoryReplacementAuthorization,
+        val deletionSummary: HistoryDeletionSummary,
+    ) : HistoryReplacementCleanupResult {
+        override val cleanupCompleted: Boolean = false
     }
 
     data class Failed(
         override val authorization: HistoryReplacementAuthorization,
         val error: Exception,
+        val deletionSummary: HistoryDeletionSummary? = null,
     ) : HistoryReplacementCleanupResult {
         override val cleanupCompleted: Boolean = false
     }
@@ -77,6 +88,15 @@ object HistoryReplacementOutcomePolicy {
         HistoryReplacementAuthorization.SourceMismatch,
         HistoryReplacementAuthorization.TypeMismatch ->
             HistoryReplacementCleanupAction.PRESERVE_FAILED
+    }
+
+    fun cleanupResult(
+        authorization: HistoryReplacementAuthorization,
+        deletionSummary: HistoryDeletionSummary,
+    ): HistoryReplacementCleanupResult = if (deletionSummary.hasFileFailures) {
+        HistoryReplacementCleanupResult.Incomplete(authorization, deletionSummary)
+    } else {
+        HistoryReplacementCleanupResult.Completed(authorization, deletionSummary)
     }
 
     fun allowsPartialSuccess(
