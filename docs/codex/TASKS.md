@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **55 active correctness defects** in this checkpoint. The previous
+There are **56 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 55-defect registry is intentionally retained here. The separate
+The broader 56-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 55-defect count unless they are explicitly promoted
+below do **not** change the 56-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-55-defect registry below.
+56-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 55 active defects
+### F1 remediation-discovered follow-up not counted in the 56 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1268,6 +1268,67 @@ Required result:
   notification/row cleanup after both direct-destination and cache-move output,
   proving committed output remains a success and does not invite duplicate
   retry.
+
+### P2 — BUG-TERMINAL-03 — Preserve SAF authority for Terminal output-folder selection
+
+**State:** Open
+
+**Failure path:** the production Terminal screen exposes a Folder action backed
+by `ACTION_OPEN_DOCUMENT_TREE`. After the user selects a tree, the activity takes
+a persistable read/write URI grant, but the selected `content://` tree is not
+kept as the authority used by the command. `TerminalFragment` immediately passes
+it through `FileUtil.formatPath()` and inserts the resulting raw
+`/storage/.../` pathname into the command text. The configured Terminal output
+path has a second production route to the same loss of authority:
+`TerminalCommandPlanFactory` reads `command_path`, calls
+`FileUtil.canWriteToDestination()` on the original value, and for a writable SAF
+tree that check can succeed through `DocumentFile`/persisted URI permission.
+`TerminalCommandPlanner` then chooses direct output and passes
+`environment.formattedDownloadLocation` — the raw path produced by
+`FileUtil.formatPath()` — to yt-dlp as `-P`.
+
+A user-entered command containing `-P ` bypasses even that destination-writable
+decision: `TerminalCommandPlanner.create()` treats the presence of `-P ` in the
+sanitized config as proof that output is direct and sets `usesAppCache = false`
+without validating whether the path is writable by the native yt-dlp process.
+`TerminalDownloadWorker` consequently skips the provider-aware
+`FileUtil.moveFile()` stage whenever this direct-output decision is made and lets
+yt-dlp write to the raw path itself.
+
+The app targets Android 36 and does not have broad all-files access. A SAF grant
+authorizes access through the document provider; converting the tree URI to a
+filesystem-looking path does not grant equivalent raw/native access under scoped
+storage. The first authoritative observation — that the app can write the SAF
+tree through the provider — is therefore discarded before the actual yt-dlp
+filesystem mutation. No later validation proves that the raw path is writable by
+yt-dlp.
+
+**Why this is a defect:** the Terminal UI can successfully present and persist a
+folder authorization that the execution path cannot actually use. A command can
+be routed away from the safe app-cache + provider-aware move path precisely
+because provider authority was observed as writable, then fail when yt-dlp is
+asked to use an unauthorized raw path. This is a normal production path on
+scoped-storage devices, not a malformed-command-only edge case, and it is
+distinct from `BUG-DUPLICATE-03`, which concerns custom download-archive storage.
+
+Required result:
+
+- retain SAF destinations as provider-backed identities through Terminal command
+  planning and stage output in app-owned storage before moving/copying it through
+  `ContentResolver`/`DocumentFile` when raw filesystem authority is unavailable;
+- permit direct yt-dlp `-P` output only after proving the exact raw destination is
+  writable by the native execution path, not merely that the corresponding SAF
+  tree is writable through the app process;
+- do not translate a successful SAF grant into raw-path authority, and make the
+  Terminal Folder action insert/retain a typed destination rather than an
+  authority-losing pathname;
+- define explicit handling for user-supplied `-P`/`--paths` destinations that
+  cannot be proven writable instead of unconditionally disabling cache staging;
+- add Android scoped-storage regressions for primary and non-primary SAF trees,
+  cache enabled/disabled, a writable provider with raw-path denial, revoked
+  grants, an actually writable app/raw destination, and explicit `-P`, proving
+  provider-authorized destinations either complete through staged movement or
+  fail before yt-dlp begins with an actionable error.
 
 ### P2 — BUG-FORMAT-01 — Do not commit or report partial bulk format refresh as success
 
