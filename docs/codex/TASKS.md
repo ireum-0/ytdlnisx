@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **54 active correctness defects** in this checkpoint. The previous
+There are **55 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 54-defect registry is intentionally retained here. The separate
+The broader 55-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 54-defect count unless they are explicitly promoted
+below do **not** change the 55-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-54-defect registry below.
+55-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 54 active defects
+### F1 remediation-discovered follow-up not counted in the 55 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2044,6 +2044,66 @@ Required result:
   after playlist-row deletion, and after group-member deletion, plus normal
   single/multi playlist and playlist-group deletion tests proving no surviving
   object loses membership and no orphan relation survives.
+
+### P2 — BUG-QUEUE-02 — Preserve worker ownership when moving a queued item to Saved
+
+**State:** Open
+
+**Failure path:** the production Queued Downloads screen loads a `DownloadItem`
+and opens `UiUtil.showDownloadItemDetailsCard()`. Its long-click Download action
+uses that earlier UI snapshot to enter the reconfiguration/save flow: it changes
+the snapshot status to `Saved`, calls
+`DownloadViewModel.updateToStatus(id, Saved)`, and then opens the normal download
+configuration sheet. The selected row is not reserved while that details card is
+open. `DownloadWorker` can independently claim the still-Queued row in the
+meantime through `claimDownloadForWorker()`, changing it to `Active` and
+installing a fresh `executionId`.
+
+The stale UI action does reload the row indirectly, but the repository does not
+use that newer state as a veto. `updateToStatus(..., Saved)` delegates to
+`DownloadRepository.moveToSaved()`, whose Room transaction reads the current row
+and then unconditionally calls `downloadDao.setStatus(id, 'Saved')`. The DAO
+update has no expected `Queued` status or execution-owner predicate and does not
+clear or coordinate the active execution token. The same transaction calls
+`markLinkedDownloadSaved()`, which can terminalize an attached low-quality child
+as `SKIPPED / SAVED_FOR_LATER` and finalize its parent operation even though the
+claimed Download worker is still executing.
+
+`DownloadWorker` does not treat `Saved` as a user-stop state; its ordinary stop
+check covers `Paused` and `Cancelled`. The worker can therefore continue doing
+network/filesystem work until a later owner-and-running-state guarded write fails,
+or can already have produced output before that conflict is observed. The
+configuration sheet opened by the stale action can subsequently mutate or queue
+the same durable row again, creating further competing state transitions while
+the original execution still exists.
+
+**Why this is a defect:** a navigation action that was authorized only by an old
+Queued UI snapshot can overwrite a newer authoritative worker claim and can
+simultaneously tell the low-quality ledger that the work was intentionally
+skipped. Durable Download state, ledger state, and the real live process can
+therefore disagree, with possible duplicate/reconfigured execution, orphaned
+output, false low-quality completion, or a spurious failure of the original
+worker. This is distinct from `BUG-FORMAT-02`, whose stale authority comes from a
+completed format-notification deep link, and from scheduler/pause defects whose
+state transitions enter through different commands.
+
+Required result:
+
+- make Queued -> Saved an expected-state transition that succeeds only while the
+  row is still in the UI-authorized non-running state and has no current worker
+  ownership; if it has already become `Active`/`PostProcessing`, report it as
+  already running instead of rewriting its status;
+- bind the details/reconfiguration action to an expected status/generation or
+  re-read and validate current ownership immediately before the mutation;
+- terminalize a linked low-quality child as `SKIPPED / SAVED_FOR_LATER` only in
+  the same transaction that successfully commits the authorized non-running
+  Download -> Saved transition;
+- never allow a stale Saved/reconfiguration UI to clear, replace, or compete with
+  an existing `executionId`; coordinate any deliberate stop-and-reconfigure flow
+  through the normal durable cancellation/pause ownership protocol first;
+- add deterministic Queued-details -> worker-claim -> Save races for ordinary and
+  low-quality-linked downloads, plus already-PostProcessing, normal still-Queued,
+  and subsequent configuration/queue-action regressions.
 
 ### P3 — BUG-LOCALADD-02 — Persist local-add session input before durable worker enqueue
 
