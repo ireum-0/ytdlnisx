@@ -178,6 +178,83 @@ non-authoritative ancillary diagnostic.  Add focused coverage for an ordinary
 non-mismatch terminal failure followed by notification failure, while retaining
 mismatch-specific regression coverage.
 
+## REMEDIATION-FOLLOWUP-WORKER-CANCELLATION-01 — Isolate item-local cancellation from worker-global cancellation
+
+**State:** Discovered  
+**Severity:** P2 candidate  
+**Discovered during:** BUG-BACKUP-01 Finding A remediation review at `963ba9a936f4f3570a815bb00e39e00cd0124ca9`  
+**Ownership:** Cross-cutting DownloadWorker concurrency / `BUG-CANCEL-01` adjacent  
+**Current remediation impact:** Current-change regression; also blocks Finding A while present
+
+`0251d144a0b38af463049e6d507c64ddfa82ae51` replaced the shared child
+`coroutineScope` with `runDownloadItemsIndependently(...)` so a non-cancellation
+failure in one item no longer immediately cancels its siblings.  The helper,
+however, treats **every** child `CancellationException` as worker-global
+cancellation by calling `scopeJob.cancel(cancelled)`.
+
+Production item-local pause/cancel paths do not imply worker-global cancellation.
+`pauseDownload(id)` persists only that row as `Paused` and destroys only that
+item's process; yt-dlp execution can then convert the row-local `Paused` or
+`Cancelled` state into a `CancellationException`.  With concurrent downloads,
+that exception now cancels the supervisor scope and unrelated sibling children.
+Those siblings can exit through cancellation while their rows remain
+`Active`/`PostProcessing`, and `cleanupStoppedWorker()` is not guaranteed because
+an item-local cancellation does not itself prove `DownloadWorker.isStopped`.
+
+This is broader than History replacement: pausing or cancelling an ordinary
+concurrent download can affect unrelated ordinary work.
+
+**Required eventual result:** distinguish item-local cancellation from
+worker/parent-global cancellation using authoritative state/ownership rather
+than exception type alone.  An item-local `Paused`/`Cancelled` transition must
+stop only that item and allow siblings to continue.  A genuine WorkManager or
+parent cancellation must still cancel the whole batch.  Add production-wiring
+coverage with `concurrent_downloads >= 2` for single-item pause, single-item
+cancel, worker-global cancel, and an unrelated sibling that must not be stranded
+as `Active`/`PostProcessing`.
+
+## REMEDIATION-FOLLOWUP-DOWNLOAD-STATE-CAS-01 — Require expected-state ownership before manual requeue/resume
+
+**State:** Discovered  
+**Severity:** P2 candidate  
+**Discovered during:** BUG-BACKUP-01 Finding A adjacent-path review  
+**Ownership:** Cross-cutting Download queue state transitions  
+**Current remediation impact:** Pre-existing / non-blocking for Finding A
+
+Several user-triggered queue transitions update by Download ID without proving
+that the row is still in the state that authorized the action.  In particular,
+`DownloadDao.reQueueDownloadItems(...)` can write `Queued` for an ID regardless
+of whether the current row is still `Paused`, and
+`resetScheduleTimeForItems(...)` can write `Queued` without requiring the row to
+still be `Scheduled`.  Both callers start a new DownloadWorker when the update
+reports any affected row.
+
+This creates a production race with stale UI/notification actions.  A Resume
+action can be authorized from an earlier paused snapshot, then run after the
+row has already become `Active`; the unconditional update can demote that live
+row back to `Queued` while its original yt-dlp/post-processing owner continues.
+Because `startDownloadWorker(...)` enqueues an independent work request and the
+DB no longer advertises the original row as `Active`, another worker can select
+the same Download ID and start overlapping work.  The scheduled "download now"
+path has the same race if a scheduled row is claimed by a worker between the UI
+snapshot and `resetScheduleTimeForItems(...)`.
+
+`PauseDownloadNotificationReceiver` exposes an additional concrete path: its
+`finally` block always creates a Resume notification even when the authoritative
+`dao.update(Paused)` throws.  In that failure case the process-destruction calls
+are skipped, so the original download can still be running while the UI advertises
+Resume; a later raw resume can then rewrite that live row to `Queued` if the DB
+has recovered.
+
+**Required eventual result:** make user state transitions compare-and-set the
+expected current state (`Paused -> Queued`, `Scheduled -> Queued`, and analogous
+manual transitions) and start new work only after that exact transition succeeds.
+A stale/double-delivered intent must be a no-op rather than demoting
+`Active`/`PostProcessing`.  Show a Resume action only after durable pause
+persistence succeeds.  Add deterministic stale-intent races for Resume and
+scheduled "download now", plus pause-persistence failure coverage proving that
+no live process can be paired with a falsely requeued row or duplicate worker.
+
 ## Review checklist retained from Finding A misses
 
 The following checks should be applied to future remediation reviews even when a
