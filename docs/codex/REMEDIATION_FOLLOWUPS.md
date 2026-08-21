@@ -143,24 +143,40 @@ lack the same reason code.
 linked low-quality terminal reason atomically where practical, or make startup
 reconciliation deterministically reconstruct the same mismatch reason.
 
-## BUG-BACKUP-01-FOLLOWUP-03 — Preserve terminal mismatch diagnostics across post-persistence notification failure
+## BUG-BACKUP-01-FOLLOWUP-03 — Preserve terminal failure diagnostics across post-persistence notification failure
 
 **State:** Discovered  
 **Severity:** P3  
 **Discovered during:** BUG-BACKUP-01 Finding A review  
-**Ownership:** BUG-BACKUP-01 outcome/notification diagnostics  
+**Ownership:** Download outcome / notification diagnostics  
 **Current remediation impact:** Non-blocking for Finding A
 
-After durable Download Error + distinct mismatch persistence and low-quality
-FAILED state, a later error-notification failure can still cause the outermost
-unexpected path to replace the in-memory `downloadOutcome` with `UNKNOWN`.
-Current durable recovery state remains the distinct History mismatch, so this is
-not a P2 state-integrity failure, but immediate terminal logging/reporting can be
-less precise than the persisted state.
+The original form of this follow-up concerned an authoritative
+SourceMismatch/TypeMismatch being replaced in-memory by `UNKNOWN` after a later
+notification failure.  The mismatch-specific case is now protected by the
+attempt-local authoritative mismatch carrier introduced by
+`fa1156be49d8ca6527948d1d7cffe0ad4f98cd18`.
 
-**Required eventual result:** once an authoritative terminal issue is durably
-persisted, later notification/reporting failures must not replace the in-memory
-terminal issue; they may only append a non-authoritative notification diagnostic.
+A broader non-mismatch diagnostic defect remains.  After an ordinary terminal
+failure has already persisted the Download Error row and linked FAILED reason, a
+later exception from `createDownloadErrored(...)` or another non-authoritative
+notification/reporting step can reach the outer unexpected catch while
+`historyReplacementFailureIssue == null`.  That catch can replace the in-memory
+`DownloadOutcome` with a newly classified `UNKNOWN` even though the durable
+Download row and linked reason still contain the original terminal issue.
+WorkManager can still return handled success, so immediate logging/reporting can
+disagree with the already-persisted authoritative failure semantics.
+
+This is a diagnostic/outcome-consistency defect rather than a new destructive
+authority path: the persisted terminal state is not reverted by the notification
+failure, and the mismatch path itself remains separately protected.
+
+**Required eventual result:** once any authoritative terminal issue has been
+durably persisted, later notification/logging/reporting failures must not replace
+the in-memory terminal issue or `DownloadOutcome`; they may only append a
+non-authoritative ancillary diagnostic.  Add focused coverage for an ordinary
+non-mismatch terminal failure followed by notification failure, while retaining
+mismatch-specific regression coverage.
 
 ## Review checklist retained from Finding A misses
 
