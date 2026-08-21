@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **48 active correctness defects** in this checkpoint. The previous
+There are **49 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 48-defect registry is intentionally retained here. The separate
+The broader 49-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 48-defect count unless they are explicitly promoted
+below do **not** change the 49-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-48-defect registry below.
+49-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 48 active defects
+### F1 remediation-discovered follow-up not counted in the 49 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -500,6 +500,67 @@ Required result:
   an immutable matching rule revision before restoring derived rows;
 - add Undo tests covering rule edit, deletion/recreation, and changed keyword
   membership while the History row is absent.
+
+### P2 — BUG-KEYWORD-03 — Recover queued automatic-keyword sync after enqueue failure
+
+**State:** Open
+
+**Failure path:** the production automatic-keyword editor calls
+`AutomaticKeywordRuleRepository.save()`. The repository first commits the rule
+revision, keyword rows, and affected existing RULE assignments in a Room
+transaction. When the enabled rule needs an initial/baseline/apply-existing
+sync, it then persists `manualSyncStatus = QUEUED` and only afterward calls
+`AutomaticKeywordRuleScheduler.enqueue()`. The user-facing Sync Now path has the
+same split boundary: `requestApplyExistingSync()` first increments the durable
+rule revision, sets `pendingApplyToExisting = 1`, and stores
+`manualSyncStatus = QUEUED`, then `syncNow()` calls the scheduler.
+
+`AutomaticKeywordRuleScheduler.enqueue()` calls
+`WorkManager.enqueueUniqueWork(...)` and discards the returned `Operation`.
+WorkManager exposes that `Operation` specifically so callers can observe when
+enqueue has completed; an enqueue failure reported through it therefore does not
+become a repository failure here. A process death between the rule/QUEUED commit
+and durable WorkManager insertion creates the same state. On the next app start,
+startup reconciliation restores automatic-keyword **observation coverage**,
+low-quality re-download state, and History date-fetch state, but it does not scan
+rules whose `manualSyncStatus` is `QUEUED` or whose
+`pendingApplyToExisting` flag still requires a manual/baseline sync.
+`AutomaticKeywordObservationCoverage.reconcile()` only creates, removes, or
+restarts discovery-only Observe Source rows; it never re-enqueues
+`AutomaticKeywordRuleSyncWorker` for orphaned rule-sync intent.
+
+The result can therefore remain durably `QUEUED` with no matching WorkManager
+work. A new rule may never establish its baseline, and an Apply Existing request
+may never apply the rule to existing History until some later explicit edit,
+toggle, or Sync Now action happens to enqueue fresh work. Because the enqueue
+`Operation` is ignored, the normal editor can also dismiss after a save whose
+rule transaction committed even though the associated sync enqueue later fails.
+
+**Why this is a defect:** the database state is the durable source of truth for
+an explicitly requested synchronization, but its queued/pending intent can
+outlive the only executor record capable of carrying it out. The UI can therefore
+show a synchronization as queued indefinitely while the requested baseline or
+existing-History mutation never occurs. This is distinct from
+`BUG-KEYWORD-01`, which concerns whether an executed fetch is authoritative, and
+from `BUG-KEYWORD-02`, which concerns restoring stale derived assignments on
+History Undo.
+
+Required result:
+
+- represent rule-sync intent with a durable generation/outbox or equivalent
+  recoverable contract and reconcile every nonterminal queued/pending request to
+  exactly one WorkManager execution after restart;
+- observe enqueue completion/failure, or otherwise rely on durable
+  reconciliation, so a rule save or Sync Now action is not reported as fully
+  queued when no work was durably accepted;
+- if the rule mutation has already committed but scheduling fails, preserve that
+  distinction instead of implying that the rule save itself was uncommitted;
+- bind worker execution to the intended rule revision/generation so stale
+  replaced work cannot consume or clear a newer sync request;
+- add deterministic enqueue-failure and process-death tests after the rule or
+  `requestApplyExistingSync()` QUEUED commit but before WorkManager persistence,
+  plus startup recovery, exactly-once replacement, revision-race, new-rule,
+  edited-rule, and Apply Existing regressions.
 
 ### P2 — BUG-METADATA-02 — Validate source identity before applying download metadata
 
@@ -1929,7 +1990,7 @@ Required result:
 | `PLAYER-01` | Partial | `PlaybackQueueState` centralizes queue data, but lifecycle, Media3, subtitle, PiP, URI, and navigation behavior remains concentrated in `VideoPlayerActivity`. |
 | `TERM-01` | Implemented | Terminal command planning includes a dry-run/preview path and argument policy. |
 
-## Newly implemented capability
+## newly implemented capability
 
 The current branch also stores media source-publication time through result,
 download, and history records; reads provider-specific dates; displays and
