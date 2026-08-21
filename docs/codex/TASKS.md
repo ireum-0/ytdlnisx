@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **34 active correctness defects** in this checkpoint. The previous
+There are **36 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -556,6 +556,42 @@ Required result:
   checks;
 - test active queue and History against youtu.be/watch/mobile/music variants.
 
+### P2 — BUG-DUPLICATE-02 — Match download-archive entries by exact media identity
+
+**State:** Open
+
+**Failure path:** when duplicate prevention is set to `download_archive`,
+`DownloadViewModel.detectAndMarkDuplicates()` reads each yt-dlp archive line,
+keeps only the second whitespace-delimited token, and then decides that a queued
+item is already downloaded when `item.url.contains(archiveId)` is true. This
+both discards the archive entry's extractor/source component and uses substring
+containment instead of an exact media-identity comparison. No upstream queue
+normalization repairs that loss: the normal production queue path reaches this
+branch with the request URL, and a match calls `markDuplicate()`, persists the
+Download row as `Duplicate`, and removes it from the set passed to the download
+worker. An archive entry such as `youtube abc123` can therefore block an
+unrelated request whose path or query merely contains `abc123`, and the same ID
+string from a different extractor can also collide.
+
+**Why this is a defect:** the archive is intended to prevent re-downloading the
+same archived media, but the current comparison can classify unrelated media as
+the same item and suppress a requested download. The decision is persisted and
+surfaced as a duplicate even though no authoritative source/media identity
+matched.
+
+Required result:
+
+- parse archive entries as source/extractor plus exact media ID according to the
+  yt-dlp archive identity contract instead of reducing them to bare substrings;
+- resolve the queued request to an authoritative canonical media identity before
+  comparing it with archive entries, while preserving deliberately supported
+  equivalent URL forms;
+- never treat an archive ID appearing only as a prefix, suffix, path fragment,
+  or query substring of another request as proof of duplication;
+- add queue-path regressions for an exact archived item, one ID contained in
+  another, an unrelated query/path containing an archived ID, the same bare ID
+  under different extractors, and canonical-equivalent YouTube URLs.
+
 ### P2 — BUG-CLEANUP-01 — Make automatic leftover cleanup actually recurring
 
 **State:** Open
@@ -1029,6 +1065,56 @@ Required result:
 - add fault-injection regressions for `cancelByUser()`, linked-ledger update, and
   scheduler requeue writes, plus restart tests proving no killed job remains as
   ghost `Active`/`PostProcessing` work.
+
+### P2 — BUG-LOWQUALITY-01 — Persist download failure and low-quality ledger failure atomically
+
+**State:** Open
+
+**Failure path:** the low-quality re-download flow creates a normal queued
+`DownloadItem` and links its generated Download ID to a nonterminal
+`LowQualityRedownloadItem`. When that production download later fails,
+`DownloadWorker` first changes the Download row to `Error`, stores the selected
+`lastIssueCode`/`lastIssueStage`, and commits that row with `dao.update()`.
+Only afterward does it call `LowQualityRedownloadLedger.transition(...,
+FAILED, ...)`. The ledger call is wrapped in `runCatching` and its failure is
+discarded. The same split ordering is present in multiple DownloadWorker error
+branches.
+
+`LowQualityRedownloadLedger.transition()` is not a notification-only follow-up:
+it calls `LowQualityRedownloadRepository.markDownloadState()`, whose Room
+transaction terminalizes the linked child and can finalize the parent operation.
+A process death after the Download-row commit, or a Room exception in that
+second transaction, therefore leaves durable `Download = Error` while the
+linked low-quality child and operation can remain nonterminal. The surrounding
+worker path does not reinterpret the swallowed ledger failure as retryable or
+force immediate reconciliation. Startup `LowQualityRedownloadManager.reconcile()`
+can repair the mismatch later by deriving `FAILED` from the Error row, but until
+that separate recovery path runs the current operation can remain falsely active
+and its progress/notification state is stale.
+
+**Why this is a defect:** the Download failure and the operation ledger describe
+one authoritative terminal event but are committed in two failure-separated
+transactions, and the second failure is explicitly suppressed. A normal
+Download failure can therefore be durably visible while the owning low-quality
+operation still claims unfinished work, blocking/falsifying operation state
+until a later reconciliation happens to run.
+
+Required result:
+
+- persist `Download = Error`, `lastIssueCode`/`lastIssueStage`, the linked child
+  `FAILED` state/reason, and any resulting parent terminal state under one Room
+  transaction or another atomic repository contract;
+- do not place logging, notification, cleanup, or other throwing side effects
+  between determination of the authoritative failure and that durable terminal
+  commit;
+- if the combined terminal commit cannot complete, preserve a typed retryable
+  persistence failure instead of swallowing the ledger half of the failure;
+- keep startup reconciliation as crash recovery, not as the normal mechanism
+  required to make a just-failed operation internally consistent;
+- add fault-injection/process-death regressions after failure classification,
+  after the Download error write, and during child/parent ledger finalization,
+  proving no observable committed state contains `Download = Error` with a
+  nonterminal linked low-quality child.
 
 ### P2 — BUG-UPDATER-01 — Preserve custom yt-dlp update failure instead of reporting success
 
