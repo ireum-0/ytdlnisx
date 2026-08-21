@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **45 active correctness defects** in this checkpoint. The previous
+There are **46 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 45-defect registry is intentionally retained here. The separate
+The broader 46-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 45-defect count unless they are explicitly promoted
+below do **not** change the 46-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-45-defect registry below.
+46-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 45 active defects
+### F1 remediation-discovered follow-up not counted in the 46 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -593,8 +593,8 @@ Required result:
 **Failure path:** custom thumbnails are written before destination History IDs
 are allocated. The path is derived from the backup-local ID as
 `restored_<oldHistoryId>.<extension>`, and `writeBytes()` overwrites an existing
-file at that location. The later `importedHistoryIdMap` cannot repair a file that
-was already overwritten.
+file at that location. The later `importedHistoryIdMap` cannot repair a file
+that was already overwritten.
 
 **Why this is a defect:** two independent backups can legitimately contain
 different History records with the same source-local numeric ID. Restoring the
@@ -1211,6 +1211,51 @@ Required result:
   the same authoritative window decision;
 - add same-day and 23:00→05:00 boundary tests plus multi-day, no-new-user-action,
   restart/re-arm, and queued-work-survives-end regressions.
+
+### P2 — BUG-SCHEDULER-02 — Preserve live execution ownership when forcing scheduled items to run now
+
+**State:** Open
+
+**Failure path:** the production Scheduled Downloads screen offers per-item and
+multi-selection “Download now” actions. Both retain the selected numeric
+Download IDs and call
+`DownloadViewModel.resetScheduleTimeForItemsAndStartDownload()`, which directly
+executes `DownloadDao.resetScheduleTimeForItems(ids)`. That DAO update has no
+expected-status or execution-owner predicate: for every matching ID it sets
+`downloadStartTime = 0`, `status = 'Queued'`, and `executionId = ''`.
+
+A scheduled row can independently become eligible at its configured time and be
+claimed by `DownloadWorker`, whose claim changes the same row from `Scheduled`
+to `Active` and installs a fresh `executionId`. If that claim occurs after the
+Scheduled UI selected the row but before the user action reaches
+`resetScheduleTimeForItems()`, the unguarded update rewrites the live `Active`
+row back to `Queued` and erases its execution token while the original worker
+continues running. The view model then starts the download worker again; the
+queued row is eligible for a fresh claim and a second execution owner can start.
+The all-Scheduled variant does not have this exact defect because
+`resetScheduleTimeForAllScheduledItems()` requires `status = 'Scheduled'`, and
+`rescheduleQueuedOrScheduled()` likewise has an expected-status predicate.
+
+**Why this is a defect:** a stale UI selection can revoke durable ownership from
+a genuinely running download without cancelling or synchronizing with that
+owner. The database then advertises the same request as queueable while the old
+worker may still be downloading, moving, or post-processing files, allowing
+duplicate execution, conflicting output, and competing terminal writes.
+
+Required result:
+
+- make per-ID “Download now” an expected-state transition that changes only
+  rows still durably `Scheduled` (or another explicitly permitted non-running
+  state) and never clears the `executionId` of `Active`/`PostProcessing` work;
+- use the same authoritative ownership/status contract for single-item and
+  multi-selection actions as the already status-guarded all-Scheduled path;
+- if the target has already been claimed, treat the action as already running
+  rather than requeueing it;
+- keep worker acquisition and UI status transitions under a CAS/transactional
+  contract so no stale selection can manufacture a second owner;
+- add deterministic races where a selected Scheduled row is claimed immediately
+  before the per-item and multi-item “Download now” write, plus normal still-
+  Scheduled and already-PostProcessing regressions.
 
 ### P2 — BUG-HARDSUB-01 — Preserve ambiguous subtitle lookup failures instead of excluding scan candidates
 
