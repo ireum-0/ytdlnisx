@@ -76,11 +76,33 @@ class HistoryReplacementSourceIdentityTest {
     }
 
     @Test
-    fun canonicalWebDetailsRemainNonIdentifying() {
+    fun canonicalWebDetailsRemainEquivalentWithoutChangingQueryIdentity() {
         assertTrue(
             HistoryReplacementSourceIdentity.matches(
                 "HTTPS://Example.com./video?utm_source=feed#one",
-                "https://example.com/video#two",
+                "https://example.com/video?utm_source=feed#two",
+            )
+        )
+    }
+
+    @Test
+    fun genericQueryParametersRemainIdentifying() {
+        assertFalse(
+            HistoryReplacementSourceIdentity.matches(
+                "https://example.com/video?utm_source=assetA",
+                "https://example.com/video?utm_source=assetB",
+            )
+        )
+        assertFalse(
+            HistoryReplacementSourceIdentity.matches(
+                "https://example.com/video?asset=one",
+                "https://example.com/video",
+            )
+        )
+        assertTrue(
+            HistoryReplacementSourceIdentity.matches(
+                "https://example.com/video?asset=one",
+                "https://example.com/video?asset=one",
             )
         )
     }

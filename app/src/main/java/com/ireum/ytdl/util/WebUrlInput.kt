@@ -96,7 +96,7 @@ object WebUrlInput {
     fun strictSourceIdentityKey(value: String): String? {
         return sourceKey(
             value,
-            dropNonIdentifyingParameters = true,
+            dropNonIdentifyingParameters = false,
             strictSchemeIdentity = true,
         )
     }

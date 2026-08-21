@@ -109,6 +109,22 @@ class HistoryReplacementAuthorizationTest {
     }
 
     @Test
+    fun genericQueryIdentityMismatchIsRejected() = runBlocking {
+        val historyId = repository().insertHistory(
+            history().copy(url = "https://example.com/video?utm_source=assetA")
+        )
+
+        assertEquals(
+            HistoryReplacementAuthorization.SourceMismatch,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = "https://example.com/video?utm_source=assetB",
+                expectedType = DownloadType.video,
+            )
+        )
+    }
+
+    @Test
     fun mismatchedReplacementLeavesExistingHistoryMediaUntouched() = runBlocking {
         val historyId = insertHistory()
         val before = db.historyDao.getItem(historyId)
@@ -212,6 +228,26 @@ class HistoryReplacementAuthorizationTest {
             ) { current -> current.copy(url = "https://example.com/video") }
         )
         assertEquals("http://example.com/video", db.historyDao.getItem(historyId).url)
+    }
+
+    @Test
+    fun replacementFactoryRejectsDifferentGenericQueryIdentity() = runBlocking {
+        val historyId = repository().insertHistory(
+            history().copy(url = "https://example.com/video?asset=one")
+        )
+
+        assertEquals(
+            HistoryReplacementOutcome.SourceMismatch,
+            repository().replaceHistoryPreservingAssignmentsAuthorized(
+                historyId = historyId,
+                expectedSourceUrl = "https://example.com/video?asset=one",
+                expectedType = DownloadType.video,
+            ) { current -> current.copy(url = "https://example.com/video?asset=two") }
+        )
+        assertEquals(
+            "https://example.com/video?asset=one",
+            db.historyDao.getItem(historyId).url,
+        )
     }
 
     @Test
