@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **41 active correctness defects** in this checkpoint. The previous
+There are **42 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 41-defect registry is intentionally retained here. The separate
+The broader 42-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 41-defect count unless they are explicitly promoted
+below do **not** change the 42-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-41-defect registry below.
+42-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 41 active defects
+### F1 remediation-discovered follow-up not counted in the 42 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -387,6 +387,54 @@ Required result:
 - add deterministic concurrency tests for both background batch enrichment and
   download-time enrichment, mutating non-metadata fields while lookup is in
   progress.
+
+### P1 — BUG-TERMINAL-02 — Separate terminal task identity from Download identity
+
+**State:** Open
+
+**Failure path:** the production terminal UI inserts `TerminalItem` rows into the
+independent `terminalDownloads` table, whose primary key is auto-generated.
+Normal downloads use a separate auto-generated primary key in the `downloads`
+table. `TerminalDownloadWorker` nevertheless uses the bare terminal row ID as
+its yt-dlp process ID and foreground/running notification ID. Its progress
+notification also builds the Cancel action with
+`CancelDownloadNotificationReceiver`, passing that terminal ID as `itemID`.
+That receiver interprets `itemID` as a normal Download ID: it calls
+`DownloadRepository.cancelByUser(id)`, refreshes any linked low-quality ledger,
+destroys the yt-dlp process with the same bare ID, cancels Download
+post-processing, cancels the untagged notification, and finally deletes a
+Terminal row with that number. `DownloadWorker` independently uses the bare
+Download row ID for its own running notification and yt-dlp process identity.
+
+Because the two tables allocate IDs independently, a live Terminal task and an
+unrelated normal Download can legitimately have the same numeric ID. In that
+case starting/updating the two jobs aliases their yt-dlp/notification identity,
+and pressing Cancel on the Terminal notification can durably change the
+unrelated Download to `Cancelled`, terminalize its linked low-quality child, and
+kill its process/post-processing. Cleanup or notification cancellation from
+either path can also remove the other live task's notification. No production
+parser or validation layer namespaces or rejects the collision.
+
+**Why this is a defect:** a user action addressed to one Terminal task can mutate
+the persistent state and execution of an unrelated normal Download solely
+because two independent database primary keys happen to be numerically equal.
+This is cross-record ownership corruption rather than a notification-only
+cosmetic collision, and can abort active work or falsely terminalize a
+low-quality operation.
+
+Required result:
+
+- give Terminal and normal Download execution/process identities disjoint
+  namespaces rather than deriving both from an unqualified numeric primary key;
+- use distinct tagged/offset notification identities and a Terminal-specific
+  cancel action that never calls normal `DownloadRepository.cancelByUser()` or
+  Download post-processing cancellation;
+- make every destroy/cancel/cleanup path target the same typed owner identity
+  that created the process/work/notification;
+- add deterministic same-numeric-ID regressions with both jobs live, covering
+  terminal start, normal start, progress updates, Terminal Cancel, normal
+  Cancel/Pause, cleanup, and a linked low-quality Download, proving neither
+  workflow mutates or terminates the other.
 
 ### P2 — BUG-KEYWORD-02 — Recompute derived RULE assignments on History Undo
 
