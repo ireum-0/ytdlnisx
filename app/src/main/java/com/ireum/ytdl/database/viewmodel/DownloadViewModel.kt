@@ -38,6 +38,7 @@ import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryRedownloadItemFactory
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.ui.downloadcard.MultipleItemFormatTuple
@@ -54,6 +55,7 @@ import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.util.download.DownloadRetryBlockReason
 import com.ireum.ytdl.util.download.DownloadRetryDecision
 import com.ireum.ytdl.util.download.DownloadRetryItemState
 import com.ireum.ytdl.util.download.DownloadRetryMetadata
@@ -257,6 +259,22 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 LowQualityRedownloadLedger.refresh(application, repository.delete(item.id))
                 return
             }
+        }
+
+        val persistedItem = if (item.id > 0L) {
+            withContext(Dispatchers.IO) { dao.getNullableDownloadById(item.id) }
+        } else {
+            null
+        }
+        if (
+            persistedItem != null &&
+            HistoryReplacementDiagnostic.isPersistedMismatch(persistedItem.lastIssueCode) &&
+            persistedItem.status !in setOf(
+                DownloadRepository.Status.Active.name,
+                DownloadRepository.Status.PostProcessing.name,
+            )
+        ) {
+            return
         }
 
         repository.update(item)
@@ -856,6 +874,15 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 itemIDs.forEach {
                     val item = repository.getItemByID(it)
                     if (processingItemsJob?.isCancelled == true) throw CancellationException()
+                    if (HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode)) {
+                        throw IllegalStateException(
+                            retryBlockedMessage(
+                                DownloadRetryDecision.Blocked(
+                                    DownloadRetryBlockReason.HISTORY_REPLACEMENT_MISMATCH
+                                )
+                            )
+                        )
+                    }
                     if (item.status == DownloadRepository.Status.Error.toString()) {
                         when (val decision = prepareRetryMetadata(
                             item = item,
@@ -1059,12 +1086,12 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun resetScheduleTimeForItemsAndStartDownload(items: List<Long>) = withContext(Dispatchers.IO) {
-        dbManager.downloadDao.resetScheduleTimeForItems(items)
+        if (dbManager.downloadDao.resetScheduleTimeForItems(items) == 0) return@withContext
         repository.startDownloadWorker(emptyList(), application)
     }
 
     suspend fun resetScheduleItemForAllScheduledItemsAndStartDownload() = withContext(Dispatchers.IO) {
-        dbManager.downloadDao.resetScheduleTimeForAllScheduledItems()
+        if (dbManager.downloadDao.resetScheduleTimeForAllScheduledItems() == 0) return@withContext
         repository.startDownloadWorker(emptyList(), application)
     }
 
@@ -1093,7 +1120,8 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun reQueueDownloadItemsAndWait(items: List<Long>) = withContext(Dispatchers.IO) {
-        dbManager.downloadDao.reQueueDownloadItems(items)
+        val requeuedCount = dbManager.downloadDao.reQueueDownloadItems(items)
+        if (requeuedCount == 0) return@withContext
         items.distinct().forEach(notificationUtil::cancelMembershipWaitingNotification)
         repository.startDownloadWorker(emptyList(), application)
     }
@@ -1145,6 +1173,8 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             issueRetryable = issueCode.supportsSameSettingsRetry(),
             hasValidOutput = hasValidOutput,
             settingsConfirmed = settingsConfirmed,
+            historyReplacementMismatch =
+                HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode),
             operationIdFactory = { UUID.randomUUID().toString() }
         )
     }
@@ -1163,6 +1193,8 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 resources.getString(R.string.retry_requires_reconfiguration)
             com.ireum.ytdl.util.download.DownloadRetryBlockReason.CANCELED ->
                 resources.getString(R.string.canceled_download_not_retried)
+            DownloadRetryBlockReason.HISTORY_REPLACEMENT_MISMATCH ->
+                resources.getString(R.string.download_retry_not_available)
             else -> resources.getString(R.string.download_retry_not_available)
         }
     }
@@ -1251,7 +1283,37 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         //if history id is empty, it just found an existing item in the queue/active list
         val existingItemIDs = mutableListOf<AlreadyExistsIDs>()
 
+        val durableMismatchIds = withContext(Dispatchers.IO) {
+            items.asSequence()
+                .map(DownloadItem::id)
+                .filter { it > 0L }
+                .toList()
+                .takeIf { it.isNotEmpty() }
+                ?.let { ids ->
+                    dao.getDownloadsByIdsSuspend(ids)
+                        .filter { item ->
+                            HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode)
+                        }
+                        .mapTo(hashSetOf<Long>(), DownloadItem::id)
+                }
+                .orEmpty()
+        }
+
         items.forEach { item ->
+            if (
+                item.id in durableMismatchIds ||
+                HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode)
+            ) {
+                return QueueDownloadsResult(
+                    message = retryBlockedMessage(
+                        DownloadRetryDecision.Blocked(
+                            DownloadRetryBlockReason.HISTORY_REPLACEMENT_MISMATCH
+                        )
+                    ),
+                    duplicateDownloadIDs = emptyList(),
+                    succeeded = false
+                )
+            }
             if (item.status == DownloadRepository.Status.Error.toString()) {
                 when (val decision = prepareRetryMetadata(
                     item = item,
@@ -1995,6 +2057,15 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         kotlin.runCatching {
             val item = withContext(Dispatchers.IO){
                 repository.getItemByID(itemID)
+            }
+            val persistedItem = withContext(Dispatchers.IO) {
+                dao.getNullableDownloadById(itemID)
+            }
+            if (
+                persistedItem != null &&
+                HistoryReplacementDiagnostic.isPersistedMismatch(persistedItem.lastIssueCode)
+            ) {
+                return@runCatching
             }
             item.status = DownloadRepository.Status.Queued.toString()
             withContext(Dispatchers.IO){

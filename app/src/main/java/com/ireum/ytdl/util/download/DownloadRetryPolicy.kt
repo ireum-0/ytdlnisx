@@ -18,7 +18,8 @@ enum class DownloadRetryBlockReason {
     VALID_OUTPUT_EXISTS,
     NOT_RETRYABLE,
     ATTEMPT_LIMIT,
-    SETTINGS_CONFIRMATION_REQUIRED
+    SETTINGS_CONFIRMATION_REQUIRED,
+    HISTORY_REPLACEMENT_MISMATCH,
 }
 
 data class DownloadRetryMetadata(
@@ -60,13 +61,19 @@ object DownloadRetryPolicy {
         issueRetryable: Boolean,
         hasValidOutput: Boolean,
         settingsConfirmed: Boolean,
-        operationIdFactory: () -> String
+        operationIdFactory: () -> String,
+        historyReplacementMismatch: Boolean = false,
     ): DownloadRetryDecision {
         if (itemState == DownloadRetryItemState.CANCELED) {
             return DownloadRetryDecision.Blocked(DownloadRetryBlockReason.CANCELED)
         }
         if (itemState != DownloadRetryItemState.ERROR) {
             return DownloadRetryDecision.Blocked(DownloadRetryBlockReason.NOT_FAILED)
+        }
+        if (historyReplacementMismatch) {
+            return DownloadRetryDecision.Blocked(
+                DownloadRetryBlockReason.HISTORY_REPLACEMENT_MISMATCH
+            )
         }
         if (hasValidOutput) {
             return DownloadRetryDecision.Blocked(DownloadRetryBlockReason.VALID_OUTPUT_EXISTS)

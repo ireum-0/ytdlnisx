@@ -101,10 +101,8 @@ import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -386,9 +384,7 @@ class DownloadWorker(
                 selectedDownloads
             }
 
-            coroutineScope {
-                eligibleDownloads.forEach{downloadItem ->
-                    launch(Dispatchers.IO) {
+            runDownloadItemsIndependently(eligibleDownloads) launch@{ downloadItem ->
                     workerDownloadIds.add(downloadItem.id)
                     val rawTempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
                     var ytdlpExecutionState: YtdlpExecutionState? = null
@@ -396,8 +392,12 @@ class DownloadWorker(
                     var currentIssueStage = DownloadIssueStage.PREFLIGHT
                     var createdOutputPaths: List<String> = emptyList()
                     var preserveQueueRecord = false
-                    var historyReplacementFailureIssue: DownloadIssue? = null
-                    var historyReplacementTerminalAction: HistoryReplacementTerminalAction? = null
+                    var historyReplacementFailureIssue: DownloadIssue? =
+                        HistoryReplacementDiagnostic.persistedMismatchIssue(downloadItem.lastIssueCode)
+                    var historyReplacementTerminalAction: HistoryReplacementTerminalAction? =
+                        historyReplacementFailureIssue?.let {
+                            HistoryReplacementTerminalAction.PRESERVE_FAILED
+                        }
                     var downloadOutcome: DownloadOutcome? = null
                     fun recordCreatedOutputs(paths: List<String>) {
                         createdOutputPaths = (createdOutputPaths + paths)
@@ -414,6 +414,12 @@ class DownloadWorker(
                             latestStatus == DownloadRepository.Status.Cancelled
                     }
                     try {
+                    if (historyReplacementFailureIssue != null) {
+                        preserveQueueRecord = true
+                        throw IllegalStateException(
+                            "History replacement mismatch cannot be retried"
+                        )
+                    }
                     if (isHardSubRedownload(downloadItem)) {
                         registerHardSubTarget(downloadItem.id)
                         updateHardSubWorkerNotificationSafely(notificationUtil)
@@ -1928,9 +1934,7 @@ class DownloadWorker(
                             ownedDownloadIds.remove(downloadItem.id)
                         }
                     }
-                }
             }
-        }
         }
 
         return Result.success()

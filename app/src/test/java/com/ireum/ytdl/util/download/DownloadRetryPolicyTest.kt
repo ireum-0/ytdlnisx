@@ -88,6 +88,54 @@ class DownloadRetryPolicyTest {
     }
 
     @Test
+    fun historyReplacementMismatchCannotBeReconfiguredOrRetried() {
+        val reconfigured = DownloadRetryPolicy.prepare(
+            current = DownloadRetryMetadata("operation", 0, DownloadRetryStrategy.ORIGINAL),
+            itemState = DownloadRetryItemState.ERROR,
+            requestedStrategy = DownloadRetryStrategy.RECONFIGURED,
+            issueRetryable = false,
+            hasValidOutput = false,
+            settingsConfirmed = true,
+            historyReplacementMismatch = true,
+            operationIdFactory = { "unused" }
+        )
+        val sameSettings = DownloadRetryPolicy.prepare(
+            current = DownloadRetryMetadata("operation", 0, DownloadRetryStrategy.ORIGINAL),
+            itemState = DownloadRetryItemState.ERROR,
+            requestedStrategy = DownloadRetryStrategy.SAME_SETTINGS,
+            issueRetryable = true,
+            hasValidOutput = false,
+            settingsConfirmed = false,
+            historyReplacementMismatch = true,
+            operationIdFactory = { "unused" }
+        )
+
+        assertEquals(
+            DownloadRetryBlockReason.HISTORY_REPLACEMENT_MISMATCH,
+            (reconfigured as DownloadRetryDecision.Blocked).reason
+        )
+        assertEquals(
+            DownloadRetryBlockReason.HISTORY_REPLACEMENT_MISMATCH,
+            (sameSettings as DownloadRetryDecision.Blocked).reason
+        )
+    }
+
+    @Test
+    fun ordinaryNonHistoryErrorCanStillBeReconfigured() {
+        val decision = DownloadRetryPolicy.prepare(
+            current = DownloadRetryMetadata("operation", 0, DownloadRetryStrategy.ORIGINAL),
+            itemState = DownloadRetryItemState.ERROR,
+            requestedStrategy = DownloadRetryStrategy.RECONFIGURED,
+            issueRetryable = false,
+            hasValidOutput = false,
+            settingsConfirmed = true,
+            operationIdFactory = { "operation" },
+        )
+
+        assertTrue(decision is DownloadRetryDecision.Allowed)
+    }
+
+    @Test
     fun canceledOrCompletedOutput_isNeverRetried() {
         val canceled = DownloadRetryPolicy.prepare(
             current = DownloadRetryMetadata("operation", 0, DownloadRetryStrategy.ORIGINAL),

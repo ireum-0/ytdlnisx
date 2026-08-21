@@ -91,4 +91,20 @@ class HistoryReplacementDiagnosticTest {
         assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED, issue.code)
         assertEquals(DownloadIssueStage.HISTORY, issue.stage)
     }
+
+    @Test
+    fun persistedMismatchCodesRestoreTheirDistinctAuthoritativeIssues() {
+        val source = HistoryReplacementDiagnostic.persistedMismatchIssue(
+            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name
+        )
+        val type = HistoryReplacementDiagnostic.persistedMismatchIssue(
+            DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name
+        )
+
+        assertEquals(DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH, source?.code)
+        assertEquals(DownloadIssueStage.HISTORY, source?.stage)
+        assertEquals(DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH, type?.code)
+        assertEquals(DownloadIssueStage.HISTORY, type?.stage)
+        assertNull(HistoryReplacementDiagnostic.persistedMismatchIssue(DownloadIssueCode.UNKNOWN.name))
+    }
 }

@@ -74,7 +74,11 @@ interface DownloadDao {
     fun getDownloadContainersByIDs(ids: List<Long>) : List<String>
 
 
-    @Query("UPDATE downloads set status = 'Processing' WHERE id in (:ids)")
+    @Query(
+        "UPDATE downloads SET status = 'Processing' WHERE id IN (:ids) " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH'))"
+    )
     suspend fun updateItemsToProcessing(ids: List<Long>)
 
 
@@ -124,7 +128,12 @@ interface DownloadDao {
     @Query("SELECT COUNT(*) FROM downloads WHERE (playlistURL = :marker OR playlistURL LIKE :marker || ':%') AND status IN ('Processing','Queued','WaitingForMembership','Active','PostProcessing','Paused','Scheduled')")
     fun countPendingByPlaylistMarker(marker: String): Int
 
-    @Query("UPDATE downloads SET status='Queued', downloadStartTime = -1 where status in ('Paused')")
+    @Query(
+        "UPDATE downloads SET status='Queued', downloadStartTime = -1 " +
+            "WHERE status IN ('Paused') " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH'))"
+    )
     suspend fun resetPausedToQueued()
 
     @Query("SELECT id FROM downloads WHERE status in('Active','PostProcessing','Queued', 'Paused')")
@@ -334,7 +343,11 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads ORDER BY id DESC LIMIT 1")
     fun getLatest() : DownloadItem
 
-    @Query("UPDATE downloads SET status='Queued' WHERE status='Processing'")
+    @Query(
+        "UPDATE downloads SET status='Queued' WHERE status='Processing' " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH'))"
+    )
     suspend fun queueAllProcessing()
 
 
@@ -367,21 +380,36 @@ interface DownloadDao {
     @Query("Select url from downloads where id in (:ids)")
     fun getURLsByID(ids: List<Long>) : List<String>
 
-    @Query("UPDATE downloads SET downloadStartTime=0, status='Queued' where id in (:list)")
-    suspend fun resetScheduleTimeForItems(list: List<Long>)
+    @Query(
+        "UPDATE downloads SET downloadStartTime=0, status='Queued' WHERE id IN (:list) " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH'))"
+    )
+    suspend fun resetScheduleTimeForItems(list: List<Long>): Int
 
-    @Query("UPDATE downloads SET downloadStartTime=0, status='Queued' WHERE status = 'Scheduled'")
-    suspend fun resetScheduleTimeForAllScheduledItems()
+    @Query(
+        "UPDATE downloads SET downloadStartTime=0, status='Queued' WHERE status = 'Scheduled' " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH'))"
+    )
+    suspend fun resetScheduleTimeForAllScheduledItems(): Int
 
     @Query(
         "UPDATE downloads SET downloadStartTime=:startTime, " +
             "status=CASE WHEN :startTime > 0 THEN 'Scheduled' ELSE 'Queued' END " +
-            "WHERE id=:id AND status IN ('Queued','Scheduled')"
+            "WHERE id=:id AND status IN ('Queued','Scheduled') " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH'))"
     )
     suspend fun rescheduleQueuedOrScheduled(id: Long, startTime: Long): Int
 
-    @Query("Update downloads SET status='Queued', downloadStartTime = 0 WHERE id in (:list)")
-    suspend fun reQueueDownloadItems(list: List<Long>)
+    @Query(
+        "UPDATE downloads SET status='Queued', downloadStartTime = 0 " +
+            "WHERE id IN (:list) " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH'))"
+    )
+    suspend fun reQueueDownloadItems(list: List<Long>): Int
 
     @Query("Update downloads SET status='Saved' WHERE status='Processing'")
     suspend fun updateProcessingtoSavedStatus()

@@ -10,6 +10,10 @@ import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
+import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
+import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.DownloadQueuePolicy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -68,6 +72,60 @@ class DownloadQueueOrderPersistenceTest {
         val all = database.downloadDao.getAllDownloadsList()
         assertEquals(5, all.map(DownloadItem::orderPosition).toSet().size)
         assertTrue(all.map(DownloadItem::id).containsAll(processingIds))
+    }
+
+    @Test
+    fun rawRequeueCannotClearAStoredHistoryMismatchBarrier() = runBlocking {
+        val mismatch = download(6, 600, DownloadRepository.Status.Error).apply {
+            playlistURL = HistoryRedownloadMarker.regular(42L)
+            val issue = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.TYPE)
+            lastIssueCode = issue.code.name
+            lastIssueStage = issue.stage.name
+        }
+        val sourceMismatch = download(8, 800, DownloadRepository.Status.Error).apply {
+            playlistURL = HistoryRedownloadMarker.quality(42L, 720)
+            val issue = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
+            lastIssueCode = issue.code.name
+            lastIssueStage = issue.stage.name
+        }
+        val ordinary = download(7, 700, DownloadRepository.Status.Processing)
+        database.downloadDao.insert(mismatch)
+        database.downloadDao.insert(sourceMismatch)
+        database.downloadDao.insert(ordinary)
+
+        val updated = database.downloadDao.reQueueDownloadItems(
+            listOf(mismatch.id, sourceMismatch.id, ordinary.id)
+        )
+
+        assertEquals(1, updated)
+        assertEquals(
+            DownloadRepository.Status.Error.name,
+            database.downloadDao.getDownloadById(mismatch.id).status
+        )
+        assertEquals(
+            DownloadRepository.Status.Error.name,
+            database.downloadDao.getDownloadById(sourceMismatch.id).status
+        )
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            database.downloadDao.getDownloadById(ordinary.id).status
+        )
+        assertEquals(
+            HistoryRedownloadMarker.regular(42L),
+            database.downloadDao.getDownloadById(mismatch.id).playlistURL
+        )
+        assertEquals(
+            HistoryRedownloadMarker.quality(42L, 720),
+            database.downloadDao.getDownloadById(sourceMismatch.id).playlistURL
+        )
+        assertEquals(
+            DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name,
+            database.downloadDao.getDownloadById(mismatch.id).lastIssueCode
+        )
+        assertEquals(
+            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name,
+            database.downloadDao.getDownloadById(sourceMismatch.id).lastIssueCode
+        )
     }
 
     @Test

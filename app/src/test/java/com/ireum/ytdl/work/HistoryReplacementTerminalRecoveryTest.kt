@@ -134,6 +134,26 @@ class HistoryReplacementTerminalRecoveryTest {
         assertEquals("Error", downloadStatus)
     }
 
+    @Test
+    fun aPersistedMismatchRemainsAuthoritativeAfterALaterPreHistoryFailure() {
+        val fallback = DownloadIssue.create(
+            stage = DownloadIssueStage.PREFLIGHT,
+            code = DownloadIssueCode.UNKNOWN,
+        )
+
+        listOf(
+            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH,
+            DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH,
+        ).forEach { persistedCode ->
+            val restored = HistoryReplacementDiagnostic.persistedMismatchIssue(persistedCode.name)
+            assertNotNull(restored)
+            val authoritative = authoritativeDownloadIssue(restored, fallback)
+            assertEquals(persistedCode, authoritative.code)
+            assertEquals(DownloadIssueStage.HISTORY, authoritative.stage)
+            assertFalse(authoritative.code == DownloadIssueCode.UNKNOWN)
+        }
+    }
+
     private fun assertMismatchSurvivesRecovery(kind: HistoryReplacementMismatchKind) {
         val issue = HistoryReplacementDiagnostic.issue(kind)
         val fallback = DownloadIssue.create(
