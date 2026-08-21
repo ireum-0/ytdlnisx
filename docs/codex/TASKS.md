@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **51 active correctness defects** in this checkpoint. The previous
+There are **52 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 51-defect registry is intentionally retained here. The separate
+The broader 52-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 51-defect count unless they are explicitly promoted
+below do **not** change the 52-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-51-defect registry below.
+52-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 51 active defects
+### F1 remediation-discovered follow-up not counted in the 52 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -774,8 +774,8 @@ Required result:
 **Failure path:** custom thumbnails are written before destination History IDs
 are allocated. The path is derived from the backup-local ID as
 `restored_<oldHistoryId>.<extension>`, and `writeBytes()` overwrites an existing
-file at that location. The later `importedHistoryIdMap` cannot repair a file
-that was already overwritten.
+file at that location. The later `importedHistoryIdMap` cannot repair a file that
+was already overwritten.
 
 **Why this is a defect:** two independent backups can legitimately contain
 different History records with the same source-local numeric ID. Restoring the
@@ -1499,6 +1499,57 @@ Required result:
 - add deterministic races where a selected Scheduled row is claimed immediately
   before the per-item and multi-item “Download now” write, plus normal still-
   Scheduled and already-PostProcessing regressions.
+
+### P2 — BUG-SCHEDULER-03 — Re-arm individually scheduled downloads after each exact alarm
+
+**State:** Open
+
+**Failure path:** the production download-card Schedule action persists
+`Processing` rows as `Scheduled` with their selected `downloadStartTime` and then
+runs the normal queue path. `DownloadRepository.startDownloadWorker()` merges
+those rows with every already-Scheduled row, groups future start times, and,
+when the user-facing `use_alarm_for_scheduling` setting is enabled, does not
+create one delayed WorkManager request per group. Instead it calls
+`AlarmScheduler.scheduleAt(futureScheduleGroups.keys.min())`, so AlarmManager
+represents only the earliest future start time. `scheduleAt()` itself stores a
+single one-shot exact alarm using the same request-code-1 PendingIntent.
+
+When that alarm fires, `ScheduleAlarmReceiver` only enqueues an immediate
+`DownloadWorker`; it does not inspect remaining future Scheduled rows or arm a
+successor alarm. `DownloadWorker` captures an eligibility cutoff near its own
+start and observes only rows whose `downloadStartTime` is at or before that
+cutoff, so a second scheduled group at a later time is not kept alive by the
+first worker. Once the due group and any current running work are gone, the
+worker can cancel itself. There is no other production caller that re-arms
+`scheduleAt()` after the alarm fires. With scheduled groups at `T1 < T2` and no
+later user/queue mutation, `T1` can run normally while `T2` remains durably
+`Scheduled` after its requested time with no execution carrier.
+
+**Why this is a defect:** enabling the explicit AlarmManager scheduling option
+changes multiple independently scheduled downloads into a chain whose only
+carrier is the first one-shot alarm, but no handoff to the next start time
+exists. A normal pair of user-scheduled downloads at different times can
+therefore silently lose the later execution even though its row still records
+the requested schedule. This is distinct from `BUG-SCHEDULER-01`, which covers
+the recurring daily scheduler window, and from `BUG-SCHEDULER-02`, which covers
+stale “Download now” ownership races.
+
+Required result:
+
+- after each individual exact alarm fires, atomically/reliably discover and arm
+  the next future Scheduled start time, or represent all pending future groups
+  with independently durable alarm/work identities;
+- keep one authoritative earliest-alarm contract when rows are added,
+  rescheduled, deleted, or forced to run now, replacing the current alarm only
+  when the next due time actually changes;
+- recover the next individual schedule after process/device restart or lost
+  platform alarm without requiring another user mutation;
+- ensure a worker launched for `T1` cannot be treated as the carrier for `T2`
+  when its eligibility cutoff excludes `T2`;
+- add deterministic two- and three-time-group regressions with AlarmManager
+  enabled, no intervening user action, cancellation/deletion of the earliest
+  group, rescheduling, process/device restart, and the WorkManager-delayed mode
+  as a non-regression control.
 
 ### P2 — BUG-HARDSUB-01 — Preserve ambiguous subtitle lookup failures instead of excluding scan candidates
 
