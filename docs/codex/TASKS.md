@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **43 active correctness defects** in this checkpoint. The previous
+There are **44 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 43-defect registry is intentionally retained here. The separate
+The broader 44-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 43-defect count unless they are explicitly promoted
+below do **not** change the 44-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-43-defect registry below.
+44-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 43 active defects
+### F1 remediation-discovered follow-up not counted in the 44 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -775,6 +775,53 @@ Required result:
 - add queue-path regressions for an exact archived item, one ID contained in
   another, an unrelated query/path containing an archived ID, the same bare ID
   under different extractors, and canonical-equivalent YouTube URLs.
+
+### P2 — BUG-DUPLICATE-03 — Preserve SAF authority for custom download-archive storage
+
+**State:** Open
+
+**Failure path:** the production Download settings screen lets the user choose a
+custom download-archive folder with `ACTION_OPEN_DOCUMENT_TREE`, takes a
+persistable read/write URI grant, and stores the returned `content://` tree URI
+in `download_archive_path`. `FileUtil.getDownloadArchivePath()` does not keep
+that provider-backed authority. It calls `formatPath()` on the stored tree URI,
+turning it into a raw `/storage/.../` path, appends `download_archive.txt`, and
+returns that raw path. `DownloadViewModel.detectAndMarkDuplicates()` then opens
+the path with `java.io.File`; any read failure is swallowed into an empty archive.
+`YTDLPUtil` independently passes the same raw path to yt-dlp through
+`--download-archive`.
+
+The app targets Android 36 and does not request broad all-files access. On
+scoped-storage Android, a successful SAF tree grant authorizes provider/document
+access; converting that URI to a raw shared-storage pathname does not transfer
+the grant to direct `File` or native yt-dlp access. No production validation
+proves that the derived raw archive file is readable and writable before the
+setting is accepted or a queued download uses it.
+
+**Why this is a defect:** a normal user can successfully choose and authorize a
+custom archive folder while the duplicate precheck silently behaves as if the
+archive were empty and yt-dlp receives a path it may not be able to read or
+update. Duplicate prevention can therefore stop working without an honest
+failure signal, and archive-enabled downloads can fail or stop recording future
+archive entries despite the UI showing an authorized custom folder. This is
+distinct from `BUG-DUPLICATE-02`, which concerns media-identity comparison after
+archive content has been read successfully.
+
+Required result:
+
+- retain custom archive storage under a provider-aware URI contract, or keep an
+  app-owned filesystem archive and synchronize it to/from the selected SAF tree
+  through `ContentResolver`/`DocumentFile` under an explicit commit contract;
+- never collapse archive access failure into an authoritative empty archive;
+- pass yt-dlp only a filesystem archive path the app/native process can actually
+  access, and surface/safely recover any failure to synchronize the authoritative
+  archive state;
+- validate read/write authority when configuring and before using a custom
+  archive, while preserving the existing app-owned default path behavior;
+- add scoped-storage regressions for a custom shared-storage tree, revoked grant,
+  read-only/unwritable provider state, an exact duplicate already in the archive,
+  archive-write failure after a successful download, and the default app-owned
+  archive path.
 
 ### P2 — BUG-CLEANUP-01 — Make automatic leftover cleanup actually recurring
 
