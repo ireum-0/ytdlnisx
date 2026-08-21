@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **34 active correctness defects** in this checkpoint. The previous
+There are **35 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -1029,6 +1029,56 @@ Required result:
 - add fault-injection regressions for `cancelByUser()`, linked-ledger update, and
   scheduler requeue writes, plus restart tests proving no killed job remains as
   ghost `Active`/`PostProcessing` work.
+
+### P2 — BUG-LOWQUALITY-01 — Persist download failure and low-quality ledger failure atomically
+
+**State:** Open
+
+**Failure path:** the low-quality re-download flow creates a normal queued
+`DownloadItem` and links its generated Download ID to a nonterminal
+`LowQualityRedownloadItem`. When that production download later fails,
+`DownloadWorker` first changes the Download row to `Error`, stores the selected
+`lastIssueCode`/`lastIssueStage`, and commits that row with `dao.update()`.
+Only afterward does it call `LowQualityRedownloadLedger.transition(...,
+FAILED, ...)`. The ledger call is wrapped in `runCatching` and its failure is
+discarded. The same split ordering is present in multiple DownloadWorker error
+branches.
+
+`LowQualityRedownloadLedger.transition()` is not a notification-only follow-up:
+it calls `LowQualityRedownloadRepository.markDownloadState()`, whose Room
+transaction terminalizes the linked child and can finalize the parent operation.
+A process death after the Download-row commit, or a Room exception in that
+second transaction, therefore leaves durable `Download = Error` while the
+linked low-quality child and operation can remain nonterminal. The surrounding
+worker path does not reinterpret the swallowed ledger failure as retryable or
+force immediate reconciliation. Startup `LowQualityRedownloadManager.reconcile()`
+can repair the mismatch later by deriving `FAILED` from the Error row, but until
+that separate recovery path runs the current operation can remain falsely active
+and its progress/notification state is stale.
+
+**Why this is a defect:** the Download failure and the operation ledger describe
+one authoritative terminal event but are committed in two failure-separated
+transactions, and the second failure is explicitly suppressed. A normal
+Download failure can therefore be durably visible while the owning low-quality
+operation still claims unfinished work, blocking/falsifying operation state
+until a later reconciliation happens to run.
+
+Required result:
+
+- persist `Download = Error`, `lastIssueCode`/`lastIssueStage`, the linked child
+  `FAILED` state/reason, and any resulting parent terminal state under one Room
+  transaction or another atomic repository contract;
+- do not place logging, notification, cleanup, or other throwing side effects
+  between determination of the authoritative failure and that durable terminal
+  commit;
+- if the combined terminal commit cannot complete, preserve a typed retryable
+  persistence failure instead of swallowing the ledger half of the failure;
+- keep startup reconciliation as crash recovery, not as the normal mechanism
+  required to make a just-failed operation internally consistent;
+- add fault-injection/process-death regressions after failure classification,
+  after the Download error write, and during child/parent ledger finalization,
+  proving no observable committed state contains `Download = Error` with a
+  nonterminal linked low-quality child.
 
 ### P2 — BUG-UPDATER-01 — Preserve custom yt-dlp update failure instead of reporting success
 
