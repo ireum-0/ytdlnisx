@@ -19,6 +19,12 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
+The broader 36-defect registry is intentionally retained here. The separate
+correctness-remediation Master Plan governs the F1→F22 execution order and may
+use a narrower baseline inventory. Remediation-discovered follow-ups recorded
+below do **not** change the 36-defect count unless they are explicitly promoted
+into this active registry.
+
 ## Defect priority
 
 - **P0 — Critical:** destructive data-integrity or safety failure that can
@@ -44,11 +50,91 @@ Before changing any item, inspect the current code and use
 [`docs/future-work.md`](../future-work.md) for the maintained recommendation,
 priority, and complexity.
 
+## Current correctness-remediation overlay
+
+This overlay records the latest reviewed F1 state without replacing the broader
+36-defect registry below.
+
+- Current remediation item: **F1 — `BUG-BACKUP-01`**.
+- Authorized review HEAD for the current Finding A review:
+  `66c1db3c7315ead73c585b9d18a229a36a275d22`.
+- Finding A status: **Partial / NOT CLEAN**.
+- The previous P2 where the first SourceMismatch / TypeMismatch terminal
+  `dao.update(...)` failure was swallowed is corrected by
+  `fa1156be49d8ca6527948d1d7cffe0ad4f98cd18`: the authoritative mismatch now
+  survives recovery and an unrecoverable mismatch-persistence failure is not
+  silently converted into handled success for that item.
+- Current open Finding A blocker: **P2 — when one item suffers both the first
+  mismatch terminal-write failure and the mismatch-preserving recovery-write
+  failure, the resulting exception can escape that per-item `launch` inside the
+  shared worker `coroutineScope`, cancel sibling downloads, and leave an
+  unrelated sibling durably `Active`/`PostProcessing` without a live owner.**
+- The required correction must either isolate this per-item terminal failure or
+  durably clean/requeue affected sibling rows. It must preserve the exact
+  authoritative mismatch for the failing item and must not confuse sibling
+  failure isolation with user/worker cancellation.
+- Add focused worker-level fault coverage with `concurrent_downloads >= 2` where
+  item A suffers first-write + recovery-write failure and item B is proven not
+  to remain a ghost `Active`/`PostProcessing` row.
+- Finding B remains confirmed but **must not start until Finding A closes**:
+  source-less `DownloadType.command` History redownload requires stable opaque target
+  identity and must never fall back to numeric History ID authority.
+- Focused Gradle verification remains **ATTEMPTED, NOT COMPLETED**, not PASS.
+- Review closure uses `remediation-review-checklist-v3.md`, including the mandatory
+  terminal fault matrix: first terminal DB write failure, linked-ledger failure,
+  notification/logging failure, recovery-write failure, process-death window, and
+  final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
+
+### F1 remediation-discovered follow-up not counted in the 36 active defects
+
+#### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
+
+**State:** Discovered  
+**Severity:** P2 candidate  
+**Ownership:** cross-cutting Download terminal repository recovery  
+**Current Finding A impact:** pre-existing / non-blocking for the current mismatch fix
+
+This follow-up is **generic terminal recovery**, not only the authoritative
+`TargetMissing` branch.
+
+For authoritative `TargetMissing`, the target-deleted terminal repository operation can
+fail. The fallback then attempts to preserve the Download as Error. If that fallback
+`dao.update(...)` also fails, the persistence exception can be logged and swallowed before
+the branch exits, leaving stale running state possible. Even when the fallback Download
+Error write succeeds, later reconciliation can reconstruct a still-nonterminal linked
+low-quality child as generic `FAILED` instead of preserving the intended
+`SKIPPED / HISTORY_TARGET_DELETED` disposition.
+
+For `Authorized + cleanup incomplete/failed`, the normal failure branch similarly relies
+on a first terminal Download Error write followed by generic outer recovery. If the first
+terminal write fails and that recovery write also fails **without an already-established
+SourceMismatch/TypeMismatch carrier**, the recovery failure can still be logged/handled in
+a way that permits a durable `Active`/`PostProcessing` row rather than an honest terminal
+worker outcome. This structure predates the narrow mismatch fix and is not attributed to
+`fa1156be`.
+
+Required eventual result:
+
+- preserve every authoritative terminal disposition through repository/recovery failure;
+- do not swallow fallback or recovery terminal persistence failure;
+- prevent stale `Active`/`PostProcessing` + handled completion;
+- preserve linked child/parent target-deleted semantics during recovery/restart;
+- cover `TargetMissing` and `Authorized + cleanup incomplete/failed` with direct
+  first-write and recovery-write fault injection.
+
+Existing broader-registry entries already own several other F1-adjacent findings and
+must not be duplicated as new active defects here: `BUG-HISTORY-03` owns the post-commit
+History reclassification issue (including cancellation after the authoritative History
+commit), `BUG-HISTORY-02` owns retained-reference deletion TOCTOU, and
+`BUG-LOWQUALITY-01` owns Download/low-quality terminal atomicity (including process-death
+loss of the exact mismatch reason). Other F1 P3 and verification follow-ups remain tracked
+in the remediation follow-up ledger.
+
 ## Active correctness defects
 
 ### P0 — BUG-BACKUP-01 — Remap History replacement markers during restore
 
-**State:** Open
+**State:** Partial / NOT CLEAN
 
 **Failure path:** app-data restore inserts History rows with newly generated
 primary keys and records those mappings in `importedHistoryIdMap`. Download rows
@@ -74,6 +160,14 @@ Required result:
   replacement or previous-media deletion;
 - add reset, merge, ID-collision, missing-target, regular-marker, and
   quality-marker regressions.
+
+**Current remediation status:** the core marker remap, transactional current-target
+authorization, strict source/type mismatch handling, exact authorized snapshots, and typed
+quality-cleanup policy are implemented through the authorized review HEAD above. Finding A
+is still blocked by the sibling-cancellation/ghost-running-row P2 described in the overlay.
+Finding B is confirmed next but has not started. Do not mark this item clean until the full
+Finding A v3 terminal fault matrix is closed and Finding B is separately
+implemented/reviewed.
 
 ### P0 — BUG-BACKUP-03 — Make reset restore fail-safe instead of destructively partial
 
@@ -764,11 +858,18 @@ replacement, the History row may already point at the replacement output while
 the old-media cleanup has not yet run. A user retry can then repeat work against
 a state that already crossed the authoritative History commit boundary.
 
+A `CancellationException` observed after that same commit boundary is another
+instance of the same barrier defect: the History catch rethrows cancellation,
+so worker execution can be exposed as canceled even though the authoritative
+History insert/replacement already committed.
+
 **Why this is a defect:** a non-authoritative derived-keyword failure after the
 History commit changes the semantic result from completed media/History
-persistence to download failure. This violates the post-commit barrier and can
-invite duplicate redownloads or repeated History replacement while durable
-success state already exists.
+persistence to download failure. Cancellation after the same boundary can
+likewise expose already-committed History mutation as if the operation never
+completed. This violates the post-commit barrier and can invite duplicate
+redownloads or repeated History replacement while durable success state already
+exists.
 
 Required result:
 
@@ -777,11 +878,14 @@ Required result:
 - make follow-up derived keyword/provenance assignment part of the same atomic
   transaction when it must gate completion, or persist/report its failure
   separately without reclassifying the committed download as failed;
+- define cancellation semantics after the authoritative History commit so a
+  late cancellation does not erase or misrepresent the committed mutation;
 - ensure replacement old-media cleanup and terminal queue/ledger state use an
   explicit recovery contract if post-commit enrichment fails;
-- add fault-injection regressions for legacy Observe Source assignment and RULE
-  assignment after both new-History insert and authorized replacement, proving a
-  committed History mutation is never exposed as a retryable download failure.
+- add fault-injection regressions for legacy Observe Source assignment, RULE
+  assignment, and cancellation after both new-History insert and authorized
+  replacement, proving a committed History mutation is never exposed as an
+  uncommitted/retryable result.
 
 ### P2 — BUG-PLAYER-01 — Serialize playback-position persistence by History item
 
@@ -1092,12 +1196,19 @@ can repair the mismatch later by deriving `FAILED` from the Error row, but until
 that separate recovery path runs the current operation can remain falsely active
 and its progress/notification state is stale.
 
+For SourceMismatch/TypeMismatch specifically, that restart reconciliation can repair the
+child to generic `FAILED`, but it does not reconstruct the exact authoritative mismatch
+reason from the Download's persisted issue code/stage. A process death between the Download
+Error commit and the linked-ledger transition can therefore lose the exact mismatch reason
+even when later reconciliation repairs liveness.
+
 **Why this is a defect:** the Download failure and the operation ledger describe
 one authoritative terminal event but are committed in two failure-separated
 transactions, and the second failure is explicitly suppressed. A normal
 Download failure can therefore be durably visible while the owning low-quality
 operation still claims unfinished work, blocking/falsifying operation state
-until a later reconciliation happens to run.
+until a later reconciliation happens to run. Crash recovery can also preserve only a
+generic terminal child state while losing the authoritative failure reason.
 
 Required result:
 
@@ -1110,11 +1221,13 @@ Required result:
 - if the combined terminal commit cannot complete, preserve a typed retryable
   persistence failure instead of swallowing the ledger half of the failure;
 - keep startup reconciliation as crash recovery, not as the normal mechanism
-  required to make a just-failed operation internally consistent;
+  required to make a just-failed operation internally consistent, and preserve the exact
+  authoritative reason when reconciliation is required;
 - add fault-injection/process-death regressions after failure classification,
   after the Download error write, and during child/parent ledger finalization,
   proving no observable committed state contains `Download = Error` with a
-  nonterminal linked low-quality child.
+  nonterminal linked low-quality child and no repaired child loses the exact authoritative
+  terminal reason.
 
 ### P2 — BUG-UPDATER-01 — Preserve custom yt-dlp update failure instead of reporting success
 
