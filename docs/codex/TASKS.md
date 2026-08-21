@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **49 active correctness defects** in this checkpoint. The previous
+There are **50 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 49-defect registry is intentionally retained here. The separate
+The broader 50-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 49-defect count unless they are explicitly promoted
+below do **not** change the 50-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-49-defect registry below.
+50-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 49 active defects
+### F1 remediation-discovered follow-up not counted in the 50 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -477,6 +477,68 @@ Required result:
 - add regressions for editing name/cadence/template at nonzero `runCount`,
   `endsAfterCount` near its terminal boundary, preserved `runHistory`, explicit
   processed-link reset, and editing while a run is active.
+
+### P2 — BUG-OBSERVE-03 — Recover active Observe Source schedules after enqueue loss
+
+**State:** Open
+
+**Failure path:** creating or editing an Observe Source enters
+`ObserveSourcesViewModel.insertUpdate()`. For an existing source it first commits
+the reconstructed source row, then `ObserveSourcesRepository.observeTask()`
+cancels the current unique/tagged work and enqueues a replacement one-time
+`ObserveSourceWorker`. For a new source the row is likewise inserted before its
+first work request is enqueued. `observeTask()` discards the `Operation` returned
+by `enqueueUniqueWork()`, so asynchronous enqueue failure is not observed; an
+edit can additionally remove the previously valid schedule before the
+replacement enqueue is durably accepted.
+
+The recurring handoff has the same split boundary. At the end of a normal or
+recovered run, `ObserveSourceWorker.finishRunAndSchedule()` first persists the
+updated `runHistory`, `runCount`, `runInProgress = false`, current status, and any
+STOPPED decision. If the source remains active it then builds a new one-time work
+request, calls `enqueueUniqueWork(..., REPLACE, ...)`, ignores its returned
+`Operation`, and immediately returns `Result.success()`. An enqueue failure or
+process death after the source-state commit but before the successor WorkManager
+record is durable therefore leaves the source persisted as `ACTIVE` with no
+future execution owner.
+
+Normal app startup does not rebuild this missing schedule. `App.onCreate()`
+reconciles automatic-keyword observation coverage, low-quality re-downloads, and
+History date-fetch operations, but has no reconciliation that enumerates every
+active USER Observe Source and proves a corresponding WorkManager chain exists.
+`AutomaticKeywordObservationCoverage.reconcile()` is not such a repair: it uses
+USER sources only to decide whether managed discovery coverage is necessary,
+and for an already-`ACTIVE` managed source it also does not call `observeTask()`
+merely because its WorkManager record is absent. A lost handoff can therefore
+remain silent across process/app restart until the user explicitly edits or
+restarts the source.
+
+**Why this is a defect:** `ACTIVE` is durable user intent for recurring
+observation, while each one-time WorkManager request is only the current carrier
+of that intent. The implementation can commit the former while losing the latter
+and then report the current worker as successful. Observation can silently stop
+forever even though the source still appears active, causing new uploads,
+retry-missing processing, synchronization, or automatic-keyword discovery to be
+missed. This is distinct from `BUG-OBSERVE-01`, which concerns destructive use of
+non-authoritative source snapshots, and `BUG-OBSERVE-02`, which concerns runtime
+state being overwritten by configuration edits.
+
+Required result:
+
+- represent active Observe Source scheduling with a durable generation/outbox or
+  equivalent contract and reconcile every active source to exactly one matching
+  WorkManager execution after startup/restart;
+- observe enqueue completion/failure rather than treating invocation as a
+  completed handoff, and make `finishRunAndSchedule()` return retry/failure or a
+  durable recoverable scheduling state when the successor was not accepted;
+- replace an existing schedule under a protocol that does not cancel the last
+  valid carrier before a replacement is durably established, or guarantees
+  recovery from that intermediate state;
+- bind replacement work to the committed source generation/configuration so
+  stale work cannot overwrite or reschedule a newer edit;
+- add deterministic initial-save, edit-replacement, end-of-run handoff,
+  asynchronous enqueue-failure, and process-death tests, plus startup recovery
+  for USER and managed sources and exactly-one-work regressions.
 
 ### P2 — BUG-KEYWORD-02 — Recompute derived RULE assignments on History Undo
 
@@ -1990,7 +2052,7 @@ Required result:
 | `PLAYER-01` | Partial | `PlaybackQueueState` centralizes queue data, but lifecycle, Media3, subtitle, PiP, URI, and navigation behavior remains concentrated in `VideoPlayerActivity`. |
 | `TERM-01` | Implemented | Terminal command planning includes a dry-run/preview path and argument policy. |
 
-## newly implemented capability
+## Newly implemented capability
 
 The current branch also stores media source-publication time through result,
 download, and history records; reads provider-specific dates; displays and
