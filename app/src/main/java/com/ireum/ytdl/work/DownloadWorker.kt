@@ -100,7 +100,9 @@ import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -122,6 +124,7 @@ class DownloadWorker(
 ) : CoroutineWorker(context, workerParams) {
     private val workerDownloadIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
     private val workerCleanupDownloadIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
+    private val workerAuthoritativeIssues: MutableMap<Long, DownloadIssue> = ConcurrentHashMap()
 
     override suspend fun getForegroundInfo(): ForegroundInfo {
         val workNotif = NotificationUtil(App.instance).createDefaultWorkerNotification()
@@ -137,16 +140,30 @@ class DownloadWorker(
         )
     }
 
-    private suspend fun cleanupStoppedWorker() = withContext(Dispatchers.IO + NonCancellable) {
+    private suspend fun cleanupStoppedWorker(
+        includeStaleRows: Boolean = true,
+        propagateRequeueFailure: Boolean = false,
+    ) = withContext(Dispatchers.IO + NonCancellable) {
         val dao = DBManager.getInstance(context).downloadDao
-        val workerOwnedIds = workerCleanupDownloadIds.toList()
-        val staleDbIds = runCatching {
-            dao.getActiveAndPostProcessingDownloadsList()
-                .map { it.id }
-                .filter { it !in ownedDownloadIds }
-        }.getOrDefault(emptyList())
+        val workerOwnedIds = (workerCleanupDownloadIds + workerDownloadIds).distinct()
+        val staleItems = if (includeStaleRows) {
+            runCatching {
+                dao.getActiveAndPostProcessingDownloadsList()
+                    .filter { it.id !in ownedDownloadIds }
+            }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+        val staleDbIds = staleItems.map { it.id }
         val activeIds = (workerOwnedIds + staleDbIds).distinct()
         if (activeIds.isEmpty()) return@withContext
+
+        val authoritativeIssues = workerAuthoritativeIssues.toMutableMap().apply {
+            staleItems.forEach { item ->
+                HistoryReplacementDiagnostic.persistedMismatchIssue(item.lastIssueCode)
+                    ?.let { put(item.id, it) }
+            }
+        }
 
         activeIds.forEach { downloadId ->
             cancelYtdlpProcess(downloadId)
@@ -155,26 +172,53 @@ class DownloadWorker(
                 NotificationUtil(context).cancelDownloadNotification(downloadId.toInt())
             }
         }
-        runCatching {
-            dao.setStatusMultipleFromStatus(
-                activeIds,
-                DownloadRepository.Status.Active.toString(),
-                DownloadRepository.Status.Queued.toString()
+        val requeueFailure = try {
+            requeueOwnedDownloadRowsPreservingIssues(
+                downloadIds = activeIds,
+                authoritativeIssues = authoritativeIssues,
+                requeueWithIssue = { ids, issue ->
+                    dao.requeueActiveDownloadsWithIssue(
+                        ids,
+                        issue.code.name,
+                        issue.stage.name,
+                    )
+                },
+                requeueOrdinary = { ids ->
+                    dao.setStatusMultipleFromStatus(
+                        ids,
+                        DownloadRepository.Status.Active.toString(),
+                        DownloadRepository.Status.Queued.toString()
+                    )
+                    dao.setStatusMultipleFromStatus(
+                        ids,
+                        DownloadRepository.Status.PostProcessing.toString(),
+                        DownloadRepository.Status.Queued.toString()
+                    )
+                },
             )
-            dao.setStatusMultipleFromStatus(
-                activeIds,
-                DownloadRepository.Status.PostProcessing.toString(),
-                DownloadRepository.Status.Queued.toString()
-            )
-        }.onFailure {
-            Log.w(TAG, "Failed to requeue stopped active downloads ids=$activeIds", it)
+            null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            error
         }
         val activeIdSet = activeIds.toSet()
         workerDownloadIds.removeAll(activeIdSet)
         workerCleanupDownloadIds.removeAll(activeIdSet)
         ownedDownloadIds.removeAll(activeIdSet)
         runningYTDLInstances.removeAll(activeIdSet)
-        Log.i(TAG, "Stopped worker cleanup completed for ${activeIds.size} active download(s)")
+        if (requeueFailure == null) {
+            workerAuthoritativeIssues.keys.removeAll(activeIdSet)
+            Log.i(TAG, "Stopped worker cleanup completed for ${activeIds.size} active download(s)")
+        } else {
+            Log.w(
+                TAG,
+                "Failed to requeue stopped active downloads ids=$activeIds; " +
+                    "ownership released without a durable non-running guarantee",
+                requeueFailure
+            )
+            if (propagateRequeueFailure) throw requeueFailure
+        }
     }
 
     private suspend fun persistDownloadMetadata(
@@ -207,6 +251,24 @@ class DownloadWorker(
     override suspend fun doWork(): Result {
         return try {
             doWorkSerialized()
+        } catch (cancelled: CancellationException) {
+            if (isStopped || currentCoroutineContext()[Job]?.isActive != true) {
+                try {
+                    cleanupStoppedWorker(includeStaleRows = false)
+                } catch (cleanupFailure: CancellationException) {
+                    cancelled.addSuppressed(cleanupFailure)
+                } catch (cleanupFailure: Exception) {
+                    cancelled.addSuppressed(cleanupFailure)
+                }
+            }
+            throw cancelled
+        } catch (failure: Exception) {
+            rethrowAfterOwnedDownloadCleanup(failure) {
+                cleanupStoppedWorker(
+                    includeStaleRows = false,
+                    propagateRequeueFailure = true,
+                )
+            }
         } finally {
             if (isStopped) {
                 cleanupStoppedWorker()
@@ -384,7 +446,22 @@ class DownloadWorker(
                 selectedDownloads
             }
 
-            runDownloadItemsIndependently(eligibleDownloads) launch@{ downloadItem ->
+            runDownloadItemsIndependently(
+                items = eligibleDownloads,
+                isItemLocalCancellation = { item ->
+                    if (this@DownloadWorker.isStopped) {
+                        false
+                    } else {
+                        withContext(Dispatchers.IO + NonCancellable) {
+                            when (runCatching { dao.checkStatus(item.id) }.getOrNull()) {
+                                DownloadRepository.Status.Paused,
+                                DownloadRepository.Status.Cancelled -> true
+                                else -> false
+                            }
+                        }
+                    }
+                },
+            ) launch@{ downloadItem ->
                     workerDownloadIds.add(downloadItem.id)
                     val rawTempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
                     var ytdlpExecutionState: YtdlpExecutionState? = null
@@ -394,10 +471,17 @@ class DownloadWorker(
                     var preserveQueueRecord = false
                     var historyReplacementFailureIssue: DownloadIssue? =
                         HistoryReplacementDiagnostic.persistedMismatchIssue(downloadItem.lastIssueCode)
+                    historyReplacementFailureIssue?.let { issue ->
+                        workerAuthoritativeIssues[downloadItem.id] = issue
+                    }
                     var historyReplacementTerminalAction: HistoryReplacementTerminalAction? =
                         historyReplacementFailureIssue?.let {
                             HistoryReplacementTerminalAction.PRESERVE_FAILED
                         }
+                    fun establishHistoryReplacementFailure(issue: DownloadIssue) {
+                        historyReplacementFailureIssue = issue
+                        workerAuthoritativeIssues[downloadItem.id] = issue
+                    }
                     var downloadOutcome: DownloadOutcome? = null
                     fun recordCreatedOutputs(paths: List<String>) {
                         createdOutputPaths = (createdOutputPaths + paths)
@@ -1307,7 +1391,7 @@ class DownloadWorker(
                                         HistoryReplacementTerminalAction.PRESERVE_FAILED
                                     )
                                 HistoryReplacementDiagnostic.issue(historyError.mismatch).also { issue ->
-                                    historyReplacementFailureIssue = issue
+                                    establishHistoryReplacementFailure(issue)
                                 }
                             } else {
                                 DownloadIssue.create(
@@ -1551,7 +1635,7 @@ class DownloadWorker(
                                             cleanupAuthorization
                                         ) ?: error("Missing mismatch kind for refused quality cleanup")
                                         val mismatchIssue = HistoryReplacementDiagnostic.issue(mismatchKind)
-                                        historyReplacementFailureIssue = mismatchIssue
+                                        establishHistoryReplacementFailure(mismatchIssue)
                                         primaryIssue = mismatchIssue
                                     }
                                 }
@@ -1925,13 +2009,17 @@ class DownloadWorker(
                             hardSubPostProcessMutex.unlock()
                         }
                         workerDownloadIds.remove(downloadItem.id)
-                        val latestStatus = runCatching { dao.checkStatus(downloadItem.id) }.getOrNull()
+                        val latestStatus = withContext(Dispatchers.IO + NonCancellable) {
+                            runCatching { dao.checkStatus(downloadItem.id) }.getOrNull()
+                        }
                         if (
-                            latestStatus != DownloadRepository.Status.Active &&
-                            latestStatus != DownloadRepository.Status.PostProcessing
+                            latestStatus != null &&
+                                latestStatus != DownloadRepository.Status.Active &&
+                                latestStatus != DownloadRepository.Status.PostProcessing
                         ) {
                             workerCleanupDownloadIds.remove(downloadItem.id)
                             ownedDownloadIds.remove(downloadItem.id)
+                            workerAuthoritativeIssues.remove(downloadItem.id)
                         }
                     }
             }

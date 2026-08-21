@@ -328,6 +328,17 @@ interface DownloadDao {
     @Query("UPDATE downloads set status=:newStatus where id IN (:ids) AND status=:currentStatus")
     suspend fun setStatusMultipleFromStatus(ids: List<Long>, currentStatus: String, newStatus: String)
 
+    @Query(
+        "UPDATE downloads SET status='Queued', downloadStartTime=0, " +
+            "lastIssueCode=:issueCode, lastIssueStage=:issueStage " +
+            "WHERE id IN (:ids) AND status IN ('Active','PostProcessing')"
+    )
+    suspend fun requeueActiveDownloadsWithIssue(
+        ids: List<Long>,
+        issueCode: String,
+        issueStage: String,
+    ): Int
+
     @Update
     suspend fun updateWithoutUpsert(item: DownloadItem)
 

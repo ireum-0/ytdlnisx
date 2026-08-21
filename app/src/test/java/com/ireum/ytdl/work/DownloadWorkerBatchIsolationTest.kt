@@ -1,6 +1,7 @@
 package com.ireum.ytdl.work
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -8,6 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 class DownloadWorkerBatchIsolationTest {
     @Test
@@ -44,5 +46,59 @@ class DownloadWorkerBatchIsolationTest {
         } catch (error: CancellationException) {
             assertEquals(cancellation.message, error.message)
         }
+    }
+
+    @Test
+    fun itemLocalPauseAndCancelCancellationDoesNotCancelSibling() = runBlocking {
+        listOf("Paused", "Cancelled").forEach { localStatus ->
+            val statuses = ConcurrentHashMap<String, String>()
+
+            runDownloadItemsIndependently(
+                items = listOf("A", "B"),
+                isItemLocalCancellation = { item -> statuses[item] == localStatus },
+            ) { item ->
+                statuses[item] = "Active"
+                if (item == "A") {
+                    statuses[item] = localStatus
+                    throw CancellationException("item locally stopped")
+                }
+                delay(25)
+                statuses[item] = "Queued"
+            }
+
+            assertEquals(localStatus, statuses["A"])
+            assertEquals("Queued", statuses["B"])
+        }
+    }
+
+    @Test
+    fun workerCancellationCancelsAllSiblingsAndRemainsCancellation() = runBlocking {
+        val bothStarted = CompletableDeferred<Unit>()
+        val workerCancellation = CancellationException("worker stopped")
+        val siblingWasCancelled = AtomicBoolean(false)
+        var thrown: CancellationException? = null
+
+        try {
+            runDownloadItemsIndependently(listOf("A", "B")) { item ->
+                if (item == "B") {
+                    bothStarted.complete(Unit)
+                    try {
+                        delay(Long.MAX_VALUE)
+                    } catch (cancelled: CancellationException) {
+                        siblingWasCancelled.set(true)
+                        throw cancelled
+                    }
+                } else {
+                    bothStarted.await()
+                    throw workerCancellation
+                }
+            }
+            throw AssertionError("worker cancellation was swallowed")
+        } catch (error: CancellationException) {
+            thrown = error
+        }
+
+        assertEquals(workerCancellation.message, thrown?.message)
+        assertTrue(siblingWasCancelled.get())
     }
 }

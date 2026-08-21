@@ -129,6 +129,31 @@ class DownloadQueueOrderPersistenceTest {
     }
 
     @Test
+    fun exceptionalWorkerRequeuePersistsTheMismatchBarrierBeforeReleasingOwnership() = runBlocking {
+        val mismatch = download(9, 900, DownloadRepository.Status.Active).apply {
+            playlistURL = HistoryRedownloadMarker.regular(84L)
+            val issue = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
+            lastIssueCode = issue.code.name
+            lastIssueStage = issue.stage.name
+        }
+        database.downloadDao.insert(mismatch)
+        val issue = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
+
+        val updated = database.downloadDao.requeueActiveDownloadsWithIssue(
+            ids = listOf(mismatch.id),
+            issueCode = issue.code.name,
+            issueStage = issue.stage.name,
+        )
+        val restored = database.downloadDao.getDownloadById(mismatch.id)
+
+        assertEquals(1, updated)
+        assertEquals(DownloadRepository.Status.Queued.name, restored.status)
+        assertEquals(issue.code.name, restored.lastIssueCode)
+        assertEquals(issue.stage.name, restored.lastIssueStage)
+        assertEquals(HistoryRedownloadMarker.regular(84L), restored.playlistURL)
+    }
+
+    @Test
     fun priorityObservationSurfacesItemBeyondOrdinaryPageForWorkerSelection() = runBlocking {
         (1L..12L).forEach { id ->
             database.downloadDao.insert(
