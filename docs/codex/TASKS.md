@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **50 active correctness defects** in this checkpoint. The previous
+There are **51 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 50-defect registry is intentionally retained here. The separate
+The broader 51-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 50-defect count unless they are explicitly promoted
+below do **not** change the 51-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-50-defect registry below.
+51-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 50 active defects
+### F1 remediation-discovered follow-up not counted in the 51 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -539,6 +539,64 @@ Required result:
 - add deterministic initial-save, edit-replacement, end-of-run handoff,
   asynchronous enqueue-failure, and process-death tests, plus startup recovery
   for USER and managed sources and exactly-one-work regressions.
+
+### P2 — BUG-OBSERVE-04 — Prevent stale Observe Source workers from overwriting newer edits
+
+**State:** Open
+
+**Failure path:** `ObserveSourceWorker.runSourceWork()` loads one full
+`ObserveSourcesItem` snapshot near the start of a run and keeps mutating that
+same object throughout extraction, membership processing, History/download
+reconciliation, and final scheduling. Worker progress and completion are
+persisted through `ObserveSourcesRepository.update(item)`, whose DAO sink is a
+full-row `@Update`; there is no source revision, expected configuration, or
+worker-generation predicate on those writes.
+
+The production edit path can race directly with that stale snapshot.
+`ObserveSourcesViewModel.insertUpdate()` persists the user's newly reconstructed
+source row **before** it calls `observeTask()` to cancel/replace the previous
+worker. Consequently an old worker can still be executing when the edit commit
+becomes authoritative. If that worker subsequently reaches `updateRunStatus()`
+or `finishRunAndSchedule()`, its full-row update writes the pre-edit values back
+over the same source ID. Fields owned by the user edit, such as URL/name,
+cadence, filters, templates, retry/sync options, termination settings, and other
+configuration, can therefore be silently reverted along with runtime fields.
+Cancellation of the old WorkManager request after the edit does not close the
+race because cancellation is not the commit boundary for the preceding DB edit,
+and no DAO CAS rejects a late stale write.
+
+The stale worker can then calculate and enqueue its successor from the reverted
+snapshot. A newer replacement worker scheduled by the edit and the stale
+worker's later `enqueueUniqueWork(..., REPLACE, ...)` use the same unique work
+name, so whichever handoff occurs last can also replace the execution carrier
+for the newer configuration. The user can therefore save a visible edit, have
+it durably overwritten by an older run, and continue observing under the old
+configuration without another explicit action.
+
+**Why this is a defect:** runtime progress ownership and configuration ownership
+are not separated. A worker that was authorized under an earlier source snapshot
+can overwrite a later authoritative user edit and can reschedule work using that
+obsolete configuration. This is a lost-update/data-integrity race distinct from
+`BUG-OBSERVE-02`, where the edit itself resets runtime fields, and from
+`BUG-OBSERVE-03`, where a valid durable source intent loses its WorkManager
+carrier.
+
+Required result:
+
+- add a monotonically increasing source revision/generation and bind each worker
+  request to the revision it loaded;
+- make worker-owned persistence update only runtime/progress fields, or use a
+  revision-checked transaction/CAS that rejects stale workers without rewriting
+  user-owned configuration;
+- make edits increment the generation before cancelling/replacing work so every
+  older worker is durably invalidated at the same authoritative boundary as the
+  new configuration;
+- prevent a stale worker from enqueueing/replacing a successor after its
+  generation has been superseded;
+- add deterministic edit-vs-worker races at initial status write, source fetch,
+  download/History processing, final full-row update, and successor enqueue,
+  proving the edited configuration remains durable and exactly one current-
+  generation worker survives.
 
 ### P2 — BUG-KEYWORD-02 — Recompute derived RULE assignments on History Undo
 
