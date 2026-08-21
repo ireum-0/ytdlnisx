@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **44 active correctness defects** in this checkpoint. The previous
+There are **45 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 44-defect registry is intentionally retained here. The separate
+The broader 45-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 44-defect count unless they are explicitly promoted
+below do **not** change the 45-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-44-defect registry below.
+45-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 44 active defects
+### F1 remediation-discovered follow-up not counted in the 45 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -593,8 +593,8 @@ Required result:
 **Failure path:** custom thumbnails are written before destination History IDs
 are allocated. The path is derived from the backup-local ID as
 `restored_<oldHistoryId>.<extension>`, and `writeBytes()` overwrites an existing
-file at that location. The later `importedHistoryIdMap` cannot repair a file
-that was already overwritten.
+file at that location. The later `importedHistoryIdMap` cannot repair a file that
+was already overwritten.
 
 **Why this is a defect:** two independent backups can legitimately contain
 different History records with the same source-local numeric ID. Restoring the
@@ -1709,6 +1709,48 @@ Required result:
 - add single-item and mixed-batch regressions for empty metadata, extractor
   exception, Download-row persistence failure, cancellation, process restart,
   retry exhaustion, and successful enrichment.
+
+### P3 — BUG-INCOGNITO-01 — Represent mixed multi-download incognito state correctly
+
+**State:** Open
+
+**Failure path:** the production multi-download configuration sheet initializes
+its Incognito control by calling `DownloadViewModel.areAllProcessingIncognito()`
+for either the current checked subset or, when no subset is checked, every
+Processing row. Despite the function name, both branches return `true` whenever
+the corresponding DAO count is merely greater than zero. A mixed set containing
+one `incognito = true` item and one `incognito = false` item is therefore
+reported to the UI as though every selected item were incognito, and the menu
+icon is rendered in the fully-enabled state.
+
+The same menu item uses that icon state as the semantic input for the next
+mutation. If the icon is fully enabled, tapping it calls
+`updateProcessingIncognito(..., false)`, whose DAO path updates every targeted
+Processing row. No parser, adapter normalization, or repository merge prevents
+mixed persisted values before this check. A user who selects a mixed set and
+sees the incorrect all-enabled state can therefore turn Incognito off for the
+entire set with one tap, including items whose previous privacy setting was not
+represented accurately by the control.
+
+**Why this is a defect:** a Boolean aggregate named and presented as “all” is
+implemented as “any”, and that false authoritative UI state is then used to
+choose a persistent bulk mutation. This is not only an icon inconsistency: mixed
+per-item privacy configuration is collapsed into a different durable state by a
+normal production action without an explicit mixed-state decision.
+
+Required result:
+
+- derive Incognito selection state from the complete targeted set, not from
+  `count > 0`; represent all-on, all-off, and mixed explicitly or otherwise
+  define a deterministic bulk-toggle contract that does not mislabel mixed data;
+- make the mutation depend on the authoritative targeted-row state or an
+  explicit user command rather than icon alpha;
+- preserve unselected Processing rows and make checked-subset versus no-selection
+  semantics unambiguous;
+- refresh the aggregate after selection membership or row state changes so the
+  displayed state cannot become stale before the write;
+- add regressions for all-on, all-off, mixed, selected-subset mixed, no-selection
+  whole-batch mixed, selection changes, and one-tap persistence outcomes.
 
 ## Current status
 
