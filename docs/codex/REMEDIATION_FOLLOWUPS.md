@@ -360,6 +360,52 @@ where source/type changes before previous-media fallback, including a generic
 hard-sub failure before final History replacement and a later target change that
 must not reauthorize the already-refused privileged operation.
 
+## BUG-BACKUP-01-FOLLOWUP-06 — Bind low-quality selection to immutable History source/type identity
+
+**State:** Discovered  
+**Severity:** P2 candidate  
+**Discovered during:** BUG-BACKUP-01 Finding A v4 re-review at `c64ddbc26a41d4bba8010d9e30f5ffb24b2336da`  
+**Ownership:** BUG-BACKUP-01 Finding A / low-quality replacement operation identity  
+**Current remediation impact:** Blocking Finding A
+
+The low-quality replacement flow discovers and presents a candidate from a
+specific live `HistoryItem`, but the durable `LowQualityRedownloadItem` records
+only the numeric `historyId` plus quality/selection state.  It does not retain the
+source URL identity or compatible media type that made that History row the
+intended replacement target when the user selected it.
+
+During `PREPARING`, `LowQualityRedownloadWorker` therefore re-loads the current
+History row by `ledgerItem.historyId`, performs qualification and metadata lookup
+against the row's **current** `url`/type, and constructs the replacement Download
+from that new snapshot.  A normal History metadata update can keep the same
+History ID while changing the URL.  If that happens after scan/selection but
+before preparation, the operation can silently rebind from the originally
+selected source A to a different source B.  The resulting Download then carries
+B as its expected source together with `history-redownload:<same id>`, so the
+later DownloadWorker source/type check can authorize B and replace/delete media
+for B even though the user-selected low-quality operation was established for A.
+
+This remains production-reachable across process death because the low-quality
+ledger has no durable source/type carrier to reconstruct the original intended
+target after restart.  It is also distinct from `BUG-LOWQUALITY-01`, which owns
+Download/low-quality terminal atomicity and exact terminal-reason durability;
+this entry owns **privileged operation identity before the child Download is
+created**.
+
+**Required eventual result:** bind every selected low-quality replacement to an
+immutable, crash-durable intended History identity that includes the source
+identity and compatible media type established for the selected candidate.
+`PREPARING` must compare the current live History target against that identity
+before metadata lookup or child Download creation.  `TargetMissing` must remain
+fail-closed with its defined target-deleted/skip semantics, and source/type drift
+must become the corresponding non-authorized outcome rather than rebind the same
+privileged operation to the new row contents.  Do not create or retain a History
+replacement marker for a changed target unless the original privileged operation
+has been explicitly and irrevocably abandoned in favor of a normal unprivileged
+download.  Add focused scan -> selection -> History URL/type change -> prepare
+coverage, plus process-death/restart coverage proving that a selected operation
+cannot rebind to a different source while preserving the same numeric History ID.
+
 ## Review checklist retained from Finding A misses
 
 The following checks should be applied to future remediation reviews even when a
@@ -390,3 +436,8 @@ problem is ultimately assigned outside the current defect:
 12. **Attribution last:** retain real defects even when they are pre-existing,
     out of current scope, or P3; classify ownership after correctness is
     established.
+13. **Durable operation identity:** when a user selection, coordinator ledger,
+    retry token, or marker authorizes later privileged work, persist the source /
+    type identity that established that authority.  Re-loading a mutable row by
+    numeric ID and validating only its new current fields is not proof that the
+    original operation still targets the same object.
