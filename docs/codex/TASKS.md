@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **53 active correctness defects** in this checkpoint. The previous
+There are **54 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 53-defect registry is intentionally retained here. The separate
+The broader 54-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 53-defect count unless they are explicitly promoted
+below do **not** change the 54-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-53-defect registry below.
+54-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 53 active defects
+### F1 remediation-discovered follow-up not counted in the 54 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -520,8 +520,8 @@ and then report the current worker as successful. Observation can silently stop
 forever even though the source still appears active, causing new uploads,
 retry-missing processing, synchronization, or automatic-keyword discovery to be
 missed. This is distinct from `BUG-OBSERVE-01`, which concerns destructive use of
-non-authoritative source snapshots, and `BUG-OBSERVE-02`, which concerns runtime
-state being overwritten by configuration edits.
+non-authoritative source snapshots, and from `BUG-OBSERVE-02`, which concerns
+runtime state being overwritten by configuration edits.
 
 Required result:
 
@@ -2192,6 +2192,54 @@ Required result:
   displayed state cannot become stale before the write;
 - add regressions for all-on, all-off, mixed, selected-subset mixed, no-selection
   whole-batch mixed, selection changes, and one-tap persistence outcomes.
+
+### P3 — BUG-RESULT-01 — Make Result reverse ordering atomic and independent of primary keys
+
+**State:** Open
+
+**Failure path:** the production playlist-selection sheet exposes a Reverse action
+that calls `ResultViewModel.reverseResults(resultItemIDs)`. The view model takes
+the maximum current Result primary key, assigns each existing Result a future
+primary key above that maximum in reverse order, immediately returns those not-
+yet-committed IDs to the UI, then launches a background coroutine that waits one
+second and calls `ResultRepository.updateID()` once per row. The DAO implements
+that operation as `UPDATE results SET id = :newID WHERE id = :id`; the sequence is
+not wrapped in one Room transaction and no revision or reservation protects the
+future IDs.
+
+A normal concurrent Result insertion can occur after the future IDs are computed
+but before all of those delayed PK rewrites finish. SQLite can allocate one of
+the supposedly reserved future IDs to that new Result, causing a later
+`UPDATE ... SET id = <same value>` to fail on the primary-key uniqueness
+constraint. Process death or coroutine failure after only a prefix of updates
+creates the same persistent partial-reorder state. Meanwhile
+`SelectPlaylistItemsDialog` has already replaced `resultItemIDs` with the full
+future-ID list and treats any mismatch between that list and the observed Result
+rows as loading, suppressing the recycler layout and disabling selection
+controls. No parser or repository layer later reconstructs the intended order or
+rolls back a partially remapped set.
+
+**Why this is a defect:** a UI-only ordering command mutates database identity in
+multiple independent commits and exposes uncommitted IDs as though they were
+already authoritative. A normal insertion race or process interruption can leave
+persistent Result rows only partly reordered and can strand the selection sheet
+waiting for IDs that will never all appear. Result rows are transient compared
+with History, so the impact is limited, but the production action still has a
+real consistency and recoverability failure.
+
+Required result:
+
+- represent Result display/order with a dedicated ordering field or an in-memory
+  ordered ID list rather than rewriting primary keys for presentation;
+- if persistent reordering is required, commit the complete reorder atomically
+  under one transaction using a collision-free mapping and do not publish new
+  identities before commit;
+- keep concurrent Result insertion from colliding with the reorder, or serialize
+  insertion/reorder under the same authoritative ordering contract;
+- on failure, retain the prior committed order and keep the selection UI usable
+  instead of waiting on speculative IDs;
+- add deterministic concurrent-insert, process-death/exception-between-updates,
+  normal reverse, repeated reverse, and selection-after-reverse regressions.
 
 ## Current status
 
