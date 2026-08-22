@@ -24,7 +24,6 @@ import com.ireum.ytdl.database.models.DownloadItemSimple
 import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
-import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.util.Extensions.toListString
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
@@ -105,19 +104,27 @@ class DownloadRepository(private val database: DBManager) {
         val affectedOperationIds: Set<String> = emptySet()
     )
 
+    data class DownloadUndoToken(val value: String)
+
+    data class DownloadUndoHandle(
+        val token: DownloadUndoToken,
+        val item: DownloadItem,
+        val affectedOperationIds: Set<String> = emptySet(),
+    )
+
     data class DownloadRemovalSnapshot(
         val download: DownloadItem,
-        val barrier: HistoryReplacementBarrier,
+        val barrier: HistoryReplacementBarrier? = null,
         val linkedItem: LowQualityRedownloadItem? = null,
-        val linkedOperation: LowQualityRedownloadOperation? = null,
     )
 
     private data class DownloadRemovalResult(
+        val download: DownloadItem,
         val affectedOperationIds: Set<String>,
         val snapshot: DownloadRemovalSnapshot?,
     )
 
-    private val pendingRemovalSnapshots = ConcurrentHashMap<Long, DownloadRemovalSnapshot>()
+    private val pendingRemovalSnapshots = ConcurrentHashMap<String, DownloadRemovalSnapshot>()
 
     data class PendingCancellationResolution(
         val restoredStatus: Status? = null,
@@ -130,7 +137,6 @@ class DownloadRepository(private val database: DBManager) {
     )
 
     suspend fun insert(item: DownloadItem) : Long {
-        restorePendingRemoval(item.id)?.let { return it }
         return downloadDao.insert(item)
     }
 
@@ -158,36 +164,61 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun deleteAll(): Set<String> =
         deleteKnownUserRemoval(downloadDao.getAllDownloadsList())
 
-    suspend fun delete(id: Long): Set<String> {
-        val item = downloadDao.getNullableDownloadById(id) ?: return emptySet()
-        val result = database.withTransaction {
-            val barrier = database.historyReplacementBarrierDao.getByDownloadId(id)
-            val linkedItem = database.lowQualityRedownloadDao.getItemByDownloadId(id)
-            val linkedOperation = linkedItem?.let {
-                database.lowQualityRedownloadDao.getOperation(it.operationId)
-            }
-            val snapshot = barrier?.let {
-                DownloadRemovalSnapshot(
-                    download = item,
-                    barrier = it,
-                    linkedItem = linkedItem,
-                    linkedOperation = linkedOperation,
-                )
-            }
-            val affectedOperationIds = terminalizeLinkedChildren(
-                downloadIds = listOf(id),
-                reason = REASON_USER_REMOVED,
-                now = System.currentTimeMillis(),
-            )
-            database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
-            downloadDao.delete(id)
-            DownloadRemovalResult(affectedOperationIds, snapshot)
-        }
-        result.snapshot?.let { snapshot ->
-            pendingRemovalSnapshots[snapshot.download.id] = snapshot
-        }
-        deleteCache(listOf(item))
+    suspend fun delete(id: Long): Set<String> = removeDownload(id)
+
+    /**
+     * Deletes a Download and returns only after the matching Undo snapshot has
+     * been registered.  UI Undo actions must retain this token instead of
+     * replaying an old DownloadItem by numeric id.
+     */
+    suspend fun deleteForUndo(id: Long): DownloadUndoHandle? {
+        val result = removeDownloadWithSnapshot(id) ?: return null
+        val snapshot = result.snapshot ?: return null
+        val token = DownloadUndoToken(UUID.randomUUID().toString())
+        pendingRemovalSnapshots[token.value] = snapshot
+        return DownloadUndoHandle(
+            token = token,
+            item = snapshot.download,
+            affectedOperationIds = result.affectedOperationIds,
+        )
+    }
+
+    private suspend fun removeDownload(id: Long): Set<String> {
+        val result = removeDownloadTransaction(id, captureUndo = false) ?: return emptySet()
+        deleteCache(listOf(result.download))
         return result.affectedOperationIds
+    }
+
+    private suspend fun removeDownloadWithSnapshot(id: Long): DownloadRemovalResult? {
+        val result = removeDownloadTransaction(id, captureUndo = true) ?: return null
+        deleteCache(listOf(result.download))
+        return result
+    }
+
+    private suspend fun removeDownloadTransaction(
+        id: Long,
+        captureUndo: Boolean,
+    ): DownloadRemovalResult? = database.withTransaction {
+        val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction null
+        val barrier = database.historyReplacementBarrierDao.getByDownloadId(id)
+        val linkedItem = database.lowQualityRedownloadDao.getItemByDownloadId(id)
+        val snapshot = if (captureUndo) {
+            DownloadRemovalSnapshot(
+                download = item,
+                barrier = barrier,
+                linkedItem = linkedItem,
+            )
+        } else {
+            null
+        }
+        val affectedOperationIds = terminalizeLinkedChildren(
+            downloadIds = listOf(id),
+            reason = REASON_USER_REMOVED,
+            now = System.currentTimeMillis(),
+        )
+        database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
+        downloadDao.delete(id)
+        DownloadRemovalResult(item, affectedOperationIds, snapshot)
     }
 
     private fun deleteCache(items: List<DownloadItem>) {
@@ -198,41 +229,23 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun update(item: DownloadItem) : Long {
-        restorePendingRemoval(item.id)?.let { return it }
         return if (item.id <= 0L) downloadDao.insert(item) else downloadDao.update(item)
     }
 
     suspend fun updateAll(list: List<DownloadItem>) : List<DownloadItem> {
-        val restoredIds = mutableMapOf<Long, Long>()
-        val remaining = mutableListOf<DownloadItem>()
-        list.forEach { item ->
-            val restoredId = restorePendingRemoval(item.id)
-            if (restoredId == null) {
-                remaining += item
-            } else {
-                restoredIds[item.id] = restoredId
-            }
-        }
-        val updated = downloadDao.updateAll(remaining)
-        val updatedById = updated.associateBy { it.id }
-        return list.map { item ->
-            restoredIds[item.id]?.let { restoredId ->
-                item.copy(id = restoredId)
-            } ?: updatedById[item.id] ?: item
-        }
+        return downloadDao.updateAll(list)
     }
 
     suspend fun updateWithoutUpsert(item: DownloadItem){
         kotlin.runCatching { downloadDao.updateWithoutUpsert(item) }
     }
 
-    private suspend fun restorePendingRemoval(downloadId: Long): Long? {
-        if (downloadId <= 0L) return null
-        val snapshot = pendingRemovalSnapshots.remove(downloadId) ?: return null
+    suspend fun restoreUndo(token: DownloadUndoToken): Long? {
+        val snapshot = pendingRemovalSnapshots.remove(token.value) ?: return null
         return try {
             restoreRemovalSnapshot(snapshot)
         } catch (error: Exception) {
-            pendingRemovalSnapshots[downloadId] = snapshot
+            pendingRemovalSnapshots[token.value] = snapshot
             throw error
         }
     }
@@ -240,18 +253,22 @@ class DownloadRepository(private val database: DBManager) {
     private suspend fun restoreRemovalSnapshot(
         snapshot: DownloadRemovalSnapshot,
     ): Long = database.withTransaction {
+        if (snapshot.barrier == null) {
+            val existing = downloadDao.getNullableDownloadById(snapshot.download.id)
+            return@withTransaction downloadDao.insert(
+                if (existing == null) {
+                    snapshot.download.copy(executionId = "")
+                } else {
+                    snapshot.download.copy(id = 0L, executionId = "")
+                }
+            )
+        }
+
         val restoredItem = snapshot.download.copy(
             id = 0L,
-            status = if (
-                snapshot.download.status in setOf(
-                    Status.Active.name,
-                    Status.PostProcessing.name,
-                )
-            ) {
-                Status.Queued.name
-            } else {
-                snapshot.download.status
-            },
+            status = Status.Error.name,
+            lastIssueCode = snapshot.barrier.issueCode,
+            lastIssueStage = snapshot.barrier.issueStage,
             executionId = "",
         )
         val restoredId = downloadDao.insert(restoredItem)
@@ -262,21 +279,9 @@ class DownloadRepository(private val database: DBManager) {
         ) {
             "History replacement refusal was not restored for download $restoredId"
         }
-
-        snapshot.linkedOperation?.let { operation ->
-            database.lowQualityRedownloadDao.upsertOperation(operation)
-        }
-        snapshot.linkedItem?.let { item ->
-            database.lowQualityRedownloadDao.upsertItem(
-                item.copy(
-                    downloadId = if (item.downloadId == snapshot.download.id) {
-                        restoredId
-                    } else {
-                        item.downloadId
-                    }
-                )
-            )
-        }
+        // Deletion already terminalized the linked child.  Do not replay the
+        // stale child/parent snapshots: sibling progress, cancellation, and a
+        // terminal parent may have changed while Undo was available.
         restoredId
     }
 

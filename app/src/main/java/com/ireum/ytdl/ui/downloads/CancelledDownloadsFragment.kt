@@ -397,13 +397,15 @@ class CancelledDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClic
                 when (direction) {
                     ItemTouchHelper.LEFT -> {
                         lifecycleScope.launch {
-                            val deletedItem = withContext(Dispatchers.IO){
-                                runCatching { downloadViewModel.getItemByID(itemID) }.getOrNull()
+                            val undoHandle = withContext(Dispatchers.IO) {
+                                downloadViewModel.deleteDownloadForUndo(itemID)
                             } ?: return@launch
-                            downloadViewModel.deleteDownload(deletedItem.id)
+                            val deletedItem = undoHandle.item
                             Snackbar.make(cancelledRecyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title.ifEmpty { deletedItem.url }, Snackbar.LENGTH_INDEFINITE)
                                 .setAction(getString(R.string.undo)) {
-                                    downloadViewModel.insert(deletedItem)
+                                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                                        downloadViewModel.restoreDownloadUndo(undoHandle)
+                                    }
                                 }.show()
                         }
                     }

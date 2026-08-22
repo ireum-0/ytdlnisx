@@ -298,14 +298,17 @@ class HistoryReplacementBarrierPersistenceTest {
         )
         val barrier = db.historyReplacementBarrierDao.getByDownloadId(item.id)!!
 
-        repository.delete(item.id)
+        val undoHandle = repository.deleteForUndo(item.id)!!
         assertEquals(null, db.downloadDao.getNullableDownloadById(item.id))
         assertEquals(null, db.historyReplacementBarrierDao.getByDownloadId(item.id))
 
-        val restoredId = repository.insert(item)
+        assertEquals(null, repository.restoreUndo(DownloadRepository.DownloadUndoToken("not-ready")))
+        val restoredId = repository.restoreUndo(undoHandle.token)!!
+        assertTrue(restoredId != item.id)
         val restoredBarrier = db.historyReplacementBarrierDao.getByDownloadId(restoredId)
         assertEquals(barrier.issueCode, restoredBarrier?.issueCode)
         assertEquals(barrier.issueStage, restoredBarrier?.issueStage)
+        assertEquals(DownloadRepository.Status.Error.name, db.downloadDao.getDownloadById(restoredId).status)
         assertEquals(
             HistoryReplacementAuthorization.SourceMismatch,
             repository().authorizeHistoryReplacement(

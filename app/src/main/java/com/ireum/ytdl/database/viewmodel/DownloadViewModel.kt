@@ -239,6 +239,19 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         notificationUtil.cancelMembershipWaitingNotification(id)
     }
 
+    suspend fun deleteDownloadForUndo(id: Long): DownloadRepository.DownloadUndoHandle? =
+        withContext(Dispatchers.IO) {
+            val handle = repository.deleteForUndo(id) ?: return@withContext null
+            LowQualityRedownloadLedger.refresh(application, handle.affectedOperationIds)
+            notificationUtil.cancelMembershipWaitingNotification(id)
+            handle
+        }
+
+    suspend fun restoreDownloadUndo(handle: DownloadRepository.DownloadUndoHandle): Long? =
+        withContext(Dispatchers.IO) {
+            repository.restoreUndo(handle.token)
+        }
+
     suspend fun updateDownload(item: DownloadItem){
         if (item.status == DownloadRepository.Status.Cancelled.name) {
             val affected = repository.cancelByUser(item.id).toMutableSet()
