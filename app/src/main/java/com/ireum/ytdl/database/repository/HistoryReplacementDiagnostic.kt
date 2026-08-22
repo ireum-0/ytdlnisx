@@ -108,4 +108,17 @@ object HistoryReplacementDiagnostic {
         details = "History target was deleted before replacement persistence",
         source = DownloadIssueSource.EXPLICIT_STATE,
     )
+
+    fun qualityAuthorityLostIssue(): DownloadIssue = DownloadIssue.create(
+        stage = DownloadIssueStage.HISTORY,
+        code = DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
+        severity = DownloadIssueSeverity.ERROR,
+        retryable = false,
+        suggestedActions = setOf(
+            DownloadSuggestedAction.VIEW_LOG,
+            DownloadSuggestedAction.COPY_SUMMARY,
+        ),
+        details = "Low-quality History replacement authority is missing, terminal, or incoherent",
+        source = DownloadIssueSource.EXPLICIT_STATE,
+    )
 }

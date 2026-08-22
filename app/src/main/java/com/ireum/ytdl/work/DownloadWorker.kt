@@ -760,6 +760,16 @@ class DownloadWorker(
                                 )
                         }
                     }
+                    fun establishQualityAuthorityLoss(): DownloadIssue {
+                        val issue = HistoryReplacementDiagnostic.qualityAuthorityLostIssue()
+                        historyReplacementTerminalAction =
+                            HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                                historyReplacementTerminalAction,
+                                HistoryReplacementTerminalAction.PRESERVE_FAILED,
+                            )
+                        establishHistoryReplacementFailure(issue)
+                        return issue
+                    }
                     suspend fun refreshDurableHistoryReplacementBarrier() {
                         val barrier = withContext(Dispatchers.IO + NonCancellable) {
                             dbManager.historyReplacementBarrierDao.getByDownloadId(downloadItem.id)
@@ -1737,6 +1747,14 @@ class DownloadWorker(
                             ) {
                                 adoptHistoryReplacementAuthorization(historyError.authorization)
                                 historyError.issue
+                            } else if (
+                                historyError is HistoryReplacementQualityAuthorityLostException
+                            ) {
+                                if (historyError.cancellationOrigin) {
+                                    downloadOutcome = DownloadOutcome.canceled()
+                                    return@launch
+                                }
+                                establishQualityAuthorityLoss()
                             } else {
                                 historyReplacementAuthoritativeIssue ?: DownloadIssue.create(
                                     stage = DownloadIssueStage.HISTORY,
@@ -1923,7 +1941,8 @@ class DownloadWorker(
                         }
                         if (
                             it is HistoryReplacementAuthorizationRefusalException ||
-                            it is HistoryReplacementRefusalPersistenceException
+                            it is HistoryReplacementRefusalPersistenceException ||
+                            it is HistoryReplacementQualityAuthorityLostException
                         ) {
                             // Preserve the typed History decision for the outer
                             // terminal state machine; do not classify it as the
@@ -2349,6 +2368,13 @@ class DownloadWorker(
                                 adoptHistoryReplacementAuthorization(unexpected.authorization)
                             is HistoryReplacementRefusalPersistenceException ->
                                 adoptHistoryReplacementAuthorization(unexpected.authorization)
+                            is HistoryReplacementQualityAuthorityLostException -> {
+                                if (unexpected.cancellationOrigin) {
+                                    downloadOutcome = DownloadOutcome.canceled()
+                                    return@launch
+                                }
+                                establishQualityAuthorityLoss()
+                            }
                             else -> Unit
                         }
                         refreshDurableHistoryReplacementBarrier()
@@ -3494,7 +3520,46 @@ class DownloadWorker(
             command.contains("visitor_data=")
     }
 
-    private fun resetYtdlpTempDirectory(
+    private suspend fun <T> withOwnedExecutionSideEffect(
+        downloadItem: DownloadItem,
+        sideEffect: () -> T,
+    ): T = withDownloadWorkerExecutionLock {
+        val current = DBManager.getInstance(context).downloadDao
+            .getNullableDownloadById(downloadItem.id)
+        if (
+            current == null ||
+                current.executionId != downloadItem.executionId ||
+                current.status !in setOf(
+                    DownloadRepository.Status.Active.name,
+                    DownloadRepository.Status.PostProcessing.name,
+                ) ||
+                !DownloadWorkerExecutionOwners.isOwnedBy(
+                    downloadItem.id,
+                    downloadItem.executionId,
+                )
+        ) {
+            throw DownloadExecutionOwnershipLostException(
+                downloadId = downloadItem.id,
+                expectedExecutionId = downloadItem.executionId,
+                actualExecutionId = current?.executionId,
+            )
+        }
+        sideEffect()
+    }
+
+    private suspend fun resetYtdlpTempDirectory(
+        downloadItem: DownloadItem,
+        rawTempDirectory: File,
+        beforeRetry: Boolean,
+    ): File = withOwnedExecutionSideEffect(downloadItem) {
+        resetYtdlpTempDirectoryUnsafe(
+            rawTempDirectory = rawTempDirectory,
+            downloadId = downloadItem.id,
+            beforeRetry = beforeRetry,
+        )
+    }
+
+    private fun resetYtdlpTempDirectoryUnsafe(
         rawTempDirectory: File,
         downloadId: Long,
         beforeRetry: Boolean,
@@ -3591,6 +3656,22 @@ class DownloadWorker(
             val processId = downloadId.toString()
             YoutubeDL.getInstance().destroyProcessById(processId)
             YoutubeDLCompat.destroyProcessById(processId)
+        }
+
+        /**
+         * Called only while downloadWorkerMutex is held and the caller has
+         * re-read the matching execution row.  A process owner for a different
+         * execution is never addressed by numeric Download ID.
+         */
+        internal fun cancelProcessesForExecution(
+            downloadId: Long,
+            expectedExecutionId: String,
+        ) {
+            if (expectedExecutionId.isBlank()) return
+            val processOwner = DownloadWorkerProcessOwners.ownerOf(downloadId)
+            if (processOwner != null && processOwner != expectedExecutionId) return
+            cancelYtdlpProcess(downloadId)
+            cancelPostProcessingById(downloadId)
         }
 
         fun cancelPostProcessingById(downloadId: Long) {

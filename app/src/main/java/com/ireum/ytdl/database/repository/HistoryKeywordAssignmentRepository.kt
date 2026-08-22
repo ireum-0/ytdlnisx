@@ -48,6 +48,7 @@ class HistoryReplacementExecutionOwnershipLostException(
 
 class HistoryReplacementQualityAuthorityLostException(
     val downloadId: Long,
+    val cancellationOrigin: Boolean = false,
 ) : IllegalStateException(
     "Low-quality History replacement authority is missing or terminal for download $downloadId"
 )
@@ -545,6 +546,8 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 val operation = ledgerItem?.let {
                     db.lowQualityRedownloadDao.getOperation(it.operationId)
                 }
+                val cancellationOrigin = operation?.cancelRequested == true ||
+                    ledgerItem?.stateValue == com.ireum.ytdl.database.models.LowQualityRedownloadItemState.CANCELLATION_REQUESTED
                 if (
                     !LowQualityReplacementAuthority.isCoherent(
                         marker = marker,
@@ -555,7 +558,10 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                         expectedType = expectedType,
                     )
                 ) {
-                    throw HistoryReplacementQualityAuthorityLostException(replacementDownloadId)
+                    throw HistoryReplacementQualityAuthorityLostException(
+                        downloadId = replacementDownloadId,
+                        cancellationOrigin = cancellationOrigin,
+                    )
                 }
             }
         }

@@ -344,13 +344,23 @@ class HistoryReplacementBarrierPersistenceTest {
             )
         )
         assertEquals(
-            1,
+            0,
             db.downloadDao.claimDownloadForWorker(
                 id = missingItem.id,
                 expectedOperationId = missingDownloadOperationId,
                 expectedRetryAttempt = missingItem.retryAttempt,
                 executionId = "quality-missing-worker",
             ),
+        )
+        // Bypass runnable admission only to exercise the destructive-boundary
+        // defense-in-depth check below.
+        db.downloadDao.update(
+            missingItem.copy(
+                playlistURL = HistoryRedownloadMarker.quality(missingHistoryId, 720),
+                operationId = missingDownloadOperationId,
+                status = DownloadRepository.Status.Active.name,
+                executionId = "quality-missing-worker",
+            )
         )
         var missingRejected = false
         try {
