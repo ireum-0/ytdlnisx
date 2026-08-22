@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **68 active correctness defects** in this checkpoint. The previous
+There are **69 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 68-defect registry is intentionally retained here. The separate
+The broader 69-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 68-defect count unless they are explicitly promoted
+below do **not** change the 69-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-68-defect registry below.
+69-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 68 active defects
+### F1 remediation-discovered follow-up not counted in the 69 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2949,9 +2949,9 @@ DAO sink is `DELETE FROM results`. There is no Result-session ID, generation, or
 expected-owner predicate. At the same time, the normal `HomeFragment` uses its
 own `ResultViewModel` and directly observes the same Room Result table as the
 current search/playlist result set, updating the visible list and selection
-controls from those rows. Because `ShareActivity` is `singleInstance` rather
-than a replacement for the Main activity's Result owner, an external share can
-run while an existing Home result session still exists. The global delete can
+controls from those rows. Because `ShareActivity` is `singleInstance` rather than
+a replacement for the Main activity's Result owner, an external share can run
+while an existing Home result session still exists. The global delete can
 therefore erase that unrelated session simply because the shared URL was new.
 
 The ordering is additionally non-authoritative because `deleteAll()` is declared
@@ -3038,6 +3038,55 @@ Required result:
   failure, clipboard failure, pre-existing-stale-clipboard, normal existing-file,
   and empty-cookie export regressions proving success cannot precede or outlive
   the requested clipboard content.
+
+### P3 — BUG-CACHE-03 — Do not report failed legacy cache migration as success
+
+**State:** Open
+
+**Failure path:** the production Folder settings screen exposes the cache-move
+action and directly enqueues `MoveCacheFilesWorker`. The app still supports
+Android API 24 and 25 (`minSdk 24`). For each non-directory cache entry the
+worker uses `Files.move(..., REPLACE_EXISTING)` only on API 26 and newer; on API
+24–25 it instead calls `File.renameTo(destFile)` and discards the returned
+Boolean. `renameTo()` reports ordinary filesystem move failure by returning
+`false`, including when the public Downloads destination cannot be created or is
+not writable. That state is production-reachable on the supported legacy path:
+external-storage permission can be denied/revoked, and `BaseActivity`'s denial
+flow does not make successful broad-storage authorization a prerequisite for
+opening Folder settings or enqueueing the cache-move worker.
+
+When `renameTo()` returns false, the source file remains in the cache and the
+worker neither records nor propagates that failure. It continues walking the
+remaining entries, posts the normal OK Toast, and returns `Result.success()`.
+If some renames succeed before another returns false, the same path reports a
+fully successful migration after only a subset of the cache was moved. There is
+no later re-scan that proves the intended source set is absent or that the
+corresponding destination files exist before the success result becomes
+authoritative.
+
+**Why this is a defect:** a user-requested cache recovery/migration can be
+reported as completed even though one or all requested files remain unmoved.
+The failure is limited to API 24–25 and does not itself delete the failed source
+file, so it is P3, but it is a real production result-integrity defect rather
+than defensive hardening. It is distinct from `BUG-CACHE-01`, which concerns
+moving files owned by live downloads, and `BUG-CACHE-02`, which concerns losing
+SAF authority for the configured live cache root.
+
+Required result:
+
+- treat the API 24–25 `renameTo()` Boolean as the authoritative per-file move
+  result and never count a false return as completed migration;
+- validate/create the destination under the actual storage authority before
+  moving and surface an explicit permission/storage failure when it is not
+  writable;
+- return WorkManager success and show the success Toast only after every eligible
+  file has been verified at its destination, or expose a deliberate partial
+  result that identifies retained source files and remains recoverable;
+- preserve every source whose move failed and avoid cleanup/state changes that
+  would make a later retry ambiguous;
+- add API 24/25 regressions for denied/revoked storage permission, destination
+  creation failure, `renameTo(false)`, first-file-success/second-file-failure,
+  all-success, and API 26+ throwing `Files.move` as a non-regression control.
 
 ## Current status
 
