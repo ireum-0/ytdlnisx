@@ -415,6 +415,10 @@ object Migrations {
             database.execSQL(
                 "ALTER TABLE downloads ADD COLUMN executionId TEXT NOT NULL DEFAULT ''"
             )
+            // v56 mismatch rows retain lastIssueCode/lastIssueStage as the
+            // fail-closed carrier.  v56 has no trustworthy replacement source
+            // snapshot, so inventing history_replacement_barriers rows here
+            // would create false destructive authority.
             database.execSQL(
                 "CREATE TABLE IF NOT EXISTS `history_replacement_barriers` (" +
                     "`downloadId` INTEGER NOT NULL, " +
@@ -426,6 +430,16 @@ object Migrations {
                     "`issueStage` TEXT NOT NULL, " +
                     "`createdAt` INTEGER NOT NULL, " +
                     "PRIMARY KEY(`downloadId`))"
+            )
+        },
+        Migration(57, 58) { database ->
+            database.execSQL(
+                "ALTER TABLE low_quality_redownload_items " +
+                    "ADD COLUMN intendedSourceUrl TEXT NOT NULL DEFAULT ''"
+            )
+            database.execSQL(
+                "ALTER TABLE low_quality_redownload_items " +
+                    "ADD COLUMN intendedType TEXT NOT NULL DEFAULT ''"
             )
         }
     )

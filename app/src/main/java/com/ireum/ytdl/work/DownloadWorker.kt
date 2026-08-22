@@ -343,10 +343,12 @@ class DownloadWorker(
                 if (affected == 0) {
                     val current = dao.getNullableDownloadById(item.id)
                     check(
-                        current?.status !in setOf(
-                            DownloadRepository.Status.Active.name,
-                            DownloadRepository.Status.PostProcessing.name,
-                        ) || current.executionId != item.executionId
+                        current?.let {
+                            it.status !in setOf(
+                                DownloadRepository.Status.Active.name,
+                                DownloadRepository.Status.PostProcessing.name,
+                            ) || it.executionId != item.executionId
+                        } ?: true
                     ) {
                         "Durable History mismatch row remained running after startup recovery ${item.id}"
                     }
@@ -373,22 +375,24 @@ class DownloadWorker(
             )
             null
         }
-        updatedItem?.apply {
-            val current = dao.getNullableDownloadById(this.id)
+        updatedItem?.let { enrichedItem ->
+            val current = dao.getNullableDownloadById(enrichedItem.id)
             if (
-                current?.status == DownloadRepository.Status.Active &&
-                current.executionId == downloadItem.executionId
+                current?.let {
+                    it.status == DownloadRepository.Status.Active.name &&
+                        it.executionId == downloadItem.executionId
+                } == true
             ) {
-                executionId = current.executionId
-                lastIssueCode = current.lastIssueCode
-                lastIssueStage = current.lastIssueStage
+                enrichedItem.executionId = current.executionId
+                enrichedItem.lastIssueCode = current.lastIssueCode
+                enrichedItem.lastIssueStage = current.lastIssueStage
                 DBManager.getInstance(context).historyReplacementBarrierDao
-                    .getByDownloadId(this.id)
+                    .getByDownloadId(enrichedItem.id)
                     ?.let { barrier ->
-                        lastIssueCode = barrier.issueCode
-                        lastIssueStage = barrier.issueStage
+                        enrichedItem.lastIssueCode = barrier.issueCode
+                        enrichedItem.lastIssueStage = barrier.issueStage
                     }
-                dao.updateIfExecutionOwned(this, current.executionId)
+                dao.updateIfExecutionOwned(enrichedItem, current.executionId)
             }
         }
     }
@@ -622,6 +626,8 @@ class DownloadWorker(
                         durableReplacementBarrier
                             ?.let { HistoryReplacementDiagnostic.persistedMismatchIssue(it.issueCode) }
                             ?: HistoryReplacementDiagnostic.persistedMismatchIssue(downloadItem.lastIssueCode)
+                    var historyReplacementAuthoritativeIssue: DownloadIssue? =
+                        historyReplacementFailureIssue
                     historyReplacementFailureIssue?.let { issue ->
                         workerAuthoritativeIssues[downloadItem.id] = issue
                     }
@@ -631,7 +637,46 @@ class DownloadWorker(
                         }
                     fun establishHistoryReplacementFailure(issue: DownloadIssue) {
                         historyReplacementFailureIssue = issue
+                        historyReplacementAuthoritativeIssue = issue
                         workerAuthoritativeIssues[downloadItem.id] = issue
+                    }
+                    fun establishHistoryTargetDeleted() {
+                        if (historyReplacementFailureIssue == null) {
+                            val issue = HistoryReplacementDiagnostic.targetDeletedIssue()
+                            historyReplacementAuthoritativeIssue = issue
+                            workerAuthoritativeIssues[downloadItem.id] = issue
+                        }
+                        historyReplacementTerminalAction =
+                            HistoryReplacementOutcomePolicy.mergeTerminalAction(
+                                historyReplacementTerminalAction,
+                                HistoryReplacementTerminalAction.TARGET_DELETED
+                            )
+                    }
+                    fun adoptHistoryReplacementAuthorization(
+                        authorization: HistoryReplacementAuthorization,
+                    ) {
+                        when (authorization) {
+                            is HistoryReplacementAuthorization.Authorized -> Unit
+                            HistoryReplacementAuthorization.TargetMissing ->
+                                establishHistoryTargetDeleted()
+                            HistoryReplacementAuthorization.SourceMismatch ->
+                                establishHistoryReplacementFailure(
+                                    HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
+                                )
+                            HistoryReplacementAuthorization.TypeMismatch ->
+                                establishHistoryReplacementFailure(
+                                    HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.TYPE)
+                                )
+                        }
+                    }
+                    suspend fun refreshDurableHistoryReplacementBarrier() {
+                        val barrier = withContext(Dispatchers.IO + NonCancellable) {
+                            dbManager.historyReplacementBarrierDao.getByDownloadId(downloadItem.id)
+                        }
+                        barrier?.let {
+                            HistoryReplacementDiagnostic.persistedMismatchIssue(it.issueCode)
+                                ?.let(::establishHistoryReplacementFailure)
+                        }
                     }
                     var downloadOutcome: DownloadOutcome? = null
                     fun recordCreatedOutputs(paths: List<String>) {
@@ -1491,8 +1536,10 @@ class DownloadWorker(
                                                 (replacement as HistoryReplacementOutcome.Updated)
                                                     .previousTarget.id
                                             HistoryReplacementTerminalAction.TARGET_DELETED -> {
-                                                completionIssues +=
+                                                val targetDeletedIssue =
                                                     HistoryReplacementDiagnostic.targetDeletedIssue()
+                                                establishHistoryTargetDeleted()
+                                                completionIssues += targetDeletedIssue
                                                 null
                                             }
                                             HistoryReplacementTerminalAction.PRESERVE_FAILED -> {
@@ -1553,8 +1600,14 @@ class DownloadWorker(
                                 HistoryReplacementDiagnostic.issue(historyError.mismatch).also { issue ->
                                     establishHistoryReplacementFailure(issue)
                                 }
+                            } else if (
+                                historyError is HistoryReplacementAuthorizationRefusalException
+                            ) {
+                                adoptHistoryReplacementAuthorization(historyError.authorization)
+                                historyReplacementAuthoritativeIssue
+                                    ?: error("History replacement refusal did not establish an issue")
                             } else {
-                                DownloadIssue.create(
+                                historyReplacementAuthoritativeIssue ?: DownloadIssue.create(
                                     stage = DownloadIssueStage.HISTORY,
                                     code = DownloadIssueCode.HISTORY_WRITE_FAILED,
                                     severity = DownloadIssueSeverity.WARNING,
@@ -1591,7 +1644,7 @@ class DownloadWorker(
                             )
                             val unrecoverableMismatch =
                                 unrecoverableHistoryReplacementPersistenceFailure(
-                                    historyReplacementFailureIssue,
+                                    historyReplacementAuthoritativeIssue,
                                     persistenceResult,
                                 )
                             if (unrecoverableMismatch != null) {
@@ -1800,8 +1853,9 @@ class DownloadWorker(
                                     is HistoryReplacementAuthorization.Authorized ->
                                         if (cleanupResult.cleanupCompleted) {
                                             createdOutputPaths = emptyList()
-                                        }
+                                    }
                                     HistoryReplacementAuthorization.TargetMissing -> {
+                                        establishHistoryTargetDeleted()
                                         primaryIssue = HistoryReplacementDiagnostic.targetDeletedIssue()
                                     }
                                     HistoryReplacementAuthorization.SourceMismatch,
@@ -2111,6 +2165,11 @@ class DownloadWorker(
                     }
                     } catch (unexpected: Exception) {
                         if (unexpected is CancellationException) throw unexpected
+                        (unexpected as? HistoryReplacementAuthorizationRefusalException)
+                            ?.let { refusal ->
+                                adoptHistoryReplacementAuthorization(refusal.authorization)
+                            }
+                        refreshDurableHistoryReplacementBarrier()
                         val fallbackIssue = DownloadIssue.create(
                             stage = currentIssueStage,
                             code = DownloadIssueCode.UNKNOWN,
@@ -2118,7 +2177,7 @@ class DownloadWorker(
                             source = DownloadIssueSource.TYPED_EXCEPTION
                         )
                         val issue = authoritativeDownloadIssue(
-                            establishedHistoryIssue = historyReplacementFailureIssue,
+                            establishedHistoryIssue = historyReplacementAuthoritativeIssue,
                             fallbackIssue = fallbackIssue,
                         )
                         downloadOutcome = DownloadOutcome.failed(issue)
@@ -2245,7 +2304,7 @@ class DownloadWorker(
                                 )
                             }
                             unrecoverableHistoryReplacementPersistenceFailure(
-                                establishedHistoryIssue = historyReplacementFailureIssue,
+                                establishedHistoryIssue = historyReplacementAuthoritativeIssue,
                                 result = recoveryResult,
                             )?.let { unrecoverableMismatch ->
                                 throw unrecoverableMismatch
@@ -2366,6 +2425,21 @@ class DownloadWorker(
     private class HistoryReplacementNotAuthorizedException(
         val mismatch: HistoryReplacementMismatchKind
     ) : IOException(HistoryReplacementDiagnostic.details(mismatch))
+
+    private class HistoryReplacementAuthorizationRefusalException(
+        val authorization: HistoryReplacementAuthorization
+    ) : IOException(
+        when (authorization) {
+            HistoryReplacementAuthorization.TargetMissing ->
+                HistoryReplacementDiagnostic.targetDeletedIssue().redactedDetails
+            HistoryReplacementAuthorization.SourceMismatch ->
+                HistoryReplacementDiagnostic.details(HistoryReplacementMismatchKind.SOURCE)
+            HistoryReplacementAuthorization.TypeMismatch ->
+                HistoryReplacementDiagnostic.details(HistoryReplacementMismatchKind.TYPE)
+            is HistoryReplacementAuthorization.Authorized ->
+                "History replacement authorization unexpectedly succeeded"
+        }
+    )
 
     private sealed interface CompletedYtdlpQualityOutcome {
         data class Accept(val result: YtdlpAttemptsResult) : CompletedYtdlpQualityOutcome
@@ -4993,7 +5067,10 @@ class DownloadWorker(
         ) {
             is HistoryReplacementAuthorization.Authorized ->
                 authorization.target
-            else -> return emptyList()
+            HistoryReplacementAuthorization.TargetMissing,
+            HistoryReplacementAuthorization.SourceMismatch,
+            HistoryReplacementAuthorization.TypeMismatch ->
+                throw HistoryReplacementAuthorizationRefusalException(authorization)
         }
         return previous.downloadPath
             .asSequence()

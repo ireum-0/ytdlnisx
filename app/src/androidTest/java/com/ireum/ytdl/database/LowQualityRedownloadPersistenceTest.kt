@@ -8,6 +8,7 @@ import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
+import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
@@ -710,6 +711,8 @@ class LowQualityRedownloadPersistenceTest {
             LowQualityRedownloadItem(
                 operationId = operation.operationId,
                 historyId = 84,
+                intendedSourceUrl = "https://example.com/84",
+                intendedType = DownloadType.video.name,
                 selected = true,
                 itemState = LowQualityRedownloadItemState.PENDING.name
             )
@@ -749,6 +752,136 @@ class LowQualityRedownloadPersistenceTest {
                 operation.operationId,
                 LowQualityRedownloadPhase.PREPARING,
                 LowQualityRedownloadPhase.QUEUEING
+            )
+        )
+    }
+
+    @Test
+    fun selectedSourceIdentityCannotRebindAfterHistoryMutation() = runBlocking {
+        val historyId = 201L
+        val originalUrl = "https://youtu.be/dQw4w9WgXcQ"
+        insertHistory(historyId, originalUrl, DownloadType.video)
+        val operation = repository.createOrReconnect(now = 100)
+        database.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = operation.operationId,
+                historyId = historyId,
+                intendedSourceUrl = originalUrl,
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.CHECKING.name
+            )
+        )
+
+        val reconstructed = LowQualityRedownloadRepository(database)
+        val persistedIdentity = reconstructed.getItems(operation.operationId).single()
+        assertEquals(originalUrl, persistedIdentity.intendedSourceUrl)
+        assertEquals(DownloadType.video.name, persistedIdentity.intendedType)
+
+        database.historyDao.updateRaw(
+            database.historyDao.getItem(historyId).copy(
+                url = "https://youtu.be/9bZkp7q19f0"
+            )
+        )
+
+        assertNull(
+            reconstructed.linkDownloadAtomically(
+                operation.operationId,
+                historyId,
+                download(historyId).copy(url = "https://youtu.be/9bZkp7q19f0")
+            )
+        )
+        val item = reconstructed.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.SKIPPED, item.stateValue)
+        assertEquals("SELECTION_SOURCE_CHANGED", item.reasonCode)
+        assertEquals(0, database.downloadDao.getQueuedDownloadsList().size)
+    }
+
+    @Test
+    fun selectedTypeIdentityCannotRebindAfterHistoryMutation() = runBlocking {
+        val historyId = 202L
+        val sourceUrl = "https://youtu.be/dQw4w9WgXcQ"
+        insertHistory(historyId, sourceUrl, DownloadType.video)
+        val operation = repository.createOrReconnect(now = 100)
+        database.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = operation.operationId,
+                historyId = historyId,
+                intendedSourceUrl = sourceUrl,
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.CHECKING.name
+            )
+        )
+
+        database.historyDao.updateRaw(
+            database.historyDao.getItem(historyId).copy(type = DownloadType.audio)
+        )
+
+        assertNull(
+            repository.linkDownloadAtomically(
+                operation.operationId,
+                historyId,
+                download(historyId).copy(type = DownloadType.audio)
+            )
+        )
+        val item = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.SKIPPED, item.stateValue)
+        assertEquals("SELECTION_TYPE_CHANGED", item.reasonCode)
+        assertEquals(0, database.downloadDao.getQueuedDownloadsList().size)
+    }
+
+    @Test
+    fun unchangedSelectedIdentityStillLinksReplacementNormallyAfterReconstruction() = runBlocking {
+        val historyId = 203L
+        val sourceUrl = "https://youtu.be/dQw4w9WgXcQ"
+        insertHistory(historyId, sourceUrl, DownloadType.video)
+        val operation = repository.createOrReconnect(now = 100)
+        database.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = operation.operationId,
+                historyId = historyId,
+                intendedSourceUrl = sourceUrl,
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.CHECKING.name
+            )
+        )
+
+        val reconstructed = LowQualityRedownloadRepository(database)
+        val linkedId = reconstructed.linkDownloadAtomically(
+            operation.operationId,
+            historyId,
+            download(historyId).copy(url = sourceUrl)
+        )
+
+        assertTrue(linkedId != null)
+        assertEquals(linkedId, reconstructed.getItems(operation.operationId).single().downloadId)
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            reconstructed.getItems(operation.operationId).single().stateValue
+        )
+    }
+
+    private suspend fun insertHistory(
+        id: Long,
+        url: String,
+        type: DownloadType,
+    ) {
+        database.historyDao.insertRaw(
+            HistoryItem(
+                id = id,
+                url = url,
+                title = "Selected history",
+                author = "Creator",
+                duration = "1:00",
+                thumb = "",
+                type = type,
+                time = id,
+                downloadPath = listOf("/downloads/$id.mp4"),
+                website = "YouTube",
+                format = Format(format_id = "1080p"),
+                downloadId = 0L,
             )
         )
     }

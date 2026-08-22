@@ -12,6 +12,7 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
 import com.ireum.ytdl.util.LowQualityRedownloadProgress
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
+import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 
@@ -60,6 +61,15 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
             operation.stateValue.isTerminal ||
             operation.phaseValue != LowQualityRedownloadPhase.AWAITING_SELECTION ||
             dao.countSelected(operationId) == 0
+        ) {
+            return@withTransaction false
+        }
+        // Candidate identity is captured during the scan and must be present
+        // before the user-confirmed operation can enter PREPARING.  Legacy
+        // rows without it remain fail-closed instead of rebinding by ID.
+        if (dao.getSelectedItems(operationId).any {
+                it.intendedSourceUrl.isBlank() || it.intendedType.isBlank()
+            }
         ) {
             return@withTransaction false
         }
@@ -118,6 +128,77 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         current.downloadId?.let { return@withTransaction it }
         check(current.stateValue == LowQualityRedownloadItemState.CHECKING) {
             "Low-quality item is not ready for queue linkage"
+        }
+        if (current.intendedSourceUrl.isNotBlank() || current.intendedType.isNotBlank()) {
+            val history = database.historyDao.getNullableItem(historyId)
+            when {
+                history == null -> {
+                    dao.setItemState(
+                        operationId,
+                        historyId,
+                        LowQualityRedownloadItemState.SKIPPED.name,
+                        "HISTORY_MISSING",
+                        System.currentTimeMillis()
+                    )
+                    return@withTransaction null
+                }
+                current.intendedSourceUrl.isBlank() -> {
+                    dao.setItemState(
+                        operationId,
+                        historyId,
+                        LowQualityRedownloadItemState.FAILED.name,
+                        "SELECTION_IDENTITY_MISSING",
+                        System.currentTimeMillis()
+                    )
+                    return@withTransaction null
+                }
+                current.intendedType.isBlank() -> {
+                    dao.setItemState(
+                        operationId,
+                        historyId,
+                        LowQualityRedownloadItemState.FAILED.name,
+                        "SELECTION_TYPE_MISSING",
+                        System.currentTimeMillis()
+                    )
+                    return@withTransaction null
+                }
+                current.intendedType != history.type.name -> {
+                    dao.setItemState(
+                        operationId,
+                        historyId,
+                        LowQualityRedownloadItemState.SKIPPED.name,
+                        "SELECTION_TYPE_CHANGED",
+                        System.currentTimeMillis()
+                    )
+                    return@withTransaction null
+                }
+                !HistoryReplacementSourceIdentity.matches(
+                    current.intendedSourceUrl,
+                    history.url
+                ) -> {
+                    dao.setItemState(
+                        operationId,
+                        historyId,
+                        LowQualityRedownloadItemState.SKIPPED.name,
+                        "SELECTION_SOURCE_CHANGED",
+                        System.currentTimeMillis()
+                    )
+                    return@withTransaction null
+                }
+                !HistoryReplacementSourceIdentity.matches(
+                    current.intendedSourceUrl,
+                    downloadItem.url
+                ) || downloadItem.type.name != current.intendedType -> {
+                    dao.setItemState(
+                        operationId,
+                        historyId,
+                        LowQualityRedownloadItemState.FAILED.name,
+                        "SELECTION_DOWNLOAD_IDENTITY_MISMATCH",
+                        System.currentTimeMillis()
+                    )
+                    return@withTransaction null
+                }
+            }
         }
         if (
             database.downloadDao.countPendingByPlaylistMarker(

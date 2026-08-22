@@ -154,6 +154,28 @@ class HistoryReplacementTerminalRecoveryTest {
         }
     }
 
+    @Test
+    fun targetMissingRemainsAuthoritativeAfterLaterGenericFailure() {
+        val targetDeleted = HistoryReplacementDiagnostic.targetDeletedIssue()
+        val fallback = DownloadIssue.create(
+            stage = DownloadIssueStage.MOVE,
+            code = DownloadIssueCode.UNKNOWN,
+        )
+
+        val authoritative = authoritativeDownloadIssue(targetDeleted, fallback)
+        val unrecoverable = unrecoverableHistoryReplacementPersistenceFailure(
+            establishedHistoryIssue = targetDeleted,
+            result = HistoryReplacementPersistenceResult.Failed(
+                IOException("terminal write failed")
+            ),
+        )
+
+        assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED, authoritative.code)
+        assertEquals(DownloadIssueStage.HISTORY, authoritative.stage)
+        assertFalse(authoritative.code == DownloadIssueCode.UNKNOWN)
+        assertNotNull(unrecoverable)
+    }
+
     private fun assertMismatchSurvivesRecovery(kind: HistoryReplacementMismatchKind) {
         val issue = HistoryReplacementDiagnostic.issue(kind)
         val fallback = DownloadIssue.create(

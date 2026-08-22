@@ -101,6 +101,14 @@ data class LowQualityRedownloadOperation(
 data class LowQualityRedownloadItem(
     val operationId: String,
     val historyId: Long,
+    /**
+     * Immutable identity captured with the candidate.  PREPARING must never
+     * reconstruct replacement authority from historyId alone.
+     */
+    @ColumnInfo(defaultValue = "")
+    val intendedSourceUrl: String = "",
+    @ColumnInfo(defaultValue = "")
+    val intendedType: String = "",
     @ColumnInfo(defaultValue = "")
     val candidateReason: String = "",
     @ColumnInfo(defaultValue = "")

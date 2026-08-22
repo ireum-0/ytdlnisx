@@ -21,6 +21,7 @@ import com.ireum.ytdl.database.repository.HistoryRedownloadItemFactory
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import com.ireum.ytdl.util.HistoryVideoQualityProbe
 import com.ireum.ytdl.util.LowQualityAssessment
 import com.ireum.ytdl.util.LowQualityAssessmentInput
@@ -168,6 +169,8 @@ class LowQualityRedownloadWorker(
         return LowQualityRedownloadItem(
             operationId = operationId,
             historyId = historyItem.id,
+            intendedSourceUrl = historyItem.url,
+            intendedType = historyItem.type.name,
             candidateReason = assessment.reason.name,
             mediaState = media.state.name,
             actualHeight = assessment.actualHeight,
@@ -202,6 +205,26 @@ class LowQualityRedownloadWorker(
                 val historyItem = database.historyDao.getNullableItem(ledgerItem.historyId)
                 if (historyItem == null) {
                     skip(operationId, ledgerItem.historyId, "HISTORY_MISSING")
+                    return@forEach
+                }
+                if (ledgerItem.intendedSourceUrl.isBlank()) {
+                    fail(operationId, ledgerItem.historyId, "SELECTION_IDENTITY_MISSING")
+                    return@forEach
+                }
+                if (ledgerItem.intendedType.isBlank()) {
+                    fail(operationId, ledgerItem.historyId, "SELECTION_TYPE_MISSING")
+                    return@forEach
+                }
+                if (ledgerItem.intendedType != historyItem.type.name) {
+                    skip(operationId, ledgerItem.historyId, "SELECTION_TYPE_CHANGED")
+                    return@forEach
+                }
+                if (!HistoryReplacementSourceIdentity.matches(
+                        ledgerItem.intendedSourceUrl,
+                        historyItem.url
+                    )
+                ) {
+                    skip(operationId, ledgerItem.historyId, "SELECTION_SOURCE_CHANGED")
                     return@forEach
                 }
                 if (!isExtractorEligible(historyItem) || historyItem.hardSubDone) {

@@ -69,8 +69,14 @@ class HistoryReplacementBarrierPersistenceTest {
         val afterStaleWrite = db.downloadDao.getDownloadById(item.id)
         assertEquals(DownloadRepository.Status.Paused.name, afterStaleWrite.status)
         assertEquals(item.playlistURL, afterStaleWrite.playlistURL)
-        assertEquals(barrier!!.issueCode, afterStaleWrite.lastIssueCode)
-        assertEquals(barrier!!.issueStage, afterStaleWrite.lastIssueStage)
+        // The authoritative mismatch is carried by the separate durable
+        // barrier.  A Paused row is allowed to retain its user-visible state;
+        // stale full-row writers must not erase the barrier or project a
+        // misleading terminal Download issue into the row.
+        assertEquals("", afterStaleWrite.lastIssueCode)
+        assertEquals("", afterStaleWrite.lastIssueStage)
+        assertEquals(barrier!!.issueCode, db.historyReplacementBarrierDao.getByDownloadId(item.id)?.issueCode)
+        assertEquals(barrier!!.issueStage, db.historyReplacementBarrierDao.getByDownloadId(item.id)?.issueStage)
 
         assertEquals(
             HistoryReplacementAuthorization.SourceMismatch,

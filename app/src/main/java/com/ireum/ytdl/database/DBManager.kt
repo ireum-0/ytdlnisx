@@ -88,7 +88,7 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         HistoryDateFetchItem::class,
         HistoryReplacementBarrier::class
     ],
-    version = 57,
+    version = 58,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),

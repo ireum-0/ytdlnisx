@@ -1,11 +1,14 @@
 package com.ireum.ytdl
 
+import androidx.room.Room
 import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.Migrations
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -555,12 +558,34 @@ class MigrationSmokeTest {
     }
 
     @Test
-    fun migrateFromVersion56To57AddsAttemptOwnershipAndMismatchBarrierTable() {
-        helper.createDatabase(TEST_DB, 56).close()
+    fun migrateFromVersion56To58PreservesLegacyMismatchAndKeepsItFailClosed() {
+        helper.createDatabase(TEST_DB, 56).apply {
+            execSQL(
+                """
+                INSERT INTO downloads (
+                    id, url, title, author, thumb, duration, type, format, container,
+                    downloadSections, allFormats, downloadPath, website, downloadSize,
+                    playlistTitle, audioPreferences, videoPreferences, extraCommands,
+                    customFileNameTemplate, SaveThumb, status, downloadStartTime, logID,
+                    playlistURL, playlistIndex, incognito, availableSubtitles, rowNumber,
+                    observeSourceId, operationId, retryAttempt, retryStrategy,
+                    lastIssueCode, lastIssueStage, mediaPublishedAt, orderPosition
+                ) VALUES (
+                    501, 'https://example.com/legacy-mismatch', 'Legacy mismatch', 'Creator',
+                    '', '00:01:00', 'video', '{}', 'mp4', '', '[]', '/downloads',
+                    'example.com', '', '', '{}', '{}', '', '%(title)s', 0, 'Queued',
+                    0, NULL, 'history-redownload:501', NULL, 0, '[]', 0,
+                    0, 'legacy-mismatch', 0, 'ORIGINAL',
+                    'HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY', 0, 501
+                )
+                """.trimIndent()
+            )
+            close()
+        }
 
         val db = helper.runMigrationsAndValidate(
             TEST_DB,
-            57,
+            58,
             true,
             *Migrations.migrationList,
         )
@@ -568,11 +593,54 @@ class MigrationSmokeTest {
         db.use {
             val downloadColumns = tableColumnDefaults(it, "downloads")
             assertEquals("''", downloadColumns["executionId"])
+            val itemColumns = tableColumnDefaults(it, "low_quality_redownload_items")
+            assertEquals("''", itemColumns["intendedSourceUrl"])
+            assertEquals("''", itemColumns["intendedType"])
             val tables = linkedSetOf<String>()
             it.query("SELECT name FROM sqlite_master WHERE type = 'table'").use { cursor ->
                 while (cursor.moveToNext()) tables += cursor.getString(0)
             }
             assertTrue(tables.contains("history_replacement_barriers"))
+            it.query(
+                "SELECT lastIssueCode, lastIssueStage FROM downloads WHERE id = 501"
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("HISTORY_REPLACEMENT_SOURCE_MISMATCH", cursor.getString(0))
+                assertEquals("HISTORY", cursor.getString(1))
+            }
+            it.query(
+                "SELECT COUNT(*) FROM history_replacement_barriers WHERE downloadId = 501"
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                // v56 does not contain trustworthy history replacement identity;
+                // the legacy mismatch fields remain the fail-closed carrier.
+                assertEquals(0, cursor.getInt(0))
+            }
+        }
+
+        val upgraded = Room.databaseBuilder(
+            InstrumentationRegistry.getInstrumentation().targetContext,
+            DBManager::class.java,
+            TEST_DB
+        )
+            .addTypeConverter(Converters())
+            .addMigrations(*Migrations.migrationList)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            runBlocking {
+                assertEquals(
+                    0,
+                    upgraded.downloadDao.claimDownloadForWorker(
+                        id = 501,
+                        expectedOperationId = "legacy-mismatch",
+                        expectedRetryAttempt = 0,
+                        executionId = "legacy-worker",
+                    )
+                )
+            }
+        } finally {
+            upgraded.close()
         }
     }
 
