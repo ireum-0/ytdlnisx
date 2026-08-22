@@ -40,6 +40,14 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 
+class DownloadExecutionOwnershipLostException(
+    val downloadId: Long,
+    val expectedExecutionId: String,
+    val actualExecutionId: String?,
+) : IllegalStateException(
+    "Download execution ownership lost for download $downloadId"
+)
+
 class DownloadRepository(private val database: DBManager) {
     private val downloadDao: DownloadDao = database.downloadDao
     val allDownloads : Pager<Int, DownloadItem> = Pager(
@@ -395,8 +403,10 @@ class DownloadRepository(private val database: DBManager) {
 
     suspend fun completeAndDelete(
         id: Long,
-        successReason: String = ""
+        successReason: String = "",
+        expectedExecutionId: String = "",
     ): Set<String> = database.withTransaction {
+        assertTerminalExecutionOwned(id, expectedExecutionId)
         val ledgerDao = database.lowQualityRedownloadDao
         val ledgerItem = ledgerDao.getItemByDownloadId(id)
         val changedOperationIds = linkedSetOf<String>()
@@ -435,8 +445,12 @@ class DownloadRepository(private val database: DBManager) {
         changedOperationIds
     }
 
-    suspend fun completeHistoryTargetDeletedAndDelete(id: Long): Set<String> =
+    suspend fun completeHistoryTargetDeletedAndDelete(
+        id: Long,
+        expectedExecutionId: String = "",
+    ): Set<String> =
         database.withTransaction {
+            assertTerminalExecutionOwned(id, expectedExecutionId)
             val ledgerDao = database.lowQualityRedownloadDao
             val ledgerItem = ledgerDao.getItemByDownloadId(id)
             val changedOperationIds = linkedSetOf<String>()
@@ -475,6 +489,25 @@ class DownloadRepository(private val database: DBManager) {
             downloadDao.delete(id)
             changedOperationIds
         }
+
+    private fun assertTerminalExecutionOwned(
+        id: Long,
+        expectedExecutionId: String,
+    ) {
+        if (expectedExecutionId.isBlank()) return
+        val current = downloadDao.getNullableDownloadById(id)
+        if (
+            current == null ||
+            current.executionId != expectedExecutionId ||
+            current.status !in setOf(Status.Active.name, Status.PostProcessing.name)
+        ) {
+            throw DownloadExecutionOwnershipLostException(
+                downloadId = id,
+                expectedExecutionId = expectedExecutionId,
+                actualExecutionId = current?.executionId,
+            )
+        }
+    }
 
     suspend fun beginUndoableCancellation(id: Long): UndoableCancellation =
         database.withTransaction {

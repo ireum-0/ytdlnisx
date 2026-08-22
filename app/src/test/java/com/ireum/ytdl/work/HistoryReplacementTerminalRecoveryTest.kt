@@ -2,6 +2,8 @@ package com.ireum.ytdl.work
 
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
+import com.ireum.ytdl.database.repository.HistoryReplacementAuthorization
+import com.ireum.ytdl.database.repository.HistoryReplacementTerminalAction
 import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
@@ -174,6 +176,26 @@ class HistoryReplacementTerminalRecoveryTest {
         assertEquals(DownloadIssueStage.HISTORY, authoritative.stage)
         assertFalse(authoritative.code == DownloadIssueCode.UNKNOWN)
         assertNotNull(unrecoverable)
+    }
+
+    @Test
+    fun typedRegularHardSubTargetMissingRefusalUsesTargetDeletedTerminalRouting() {
+        val refusal = HistoryReplacementAuthorizationRefusalException(
+            HistoryReplacementAuthorization.TargetMissing
+        )
+        val issue = historyReplacementRefusalIssue(refusal.authorization)
+        val fallback = DownloadIssue.create(
+            stage = DownloadIssueStage.HARD_SUB,
+            code = DownloadIssueCode.UNKNOWN,
+        )
+
+        assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED, issue.code)
+        assertEquals(
+            HistoryReplacementTerminalAction.TARGET_DELETED,
+            historyReplacementRefusalTerminalAction(refusal.authorization),
+        )
+        assertEquals(issue.code, authoritativeDownloadIssue(issue, fallback).code)
+        assertFalse(authoritativeDownloadIssue(issue, fallback).code == DownloadIssueCode.UNKNOWN)
     }
 
     private fun assertMismatchSurvivesRecovery(kind: HistoryReplacementMismatchKind) {

@@ -43,6 +43,8 @@ interface ObserveSourcesDao {
         WHERE id = :downloadId
           AND observeSourceId = :sourceId
           AND status = :expectedStatus
+          AND (:expectedExecutionId = '' OR executionId = :expectedExecutionId)
+          AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED')
           AND EXISTS(
               SELECT 1 FROM sources
               WHERE id = :sourceId AND status = 'ACTIVE'
@@ -53,7 +55,8 @@ interface ObserveSourcesDao {
         sourceId: Long,
         expectedStatus: String,
         issueCode: String,
-        issueStage: String
+        issueStage: String,
+        expectedExecutionId: String = "",
     ): Int
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)

@@ -4,6 +4,27 @@ import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
 import kotlinx.coroutines.CancellationException
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Process-local liveness registry keyed by the exact Download execution token.
+ * A dead E1 must not hide a recoverable row, and releasing E1 must never clear
+ * a newer E2 owner for the same numeric Download ID.
+ */
+internal object DownloadWorkerExecutionOwners {
+    private val owners: MutableMap<Long, String> = ConcurrentHashMap()
+
+    fun claim(downloadId: Long, executionId: String) {
+        if (executionId.isNotBlank()) owners[downloadId] = executionId
+    }
+
+    fun isOwnedBy(downloadId: Long, executionId: String): Boolean =
+        executionId.isNotBlank() && owners[downloadId] == executionId
+
+    fun release(downloadId: Long, executionId: String) {
+        if (executionId.isNotBlank()) owners.remove(downloadId, executionId)
+    }
+}
 
 /**
  * Requeues worker-owned rows without discarding an already authoritative

@@ -13,6 +13,19 @@ import java.io.IOException
 
 class DownloadWorkerOwnershipRecoveryTest {
     @Test
+    fun releasingDeadExecutionCannotClearNewerExecutionOwner() {
+        val downloadId = 903L
+        DownloadWorkerExecutionOwners.claim(downloadId, "E1")
+        DownloadWorkerExecutionOwners.claim(downloadId, "E2")
+
+        DownloadWorkerExecutionOwners.release(downloadId, "E1")
+
+        assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, "E2"))
+        assertFalse(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, "E1"))
+        DownloadWorkerExecutionOwners.release(downloadId, "E2")
+    }
+
+    @Test
     fun unrecoverableSourceAndTypeMismatchWritesRequeueWithExactBarrierAndPropagate() = runBlocking {
         listOf(
             HistoryReplacementMismatchKind.SOURCE,

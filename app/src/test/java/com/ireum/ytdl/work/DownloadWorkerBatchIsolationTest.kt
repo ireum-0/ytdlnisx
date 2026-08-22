@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import com.ireum.ytdl.database.repository.HistoryReplacementAuthorization
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -131,5 +132,28 @@ class DownloadWorkerBatchIsolationTest {
 
         assertEquals("Queued", statuses[oldAttempt.id])
         assertEquals("Queued", statuses[902L])
+    }
+
+    @Test
+    fun typedTargetMissingRefusalSurvivesBatchFailureRouting() = runBlocking {
+        val refusal = HistoryReplacementAuthorizationRefusalException(
+            HistoryReplacementAuthorization.TargetMissing
+        )
+        var thrown: Exception? = null
+
+        try {
+            runDownloadItemsIndependently(listOf("A", "B")) { item ->
+                if (item == "A") throw refusal
+                delay(10)
+            }
+        } catch (error: Exception) {
+            thrown = error
+        }
+
+        assertEquals(refusal, thrown)
+        assertEquals(
+            com.ireum.ytdl.database.repository.HistoryReplacementAuthorization.TargetMissing,
+            (thrown as HistoryReplacementAuthorizationRefusalException).authorization,
+        )
     }
 }

@@ -27,6 +27,20 @@ sealed interface HistoryReplacementAuthorization {
     data object TypeMismatch : HistoryReplacementAuthorization
 }
 
+/**
+ * Raised when a DownloadWorker reaches a privileged History boundary after a
+ * newer execution has claimed the Download row.  The exception is deliberately
+ * distinct from an authorization refusal: the stale attempt must stop without
+ * turning the newer attempt's row, ledger item, or History target terminal.
+ */
+class HistoryReplacementExecutionOwnershipLostException(
+    val downloadId: Long,
+    val expectedExecutionId: String,
+    val actualExecutionId: String?,
+) : IllegalStateException(
+    "History replacement execution ownership lost for download $downloadId"
+)
+
 sealed interface HistoryReplacementOutcome {
     data class Updated(val previousTarget: HistoryItem) : HistoryReplacementOutcome
     data object TargetMissing : HistoryReplacementOutcome
@@ -340,6 +354,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         expectedType: DownloadType,
         replacementDownloadId: Long = 0L,
         replacementOperationId: String = "",
+        expectedExecutionId: String = "",
     ): HistoryReplacementAuthorization {
         require(historyId > 0L)
         return db.withTransaction {
@@ -349,6 +364,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 expectedType = expectedType,
                 replacementDownloadId = replacementDownloadId,
                 replacementOperationId = replacementOperationId,
+                expectedExecutionId = expectedExecutionId,
             )
         }
     }
@@ -364,6 +380,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         expectedType: DownloadType,
         replacementDownloadId: Long = 0L,
         replacementOperationId: String = "",
+        expectedExecutionId: String = "",
     ): HistoryReplacementAuthorization = runBlocking {
         authorizeHistoryReplacement(
             historyId = historyId,
@@ -371,6 +388,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             expectedType = expectedType,
             replacementDownloadId = replacementDownloadId,
             replacementOperationId = replacementOperationId,
+            expectedExecutionId = expectedExecutionId,
         )
     }
 
@@ -385,6 +403,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         expectedType: DownloadType,
         replacementDownloadId: Long = 0L,
         replacementOperationId: String = "",
+        expectedExecutionId: String = "",
         replacementFactory: (HistoryItem) -> HistoryItem,
     ): HistoryReplacementOutcome {
         require(historyId > 0L)
@@ -396,6 +415,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                     expectedType = expectedType,
                     replacementDownloadId = replacementDownloadId,
                     replacementOperationId = replacementOperationId,
+                    expectedExecutionId = expectedExecutionId,
                 )
             ) {
                 is HistoryReplacementAuthorization.Authorized -> {
@@ -459,6 +479,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         expectedType: DownloadType,
         replacementDownloadId: Long = 0L,
         replacementOperationId: String = "",
+        expectedExecutionId: String = "",
         replacementFactory: (HistoryItem) -> HistoryItem,
     ): HistoryReplacementOutcome = runBlocking {
         replaceHistoryPreservingAssignmentsAuthorized(
@@ -468,6 +489,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             replacementFactory = replacementFactory,
             replacementDownloadId = replacementDownloadId,
             replacementOperationId = replacementOperationId,
+            expectedExecutionId = expectedExecutionId,
         )
     }
 
@@ -477,7 +499,12 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         expectedType: DownloadType,
         replacementDownloadId: Long,
         replacementOperationId: String,
+        expectedExecutionId: String,
     ): HistoryReplacementAuthorization {
+        assertReplacementExecutionOwned(
+            replacementDownloadId = replacementDownloadId,
+            expectedExecutionId = expectedExecutionId,
+        )
         if (replacementDownloadId > 0L) {
             db.historyReplacementBarrierDao.getByDownloadId(replacementDownloadId)?.let { barrier ->
                 return when (barrier.issueCode) {
@@ -515,6 +542,25 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             )
         }
         return HistoryReplacementAuthorization.Authorized(existingHistory)
+    }
+
+    private suspend fun assertReplacementExecutionOwned(
+        replacementDownloadId: Long,
+        expectedExecutionId: String,
+    ) {
+        if (replacementDownloadId <= 0L || expectedExecutionId.isBlank()) return
+        val current = db.downloadDao.getNullableDownloadById(replacementDownloadId)
+        if (
+            current == null ||
+            current.executionId != expectedExecutionId ||
+            current.status !in setOf("Active", "PostProcessing")
+        ) {
+            throw HistoryReplacementExecutionOwnershipLostException(
+                downloadId = replacementDownloadId,
+                expectedExecutionId = expectedExecutionId,
+                actualExecutionId = current?.executionId,
+            )
+        }
     }
 
     private suspend fun durableMismatchAuthorization(

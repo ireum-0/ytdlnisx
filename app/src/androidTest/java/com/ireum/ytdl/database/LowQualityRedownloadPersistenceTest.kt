@@ -15,6 +15,8 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
 import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.DownloadExecutionOwnershipLostException
+import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
@@ -22,6 +24,7 @@ import com.ireum.ytdl.ui.downloads.shouldPresentLowQualitySelection
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.HistoryReplacementPersistenceResult
+import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.dispatchLowQualityRedownloadRecovery
 import com.ireum.ytdl.work.persistHistoryReplacementTerminalState
 import kotlinx.coroutines.runBlocking
@@ -863,6 +866,69 @@ class LowQualityRedownloadPersistenceTest {
         )
     }
 
+    @Test
+    fun staleExecutionCannotAuthorizeHistoryReplacementOrDeleteNewerDownload() = runBlocking {
+        val historyId = 204L
+        val sourceUrl = "https://youtu.be/dQw4w9WgXcQ"
+        insertHistory(historyId, sourceUrl, DownloadType.video)
+        val downloadId = database.downloadDao.insert(
+            download(historyId).apply {
+                executionId = "E2"
+                status = DownloadRepository.Status.Active.name
+            }
+        )
+        val beforeHistory = database.historyDao.getItem(historyId)
+        var ownershipLost = false
+
+        try {
+            HistoryKeywordAssignmentRepository(database)
+                .replaceHistoryPreservingAssignmentsAuthorized(
+                    historyId = historyId,
+                    expectedSourceUrl = sourceUrl,
+                    expectedType = DownloadType.video,
+                    replacementDownloadId = downloadId,
+                    replacementOperationId = "stale-operation",
+                    expectedExecutionId = "E1",
+                ) { current -> current.copy(title = "stale replacement") }
+        } catch (_: com.ireum.ytdl.database.repository.HistoryReplacementExecutionOwnershipLostException) {
+            ownershipLost = true
+        }
+
+        assertTrue(ownershipLost)
+        assertEquals(beforeHistory.title, database.historyDao.getItem(historyId).title)
+        assertEquals("E2", database.downloadDao.getDownloadById(downloadId).executionId)
+        assertTrue(database.downloadDao.getDownloadById(downloadId).status == DownloadRepository.Status.Active.name)
+    }
+
+    @Test
+    fun staleExecutionCannotCompleteOrDeleteNewerDownload() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(
+            operationId = operation.operationId,
+            historyId = 205,
+            status = DownloadRepository.Status.Active,
+            executionId = "E2",
+        )
+        var ownershipLost = false
+
+        try {
+            DownloadRepository(database).completeAndDelete(
+                id = downloadId,
+                expectedExecutionId = "E1",
+            )
+        } catch (_: DownloadExecutionOwnershipLostException) {
+            ownershipLost = true
+        }
+
+        assertTrue(ownershipLost)
+        assertEquals("E2", database.downloadDao.getDownloadById(downloadId).executionId)
+        assertEquals(
+            DownloadRepository.Status.Active.name,
+            database.downloadDao.getDownloadById(downloadId).status,
+        )
+        assertEquals(downloadId, repository.getItems(operation.operationId).single().downloadId)
+    }
+
     private suspend fun insertHistory(
         id: Long,
         url: String,
@@ -1048,7 +1114,13 @@ class LowQualityRedownloadPersistenceTest {
     fun coordinatorFailureAtomicallyCancelsDownloadsAndTerminalizesChildren() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
         val queuedId = linkDownload(operation.operationId, 86, DownloadRepository.Status.Queued)
-        val activeId = linkDownload(operation.operationId, 87, DownloadRepository.Status.Active)
+        val activeExecutionId = "low-quality-active-execution"
+        val activeId = linkDownload(
+            operation.operationId,
+            87,
+            DownloadRepository.Status.Active,
+            activeExecutionId,
+        )
 
         assertEquals(
             setOf(queuedId, activeId),
@@ -1069,12 +1141,41 @@ class LowQualityRedownloadPersistenceTest {
         assertEquals(LowQualityRedownloadOperationState.FAILED, failed.stateValue)
         assertEquals(LowQualityRedownloadRepository.REASON_COORDINATOR_FAILURE, failed.terminalReason)
         assertNull(repository.markDownloadState(activeId, LowQualityRedownloadItemState.SUCCEEDED))
+        assertTrue(DownloadCancellationRegistry.belongsTo(activeId, activeExecutionId))
+        assertFalse(DownloadCancellationRegistry.belongsTo(activeId, "newer-execution"))
+    }
+
+    @Test
+    fun targetDeletedCarrierCannotBeReturnedToRunnableQueue() = runBlocking {
+        val item = download(206).apply {
+            status = DownloadRepository.Status.Queued.name
+            lastIssueCode = DownloadIssueCode.HISTORY_TARGET_DELETED.name
+            lastIssueStage = "HISTORY"
+        }
+        val id = database.downloadDao.insert(item)
+
+        assertTrue(database.downloadDao.getQueuedDownloadsList().none { it.id == id })
+        assertEquals(0, database.downloadDao.reQueueDownloadItems(listOf(id)))
+        assertEquals(
+            0,
+            database.downloadDao.claimDownloadForWorker(
+                id = id,
+                expectedOperationId = item.operationId,
+                expectedRetryAttempt = item.retryAttempt,
+                executionId = "target-deleted-attempt",
+            )
+        )
+
+        val persisted = database.downloadDao.getDownloadById(id)
+        assertEquals(DownloadRepository.Status.Queued.name, persisted.status)
+        assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED.name, persisted.lastIssueCode)
     }
 
     private suspend fun linkDownload(
         operationId: String,
         historyId: Long,
-        status: DownloadRepository.Status
+        status: DownloadRepository.Status,
+        executionId: String = "",
     ): Long {
         database.lowQualityRedownloadDao.upsertItem(
             LowQualityRedownloadItem(
@@ -1084,7 +1185,11 @@ class LowQualityRedownloadPersistenceTest {
                 itemState = LowQualityRedownloadItemState.CHECKING.name
             )
         )
-        val id = repository.linkDownloadAtomically(operationId, historyId, download(historyId))!!
+        val id = repository.linkDownloadAtomically(
+            operationId,
+            historyId,
+            download(historyId).apply { this.executionId = executionId },
+        )!!
         database.downloadDao.setStatus(id, status.name)
         return id
     }

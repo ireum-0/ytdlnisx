@@ -192,10 +192,16 @@ object LowQualityRedownloadLedger {
         context: Context,
         downloadId: Long,
         state: LowQualityRedownloadItemState,
-        reason: String = ""
+        reason: String = "",
+        expectedExecutionId: String = "",
     ) {
         val repository = LowQualityRedownloadRepository(DBManager.getInstance(context))
-        val operationId = repository.markDownloadState(downloadId, state, reason) ?: return
+        val operationId = repository.markDownloadState(
+            downloadId = downloadId,
+            state = state,
+            reason = reason,
+            expectedExecutionId = expectedExecutionId,
+        ) ?: return
         refresh(context, setOf(operationId))
     }
 
