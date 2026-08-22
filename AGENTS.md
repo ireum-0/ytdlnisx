@@ -16,6 +16,14 @@
 - Avoid broad refactors unless explicitly requested.
 - Do not add dependencies, network access, build tooling, ECC, Codex hooks, MCP, skills, plugins, or `.codex` config without explicit approval.
 
+## Correctness
+- For stateful or typed correctness changes, trace the invariant across admission/claim, execution, destructive side effects, semantic commit, terminalization, retry/reconfiguration, cancellation, startup/restore, notifications, and cleanup. Do not validate only the edited function.
+- Keep identity domains explicit and separate. Before comparing IDs, verify what entity owns each ID, when it is created, and whether it survives retry, requeue, restart, or restore. For privileged or destructive operations, a numeric ID, similarly named field, marker, or merely nonterminal status is not sufficient authority.
+- Gate privileged work with explicit allowed states and revoke conditions, and gate execution-scoped external side effects with exact execution ownership. A database CAS alone does not protect native processes, temporary paths, post-processing, or filesystem effects.
+- Treat process death and recovery as explicit protocol states. Do not infer live ownership, abandoned work, or expired transient authority solely from a durable database shape that can also exist during normal runtime.
+- When introducing or changing a typed exception or result, trace it through persisted diagnostics, queue state, linked state, retryability, worker result, notification, and cleanup so terminal behavior remains consistent.
+- For observe → persist durable carrier → return/throw protocols, preserve the authoritative decision if the first carrier write or verification/read-back fails. Fail closed rather than silently downgrading or reinterpreting the decision.
+
 ## Sensitive Files and Directories
 - Do not read, print, summarize, expose, or modify secret-bearing files such as `local.properties`, `keystore.properties`, `.env`, tokens, cookies, API keys, signing credentials, or secret-like values unless explicitly requested.
 - Do not modify keystore files, signing config material, release artifacts, APK/AAB outputs, bundled executables, native libraries, `app/src/main/assets/bin/`, `app/src/main/jniLibs/`, or `.tmp_*` unless explicitly requested.
@@ -36,6 +44,8 @@
 - Prefer `./gradlew :app:compileDebugKotlin -x lint` for small Kotlin/Android code changes.
 - Do not impose short timeouts on Gradle compilation checks; allow enough time for the command to complete.
 - Ask before running anything heavier than `:app:compileDebugKotlin -x lint`, including full builds, release builds, connected device tests, dependency updates, network-dependent tasks, or long-running tasks.
+- For stateful, authority, persistence, or concurrency changes, prefer tests that reproduce real production object creation, identity relationships, entrypoints, and durable state transitions. Helper-only fixtures must not substitute for production wiring when claim, retry, terminal, notification, or cleanup behavior is under test.
+- Within the approved verification scope, cover relevant stale-attempt, cancellation, process-death, recovery, and external-side-effect interleavings, and verify durable state, terminal result, retryability, notifications, and cleanup. If required production-level verification cannot run, report the evidence gap instead of weakening the test model.
 - Common candidates:
     - `./gradlew :app:compileDebugKotlin -x lint`
     - `./gradlew :app:testDebugUnitTest`
