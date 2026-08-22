@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **63 active correctness defects** in this checkpoint. The previous
+There are **64 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 63-defect registry is intentionally retained here. The separate
+The broader 64-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 63-defect count unless they are explicitly promoted
+below do **not** change the 64-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-63-defect registry below.
+64-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 63 active defects
+### F1 remediation-discovered follow-up not counted in the 64 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2767,6 +2767,51 @@ Required result:
   candidate classification, after pending-payload persistence, after open-session
   persistence, after notification publication, and immediately before worker
   success, plus normal notification-open and restart-recovery coverage.
+
+### P3 — BUG-TEMPLATE-01 — Await Command Template clipboard export before reporting success
+
+**State:** Open
+
+**Failure path:** the production Command Templates overflow menu handles Export
+Clipboard by launching a Fragment coroutine and calling
+`commandTemplateViewModel.exportToClipboard()` inside `withContext(Dispatchers.IO)`.
+That view-model method is not a suspending export operation: it immediately
+starts a separate `viewModelScope.launch`, returns its `Job`, and performs the
+actual template/shortcut reads, JSON serialization, and `ClipboardManager.setText()`
+later in that independent coroutine. `withContext()` therefore waits only for
+the call that created the new job, not for the clipboard mutation itself. The
+Fragment immediately shows the `copied_to_clipboard` success Snackbar.
+
+The detached export coroutine catches every `Exception` from repository reads,
+serialization, service lookup, or clipboard writing and only prints the stack
+trace. It does not return a failure to the Fragment or retract the success
+message. A Room/serialization/clipboard failure can consequently leave the
+clipboard unchanged (including retaining unrelated or older contents) after the
+UI has told the user that the Command Template export was copied. Even on the
+normal path, the success signal is allowed to precede the actual clipboard
+write; no upstream parser or later result check closes that gap.
+
+**Why this is a defect:** clipboard export is a user-requested data transfer, but
+the UI's authoritative success state is disconnected from completion of the
+transfer and all execution failures are collapsed into an unobservable
+background error. The user can paste or save stale clipboard contents believing
+they are the just-exported templates. The impact is limited to this export path
+and does not itself mutate persistent application data, so it is P3.
+
+Required result:
+
+- expose clipboard export as one suspending or otherwise awaitable operation
+  whose result covers repository reads, serialization, and the actual clipboard
+  mutation;
+- propagate a typed/export failure to the caller, preserve coroutine
+  cancellation, and do not swallow failure inside a detached `viewModelScope`
+  job;
+- show `copied_to_clipboard` only after the clipboard write completes
+  successfully, and show an explicit failure result without implying that stale
+  clipboard contents are the new export;
+- add deterministic delayed-export, repository-read failure, serialization/
+  clipboard failure, cancellation, and normal-success UI regressions proving
+  success cannot be observed before or without the requested clipboard content.
 
 ## Current status
 
