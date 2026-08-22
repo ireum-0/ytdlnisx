@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **70 active correctness defects** in this checkpoint. The previous
+There are **71 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 70-defect registry is intentionally retained here. The separate
+The broader 71-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 70-defect count unless they are explicitly promoted
+below do **not** change the 71-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-70-defect registry below.
+71-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 70 active defects
+### F1 remediation-discovered follow-up not counted in the 71 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -575,9 +575,6 @@ or `finishRunAndSchedule()`, its full-row update writes the pre-edit values back
 over the same source ID. Fields owned by the user edit, such as URL/name,
 cadence, filters, templates, retry/sync options, termination settings, and other
 configuration, can therefore be silently reverted along with runtime fields.
-Cancellation of the old WorkManager request after the edit does not close the
-race because cancellation is not the commit boundary for the preceding DB edit,
-and no DAO CAS rejects a late stale write.
 
 The stale worker can then calculate and enqueue its successor from the reverted
 snapshot. A newer replacement worker scheduled by the edit and the stale
@@ -817,9 +814,8 @@ terminal completed notification and return `Result.success()`.
 
 There is a second consequence: child lookup failures that have already been
 converted into terminal `FAILED` item outcomes do not escape as coordinator
-exceptions. Because the worker still succeeds, WorkManager does not
-explicitly retry those failed items even when the underlying lookup failure was
-transient.
+exceptions. Because the worker still succeeds, WorkManager does not explicitly
+retry those failed items even when the underlying lookup failure was transient.
 
 **Why this is a defect:** parent state, notification state, and retry behavior
 can all claim completion while part or all of the requested backfill failed.
@@ -3148,6 +3144,59 @@ Required result:
 - add API 24/25 regressions for denied/revoked storage permission, destination
   creation failure, `renameTo(false)`, first-file-success/second-file-failure,
   all-success, and API 26+ throwing `Files.move` as a non-regression control.
+
+### P3 — BUG-LOG-01 — Preserve Download-log associations across log deletion Undo
+
+**State:** Open
+
+**Failure path:** the production Download Logs screen exposes swipe-to-delete
+with an Undo Snackbar. The swipe handler first loads the selected `LogItem`, then
+calls `LogViewModel.delete(deletedItem)`. That method launches its own
+`viewModelScope` IO coroutine and returns immediately; inside that detached
+operation it deletes the Log row and only afterward calls
+`DownloadRepository.removeLogID()`, whose DAO sink executes
+`UPDATE downloads SET logID = null WHERE logID = :logID` as a separate write.
+The Snackbar Undo does not reverse that relationship mutation. It only launches
+another coroutine that calls `LogViewModel.insert(deletedItem)`.
+
+Once the ordinary delete coroutine finishes, pressing Undo can therefore
+reinsert the same Log row while every Download that previously referenced it
+remains permanently detached. This relationship is user-visible:
+`ErroredDownloadsFragment` exposes its failure-log action only when
+`DownloadItem.logID` is non-null, so the restored log no longer restores the
+failed Download's diagnostic link. There is also a concrete ordering race before
+the delete finishes. `LogDao.insert()` uses `OnConflictStrategy.IGNORE`; if a
+fast Undo insert reaches Room while the original Log row still exists, the
+restore is ignored, and the later asynchronous delete can then remove that row,
+so an explicit Undo can still end with the log absent. Single-log and Delete All
+cleanup likewise split Log deletion from Download-reference clearing across
+independent Room statements, allowing process death or persistence failure to
+leave a Download pointing at a missing log.
+
+**Why this is a defect:** the user-facing Undo does not reverse the logical
+mutation it advertises and can durably lose the provenance relationship between
+a failed Download and its diagnostic log. Depending on coroutine ordering it can
+also fail to restore the Log itself. The impact is limited to diagnostic/log
+state rather than media or History data, so it is P3, but it is a concrete
+production correctness and relationship-integrity failure rather than defensive
+hardening.
+
+Required result:
+
+- make Log-row deletion and disposition of every referencing `Download.logID`
+  one transactional repository operation, including Delete All;
+- make swipe deletion capture a durable undo snapshot containing the Log and the
+  exact affected Download references, then restore both sides atomically, or
+  defer irreversible reference cleanup until the Undo window is committed;
+- serialize immediate Undo against the delete operation so a same-ID
+  `OnConflictStrategy.IGNORE` insert cannot be reported as restoration before a
+  later delete removes the row;
+- do not expose successful Undo until the Log and every still-valid captured
+  Download reference are durably restored;
+- add deterministic normal delete→Undo, immediate Undo-before-delete,
+  multiple-Downloads-to-one-log, Delete All, first-write/second-write failure,
+  and process-death regressions proving no dangling reference, lost association,
+  or disappeared-after-Undo log remains.
 
 ## Current status
 
