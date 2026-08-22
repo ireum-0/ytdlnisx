@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **65 active correctness defects** in this checkpoint. The previous
+There are **66 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 65-defect registry is intentionally retained here. The separate
+The broader 66-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 65-defect count unless they are explicitly promoted
+below do **not** change the 66-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-65-defect registry below.
+66-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 65 active defects
+### F1 remediation-discovered follow-up not counted in the 66 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -695,6 +695,60 @@ Required result:
   `requestApplyExistingSync()` QUEUED commit but before WorkManager persistence,
   plus startup recovery, exactly-once replacement, revision-race, new-rule,
   edited-rule, and Apply Existing regressions.
+
+### P2 — BUG-KEYWORD-04 — Revalidate History source identity before applying automatic-keyword assignments
+
+**State:** Open
+
+**Failure path:** the production automatic-keyword synchronization worker loads
+source videos and enters `AutomaticKeywordRuleEngine.applyFullSync()` or
+`recordDiscovery()`. Before applying a rule, the engine builds a
+`HistoryItem` index keyed by normalized video URL and keeps the resulting
+History IDs/snapshots while it processes the source. That index is only a
+point-in-time observation. A normal History metadata edit can concurrently
+change an indexed row from source URL A to source URL B; the History edit path
+then calls `reconcileHistoryUrlChange()`, which removes A-derived RULE
+assignments and recomputes assignments for B.
+
+The already-running automatic-keyword pass does not treat that later History
+mutation as revoking its old match. `applyRuleToLocalHistory()` looks up the
+stale A entry from the prebuilt index and passes only its numeric History ID to
+`applyRuleToHistory()`. The write transaction revalidates the rule's existence,
+enabled state, and revision, but it does not reload the current History row and
+require its normalized source identity to still equal A before calling
+`HistoryKeywordAssignmentRepository.replaceSourceKeywords()`. If the sync
+resumes after the A→B edit/reconciliation, it can therefore persist the A rule's
+keywords back onto the History row that now authoritatively represents B.
+
+**Why this is a defect:** a cached source-to-History match is being reused as
+write authority after the source identity that established the match has
+changed. A routine concurrent metadata edit can leave durable RULE assignment
+rows and the materialized `HistoryItem.keywords` projection describing the old
+media on a different current History item, which affects keyword filtering and
+grouping. This is distinct from `BUG-KEYWORD-01`, which concerns source snapshot
+completeness, `BUG-KEYWORD-02`, which concerns derived assignments restored by
+History Undo, and `BUG-KEYWORD-03`, which concerns losing the WorkManager carrier
+for a queued sync.
+
+Required result:
+
+- treat the prebuilt History index only as a candidate lookup, not durable
+  authorization, and re-read the target History row at the assignment write
+  boundary;
+- in the same transaction that persists RULE assignments, require the current
+  History row to exist and its authoritative normalized video/source identity to
+  equal the source video that produced the rule match;
+- if the History row was deleted or its source changed, skip the stale match or
+  recompute against the current source rather than reintroducing old-derived
+  keywords;
+- keep History URL-change reconciliation and automatic-keyword assignment under
+  one ordering/CAS contract so whichever source identity is current determines
+  the final derived assignments;
+- add deterministic `applyFullSync` and `recordDiscovery` races that pause after
+  the History index is built, change one indexed row A→B and complete URL-change
+  reconciliation, then resume the A sync and prove no A-derived RULE assignment
+  or materialized keyword is written to B; include row deletion and unchanged-A
+  controls.
 
 ### P2 — BUG-METADATA-02 — Validate source identity before applying download metadata
 
@@ -2893,7 +2947,7 @@ Required result:
 | `PLAYER-01` | Partial | `PlaybackQueueState` centralizes queue data, but lifecycle, Media3, subtitle, PiP, URI, and navigation behavior remains concentrated in `VideoPlayerActivity`. |
 | `TERM-01` | Implemented | Terminal command planning includes a dry-run/preview path and argument policy. |
 
-## Newly implemented capability
+## newly implemented capability
 
 The current branch also stores media source-publication time through result,
 download, and history records; reads provider-specific dates; displays and
