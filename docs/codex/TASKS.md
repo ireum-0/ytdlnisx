@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **64 active correctness defects** in this checkpoint. The previous
+There are **65 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 64-defect registry is intentionally retained here. The separate
+The broader 65-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 64-defect count unless they are explicitly promoted
+below do **not** change the 65-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-64-defect registry below.
+65-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 64 active defects
+### F1 remediation-discovered follow-up not counted in the 65 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -516,16 +516,16 @@ process death after the source-state commit but before the successor WorkManager
 record is durable therefore leaves the source persisted as `ACTIVE` with no
 future execution owner.
 
-Normal app startup does not rebuild this missing schedule. `App.onCreate()`
-reconciles automatic-keyword observation coverage, low-quality re-downloads, and
-History date-fetch operations, but has no reconciliation that enumerates every
-active USER Observe Source and proves a corresponding WorkManager chain exists.
-`AutomaticKeywordObservationCoverage.reconcile()` is not such a repair: it uses
-USER sources only to decide whether managed discovery coverage is necessary,
-and for an already-`ACTIVE` managed source it also does not call `observeTask()`
-merely because its WorkManager record is absent. A lost handoff can therefore
-remain silent across process/app restart until the user explicitly edits or
-restarts the source.
+Normal app startup does not rebuild this missing schedule.
+`App.onCreate()` reconciles automatic-keyword observation coverage, low-quality
+re-downloads, and History date-fetch operations, but has no reconciliation that
+enumerates every active USER Observe Source and proves a corresponding
+WorkManager chain exists. `AutomaticKeywordObservationCoverage.reconcile()` is
+not such a repair: it uses USER sources only to decide whether managed discovery
+coverage is necessary, and for an already-`ACTIVE` managed source it also does
+not call `observeTask()` merely because its WorkManager record is absent. A lost
+handoff can therefore remain silent across process/app restart until the user
+explicitly edits or restarts the source.
 
 **Why this is a defect:** `ACTIVE` is durable user intent for recurring
 observation, while each one-time WorkManager request is only the current carrier
@@ -2812,6 +2812,64 @@ Required result:
 - add deterministic delayed-export, repository-read failure, serialization/
   clipboard failure, cancellation, and normal-success UI regressions proving
   success cannot be observed before or without the requested clipboard content.
+
+### P3 — BUG-SHARE-01 — Do not clear unrelated Result state when handling external shares
+
+**State:** Open
+
+**Failure path:** `ShareActivity` is an exported production entry point for
+`ACTION_SEND` text and browsable `ACTION_VIEW` links. After extracting the first
+URL, it queries the shared Result table for exact matches. For the normal case
+where that URL is not already cached — and also when more than one exact match
+exists — it calls `resultViewModel.deleteAll()` and then constructs a local
+`ResultItem` with `DownloadViewModel.createEmptyResultItem(inputQuery)`. That
+local item is not inserted into the Result table, so the share request itself
+does not require ownership of the table it just cleared.
+
+`ResultViewModel.deleteAll()` is broader than the share request: it launches a
+new `viewModelScope` IO coroutine and calls `ResultRepository.deleteAll()`, whose
+DAO sink is `DELETE FROM results`. There is no Result-session ID, generation, or
+expected-owner predicate. At the same time, the normal `HomeFragment` uses its
+own `ResultViewModel` and directly observes the same Room Result table as the
+current search/playlist result set, updating the visible list and selection
+controls from those rows. Because `ShareActivity` is `singleInstance` rather
+than a replacement for the Main activity's Result owner, an external share can
+run while an existing Home result session still exists. The global delete can
+therefore erase that unrelated session simply because the shared URL was new.
+
+The ordering is additionally non-authoritative because `deleteAll()` is declared
+`suspend` but returns the detached `Job` created by `viewModelScope.launch`; the
+Share coroutine does not await the actual DAO delete before continuing. A Home
+search/parser can insert or repopulate Result rows while that detached delete is
+still pending, and the later `DELETE FROM results` can remove those newer rows as
+well. No parser or navigation layer scopes the deletion to the Share request or
+repairs the prior Home session after it is cleared.
+
+**Why this is a defect:** opening or sharing one unrelated URL is a local input
+action, but it can destructively reset the transient Result state owned by a
+different active search/playlist session. The user can return to an emptied or
+partially invalidated Home result set, and concurrent parsing can lose freshly
+produced rows depending on coroutine timing. Result rows are transient rather
+than long-lived media/History data, so the impact is P3, but the production
+behavior is still a real cross-session correctness failure. This is distinct
+from `BUG-RESULT-01`, which concerns non-atomic primary-key rewrites during the
+Reverse action.
+
+Required result:
+
+- make Share handling use a request-local Result value or a scoped cache lookup
+  without deleting unrelated rows from the global Result table;
+- if a Result reset is genuinely required for a specific owner, bind it to an
+  explicit session/generation and reject a stale reset once another session has
+  become authoritative;
+- make any required deletion an actually awaited repository operation rather
+  than a detached `viewModelScope` launch hidden behind a suspending API;
+- keep Main/Home search and playlist-selection state independent from exported
+  Share activity lifetime and navigation;
+- add regressions with a populated Home playlist/search followed by a new
+  `ACTION_SEND` URL and browsable `ACTION_VIEW` URL, an exact cached URL, duplicate
+  exact matches, and a deterministic concurrent Home parse/insert while Share is
+  handling its request, proving unrelated Result rows are never cleared.
 
 ## Current status
 
