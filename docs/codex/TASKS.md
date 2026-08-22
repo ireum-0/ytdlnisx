@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **59 active correctness defects** in this checkpoint. The previous
+There are **60 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 59-defect registry is intentionally retained here. The separate
+The broader 60-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 59-defect count unless they are explicitly promoted
+below do **not** change the 60-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-59-defect registry below.
+60-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 59 active defects
+### F1 remediation-discovered follow-up not counted in the 60 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2323,6 +2323,60 @@ Required result:
 - add deterministic Queued-details -> worker-claim -> Save races for ordinary and
   low-quality-linked downloads, plus already-PostProcessing, normal still-Queued,
   and subsequent configuration/queue-action regressions.
+
+### P2 — BUG-GROUP-01 — Make keyword and Youtuber group deletion atomic
+
+**State:** Open
+
+**Failure path:** the production History group-management UI deletes selected
+keyword groups and Youtuber groups directly from `HistoryFragment`. For each
+keyword group it calls `KeywordGroupDao.deleteMembersByGroup(id)` and then
+`deleteGroup(id)` as separate Room statements. For each Youtuber group it calls
+`YoutuberGroupDao.deleteMembersByGroup(id)`,
+`deleteRelationsByGroup(id)`, and finally `deleteGroup(id)`, again without one
+transaction spanning the logical deletion. The entity models do not declare
+foreign keys or cascade behavior from `keyword_group_members`,
+`youtuber_group_members`, or `youtuber_group_relations` to their group rows, so a
+later statement cannot rely on Room/SQLite to repair an earlier committed
+prefix.
+
+If keyword membership deletion commits and group deletion then throws or the
+process dies, the group survives but is silently emptied. In the Youtuber path,
+a failure after membership or relation deletion can leave the group present with
+part of its relationship graph already erased; a failure of the final group-row
+delete can leave an emptied/disconnected group, while a future reordering of the
+statements would also permit orphan relation rows because no FK protects them.
+Multi-selection repeats this non-atomic sequence group by group, so earlier
+groups can be fully deleted while a later one is only partially mutated. The UI
+resets filters/action state immediately after launching the IO coroutine and does
+not expose a partial-deletion result or rollback contract.
+
+**Why this is a defect:** deleting one logical group is a destructive mutation of
+the group and all relationships that define its contents/hierarchy, but the
+production command can durably commit only a prefix. A transient Room failure or
+process death can therefore lose keyword memberships, Youtuber memberships, or
+parent/child relationships while the affected group itself remains, and the
+normal UI gives no indication of which prefix committed. This is distinct from
+`BUG-PLAYLIST-01`, which owns playlist and playlist-group relationship deletion,
+and from `BUG-BACKUP-06`, which concerns remapping group identities during
+restore.
+
+Required result:
+
+- delete each keyword group together with all `KeywordGroupMember` rows in one
+  Room transaction or equivalent FK/cascade contract;
+- delete each Youtuber group together with every member row and every parent or
+  child `YoutuberGroupRelation` in one authoritative transaction;
+- define multi-selection deletion as all-or-nothing or return an explicit
+  per-group result rather than silently accepting a partially committed batch;
+- surface persistence failure without clearing/resetting the management UI as if
+  deletion definitely committed, and keep surviving groups' relationship graphs
+  intact;
+- add fault-injection/process-death regressions after keyword-member deletion,
+  after Youtuber-member deletion, after relation deletion, and before group-row
+  deletion, plus normal single/multi deletion and parent/child hierarchy tests
+  proving no surviving group loses only part of its graph and no orphan relation
+  survives.
 
 ### P3 — BUG-LOCALADD-02 — Persist local-add session input before durable worker enqueue
 
