@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **66 active correctness defects** in this checkpoint. The previous
+There are **67 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 66-defect registry is intentionally retained here. The separate
+The broader 67-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 66-defect count unless they are explicitly promoted
+below do **not** change the 67-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-66-defect registry below.
+67-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 66 active defects
+### F1 remediation-discovered follow-up not counted in the 67 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2925,6 +2925,57 @@ Required result:
   exact matches, and a deterministic concurrent Home parse/insert while Share is
   handling its request, proving unrelated Result rows are never cleared.
 
+### P3 — BUG-COOKIE-02 — Await Cookie clipboard export before reporting success
+
+**State:** Open
+
+**Failure path:** the production Cookies overflow menu handles Export Clipboard
+by calling `CookieViewModel.exportToClipboard()` and immediately showing the
+`copied_to_clipboard` success Snackbar. The view-model operation is not awaited
+by the Fragment: `exportToClipboard()` starts a `viewModelScope` coroutine and
+returns its `Job`, while the actual runtime-file read and clipboard mutation run
+later inside that coroutine.
+
+There is a concrete production failure path even without an injected clipboard
+exception. `exportToClipboard()` resolves the runtime `cookies.txt`; if the file
+does not exist it calls `updateCookiesFile()`, but that method itself launches a
+separate IO coroutine and returns immediately. The export coroutine then calls
+`cookieFile.readText()` without waiting for the rebuild to create/write the
+file. A missing runtime projection can therefore produce a read failure before
+the detached rebuild finishes. File reads, service lookup, and
+`ClipboardManager.setText()` can also throw independently. The export coroutine
+catches every `Exception` and only prints the stack trace, so none of those
+failures reaches the Fragment or retracts the already-shown success message; the
+clipboard can retain unrelated or older contents.
+
+**Why this is a defect:** a user-requested Cookie export can be reported as
+successfully copied before the clipboard write occurs, and can remain reported
+as successful when no clipboard mutation occurs at all. The missing-runtime-file
+case is reachable through ordinary runtime projection lifecycle rather than only
+fault injection. The impact is limited to this export path and does not itself
+mutate persistent application data, so it is P3. This is distinct from
+`BUG-COOKIE-01`, which owns the authoritative Room-to-runtime credential
+projection/revocation contract, and from `BUG-TEMPLATE-01`, which owns the
+separate Command Template export path.
+
+Required result:
+
+- expose Cookie clipboard export as one suspending or otherwise awaitable
+  operation whose result covers obtaining the current runtime cookie projection,
+  reading it, and completing the actual clipboard mutation;
+- if the runtime cookie file is missing or stale, await creation of the current
+  projection under the same authoritative cookie-generation contract rather
+  than launching a detached rebuild and racing its file read;
+- propagate projection/read/clipboard failure to the caller, preserve coroutine
+  cancellation, and do not swallow failure in a detached `viewModelScope` job;
+- show `copied_to_clipboard` only after a successful clipboard write and surface
+  an explicit failure without implying that pre-existing clipboard contents are
+  the requested export;
+- add deterministic missing-`cookies.txt` + delayed-rebuild, projection/file-read
+  failure, clipboard failure, pre-existing-stale-clipboard, normal existing-file,
+  and empty-cookie export regressions proving success cannot precede or outlive
+  the requested clipboard content.
+
 ## Current status
 
 | ID | Status | Current implementation and remaining evidence |
@@ -2947,7 +2998,7 @@ Required result:
 | `PLAYER-01` | Partial | `PlaybackQueueState` centralizes queue data, but lifecycle, Media3, subtitle, PiP, URI, and navigation behavior remains concentrated in `VideoPlayerActivity`. |
 | `TERM-01` | Implemented | Terminal command planning includes a dry-run/preview path and argument policy. |
 
-## Newly implemented capability
+## newly implemented capability
 
 The current branch also stores media source-publication time through result,
 download, and history records; reads provider-specific dates; displays and
