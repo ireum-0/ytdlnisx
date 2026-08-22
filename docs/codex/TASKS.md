@@ -130,6 +130,20 @@ commit), `BUG-HISTORY-02` owns retained-reference deletion TOCTOU, and
 loss of the exact mismatch reason). Other F1 P3 and verification follow-ups remain tracked
 in the remediation follow-up ledger.
 
+#### REMEDIATION-FOLLOWUP-TARGET-DELETED-QUEUE-COUNT-01
+
+**State:** Discovered
+**Severity:** P3 candidate
+**Ownership:** runnable queue/count accounting
+**Current Finding A impact:** non-blocking
+
+A `Download` carrying the authoritative `HISTORY_TARGET_DELETED` refusal may remain
+durably `Queued` while the actual runnable-download query correctly excludes it. The
+`runnableQueuedDownloadsCount` path currently counts queued rows without applying the
+same target-deleted eligibility predicate, so UI/state logic can report ghost runnable
+work even though the row must remain fail-closed. Align the count with runnable
+eligibility in a separate follow-up; do not mix that accounting change into Finding A.
+
 ## Active correctness defects
 
 ### P0 — BUG-BACKUP-01 — Remap History replacement markers during restore
