@@ -83,6 +83,9 @@ interface LowQualityRedownloadDao {
     suspend fun insertOperation(operation: LowQualityRedownloadOperation)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertOperation(operation: LowQualityRedownloadOperation)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertItem(item: LowQualityRedownloadItem)
 
     @Query(

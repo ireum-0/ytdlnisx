@@ -14,6 +14,7 @@ import com.ireum.ytdl.database.repository.HistoryReplacementAuthorization
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.util.BackupSettingsUtil
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -241,6 +242,147 @@ class HistoryReplacementBarrierPersistenceTest {
         assertEquals(issue.stage.name, current.lastIssueStage)
         assertEquals(0, db.downloadDao.reQueueDownloadItems(listOf(item.id)))
         assertEquals(DownloadRepository.Status.Paused.name, db.downloadDao.getDownloadById(item.id).status)
+    }
+
+    @Test
+    fun barrierOnlyRefusalIsProjectedThroughBackupAndRestoredWithNewDownloadId() = runBlocking {
+        val historyId = insertHistory()
+        val item = insertDownload(DownloadType.video)
+        val repository = DownloadRepository(db)
+        repository().authorizeHistoryReplacement(
+            historyId = historyId,
+            expectedSourceUrl = OTHER_URL,
+            expectedType = DownloadType.video,
+            replacementDownloadId = item.id,
+            replacementOperationId = item.operationId,
+        )
+
+        val barrier = db.historyReplacementBarrierDao.getByDownloadId(item.id)!!
+        assertEquals("", db.downloadDao.getDownloadById(item.id).lastIssueCode)
+        val backupItem = repository.getQueuedDownloadsForBackup().single { it.id == item.id }
+        assertEquals(barrier.issueCode, backupItem.lastIssueCode)
+        assertEquals(barrier.issueStage, backupItem.lastIssueStage)
+
+        val restoredId = repository.insertRestoredDownload(
+            backupItem.copy(id = 0L),
+            barrier.copy(downloadId = 0L),
+        )
+        assertTrue(restoredId != item.id)
+        assertEquals(
+            barrier.issueCode,
+            db.historyReplacementBarrierDao.getByDownloadId(restoredId)?.issueCode,
+        )
+        assertEquals(
+            HistoryReplacementAuthorization.SourceMismatch,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = restoredId,
+                replacementOperationId = item.operationId,
+            )
+        )
+    }
+
+    @Test
+    fun barrierIsRestoredByRepositoryUndoPrimitive() = runBlocking {
+        val historyId = insertHistory()
+        val item = insertDownload(DownloadType.video)
+        val repository = DownloadRepository(db)
+        repository().authorizeHistoryReplacement(
+            historyId = historyId,
+            expectedSourceUrl = OTHER_URL,
+            expectedType = DownloadType.video,
+            replacementDownloadId = item.id,
+            replacementOperationId = item.operationId,
+        )
+        val barrier = db.historyReplacementBarrierDao.getByDownloadId(item.id)!!
+
+        repository.delete(item.id)
+        assertEquals(null, db.downloadDao.getNullableDownloadById(item.id))
+        assertEquals(null, db.historyReplacementBarrierDao.getByDownloadId(item.id))
+
+        val restoredId = repository.insert(item)
+        val restoredBarrier = db.historyReplacementBarrierDao.getByDownloadId(restoredId)
+        assertEquals(barrier.issueCode, restoredBarrier?.issueCode)
+        assertEquals(barrier.issueStage, restoredBarrier?.issueStage)
+        assertEquals(
+            HistoryReplacementAuthorization.SourceMismatch,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = restoredId,
+                replacementOperationId = item.operationId,
+            )
+        )
+    }
+
+    @Test
+    fun typeMismatchBarrierOnlyStateIsProjectedAndRestored() = runBlocking {
+        val historyId = insertHistory()
+        val item = insertDownload(DownloadType.audio)
+        val repository = DownloadRepository(db)
+        repository().authorizeHistoryReplacement(
+            historyId = historyId,
+            expectedSourceUrl = HISTORY_URL,
+            expectedType = DownloadType.audio,
+            replacementDownloadId = item.id,
+            replacementOperationId = item.operationId,
+        )
+        val barrier = db.historyReplacementBarrierDao.getByDownloadId(item.id)!!
+        val backupItem = repository.getQueuedDownloadsForBackup().single { it.id == item.id }
+        assertEquals(barrier.issueCode, backupItem.lastIssueCode)
+
+        val restoredId = repository.insertRestoredDownload(
+            backupItem.copy(id = 0L),
+            barrier.copy(downloadId = 0L),
+        )
+        assertEquals(
+            HistoryReplacementAuthorization.TypeMismatch,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = restoredId,
+                replacementOperationId = item.operationId,
+            )
+        )
+    }
+
+    @Test
+    fun targetDeletedBarrierOnlyStateIsProjectedAndRestored() = runBlocking {
+        val historyId = insertHistory()
+        val item = insertDownload(DownloadType.video)
+        db.historyDao.deleteById(historyId)
+        repository().authorizeHistoryReplacement(
+            historyId = historyId,
+            expectedSourceUrl = HISTORY_URL,
+            expectedType = DownloadType.video,
+            replacementDownloadId = item.id,
+            replacementOperationId = item.operationId,
+        )
+        val barrier = db.historyReplacementBarrierDao.getByDownloadId(item.id)!!
+        val backupItem = DownloadRepository(db)
+            .getQueuedDownloadsForBackup()
+            .single { it.id == item.id }
+        assertEquals("HISTORY_TARGET_DELETED", backupItem.lastIssueCode)
+
+        val restoredId = DownloadRepository(db).insertRestoredDownload(
+            backupItem.copy(id = 0L),
+            barrier.copy(downloadId = 0L),
+        )
+        db.historyDao.insertRaw(history().copy(id = historyId))
+        assertEquals(
+            HistoryReplacementAuthorization.TargetMissing,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = restoredId,
+                replacementOperationId = item.operationId,
+            )
+        )
     }
 
     private fun repository() = HistoryKeywordAssignmentRepository(db)

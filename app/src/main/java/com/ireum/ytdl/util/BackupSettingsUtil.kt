@@ -57,73 +57,48 @@ object BackupSettingsUtil {
     }
 
     suspend fun backupQueuedDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                downloadRepository.getQueuedDownloads()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
+        val items = withContext(Dispatchers.IO) {
+            downloadRepository.getQueuedDownloadsForBackup()
         }
-        return JsonArray()
+        return JsonArray().also { arr ->
+            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
+        }
     }
 
     suspend fun backupScheduledDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                downloadRepository.getScheduledDownloads()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
+        val items = withContext(Dispatchers.IO) {
+            downloadRepository.getScheduledDownloadsForBackup()
         }
-        return JsonArray()
+        return JsonArray().also { arr ->
+            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
+        }
     }
 
     suspend fun backupCancelledDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                downloadRepository.getCancelledDownloads()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
+        val items = withContext(Dispatchers.IO) {
+            downloadRepository.getCancelledDownloadsForBackup()
         }
-        return JsonArray()
+        return JsonArray().also { arr ->
+            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
+        }
     }
 
     suspend fun backupErroredDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                downloadRepository.getErroredDownloads()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
+        val items = withContext(Dispatchers.IO) {
+            downloadRepository.getErroredDownloadsForBackup()
         }
-        return JsonArray()
+        return JsonArray().also { arr ->
+            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
+        }
     }
 
     suspend fun backupSavedDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                downloadRepository.getSavedDownloads()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
+        val items = withContext(Dispatchers.IO) {
+            downloadRepository.getSavedDownloadsForBackup()
         }
-        return JsonArray()
+        return JsonArray().also { arr ->
+            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
+        }
     }
 
     suspend fun backupCookies(cookieRepository: CookieRepository) : JsonArray {

@@ -22,6 +22,7 @@ import com.ireum.ytdl.database.dao.YoutuberGroupDao
 import com.ireum.ytdl.database.dao.YoutuberMetaDao
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.models.BackupCustomThumbItem
+import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.AutomaticKeywordRuleTypes
 import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
@@ -33,6 +34,7 @@ import com.ireum.ytdl.database.repository.CookieRepository
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.SearchHistoryRepository
 import com.ireum.ytdl.util.BackupSettingsUtil
@@ -55,6 +57,11 @@ import java.util.concurrent.TimeUnit
 
 
 class SettingsViewModel(private val application: Application) : AndroidViewModel(application) {
+    private data class RemappedDownload(
+        val item: com.ireum.ytdl.database.models.DownloadItem,
+        val barrier: HistoryReplacementBarrier? = null,
+    )
+
     private val prefVisibleChildYoutuberGroupsKey = "history_visible_child_youtuber_groups"
     private val prefVisibleChildYoutubersKey = "history_visible_child_youtubers"
     private val prefVisibleChildKeywordsKey = "history_visible_child_keywords"
@@ -540,7 +547,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
             val liveObserveSourceIdCache = mutableMapOf<Long, Long?>()
             fun remapRestoredDownload(item: com.ireum.ytdl.database.models.DownloadItem) :
-                com.ireum.ytdl.database.models.DownloadItem {
+                RemappedDownload {
                 val oldSourceId = item.observeSourceId
                 val restoredSourceId = if (oldSourceId <= 0L) {
                     0L
@@ -573,27 +580,81 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     observeSourceId = restoredSourceId ?: 0L,
                     status = restoredStatus
                 )
+                val persistedRefusal = HistoryReplacementDiagnostic
+                    .persistedHistoryReplacementIssue(remappedItem.lastIssueCode)
                 return when (val marker = HistoryRedownloadMarker.remap(
                     remappedItem.playlistURL,
                     importedHistoryIdMap
                 )) {
-                    com.ireum.ytdl.util.RestoreRemapResult.NotMarker -> remappedItem
-                    is com.ireum.ytdl.util.RestoreRemapResult.Mapped -> remappedItem.copy(
-                        playlistURL = marker.encodedMarker
-                    )
-                    com.ireum.ytdl.util.RestoreRemapResult.Unmappable -> remappedItem.copy(
-                        playlistURL = "",
-                        status = DownloadRepository.Status.Error.toString(),
-                        lastIssueCode = DownloadIssueCode.HISTORY_TARGET_DELETED.name,
-                        lastIssueStage = DownloadIssueStage.HISTORY.name
-                    )
+                    com.ireum.ytdl.util.RestoreRemapResult.NotMarker ->
+                        if (persistedRefusal == null) {
+                            RemappedDownload(remappedItem)
+                        } else {
+                            RemappedDownload(
+                                item = remappedItem.copy(
+                                    playlistURL = "",
+                                    status = DownloadRepository.Status.Error.toString(),
+                                )
+                            )
+                        }
+                    is com.ireum.ytdl.util.RestoreRemapResult.Mapped -> {
+                        val mappedItem = remappedItem.copy(playlistURL = marker.encodedMarker)
+                        val mappedHistoryId = HistoryRedownloadMarker.parse(marker.encodedMarker)
+                            ?.historyId
+                        val canReconstructBarrier = persistedRefusal != null &&
+                            mappedHistoryId != null &&
+                            mappedHistoryId > 0L &&
+                            mappedItem.operationId.isNotBlank() &&
+                            mappedItem.url.isNotBlank()
+                        if (!canReconstructBarrier) {
+                            RemappedDownload(
+                                item = if (persistedRefusal == null) {
+                                    mappedItem
+                                } else {
+                                    mappedItem.copy(
+                                        playlistURL = "",
+                                        status = DownloadRepository.Status.Error.toString(),
+                                    )
+                                }
+                            )
+                        } else {
+                            RemappedDownload(
+                                item = mappedItem,
+                                barrier = HistoryReplacementBarrier(
+                                    downloadId = 0L,
+                                    operationId = mappedItem.operationId,
+                                    historyId = mappedHistoryId!!,
+                                    expectedSourceUrl = mappedItem.url,
+                                    expectedType = mappedItem.type.name,
+                                    issueCode = persistedRefusal!!.code.name,
+                                    issueStage = remappedItem.lastIssueStage.ifBlank {
+                                        persistedRefusal.stage.name
+                                    },
+                                    createdAt = System.currentTimeMillis(),
+                                )
+                            )
+                        }
+                    }
+                    com.ireum.ytdl.util.RestoreRemapResult.Unmappable ->
+                        RemappedDownload(
+                            item = remappedItem.copy(
+                                playlistURL = "",
+                                status = DownloadRepository.Status.Error.toString(),
+                                lastIssueCode = persistedRefusal?.code?.name
+                                    ?: DownloadIssueCode.HISTORY_TARGET_DELETED.name,
+                                lastIssueStage = remappedItem.lastIssueStage.ifBlank {
+                                    persistedRefusal?.stage?.name ?: DownloadIssueStage.HISTORY.name
+                                },
+                            )
+                        )
                 }
             }
 
             data.queued?.let { queued ->
                 withContext(Dispatchers.IO){
                     queued.forEach { item ->
-                        downloadRepository.insert(remapRestoredDownload(item))
+                        val restored = remapRestoredDownload(item)
+                        downloadRepository.insertRestoredDownload(restored.item, restored.barrier)
                     }
                     downloadRepository.startDownloadWorker(listOf(), application)
                 }
@@ -609,8 +670,12 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     }
                     val restoredScheduled = mutableListOf<com.ireum.ytdl.database.models.DownloadItem>()
                     data.scheduled!!.forEach {
-                        val restoredItem = remapRestoredDownload(it)
-                        restoredItem.id = downloadRepository.insert(restoredItem)
+                        val restored = remapRestoredDownload(it)
+                        val restoredItem = restored.item
+                        restoredItem.id = downloadRepository.insertRestoredDownload(
+                            restored.item,
+                            restored.barrier,
+                        )
                         restoredScheduled.add(restoredItem)
                     }
                     downloadRepository.startDownloadWorker(restoredScheduled, application)
@@ -626,7 +691,8 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         )
                     }
                     data.cancelled!!.forEach {
-                        downloadRepository.insert(remapRestoredDownload(it))
+                        val restored = remapRestoredDownload(it)
+                        downloadRepository.insertRestoredDownload(restored.item, restored.barrier)
                     }
                 }
             }
@@ -635,7 +701,8 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 withContext(Dispatchers.IO){
                     if (resetData) downloadRepository.deleteErrored()
                     data.errored!!.forEach {
-                        downloadRepository.insert(remapRestoredDownload(it))
+                        val restored = remapRestoredDownload(it)
+                        downloadRepository.insertRestoredDownload(restored.item, restored.barrier)
                     }
                 }
             }
@@ -644,7 +711,8 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 withContext(Dispatchers.IO){
                     if (resetData) downloadRepository.deleteSaved()
                     data.saved!!.forEach {
-                        downloadRepository.insert(remapRestoredDownload(it))
+                        val restored = remapRestoredDownload(it)
+                        downloadRepository.insertRestoredDownload(restored.item, restored.barrier)
                     }
                 }
             }

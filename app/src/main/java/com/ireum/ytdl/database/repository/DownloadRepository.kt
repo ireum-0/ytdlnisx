@@ -21,7 +21,10 @@ import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.DownloadItemConfigureMultiple
 import com.ireum.ytdl.database.models.DownloadItemSimple
+import com.ireum.ytdl.database.models.HistoryReplacementBarrier
+import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
+import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.util.Extensions.toListString
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
@@ -38,6 +41,7 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 
 
 class DownloadExecutionOwnershipLostException(
@@ -101,6 +105,20 @@ class DownloadRepository(private val database: DBManager) {
         val affectedOperationIds: Set<String> = emptySet()
     )
 
+    data class DownloadRemovalSnapshot(
+        val download: DownloadItem,
+        val barrier: HistoryReplacementBarrier,
+        val linkedItem: LowQualityRedownloadItem? = null,
+        val linkedOperation: LowQualityRedownloadOperation? = null,
+    )
+
+    private data class DownloadRemovalResult(
+        val affectedOperationIds: Set<String>,
+        val snapshot: DownloadRemovalSnapshot?,
+    )
+
+    private val pendingRemovalSnapshots = ConcurrentHashMap<Long, DownloadRemovalSnapshot>()
+
     data class PendingCancellationResolution(
         val restoredStatus: Status? = null,
         val affectedOperationIds: Set<String> = emptySet()
@@ -112,7 +130,25 @@ class DownloadRepository(private val database: DBManager) {
     )
 
     suspend fun insert(item: DownloadItem) : Long {
+        restorePendingRemoval(item.id)?.let { return it }
         return downloadDao.insert(item)
+    }
+
+    suspend fun insertRestoredDownload(
+        item: DownloadItem,
+        barrier: HistoryReplacementBarrier?,
+    ): Long = database.withTransaction {
+        val restoredId = downloadDao.insert(item.copy(id = 0L, executionId = ""))
+        barrier?.let { source ->
+            val restoredBarrier = source.copy(downloadId = restoredId)
+            database.historyReplacementBarrierDao.insertIfAbsent(restoredBarrier)
+            check(
+                database.historyReplacementBarrierDao.getByDownloadId(restoredId) == restoredBarrier
+            ) {
+                "History replacement refusal was not restored for download $restoredId"
+            }
+        }
+        restoredId
     }
 
     suspend fun insertAll(items: List<DownloadItem>) : List<Long> {
@@ -124,7 +160,34 @@ class DownloadRepository(private val database: DBManager) {
 
     suspend fun delete(id: Long): Set<String> {
         val item = downloadDao.getNullableDownloadById(id) ?: return emptySet()
-        return deleteKnownUserRemoval(listOf(item))
+        val result = database.withTransaction {
+            val barrier = database.historyReplacementBarrierDao.getByDownloadId(id)
+            val linkedItem = database.lowQualityRedownloadDao.getItemByDownloadId(id)
+            val linkedOperation = linkedItem?.let {
+                database.lowQualityRedownloadDao.getOperation(it.operationId)
+            }
+            val snapshot = barrier?.let {
+                DownloadRemovalSnapshot(
+                    download = item,
+                    barrier = it,
+                    linkedItem = linkedItem,
+                    linkedOperation = linkedOperation,
+                )
+            }
+            val affectedOperationIds = terminalizeLinkedChildren(
+                downloadIds = listOf(id),
+                reason = REASON_USER_REMOVED,
+                now = System.currentTimeMillis(),
+            )
+            database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
+            downloadDao.delete(id)
+            DownloadRemovalResult(affectedOperationIds, snapshot)
+        }
+        result.snapshot?.let { snapshot ->
+            pendingRemovalSnapshots[snapshot.download.id] = snapshot
+        }
+        deleteCache(listOf(item))
+        return result.affectedOperationIds
     }
 
     private fun deleteCache(items: List<DownloadItem>) {
@@ -135,16 +198,125 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun update(item: DownloadItem) : Long {
+        restorePendingRemoval(item.id)?.let { return it }
         return if (item.id <= 0L) downloadDao.insert(item) else downloadDao.update(item)
     }
 
     suspend fun updateAll(list: List<DownloadItem>) : List<DownloadItem> {
-        return downloadDao.updateAll(list)
+        val restoredIds = mutableMapOf<Long, Long>()
+        val remaining = mutableListOf<DownloadItem>()
+        list.forEach { item ->
+            val restoredId = restorePendingRemoval(item.id)
+            if (restoredId == null) {
+                remaining += item
+            } else {
+                restoredIds[item.id] = restoredId
+            }
+        }
+        val updated = downloadDao.updateAll(remaining)
+        val updatedById = updated.associateBy { it.id }
+        return list.map { item ->
+            restoredIds[item.id]?.let { restoredId ->
+                item.copy(id = restoredId)
+            } ?: updatedById[item.id] ?: item
+        }
     }
 
     suspend fun updateWithoutUpsert(item: DownloadItem){
         kotlin.runCatching { downloadDao.updateWithoutUpsert(item) }
     }
+
+    private suspend fun restorePendingRemoval(downloadId: Long): Long? {
+        if (downloadId <= 0L) return null
+        val snapshot = pendingRemovalSnapshots.remove(downloadId) ?: return null
+        return try {
+            restoreRemovalSnapshot(snapshot)
+        } catch (error: Exception) {
+            pendingRemovalSnapshots[downloadId] = snapshot
+            throw error
+        }
+    }
+
+    private suspend fun restoreRemovalSnapshot(
+        snapshot: DownloadRemovalSnapshot,
+    ): Long = database.withTransaction {
+        val restoredItem = snapshot.download.copy(
+            id = 0L,
+            status = if (
+                snapshot.download.status in setOf(
+                    Status.Active.name,
+                    Status.PostProcessing.name,
+                )
+            ) {
+                Status.Queued.name
+            } else {
+                snapshot.download.status
+            },
+            executionId = "",
+        )
+        val restoredId = downloadDao.insert(restoredItem)
+        val restoredBarrier = snapshot.barrier.copy(downloadId = restoredId)
+        database.historyReplacementBarrierDao.insertIfAbsent(restoredBarrier)
+        check(
+            database.historyReplacementBarrierDao.getByDownloadId(restoredId) == restoredBarrier
+        ) {
+            "History replacement refusal was not restored for download $restoredId"
+        }
+
+        snapshot.linkedOperation?.let { operation ->
+            database.lowQualityRedownloadDao.upsertOperation(operation)
+        }
+        snapshot.linkedItem?.let { item ->
+            database.lowQualityRedownloadDao.upsertItem(
+                item.copy(
+                    downloadId = if (item.downloadId == snapshot.download.id) {
+                        restoredId
+                    } else {
+                        item.downloadId
+                    }
+                )
+            )
+        }
+        restoredId
+    }
+
+    private suspend fun projectHistoryRefusalsForBackup(
+        items: List<DownloadItem>,
+    ): List<DownloadItem> = database.withTransaction {
+        if (items.isEmpty()) return@withTransaction emptyList()
+        val barriers = database.historyReplacementBarrierDao
+            .getByDownloadIds(items.map(DownloadItem::id))
+            .associateBy(HistoryReplacementBarrier::downloadId)
+        items.map { item ->
+            val barrier = barriers[item.id] ?: return@map item.copy()
+            check(
+                HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(
+                    barrier.issueCode
+                )
+            ) {
+                "Invalid History replacement refusal barrier for backup ${item.id}"
+            }
+            item.copy(
+                lastIssueCode = barrier.issueCode,
+                lastIssueStage = barrier.issueStage,
+            )
+        }
+    }
+
+    suspend fun getQueuedDownloadsForBackup(): List<DownloadItem> =
+        projectHistoryRefusalsForBackup(getQueuedDownloads())
+
+    suspend fun getScheduledDownloadsForBackup(): List<DownloadItem> =
+        projectHistoryRefusalsForBackup(getScheduledDownloads())
+
+    suspend fun getCancelledDownloadsForBackup(): List<DownloadItem> =
+        projectHistoryRefusalsForBackup(getCancelledDownloads())
+
+    suspend fun getErroredDownloadsForBackup(): List<DownloadItem> =
+        projectHistoryRefusalsForBackup(getErroredDownloads())
+
+    suspend fun getSavedDownloadsForBackup(): List<DownloadItem> =
+        projectHistoryRefusalsForBackup(getSavedDownloads())
 
 
     suspend fun setDownloadStatus(id: Long, status: Status) {
