@@ -575,6 +575,9 @@ or `finishRunAndSchedule()`, its full-row update writes the pre-edit values back
 over the same source ID. Fields owned by the user edit, such as URL/name,
 cadence, filters, templates, retry/sync options, termination settings, and other
 configuration, can therefore be silently reverted along with runtime fields.
+Cancellation of the old WorkManager request after the edit does not close the
+race because cancellation is not the commit boundary for the preceding DB edit,
+and no DAO CAS rejects a late stale write.
 
 The stale worker can then calculate and enqueue its successor from the reverted
 snapshot. A newer replacement worker scheduled by the edit and the stale
@@ -814,8 +817,9 @@ terminal completed notification and return `Result.success()`.
 
 There is a second consequence: child lookup failures that have already been
 converted into terminal `FAILED` item outcomes do not escape as coordinator
-exceptions. Because the worker still succeeds, WorkManager does not explicitly
-retry those failed items even when the underlying lookup failure was transient.
+exceptions. Because the worker still succeeds, WorkManager does not
+explicitly retry those failed items even when the underlying lookup failure was
+transient.
 
 **Why this is a defect:** parent state, notification state, and retry behavior
 can all claim completion while part or all of the requested backfill failed.
