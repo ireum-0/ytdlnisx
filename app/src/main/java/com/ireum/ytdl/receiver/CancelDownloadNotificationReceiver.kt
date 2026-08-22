@@ -34,7 +34,8 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
                             }
                             runCatching {
                                 val affectedOperationIds = DownloadRepository(dbManager).cancelByUser(
-                                    id.toLong()
+                                    id.toLong(),
+                                    expectedExecutionId.takeIf { it.isNotBlank() },
                                 )
                                 LowQualityRedownloadLedger.refresh(c, affectedOperationIds)
                             }

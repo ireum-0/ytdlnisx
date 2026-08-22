@@ -665,10 +665,18 @@ class DownloadRepository(private val database: DBManager) {
         convergeHistoryReplacementRefusalLocked(id, expectedExecutionId, forceError)
 
 
-    suspend fun setDownloadStatus(id: Long, status: Status) {
+    suspend fun setDownloadStatus(
+        id: Long,
+        status: Status,
+        expectedExecutionId: String? = null,
+    ) {
         database.withTransaction {
             val current = downloadDao.getNullableDownloadById(id)
                 ?: return@withTransaction
+            val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
+            if (expected != null && current.executionId != expected) {
+                return@withTransaction
+            }
             if (
                 status in setOf(Status.Paused, Status.Cancelled) &&
                     current.executionId.isNotBlank()
@@ -944,8 +952,15 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun deleteAllWithIDs(ids: List<Long>): Set<String> =
         deleteKnownUserRemoval(downloadDao.getDownloadsByIdsSuspend(ids.distinct()))
 
-    suspend fun cancelByUser(id: Long): Set<String> = database.withTransaction {
+    suspend fun cancelByUser(
+        id: Long,
+        expectedExecutionId: String? = null,
+    ): Set<String> = database.withTransaction {
         val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction emptySet()
+        val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
+        if (expected != null && item.executionId != expected) {
+            return@withTransaction emptySet()
+        }
         val changed = if (item.executionId.isBlank()) {
             downloadDao.cancelByUser(item.id) == 1
         } else {
@@ -1112,10 +1127,17 @@ class DownloadRepository(private val database: DBManager) {
         }
     }
 
-    suspend fun beginUndoableCancellation(id: Long): UndoableCancellation =
+    suspend fun beginUndoableCancellation(
+        id: Long,
+        expectedExecutionId: String? = null,
+    ): UndoableCancellation =
         database.withTransaction {
             val item = downloadDao.getNullableDownloadById(id)
                 ?: return@withTransaction UndoableCancellation()
+            val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
+            if (expected != null && item.executionId != expected) {
+                return@withTransaction UndoableCancellation()
+            }
             val refusal = persistedHistoryRefusalLocked(id)
             if (refusal != null) {
                 val changed = if (item.executionId.isBlank()) {

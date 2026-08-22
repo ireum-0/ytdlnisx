@@ -1981,11 +1981,15 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         val first = dao.getFirstProcessingDownload()
     }
 
-    suspend fun updateToStatus(id: Long, status: DownloadRepository.Status) {
+    suspend fun updateToStatus(
+        id: Long,
+        status: DownloadRepository.Status,
+        expectedExecutionId: String? = null,
+    ) {
         if (status == DownloadRepository.Status.Saved) {
             LowQualityRedownloadLedger.refresh(application, repository.moveToSaved(id))
         } else {
-            repository.setDownloadStatus(id, status)
+            repository.setDownloadStatus(id, status, expectedExecutionId)
         }
     }
 
@@ -2077,33 +2081,51 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     ) {
         withContext(Dispatchers.IO) {
             withDownloadWorkerExecutionLock {
-                val current = dao.getNullableDownloadById(id)
-                val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
-                if (
-                    current != null &&
-                        expected != null &&
-                        current.executionId == expected
-                ) {
-                    com.ireum.ytdl.work.DownloadWorker.cancelProcessesForExecution(id, expected)
-                }
-                notificationUtil.cancelDownloadNotification(id.toInt())
-                notificationUtil.cancelMembershipWaitingNotification(id)
+                cancelDownloadOnlyLocked(id, expectedExecutionId)
             }
         }
     }
 
+    private suspend fun cancelDownloadOnlyLocked(
+        id: Long,
+        expectedExecutionId: String?,
+    ) {
+        val current = dao.getNullableDownloadById(id)
+        val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
+        if (
+            current != null &&
+                expected != null &&
+                current.executionId == expected
+        ) {
+            com.ireum.ytdl.work.DownloadWorker.cancelProcessesForExecution(id, expected)
+        }
+        notificationUtil.cancelDownloadNotification(id.toInt())
+        notificationUtil.cancelMembershipWaitingNotification(id)
+    }
+
     suspend fun cancelDownload(id: Long) {
-        val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
-        LowQualityRedownloadLedger.refresh(application, repository.cancelByUser(id))
-        cancelDownloadOnly(id, expectedExecutionId)
+        withContext(Dispatchers.IO) {
+            withDownloadWorkerExecutionLock {
+                val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
+                LowQualityRedownloadLedger.refresh(
+                    application,
+                    repository.cancelByUser(id, expectedExecutionId),
+                )
+                cancelDownloadOnlyLocked(id, expectedExecutionId)
+            }
+        }
     }
 
     suspend fun beginUndoableCancellation(id: Long): String? {
-        val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
-        val outcome = repository.beginUndoableCancellation(id)
-        LowQualityRedownloadLedger.refresh(application, outcome.affectedOperationIds)
-        cancelDownloadOnly(id, expectedExecutionId)
-        return outcome.pendingToken
+        return withContext(Dispatchers.IO) {
+            withDownloadWorkerExecutionLock {
+                val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
+                val outcome = repository.beginUndoableCancellation(id, expectedExecutionId)
+                LowQualityRedownloadLedger.refresh(application, outcome.affectedOperationIds)
+                cancelDownloadOnlyLocked(id, expectedExecutionId)
+                outcome.pendingToken
+            }
+        }
     }
 
     /**
@@ -2174,9 +2196,17 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun pauseDownload(id: Long)  {
-        val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
-        updateToStatus(id, DownloadRepository.Status.Paused)
-        cancelDownloadOnly(id, expectedExecutionId)
+        withContext(Dispatchers.IO) {
+            withDownloadWorkerExecutionLock {
+                val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
+                updateToStatus(
+                    id,
+                    DownloadRepository.Status.Paused,
+                    expectedExecutionId,
+                )
+                cancelDownloadOnlyLocked(id, expectedExecutionId)
+            }
+        }
     }
 
     suspend fun pauseAllDownloads() {

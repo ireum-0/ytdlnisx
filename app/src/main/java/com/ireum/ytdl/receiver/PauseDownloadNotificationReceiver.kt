@@ -39,6 +39,7 @@ class PauseDownloadNotificationReceiver : BroadcastReceiver() {
                         DownloadRepository(dbManager).setDownloadStatus(
                             item.id,
                             DownloadRepository.Status.Paused,
+                            expectedExecutionId,
                         )
                         notificationUtil.cancelDownloadNotification(id)
                         DownloadWorker.cancelProcessesForExecution(
