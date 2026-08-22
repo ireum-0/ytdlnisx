@@ -2938,7 +2938,7 @@ later inside that coroutine.
 
 There is a concrete production failure path even without an injected clipboard
 exception. `exportToClipboard()` resolves the runtime `cookies.txt`; if the file
-does not exist it calls `updateCookiesFile()`, but that method itself launches a
+not exist it calls `updateCookiesFile()`, but that method itself launches a
 separate IO coroutine and returns immediately. The export coroutine then calls
 `cookieFile.readText()` without waiting for the rebuild to create/write the
 file. A missing runtime projection can therefore produce a read failure before
@@ -2998,7 +2998,7 @@ Required result:
 | `PLAYER-01` | Partial | `PlaybackQueueState` centralizes queue data, but lifecycle, Media3, subtitle, PiP, URI, and navigation behavior remains concentrated in `VideoPlayerActivity`. |
 | `TERM-01` | Implemented | Terminal command planning includes a dry-run/preview path and argument policy. |
 
-## newly implemented capability
+## Newly implemented capability
 
 The current branch also stores media source-publication time through result,
 download, and history records; reads provider-specific dates; displays and
