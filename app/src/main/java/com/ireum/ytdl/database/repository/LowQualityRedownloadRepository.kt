@@ -415,6 +415,12 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                     item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
                     item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX)
             ) {
+                if (DownloadRepository.isLivePendingRemovalToken(item.reasonCode)) {
+                    // A live Snackbar Undo token is still authoritative.  A
+                    // routine reconcile must not consume it before the exact
+                    // Undo action or explicit commit gets to run.
+                    return@forEach
+                }
                 // A process death or coordinator reconciliation commits an
                 // unresolved delete-for-Undo token rather than inventing a
                 // generic failure for the missing, intentionally hidden row.

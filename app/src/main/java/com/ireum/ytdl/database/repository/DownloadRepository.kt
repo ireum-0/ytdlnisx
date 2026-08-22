@@ -195,14 +195,24 @@ class DownloadRepository(private val database: DBManager) {
      */
     suspend fun deleteForUndo(id: Long): DownloadUndoHandle? {
         val token = DownloadUndoToken("$PENDING_REMOVAL_TOKEN_PREFIX${UUID.randomUUID()}")
-        val result = removeDownloadWithSnapshot(id, token.value) ?: return null
-        val snapshot = result.snapshot ?: return null
-        pendingRemovalSnapshots[token.value] = snapshot
-        return DownloadUndoHandle(
-            token = token,
-            item = snapshot.download,
-            affectedOperationIds = result.affectedOperationIds,
-        )
+        registerLivePendingRemovalToken(token.value)
+        try {
+            val result = removeDownloadWithSnapshot(id, token.value)
+            val snapshot = result?.snapshot
+            if (snapshot == null) {
+                unregisterLivePendingRemovalToken(token.value)
+                return null
+            }
+            pendingRemovalSnapshots[token.value] = snapshot
+            return DownloadUndoHandle(
+                token = token,
+                item = snapshot.download,
+                affectedOperationIds = result.affectedOperationIds,
+            )
+        } catch (error: Exception) {
+            unregisterLivePendingRemovalToken(token.value)
+            throw error
+        }
     }
 
     private suspend fun removeDownload(id: Long): Set<String> {
@@ -299,7 +309,9 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun restoreUndo(token: DownloadUndoToken): Long? {
         val snapshot = pendingRemovalSnapshots.remove(token.value) ?: return null
         return try {
-            restoreRemovalSnapshot(snapshot)
+            restoreRemovalSnapshot(snapshot).also {
+                unregisterLivePendingRemovalToken(token.value)
+            }
         } catch (error: Exception) {
             pendingRemovalSnapshots[token.value] = snapshot
             throw error
@@ -310,7 +322,9 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun commitUndo(token: DownloadUndoToken): Set<String> {
         val snapshot = pendingRemovalSnapshots.remove(token.value) ?: return emptySet()
         return try {
-            commitRemovalSnapshot(snapshot)
+            commitRemovalSnapshot(snapshot).also {
+                unregisterLivePendingRemovalToken(token.value)
+            }
         } catch (error: Exception) {
             pendingRemovalSnapshots[token.value] = snapshot
             throw error
@@ -1496,6 +1510,22 @@ class DownloadRepository(private val database: DBManager) {
         const val REASON_HISTORY_TARGET_DELETED = "HISTORY_TARGET_DELETED"
         const val PENDING_CANCELLATION_TOKEN_PREFIX = "PENDING_USER_CANCELLATION:"
         const val PENDING_REMOVAL_TOKEN_PREFIX = "PENDING_USER_REMOVAL:"
+        private val livePendingRemovalTokens = ConcurrentHashMap.newKeySet<String>()
+
+        internal fun isLivePendingRemovalToken(token: String): Boolean =
+            livePendingRemovalTokens.contains(token)
+
+        private fun registerLivePendingRemovalToken(token: String) {
+            livePendingRemovalTokens += token
+        }
+
+        private fun unregisterLivePendingRemovalToken(token: String) {
+            livePendingRemovalTokens -= token
+        }
+
+        internal fun clearLivePendingRemovalTokensForTest() {
+            livePendingRemovalTokens.clear()
+        }
         private const val DOWNLOAD_WORK_NAME = "download"
         private const val SCHEDULED_DOWNLOAD_WORK_NAME = "scheduledDownload"
     }

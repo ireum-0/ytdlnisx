@@ -420,6 +420,63 @@ class LowQualityRedownloadPersistenceTest {
     }
 
     @Test
+    fun liveUndoTokenSurvivesRoutineReconciliation() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 309, DownloadRepository.Status.Queued)
+        val downloadRepository = DownloadRepository(database)
+        val undoHandle = downloadRepository.deleteForUndo(linkedId)!!
+
+        LowQualityRedownloadRepository(database).reconcileLinkedDownloads(operation.operationId)
+
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        val restoredId = downloadRepository.restoreUndo(undoHandle.token)!!
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(
+            DownloadRepository.Status.Queued,
+            DownloadRepository.Status.valueOf(database.downloadDao.getDownloadById(restoredId).status),
+        )
+    }
+
+    @Test
+    fun liveUndoTokenSurvivesReconciliationUntilExplicitCommit() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 310, DownloadRepository.Status.Queued)
+        val downloadRepository = DownloadRepository(database)
+        val undoHandle = downloadRepository.deleteForUndo(linkedId)!!
+
+        LowQualityRedownloadRepository(database).reconcileLinkedDownloads(operation.operationId)
+        assertEquals(
+            setOf(operation.operationId),
+            downloadRepository.commitUndo(undoHandle.token),
+        )
+        val child = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.CANCELLED, child.stateValue)
+        assertEquals(DownloadRepository.REASON_USER_REMOVED, child.reasonCode)
+    }
+
+    @Test
+    fun reconstructedProcessCommitsAbandonedPendingRemoval() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 311, DownloadRepository.Status.Queued)
+        val downloadRepository = DownloadRepository(database)
+        downloadRepository.deleteForUndo(linkedId)!!
+
+        // A new process has no live in-memory Undo token registry.
+        DownloadRepository.clearLivePendingRemovalTokensForTest()
+        LowQualityRedownloadRepository(database).reconcileLinkedDownloads(operation.operationId)
+
+        val child = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.CANCELLED, child.stateValue)
+        assertEquals(DownloadRepository.REASON_USER_REMOVED, child.reasonCode)
+    }
+
+    @Test
     fun terminalLowQualityLedgerRejectsHistorySuccessCompletion() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
         val linkedId = linkDownload(operation.operationId, 305, DownloadRepository.Status.Active)
