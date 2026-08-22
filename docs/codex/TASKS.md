@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **71 active correctness defects** in this checkpoint. The previous
+There are **72 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 71-defect registry is intentionally retained here. The separate
+The broader 72-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 71-defect count unless they are explicitly promoted
+below do **not** change the 72-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-71-defect registry below.
+72-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 71 active defects
+### F1 remediation-discovered follow-up not counted in the 72 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2578,6 +2578,67 @@ Required result:
   the `Queued` Room commit but before WorkManager persistence, plus cold-start
   recovery, normal successful enqueue, already-owned work, retry, resume,
   hard-sub insertion, delayed scheduling, and exactly-one-execution regressions.
+
+### P2 — BUG-QUEUE-04 — Do not delete a Download after a stale Queued selection has been claimed
+
+**State:** Open
+
+**Failure path:** the production Queued Downloads multi-select Delete action
+captures selected Download IDs, calls `DownloadViewModel.cancelDownloadOnly(id)`
+for each selected ID, and then calls `deleteAllWithID(selectedIds)`. The selected
+rows are not reserved while the contextual action is open. `DownloadWorker` can
+independently claim one of those still-Queued rows before the delete action
+reaches the database, changing it to `Active` and installing a fresh
+`executionId`.
+
+The bulk action does not treat that newer claim as revoking its stale Queued
+authority. Because it calls `cancelDownloadOnly()` without an expected execution
+ID, `cancelDownloadOnlyLocked()` does not cancel an owned yt-dlp or
+post-processing execution; the expected-ID branch is the only branch that calls
+`DownloadWorker.cancelProcessesForExecution()`. The call only cancels
+notifications. `deleteAllWithID()` then calls
+`DownloadRepository.deleteAllWithIDs(selectedIds)`, which reloads rows by ID with
+no expected-status or execution predicate and passes them to
+`deleteKnownUserRemoval()`. If the selected row is now `Active`, the repository
+transaction nevertheless terminalizes its linked low-quality child as
+`REASON_USER_REMOVED`, removes any History-replacement barrier, and deletes the
+Download row. After the transaction, `deleteCache()` recursively removes
+`<cache>/<downloadId>` even though the already-claimed worker can still be using
+that directory.
+
+**Why this is a defect:** a stale selection that was authorized only while a
+request was queued can erase a newer authoritative running owner without first
+durably cancelling and synchronizing with that owner. The live process can
+continue after its Download row and temp files have been deleted, while a linked
+low-quality operation can simultaneously claim user-removal termination. This
+can cause active extraction/post-processing failure, loss of recoverable temp
+output, orphaned/direct destination output, and durable state that no longer
+represents the execution still in flight. It is distinct from `BUG-QUEUE-02`,
+where stale Queued UI rewrites a claimed row to `Saved`, and from
+`BUG-CANCEL-01`, where explicit cancellation kills a process before its terminal
+state persists; here the bulk deletion skips owned cancellation and deletes the
+claimed row itself.
+
+Required result:
+
+- make Queued-list deletion an expected-state/ownership transition that can
+  delete directly only while each selected row is still
+  `Queued`/`WaitingForMembership` and unowned;
+- if a selected row has become `Active`/`PostProcessing`, either reject that
+  stale selection as already running or route it through the same execution-
+  token cancellation protocol as normal owned cancellation, with durable
+  cancellation/ledger state established before process or temp cleanup;
+- bind bulk selection, linked-low-quality terminalization, History-replacement
+  barrier disposition, Download-row deletion, and cache cleanup to one current
+  ownership decision so no stale ID list can delete a newer execution;
+- do not recursively delete a per-download cache directory until the exact
+  execution owner has been stopped/released and filesystem ownership is no
+  longer live;
+- add deterministic multi-select races where a Queued row is claimed immediately
+  before `cancelDownloadOnly()` and immediately before `deleteAllWithIDs()`,
+  covering ordinary and low-quality-linked downloads, `PostProcessing`, still-
+  Queued and membership-waiting controls, and proving no live process survives
+  row/cache deletion and no claimed row is silently erased.
 
 ### P2 — BUG-GROUP-01 — Make keyword and Youtuber group deletion atomic
 
