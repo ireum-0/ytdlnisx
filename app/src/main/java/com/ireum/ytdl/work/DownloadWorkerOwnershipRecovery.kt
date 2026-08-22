@@ -75,6 +75,28 @@ internal object DownloadWorkerExecutionOwners {
 }
 
 /**
+ * The native yt-dlp process is addressed by numeric Download ID.  Keep its
+ * exact execution token in process memory so a stale attempt cannot destroy a
+ * newer attempt's process after the database row has been reused.
+ */
+internal object DownloadWorkerProcessOwners {
+    private val owners: MutableMap<Long, String> = ConcurrentHashMap()
+
+    fun claim(downloadId: Long, executionId: String) {
+        if (executionId.isNotBlank()) owners[downloadId] = executionId
+    }
+
+    fun isOwnedBy(downloadId: Long, executionId: String): Boolean =
+        executionId.isNotBlank() && owners[downloadId] == executionId
+
+    fun ownerOf(downloadId: Long): String? = owners[downloadId]
+
+    fun release(downloadId: Long, executionId: String) {
+        if (executionId.isNotBlank()) owners.remove(downloadId, executionId)
+    }
+}
+
+/**
  * Requeues worker-owned rows without discarding an already authoritative
  * History replacement mismatch.  The mismatch write is deliberately kept
  * separate from the linked-ledger transition; this only protects the queue

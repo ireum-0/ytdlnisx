@@ -36,6 +36,7 @@ import com.ireum.ytdl.database.repository.HistoryReplacementCleanupAction
 import com.ireum.ytdl.database.repository.HistoryReplacementCleanupResult
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementExecutionOwnershipLostException
+import com.ireum.ytdl.database.repository.HistoryReplacementQualityAuthorityLostException
 import com.ireum.ytdl.database.repository.HistoryReplacementRefusalPersistenceException
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcome
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcomePolicy
@@ -207,8 +208,9 @@ class DownloadWorker(
                     )
                     return@forEach
                 }
-                cancelYtdlpProcess(downloadId)
-                cancelPostProcessingById(downloadId)
+                if (expectedExecutionId.isNotBlank()) {
+                    cancelProcessesForExecution(downloadId, expectedExecutionId)
+                }
                 runCatching {
                     NotificationUtil(context).cancelDownloadNotification(downloadId.toInt())
                 }
@@ -2049,11 +2051,13 @@ class DownloadWorker(
                                 }
                             }
                             runCatching {
-                                resetYtdlpTempDirectory(
-                                    rawTempDirectory = rawTempFileDir,
-                                    downloadId = downloadItem.id,
-                                    beforeRetry = true
-                                ).delete()
+                                withOwnedExecutionSideEffect(downloadItem) {
+                                    resetYtdlpTempDirectoryUnsafe(
+                                        rawTempDirectory = rawTempFileDir,
+                                        downloadId = downloadItem.id,
+                                        beforeRetry = true,
+                                    ).delete()
+                                }
                             }.onFailure { cleanupError ->
                                 Log.w(
                                     TAG,
@@ -2219,7 +2223,11 @@ class DownloadWorker(
 
 
                         failedYtdlpState?.validatedTempDirectory?.let { failedTempDirectory ->
-                            runCatching { failedTempDirectory.deleteRecursively() }
+                            runCatching {
+                                withOwnedExecutionSideEffect(downloadItem) {
+                                    failedTempDirectory.deleteRecursively()
+                                }
+                            }
                                 .onFailure { cleanupError ->
                                     Log.w(
                                         TAG,
@@ -2844,8 +2852,8 @@ class DownloadWorker(
         val runtime = YtdlpPhaseRuntimeState(preparation, startedAt)
         return try {
             runtime.validatedTempDirectory = resetYtdlpTempDirectory(
+                downloadItem = input.downloadItem,
                 rawTempDirectory = input.rawTempDirectory,
-                downloadId = input.downloadItem.id,
                 beforeRetry = false,
             )
             val progressCallback = createYtdlpProgressCallback(input, services, eventBus, runtime)
@@ -3071,7 +3079,7 @@ class DownloadWorker(
         }
     }
 
-    private fun executeYtdlpAttempt(
+    private suspend fun executeYtdlpAttempt(
         input: YtdlpPhaseInput,
         runtime: YtdlpPhaseRuntimeState,
         attempt: YtdlpAttempt,
@@ -3079,15 +3087,34 @@ class DownloadWorker(
     ): YoutubeDLResponse {
         runtime.issueStage = DownloadIssueStage.EXTRACT
         val processId = input.downloadItem.id.toString()
-        YoutubeDL.getInstance().destroyProcessById(processId)
-        YoutubeDLCompat.destroyProcessById(processId)
-        return YoutubeDLCompat.execute(
-            applicationContext,
-            attempt.request,
-            processId,
-            true,
-            progressCallback,
-        )
+        withOwnedExecutionSideEffect(input.downloadItem) {
+            prepareProcessForExecution(
+                input.downloadItem.id,
+                input.downloadItem.executionId,
+            )
+            DownloadWorkerProcessOwners.claim(
+                input.downloadItem.id,
+                input.downloadItem.executionId,
+            )
+        }
+        return try {
+            YoutubeDLCompat.execute(
+                applicationContext,
+                attempt.request,
+                processId,
+                true,
+                progressCallback,
+            )
+        } finally {
+            withContext(Dispatchers.IO + NonCancellable) {
+                withDownloadWorkerExecutionLock {
+                    DownloadWorkerProcessOwners.release(
+                        input.downloadItem.id,
+                        input.downloadItem.executionId,
+                    )
+                }
+            }
+        }
     }
 
     private suspend fun executeYtdlpAttempts(
@@ -3139,9 +3166,9 @@ class DownloadWorker(
                     is CompletedYtdlpQualityOutcome.Accept -> return qualityOutcome.result
                     is CompletedYtdlpQualityOutcome.Reject -> {
                         resetYtdlpTempDirectory(
+                            downloadItem = input.downloadItem,
                             rawTempDirectory = input.rawTempDirectory,
-                            downloadId = input.downloadItem.id,
-                            beforeRetry = true
+                            beforeRetry = true,
                         )
                         throw YtdlpQualityRejectedException(qualityOutcome.message)
                     }
@@ -3310,7 +3337,11 @@ class DownloadWorker(
             deleteLoadedAppInfoJson(previousAttempt.command)
         }
         announceYtdlpRetry(input, services, eventBus, plan.notice, previousError)
-        resetYtdlpTempDirectory(input.rawTempDirectory, input.downloadItem.id, beforeRetry = true)
+        resetYtdlpTempDirectory(
+            downloadItem = input.downloadItem,
+            rawTempDirectory = input.rawTempDirectory,
+            beforeRetry = true,
+        )
         return buildYtdlpAttempt(
             downloadItem = input.downloadItem,
             ytdlpUtil = services.ytdlpUtil,
@@ -3669,7 +3700,26 @@ class DownloadWorker(
         ) {
             if (expectedExecutionId.isBlank()) return
             val processOwner = DownloadWorkerProcessOwners.ownerOf(downloadId)
-            if (processOwner != null && processOwner != expectedExecutionId) return
+            if (
+                processOwner != null &&
+                    processOwner != expectedExecutionId &&
+                    DownloadWorkerExecutionOwners.isOwnedBy(downloadId, processOwner)
+            ) return
+            cancelYtdlpProcess(downloadId)
+            cancelPostProcessingById(downloadId)
+        }
+
+        /**
+         * Starts a new attempt while holding the exact current Download
+         * ownership gate.  A process left by a dead/stale older execution may
+         * be replaced; a process owned by the currently published execution
+         * is never mistaken for that stale process.
+         */
+        internal fun prepareProcessForExecution(
+            downloadId: Long,
+            expectedExecutionId: String,
+        ) {
+            if (expectedExecutionId.isBlank()) return
             cancelYtdlpProcess(downloadId)
             cancelPostProcessingById(downloadId)
         }

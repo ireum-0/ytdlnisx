@@ -63,7 +63,6 @@ import com.ireum.ytdl.util.download.DownloadRetryMetadata
 import com.ireum.ytdl.util.download.DownloadRetryPolicy
 import com.ireum.ytdl.util.download.DownloadRetryStrategy
 import com.ireum.ytdl.util.download.supportsSameSettingsRetry
-import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.preset.DownloadPreset
 import com.ireum.ytdl.util.preset.DownloadPresetMapper
@@ -72,8 +71,8 @@ import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.UpdateMultipleDownloadsDataWorker
 import com.ireum.ytdl.work.UpdateMultipleDownloadsFormatsWorker
+import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import com.google.gson.Gson
-import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -2072,23 +2071,39 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
     }
 
-    fun cancelDownloadOnly(id : Long) {
-        YoutubeDL.getInstance().destroyProcessById(id.toString())
-        YoutubeDLCompat.destroyProcessById(id.toString())
-        com.ireum.ytdl.work.DownloadWorker.cancelPostProcessingById(id)
-        notificationUtil.cancelDownloadNotification(id.toInt())
-        notificationUtil.cancelMembershipWaitingNotification(id)
+    suspend fun cancelDownloadOnly(
+        id: Long,
+        expectedExecutionId: String? = null,
+    ) {
+        withContext(Dispatchers.IO) {
+            withDownloadWorkerExecutionLock {
+                val current = dao.getNullableDownloadById(id)
+                val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
+                    ?: current?.executionId.orEmpty()
+                if (
+                    current != null &&
+                        expected.isNotBlank() &&
+                        current.executionId == expected
+                ) {
+                    com.ireum.ytdl.work.DownloadWorker.cancelProcessesForExecution(id, expected)
+                }
+                notificationUtil.cancelDownloadNotification(id.toInt())
+                notificationUtil.cancelMembershipWaitingNotification(id)
+            }
+        }
     }
 
     suspend fun cancelDownload(id: Long) {
+        val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
         LowQualityRedownloadLedger.refresh(application, repository.cancelByUser(id))
-        cancelDownloadOnly(id)
+        cancelDownloadOnly(id, expectedExecutionId)
     }
 
     suspend fun beginUndoableCancellation(id: Long): String? {
+        val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
         val outcome = repository.beginUndoableCancellation(id)
         LowQualityRedownloadLedger.refresh(application, outcome.affectedOperationIds)
-        cancelDownloadOnly(id)
+        cancelDownloadOnly(id, expectedExecutionId)
         return outcome.pendingToken
     }
 
@@ -2160,8 +2175,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun pauseDownload(id: Long)  {
+        val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
         updateToStatus(id, DownloadRepository.Status.Paused)
-        cancelDownloadOnly(id)
+        cancelDownloadOnly(id, expectedExecutionId)
     }
 
     suspend fun pauseAllDownloads() {
@@ -2177,7 +2193,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
         WorkManager.getInstance(application).cancelAllWorkByTag("download")
         activeDownloadsList.forEach {
-            cancelDownloadOnly(it.id)
+            cancelDownloadOnly(it.id, it.executionId)
         }
         delay(1000)
         isPausingResuming = false
@@ -2223,7 +2239,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 dao.getMembershipWaitingDownloads()
         }
         downloadsToCancel.distinctBy(DownloadItem::id).forEach {
-            cancelDownloadOnly(it.id)
+            cancelDownloadOnly(it.id, it.executionId)
         }
         cancelActiveQueued()
         linkedBatchIds.forEach { id ->
