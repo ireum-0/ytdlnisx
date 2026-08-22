@@ -366,8 +366,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
                                 downloadViewModel.undoPendingCancellation(item, pendingToken)
                             } else {
                                 lifecycleScope.launch(Dispatchers.IO) {
-                                    downloadViewModel.deleteDownload(item.id)
-                                    downloadViewModel.queueDownloads(listOf(item))
+                                    downloadViewModel.undoCancelledDownload(item)
                                 }
                             }
                         }

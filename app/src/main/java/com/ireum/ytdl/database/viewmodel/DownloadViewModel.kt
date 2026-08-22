@@ -249,7 +249,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     suspend fun restoreDownloadUndo(handle: DownloadRepository.DownloadUndoHandle): Long? =
         withContext(Dispatchers.IO) {
-            repository.restoreUndo(handle.token)
+            val restoredId = repository.restoreUndo(handle.token)
+            if (restoredId != null) {
+                LowQualityRedownloadLedger.refresh(application, handle.affectedOperationIds)
+            }
+            restoredId
         }
 
     suspend fun updateDownload(item: DownloadItem){
@@ -887,10 +891,13 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 itemIDs.forEach {
                     val item = repository.getItemByID(it)
                     if (processingItemsJob?.isCancelled == true) throw CancellationException()
+                    val refusalConverged = convergePersistedHistoryRefusal(item.id)
                     if (
-                        HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
+                        refusalConverged ||
+                            HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
                             dbManager.historyReplacementBarrierDao
-                                .getByDownloadIdBlocking(item.id) != null
+                                .getByDownloadIdBlocking(item.id) != null ||
+                            hasTerminalHistoryReplacementLedger(item)
                     ) {
                         throw IllegalStateException(
                             retryBlockedMessage(
@@ -1087,7 +1094,18 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun requeueActiveDownloadsForExit(ids: List<Long>) = withContext(Dispatchers.IO) {
+        val refused = repository.getAllItemsByIDs(ids).filter { item ->
+            HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
+                dbManager.historyReplacementBarrierDao.getByDownloadIdBlocking(item.id) != null
+        }
         dao.requeueActiveDownloads(ids)
+        refused.forEach { item ->
+            repository.convergeHistoryReplacementRefusal(
+                id = item.id,
+                expectedExecutionId = item.executionId,
+                forceError = true,
+            )
+        }
     }
 
     fun getActiveDownloadsCount() : Int {
@@ -1107,16 +1125,19 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun resetScheduleTimeForItemsAndStartDownload(items: List<Long>) = withContext(Dispatchers.IO) {
+        items.forEach { convergePersistedHistoryRefusal(it) }
         if (dbManager.downloadDao.resetScheduleTimeForItems(items) == 0) return@withContext
         repository.startDownloadWorker(emptyList(), application)
     }
 
     suspend fun resetScheduleItemForAllScheduledItemsAndStartDownload() = withContext(Dispatchers.IO) {
+        repository.getScheduledDownloads().forEach { convergePersistedHistoryRefusal(it.id) }
         if (dbManager.downloadDao.resetScheduleTimeForAllScheduledItems() == 0) return@withContext
         repository.startDownloadWorker(emptyList(), application)
     }
 
     suspend fun rescheduleExistingDownload(id: Long, startTime: Long) = withContext(Dispatchers.IO) {
+        if (convergePersistedHistoryRefusal(id)) return@withContext
         if (dao.rescheduleQueuedOrScheduled(id, startTime) == 1) {
             repository.startDownloadWorker(emptyList(), application)
         }
@@ -1141,9 +1162,16 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun reQueueDownloadItemsAndWait(items: List<Long>) = withContext(Dispatchers.IO) {
-        val requeuedCount = dbManager.downloadDao.reQueueDownloadItems(items)
+        val eligibleItems = items.distinct().mapNotNull { id ->
+            if (convergePersistedHistoryRefusal(id)) {
+                null
+            } else {
+                repository.getItemByID(id).takeUnless { hasTerminalHistoryReplacementLedger(it) }
+            }
+        }
+        val requeuedCount = dbManager.downloadDao.reQueueDownloadItems(eligibleItems.map { it.id })
         if (requeuedCount == 0) return@withContext
-        items.distinct().forEach(notificationUtil::cancelMembershipWaitingNotification)
+        eligibleItems.map { it.id }.forEach(notificationUtil::cancelMembershipWaitingNotification)
         repository.startDownloadWorker(emptyList(), application)
     }
 
@@ -1164,7 +1192,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         return decision
     }
 
-    private fun prepareRetryMetadata(
+    private suspend fun prepareRetryMetadata(
         item: DownloadItem,
         strategy: DownloadRetryStrategy,
         settingsConfirmed: Boolean
@@ -1183,6 +1211,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 ?.downloadPath
                 ?.any(FileUtil::exists) == true
         }.getOrDefault(false)
+        val hasTerminalHistoryReplacementLedger = hasTerminalHistoryReplacementLedger(item)
         return DownloadRetryPolicy.prepare(
             current = DownloadRetryMetadata(
                 operationId = item.operationId,
@@ -1197,9 +1226,35 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             historyReplacementMismatch =
                 HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
                     dbManager.historyReplacementBarrierDao
-                        .getByDownloadIdBlocking(item.id) != null,
+                        .getByDownloadIdBlocking(item.id) != null ||
+                    hasTerminalHistoryReplacementLedger,
             operationIdFactory = { UUID.randomUUID().toString() }
         )
+    }
+
+    private suspend fun hasTerminalHistoryReplacementLedger(item: DownloadItem): Boolean {
+        if (item.id <= 0L || HistoryRedownloadMarker.parse(item.playlistURL) == null) {
+            return false
+        }
+        val ledgerItem = dbManager.lowQualityRedownloadDao.getItemByDownloadId(item.id)
+            ?: return false
+        val operation = dbManager.lowQualityRedownloadDao.getOperation(ledgerItem.operationId)
+        return ledgerItem.stateValue.isTerminal || operation?.stateValue?.isTerminal == true
+    }
+
+    private suspend fun convergePersistedHistoryRefusal(id: Long): Boolean {
+        if (id <= 0L) return false
+        val current = dao.getNullableDownloadById(id) ?: return false
+        val hasRefusal =
+            HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(current.lastIssueCode) ||
+                dbManager.historyReplacementBarrierDao.getByDownloadIdBlocking(id) != null
+        if (!hasRefusal) return false
+        repository.convergeHistoryReplacementRefusal(
+            id = id,
+            expectedExecutionId = current.executionId,
+            forceError = true,
+        )
+        return true
     }
 
     private fun applyRetryMetadata(item: DownloadItem, metadata: DownloadRetryMetadata) {
@@ -1327,9 +1382,15 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
 
         items.forEach { item ->
+            val terminalHistoryReplacementLedger = hasTerminalHistoryReplacementLedger(item)
+            val refusalConverged = item.id > 0L && withContext(Dispatchers.IO) {
+                convergePersistedHistoryRefusal(item.id)
+            }
             if (
                 item.id in durableMismatchIds ||
-                HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode)
+                refusalConverged ||
+                HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
+                terminalHistoryReplacementLedger
             ) {
                 return QueueDownloadsResult(
                     message = retryBlockedMessage(
@@ -1669,7 +1730,18 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun moveProcessingToSavedCategory(){
+        val refused = repository.getAllProcessingDownloads().filter { item ->
+            HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
+                dbManager.historyReplacementBarrierDao.getByDownloadIdBlocking(item.id) != null
+        }
         dao.updateProcessingtoSavedStatus()
+        refused.forEach { item ->
+            repository.convergeHistoryReplacementRefusal(
+                id = item.id,
+                expectedExecutionId = item.executionId,
+                forceError = true,
+            )
+        }
     }
 
 
@@ -1876,7 +1948,14 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     suspend fun updateItemsWithIdsToProcessingStatus(ids: List<Long>) {
         repository.deleteProcessing()
-        dao.updateItemsToProcessing(ids)
+        val eligibleIds = ids.mapNotNull { id ->
+            if (convergePersistedHistoryRefusal(id)) {
+                null
+            } else {
+                repository.getItemByID(id).takeUnless { hasTerminalHistoryReplacementLedger(it) }?.id
+            }
+        }
+        dao.updateItemsToProcessing(eligibleIds)
         val first = dao.getFirstProcessingDownload()
     }
 
@@ -1889,6 +1968,30 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun restoreMembershipWaiting(item: DownloadItem) {
+        val current = dbManager.downloadDao.getNullableDownloadById(item.id)
+        if (
+            current != null &&
+                (
+                    HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(
+                        current.lastIssueCode
+                    ) || dbManager.historyReplacementBarrierDao.getByDownloadId(item.id) != null ||
+                        hasTerminalHistoryReplacementLedger(current)
+                )
+        ) {
+            if (
+                HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(
+                    current.lastIssueCode
+                ) || dbManager.historyReplacementBarrierDao.getByDownloadId(item.id) != null
+            ) {
+                val convergence = repository.convergeHistoryReplacementRefusal(
+                    id = item.id,
+                    expectedExecutionId = current.executionId,
+                    forceError = true,
+                )
+                LowQualityRedownloadLedger.refresh(application, convergence.affectedOperationIds)
+            }
+            return
+        }
         val restored = dbManager.observeSourcesDao.parkDownloadForMembership(
             downloadId = item.id,
             sourceId = item.observeSourceId,
@@ -1966,6 +2069,35 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         return outcome.pendingToken
     }
 
+    /**
+     * Restores a cancelled ordinary download for the legacy no-ledger Undo
+     * path.  A refused History replacement is deliberately not deleted and
+     * requeued: that would turn an Undo gesture into implicit abandonment of
+     * the refusal barrier.
+     */
+    suspend fun undoCancelledDownload(item: DownloadItem) {
+        val current = dbManager.downloadDao.getNullableDownloadById(item.id)
+        if (
+            current != null &&
+                (
+                    HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(
+                        current.lastIssueCode
+                    ) || dbManager.historyReplacementBarrierDao.getByDownloadId(item.id) != null ||
+                        hasTerminalHistoryReplacementLedger(current)
+                )
+        ) {
+            val convergence = repository.convergeHistoryReplacementRefusal(
+                id = item.id,
+                expectedExecutionId = current.executionId,
+                forceError = true,
+            )
+            LowQualityRedownloadLedger.refresh(application, convergence.affectedOperationIds)
+            return
+        }
+        deleteDownloadAndWait(item.id)
+        queueDownloads(listOf(item))
+    }
+
     fun undoPendingCancellation(item: DownloadItem, token: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val originalStatus = runCatching {
@@ -2038,6 +2170,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
 
         withContext(Dispatchers.IO){
+            paused.forEach { convergePersistedHistoryRefusal(it.id) }
             dbManager.downloadDao.resetPausedToQueued()
             repository.startDownloadWorker(paused, application)
         }
@@ -2093,8 +2226,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 (
                     HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(persistedItem.lastIssueCode) ||
                         dbManager.historyReplacementBarrierDao
-                            .getByDownloadIdBlocking(persistedItem.id) != null
-                    )
+                            .getByDownloadIdBlocking(persistedItem.id) != null ||
+                        hasTerminalHistoryReplacementLedger(persistedItem)
+                )
             ) {
                 return@runCatching
             }

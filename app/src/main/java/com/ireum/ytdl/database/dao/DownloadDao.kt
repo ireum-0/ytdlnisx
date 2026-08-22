@@ -157,7 +157,18 @@ interface DownloadDao {
     fun getActiveAndQueuedDownloads() : Flow<List<DownloadItem>>
 
     @RewriteQueriesToDropUnusedColumns
-    @Query("SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED') ORDER BY orderPosition, id")
+    @Query(
+        "SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = downloads.id " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "OR lqo.state != 'RUNNING')) " +
+            "ORDER BY orderPosition, id"
+    )
     fun getQueuedDownloads() : PagingSource<Int, DownloadItemSimple>
 
     @Query("SELECT format FROM downloads WHERE status IN ('Queued','WaitingForMembership')")
@@ -166,8 +177,14 @@ interface DownloadDao {
     @Query("""
         SELECT * FROM downloads 
         WHERE status in ('Queued', 'Scheduled') AND downloadStartTime <= :currentTime
-        AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED')
+        AND (lastIssueCode IS NULL OR lastIssueCode NOT IN
+            ('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED'))
         AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id)
+        AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi
+            LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId
+            WHERE lqi.downloadId = downloads.id
+            AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED')
+                OR lqo.state != 'RUNNING'))
         ORDER BY downloadStartTime, orderPosition, id
         LIMIT 10
     """)
@@ -176,8 +193,14 @@ interface DownloadDao {
     @Query("""
         SELECT * FROM downloads 
         WHERE status in ('Queued', 'Scheduled') AND downloadStartTime <= :currentTime
-        AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED')
+        AND (lastIssueCode IS NULL OR lastIssueCode NOT IN
+            ('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED'))
         AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id)
+        AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi
+            LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId
+            WHERE lqi.downloadId = downloads.id
+            AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED')
+                OR lqo.state != 'RUNNING'))
         ORDER BY 
             CASE
                 WHEN id in (:priorityItems) THEN 0
@@ -188,13 +211,52 @@ interface DownloadDao {
     """)
     fun getQueuedScheduledDownloadsUntilWithPriority(currentTime: Long, priorityItems: List<Long>) : Flow<List<DownloadItem>>
 
-    @Query("SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED') ORDER BY orderPosition, id")
+    @Query(
+        "SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = downloads.id " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "OR lqo.state != 'RUNNING')) " +
+            "ORDER BY orderPosition, id"
+    )
     fun getQueuedDownloadsList() : List<DownloadItem>
 
-    @Query("SELECT * FROM downloads WHERE status='Scheduled' AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED') ORDER BY downloadStartTime, orderPosition, id")
+    @Query("SELECT * FROM downloads WHERE status in ('Queued','WaitingForMembership') ORDER BY orderPosition, id")
+    suspend fun getQueuedDownloadsForBackupList(): List<DownloadItem>
+
+    @Query(
+        "SELECT * FROM downloads WHERE status='Scheduled' " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = downloads.id " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "OR lqo.state != 'RUNNING')) " +
+            "ORDER BY downloadStartTime, orderPosition, id"
+    )
     fun getScheduledDownloadsList() : List<DownloadItem>
 
-    @Query("SELECT id FROM downloads WHERE status='Queued' AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED') ORDER BY orderPosition, id")
+    @Query("SELECT * FROM downloads WHERE status='Scheduled' ORDER BY downloadStartTime, orderPosition, id")
+    suspend fun getScheduledDownloadsForBackupList(): List<DownloadItem>
+
+    @Query(
+        "SELECT id FROM downloads WHERE status='Queued' " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = downloads.id " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "OR lqo.state != 'RUNNING')) " +
+            "ORDER BY orderPosition, id"
+    )
     fun getQueuedDownloadsListIDs() : List<Long>
 
     @RewriteQueriesToDropUnusedColumns
@@ -212,7 +274,18 @@ interface DownloadDao {
     fun getErroredDownloadsList() : List<DownloadItem>
 
 
-    @Query("SELECT id from downloads WHERE status='Scheduled' AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED') ORDER BY downloadStartTime, orderPosition, id DESC")
+    @Query(
+        "SELECT id from downloads WHERE status='Scheduled' " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = downloads.id " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "OR lqo.state != 'RUNNING')) " +
+            "ORDER BY downloadStartTime, orderPosition, id DESC"
+    )
     fun getScheduledDownloadIDs(): List<Long>
 
     @RewriteQueriesToDropUnusedColumns
@@ -223,7 +296,19 @@ interface DownloadDao {
     fun getSavedDownloadsList() : List<DownloadItem>
 
     @RewriteQueriesToDropUnusedColumns
-    @Query("SELECT * FROM downloads WHERE status='Scheduled' AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED') ORDER BY downloadStartTime, orderPosition, id DESC")
+    @RewriteQueriesToDropUnusedColumns
+    @Query(
+        "SELECT * FROM downloads WHERE status='Scheduled' " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = downloads.id " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "OR lqo.state != 'RUNNING')) " +
+            "ORDER BY downloadStartTime, orderPosition, id DESC"
+    )
     fun getScheduledDownloads() : PagingSource<Int, DownloadItemSimple>
 
     @Query("SELECT * FROM downloads WHERE id=:id LIMIT 1")
@@ -254,7 +339,12 @@ interface DownloadDao {
             "AND operationId=:expectedOperationId AND retryAttempt=:expectedRetryAttempt " +
             "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
             "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
-            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id)"
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = downloads.id " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "OR lqo.state != 'RUNNING'))"
     )
     suspend fun claimDownloadForWorker(
         id: Long,
@@ -454,9 +544,34 @@ interface DownloadDao {
     suspend fun setStatusMultiple(ids: List<Long>, status: String)
 
     @Query(
+        "UPDATE downloads SET status=:nextStatus, " +
+            "downloadStartTime=CASE WHEN :nextStatus='Error' THEN 0 ELSE downloadStartTime END, " +
+            "executionId=CASE WHEN :nextStatus='Error' THEN '' ELSE executionId END, " +
+            "lastIssueCode=:issueCode, lastIssueStage=:issueStage " +
+            "WHERE id=:id AND status=:expectedStatus " +
+            "AND (:expectedExecutionId='' OR executionId=:expectedExecutionId) " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode='' OR lastIssueCode=:issueCode OR EXISTS (" +
+            "SELECT 1 FROM history_replacement_barriers b0 WHERE b0.downloadId=downloads.id " +
+            "AND b0.issueCode=:issueCode AND b0.issueStage=:issueStage)) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b " +
+            "WHERE b.downloadId=downloads.id " +
+            "AND (b.issueCode != :issueCode OR b.issueStage != :issueStage))"
+    )
+    suspend fun convergeHistoryReplacementRefusal(
+        id: Long,
+        expectedStatus: String,
+        expectedExecutionId: String,
+        nextStatus: String,
+        issueCode: String,
+        issueStage: String,
+    ): Int
+
+    @Query(
         "UPDATE downloads SET status='Queued', downloadStartTime=0, executionId='' " +
             "WHERE id IN (:ids) AND status IN ('Active','PostProcessing') " +
-            "AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED')"
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id)"
     )
     suspend fun requeueActiveDownloads(ids: List<Long>): Int
 
@@ -646,7 +761,12 @@ interface DownloadDao {
     )
     suspend fun reQueueDownloadItems(list: List<Long>): Int
 
-    @Query("Update downloads SET status='Saved' WHERE status='Processing'")
+    @Query(
+        "UPDATE downloads SET status='Saved' WHERE status='Processing' " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id)"
+    )
     suspend fun updateProcessingtoSavedStatus()
 
     @Transaction

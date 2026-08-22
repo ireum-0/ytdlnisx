@@ -6,11 +6,17 @@ import com.ireum.ytdl.util.download.DownloadIssueSeverity
 import com.ireum.ytdl.util.download.DownloadIssueSource
 import com.ireum.ytdl.util.download.DownloadIssueStage
 import com.ireum.ytdl.util.download.DownloadSuggestedAction
+import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 
 enum class HistoryReplacementMismatchKind {
     SOURCE,
     TYPE,
 }
+
+data class HistoryReplacementRefusalLedgerDisposition(
+    val itemState: LowQualityRedownloadItemState,
+    val reasonCode: String,
+)
 
 object HistoryReplacementDiagnostic {
     fun persistedHistoryReplacementIssue(issueCode: String): DownloadIssue? = when (issueCode) {
@@ -33,6 +39,22 @@ object HistoryReplacementDiagnostic {
 
     fun isPersistedMismatch(issueCode: String): Boolean =
         persistedMismatchIssue(issueCode) != null
+
+    fun refusalLedgerDisposition(issueCode: String): HistoryReplacementRefusalLedgerDisposition? =
+        when (issueCode) {
+            DownloadIssueCode.HISTORY_TARGET_DELETED.name ->
+                HistoryReplacementRefusalLedgerDisposition(
+                    itemState = LowQualityRedownloadItemState.SKIPPED,
+                    reasonCode = DownloadIssueCode.HISTORY_TARGET_DELETED.name,
+                )
+            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name,
+            DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
+                HistoryReplacementRefusalLedgerDisposition(
+                    itemState = LowQualityRedownloadItemState.FAILED,
+                    reasonCode = issueCode,
+                )
+            else -> null
+        }
 
     fun mismatchKind(outcome: HistoryReplacementOutcome): HistoryReplacementMismatchKind? =
         when (outcome) {

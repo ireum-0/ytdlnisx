@@ -1196,15 +1196,17 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
 
             UiUtil.showGenericDeleteDialog(requireContext(), deletedItem.title){
                 lifecycleScope.launch {
+                    val undoHandle = withContext(Dispatchers.IO) {
+                        downloadViewModel.deleteDownloadForUndo(id)
+                    } ?: return@launch
                     processingItemsCount--
-                    downloadViewModel.deleteDownload(id)
 
                     if (processingItemsCount > 0){
                         Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
                             .setAction(getString(R.string.undo)) {
                                 lifecycleScope.launch(Dispatchers.IO) {
                                     processingItemsCount++
-                                    downloadViewModel.insert(deletedItem)
+                                    downloadViewModel.restoreDownloadUndo(undoHandle)
                                 }
                             }.show()
                     }else{
@@ -1261,17 +1263,19 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                             val deletedItem = withContext(Dispatchers.IO){
                                 runCatching { downloadViewModel.getItemByID(itemID) }.getOrNull()
                             } ?: return@launch
+                            val undoHandle = withContext(Dispatchers.IO) {
+                                downloadViewModel.deleteDownloadForUndo(deletedItem.id)
+                            } ?: return@launch
                             processingItemsCount--
-                            withContext(Dispatchers.IO){
-                                downloadViewModel.deleteDownload(deletedItem.id)
-                            }
 
 
                             if (processingItemsCount > 0) {
                                 Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
                                     .setAction(getString(R.string.undo)) {
-                                        processingItemsCount++
-                                        downloadViewModel.insert(deletedItem)
+                                        lifecycleScope.launch(Dispatchers.IO) {
+                                            processingItemsCount++
+                                            downloadViewModel.restoreDownloadUndo(undoHandle)
+                                        }
                                     }.show()
                             }else{
                                 dismiss()

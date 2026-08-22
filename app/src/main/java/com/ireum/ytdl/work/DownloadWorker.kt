@@ -212,17 +212,22 @@ class DownloadWorker(
             }
         }
         val releasedIds = linkedSetOf<Long>()
+        val refusalRepository = DownloadRepository(dbManager)
         val requeueFailure = try {
             activeIds.forEach { downloadId ->
                 val issue = authoritativeIssues[downloadId]
                 val executionId = executionIds[downloadId].orEmpty()
                 if (executionId.isBlank()) {
                     if (issue != null) {
-                        dao.requeueActiveDownloadsWithIssue(
-                            listOf(downloadId),
-                            issue.code.name,
-                            issue.stage.name,
-                        )
+                        check(
+                            refusalRepository.convergeHistoryReplacementRefusal(
+                            id = downloadId,
+                            expectedExecutionId = "",
+                            forceError = true,
+                            ).downloadUpdated
+                        ) {
+                            "History refusal could not converge for download $downloadId"
+                        }
                     } else {
                         dao.setStatusMultipleFromStatus(
                             listOf(downloadId),
@@ -240,12 +245,13 @@ class DownloadWorker(
                 }
 
                 val affected = if (issue != null) {
-                    dao.requeueActiveDownloadWithIssue(
-                        id = downloadId,
-                        executionId = executionId,
-                        issueCode = issue.code.name,
-                        issueStage = issue.stage.name,
-                    )
+                    if (
+                        refusalRepository.convergeHistoryReplacementRefusal(
+                            id = downloadId,
+                            expectedExecutionId = executionId,
+                            forceError = true,
+                        ).downloadUpdated
+                    ) 1 else 0
                 } else {
                     dao.requeueActiveDownload(downloadId, executionId)
                 }
@@ -398,14 +404,18 @@ class DownloadWorker(
                     },
                     isOwnedBy = DownloadWorkerExecutionOwners::isOwnedBy,
                     requeue = { downloadId, executionId ->
-                        authoritativeIssues[downloadId]?.let { issue ->
-                            dao.requeueActiveDownloadWithIssue(
-                                id = downloadId,
-                                executionId = executionId,
-                                issueCode = issue.code.name,
-                                issueStage = issue.stage.name,
-                            )
-                        } ?: dao.requeueActiveDownload(downloadId, executionId)
+                        if (authoritativeIssues[downloadId] != null) {
+                            DownloadRepository(dbManager)
+                                .convergeHistoryReplacementRefusal(
+                                    id = downloadId,
+                                    expectedExecutionId = executionId,
+                                    forceError = true,
+                                )
+                                .downloadUpdated
+                                .let { if (it) 1 else 0 }
+                        } else {
+                            dao.requeueActiveDownload(downloadId, executionId)
+                        }
                     },
                     readCurrent = { downloadId ->
                         dao.getNullableDownloadById(downloadId)?.let {

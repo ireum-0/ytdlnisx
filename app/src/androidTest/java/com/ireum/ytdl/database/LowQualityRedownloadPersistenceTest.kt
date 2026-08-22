@@ -9,6 +9,7 @@ import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
@@ -222,6 +223,207 @@ class LowQualityRedownloadPersistenceTest {
         val child = repository.getItems(operation.operationId).single()
         assertEquals(LowQualityRedownloadItemState.FAILED, child.stateValue)
         assertEquals(issue.code.name, child.reasonCode)
+    }
+
+    @Test
+    fun refusedReplacementStatusTransitionsConvergeDownloadAndLedgerSemantics() = runBlocking {
+        suspend fun addBarrier(
+            operationId: String,
+            downloadId: Long,
+            historyId: Long,
+            issueCode: String,
+        ) {
+            database.historyReplacementBarrierDao.insertIfAbsent(
+                HistoryReplacementBarrier(
+                    downloadId = downloadId,
+                    operationId = operationId,
+                    historyId = historyId,
+                    expectedSourceUrl = "https://example.com/$historyId",
+                    expectedType = DownloadType.video.name,
+                    issueCode = issueCode,
+                    issueStage = "HISTORY",
+                    createdAt = 1L,
+                )
+            )
+        }
+
+        val sourceOperation = repository.createOrReconnect(now = 100)
+        val sourceId = linkDownload(
+            sourceOperation.operationId,
+            301,
+            DownloadRepository.Status.Queued,
+        )
+        addBarrier(
+            sourceOperation.operationId,
+            sourceId,
+            301,
+            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name,
+        )
+        DownloadRepository(database).moveToSaved(sourceId)
+
+        val sourceDownload = database.downloadDao.getDownloadById(sourceId)
+        assertEquals(DownloadRepository.Status.Error.name, sourceDownload.status)
+        assertEquals(
+            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name,
+            sourceDownload.lastIssueCode,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.FAILED,
+            repository.getItems(sourceOperation.operationId).single().stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.FAILED,
+            repository.getOperation(sourceOperation.operationId)?.stateValue,
+        )
+
+        val targetOperation = repository.createOrReconnect(now = 200)
+        val targetId = linkDownload(
+            targetOperation.operationId,
+            302,
+            DownloadRepository.Status.Cancelled,
+        )
+        addBarrier(
+            targetOperation.operationId,
+            targetId,
+            302,
+            DownloadIssueCode.HISTORY_TARGET_DELETED.name,
+        )
+        DownloadRepository(database).cancelByUser(targetId)
+
+        val targetDownload = database.downloadDao.getDownloadById(targetId)
+        assertEquals(DownloadRepository.Status.Cancelled.name, targetDownload.status)
+        assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED.name, targetDownload.lastIssueCode)
+        assertEquals(
+            LowQualityRedownloadItemState.SKIPPED,
+            repository.getItems(targetOperation.operationId).single().stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.COMPLETED,
+            repository.getOperation(targetOperation.operationId)?.stateValue,
+        )
+    }
+
+    @Test
+    fun undoDoesNotRewriteNewerSiblingDerivedTerminalParent() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val deletedId = linkDownload(operation.operationId, 303, DownloadRepository.Status.Queued)
+        val siblingId = linkDownload(operation.operationId, 304, DownloadRepository.Status.Queued)
+        val issueCode = DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name
+        database.historyReplacementBarrierDao.insertIfAbsent(
+            HistoryReplacementBarrier(
+                downloadId = deletedId,
+                operationId = operation.operationId,
+                historyId = 303,
+                expectedSourceUrl = "https://example.com/303",
+                expectedType = DownloadType.video.name,
+                issueCode = issueCode,
+                issueStage = "HISTORY",
+                createdAt = 1L,
+            )
+        )
+
+        val downloadRepository = DownloadRepository(database)
+        val undoHandle = downloadRepository.deleteForUndo(deletedId)!!
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).first { it.historyId == 303 }.stateValue,
+        )
+        repository.markDownloadState(siblingId, LowQualityRedownloadItemState.SUCCEEDED)
+        val parentBeforeUndo = repository.getOperation(operation.operationId)!!
+        assertEquals(LowQualityRedownloadOperationState.PARTIAL_FAILURE, parentBeforeUndo.stateValue)
+
+        val restoredId = downloadRepository.restoreUndo(undoHandle.token)!!
+        val restored = database.downloadDao.getDownloadById(restoredId)
+        assertEquals(DownloadRepository.Status.Error.name, restored.status)
+        assertEquals(issueCode, restored.lastIssueCode)
+        assertEquals(
+            LowQualityRedownloadItemState.FAILED,
+            repository.getItems(operation.operationId).first { it.historyId == 303 }.stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.SUCCEEDED,
+            repository.getItems(operation.operationId).first { it.historyId == 304 }.stateValue,
+        )
+        val parentAfterUndo = repository.getOperation(operation.operationId)!!
+        assertEquals(parentBeforeUndo.state, parentAfterUndo.state)
+        assertEquals(parentBeforeUndo.completedAt, parentAfterUndo.completedAt)
+    }
+
+    @Test
+    fun ordinaryUndoRebindsLinkedChildWithoutRestoringAStaleParentSnapshot() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 306, DownloadRepository.Status.Queued)
+        val downloadRepository = DownloadRepository(database)
+        val undoHandle = downloadRepository.deleteForUndo(linkedId)!!
+
+        val restoredId = downloadRepository.restoreUndo(undoHandle.token)!!
+        assertEquals(DownloadRepository.Status.Queued.name, database.downloadDao.getDownloadById(restoredId).status)
+        val restoredChild = repository.getItems(operation.operationId).single()
+        assertEquals(restoredId, restoredChild.downloadId)
+        assertEquals(LowQualityRedownloadItemState.QUEUED, restoredChild.stateValue)
+        assertEquals(LowQualityRedownloadOperationState.RUNNING, repository.getOperation(operation.operationId)?.stateValue)
+    }
+
+    @Test
+    fun terminalLowQualityLedgerRejectsHistorySuccessCompletion() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 305, DownloadRepository.Status.Active)
+        repository.markDownloadState(
+            linkedId,
+            LowQualityRedownloadItemState.FAILED,
+            "HISTORY_REPLACEMENT_SOURCE_MISMATCH",
+        )
+
+        var rejected = false
+        try {
+            DownloadRepository(database).completeAndDelete(linkedId)
+        } catch (_: IllegalStateException) {
+            rejected = true
+        }
+        assertTrue(rejected)
+        assertEquals(
+            DownloadRepository.Status.Active.name,
+            database.downloadDao.getDownloadById(linkedId).status,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.FAILED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.FAILED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+    }
+
+    @Test
+    fun terminalLowQualityLedgerCannotBeClaimedAsAReplacementRetry() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 307, DownloadRepository.Status.Queued)
+        repository.markDownloadState(
+            linkedId,
+            LowQualityRedownloadItemState.FAILED,
+            "HISTORY_REPLACEMENT_TYPE_MISMATCH",
+        )
+        database.downloadDao.setStatus(linkedId, DownloadRepository.Status.Queued.name)
+
+        val current = database.downloadDao.getDownloadById(linkedId)
+        assertEquals(
+            0,
+            database.downloadDao.claimDownloadForWorker(
+                id = linkedId,
+                expectedOperationId = current.operationId,
+                expectedRetryAttempt = current.retryAttempt,
+                executionId = "terminal-retry-attempt",
+            )
+        )
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            database.downloadDao.getDownloadById(linkedId).status,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.FAILED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
     }
 
     @Test
@@ -1143,6 +1345,40 @@ class LowQualityRedownloadPersistenceTest {
         assertNull(repository.markDownloadState(activeId, LowQualityRedownloadItemState.SUCCEEDED))
         assertTrue(DownloadCancellationRegistry.belongsTo(activeId, activeExecutionId))
         assertFalse(DownloadCancellationRegistry.belongsTo(activeId, "newer-execution"))
+    }
+
+    @Test
+    fun lowQualityCoordinatorCannotReplaceHistoryRefusalWithCancellation() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val executionId = "refused-coordinator-execution"
+        val linkedId = linkDownload(
+            operation.operationId,
+            207,
+            DownloadRepository.Status.Active,
+            executionId,
+        )
+        val issueCode = DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name
+        database.historyReplacementBarrierDao.insertIfAbsent(
+            HistoryReplacementBarrier(
+                downloadId = linkedId,
+                operationId = operation.operationId,
+                historyId = 207,
+                expectedSourceUrl = "https://example.com/207",
+                expectedType = DownloadType.video.name,
+                issueCode = issueCode,
+                issueStage = "HISTORY",
+                createdAt = 1L,
+            )
+        )
+
+        repository.failCoordinator(operation.operationId)
+
+        val persisted = database.downloadDao.getDownloadById(linkedId)
+        assertEquals(DownloadRepository.Status.Error.name, persisted.status)
+        assertEquals(issueCode, persisted.lastIssueCode)
+        assertEquals(LowQualityRedownloadItemState.FAILED, repository.getItems(operation.operationId).single().stateValue)
+        assertEquals(LowQualityRedownloadOperationState.FAILED, repository.getOperation(operation.operationId)?.stateValue)
+        assertTrue(DownloadCancellationRegistry.belongsTo(linkedId, executionId))
     }
 
     @Test

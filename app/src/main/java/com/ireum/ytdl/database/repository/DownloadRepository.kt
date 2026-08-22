@@ -24,10 +24,13 @@ import com.ireum.ytdl.database.models.DownloadItemSimple
 import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
+import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
+import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
 import com.ireum.ytdl.util.Extensions.toListString
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
+import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.DownloadWorker
@@ -124,6 +127,11 @@ class DownloadRepository(private val database: DBManager) {
         val snapshot: DownloadRemovalSnapshot?,
     )
 
+    private data class PersistedHistoryRefusal(
+        val issueCode: String,
+        val issueStage: String,
+    )
+
     private val pendingRemovalSnapshots = ConcurrentHashMap<String, DownloadRemovalSnapshot>()
 
     data class PendingCancellationResolution(
@@ -136,6 +144,11 @@ class DownloadRepository(private val database: DBManager) {
         val affectedOperationIds: Set<String> = emptySet()
     )
 
+    data class HistoryReplacementConvergenceResult(
+        val downloadUpdated: Boolean,
+        val affectedOperationIds: Set<String> = emptySet(),
+    )
+
     suspend fun insert(item: DownloadItem) : Long {
         return downloadDao.insert(item)
     }
@@ -144,7 +157,14 @@ class DownloadRepository(private val database: DBManager) {
         item: DownloadItem,
         barrier: HistoryReplacementBarrier?,
     ): Long = database.withTransaction {
-        val restoredId = downloadDao.insert(item.copy(id = 0L, executionId = ""))
+        val restoredItem = barrier?.let {
+            item.copy(
+                status = Status.Error.name,
+                lastIssueCode = it.issueCode,
+                lastIssueStage = it.issueStage,
+            )
+        } ?: item
+        val restoredId = downloadDao.insert(restoredItem.copy(id = 0L, executionId = ""))
         barrier?.let { source ->
             val restoredBarrier = source.copy(downloadId = restoredId)
             database.historyReplacementBarrierDao.insertIfAbsent(restoredBarrier)
@@ -255,13 +275,58 @@ class DownloadRepository(private val database: DBManager) {
     ): Long = database.withTransaction {
         if (snapshot.barrier == null) {
             val existing = downloadDao.getNullableDownloadById(snapshot.download.id)
-            return@withTransaction downloadDao.insert(
-                if (existing == null) {
-                    snapshot.download.copy(executionId = "")
+            val restoredItem = snapshot.download.copy(
+                id = if (existing == null) snapshot.download.id else 0L,
+                status = if (
+                    snapshot.download.status in setOf(Status.Active.name, Status.PostProcessing.name)
+                ) {
+                    Status.Queued.name
                 } else {
-                    snapshot.download.copy(id = 0L, executionId = "")
-                }
+                    snapshot.download.status
+                },
+                executionId = "",
             )
+            val restoredId = downloadDao.insert(restoredItem)
+            snapshot.linkedItem?.let { linkedSnapshot ->
+                val ledgerDao = database.lowQualityRedownloadDao
+                ledgerDao.rebindDownloadId(
+                    oldDownloadId = snapshot.download.id,
+                    newDownloadId = restoredId,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                val operation = ledgerDao.getOperation(linkedSnapshot.operationId)
+                if (operation != null && !operation.stateValue.isTerminal) {
+                    val restoredState = when (linkedSnapshot.stateValue) {
+                        LowQualityRedownloadItemState.ACTIVE,
+                        LowQualityRedownloadItemState.CANCELLATION_REQUESTED ->
+                            LowQualityRedownloadItemState.QUEUED
+                        else -> linkedSnapshot.stateValue
+                    }
+                    check(
+                        ledgerDao.restoreUndoableLinkedItem(
+                            downloadId = restoredId,
+                            state = restoredState.name,
+                            reason = linkedSnapshot.reasonCode,
+                            updatedAt = System.currentTimeMillis(),
+                        ) == 1
+                    ) {
+                        "Undoable low-quality child restore lost ownership $restoredId"
+                    }
+                    val finalState = LowQualityRedownloadCompletionPolicy.terminalState(
+                        operation,
+                        ledgerDao.getItems(linkedSnapshot.operationId),
+                    )
+                    if (finalState != null && finalState.name != operation.state) {
+                        ledgerDao.finishOperation(
+                            linkedSnapshot.operationId,
+                            finalState.name,
+                            "",
+                            System.currentTimeMillis(),
+                        )
+                    }
+                }
+            }
+            return@withTransaction restoredId
         }
 
         val restoredItem = snapshot.download.copy(
@@ -279,6 +344,17 @@ class DownloadRepository(private val database: DBManager) {
         ) {
             "History replacement refusal was not restored for download $restoredId"
         }
+        snapshot.linkedItem?.let {
+            database.lowQualityRedownloadDao.rebindDownloadId(
+                oldDownloadId = snapshot.download.id,
+                newDownloadId = restoredId,
+                updatedAt = System.currentTimeMillis(),
+            )
+        }
+        convergeLinkedHistoryRefusalLocked(
+            restoredId,
+            PersistedHistoryRefusal(restoredBarrier.issueCode, restoredBarrier.issueStage),
+        )
         // Deletion already terminalized the linked child.  Do not replay the
         // stale child/parent snapshots: sibling progress, cancellation, and a
         // terminal parent may have changed while Undo was available.
@@ -309,10 +385,10 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun getQueuedDownloadsForBackup(): List<DownloadItem> =
-        projectHistoryRefusalsForBackup(getQueuedDownloads())
+        projectHistoryRefusalsForBackup(downloadDao.getQueuedDownloadsForBackupList())
 
     suspend fun getScheduledDownloadsForBackup(): List<DownloadItem> =
-        projectHistoryRefusalsForBackup(getScheduledDownloads())
+        projectHistoryRefusalsForBackup(downloadDao.getScheduledDownloadsForBackupList())
 
     suspend fun getCancelledDownloadsForBackup(): List<DownloadItem> =
         projectHistoryRefusalsForBackup(getCancelledDownloads())
@@ -322,6 +398,150 @@ class DownloadRepository(private val database: DBManager) {
 
     suspend fun getSavedDownloadsForBackup(): List<DownloadItem> =
         projectHistoryRefusalsForBackup(getSavedDownloads())
+
+    private suspend fun persistedHistoryRefusalLocked(
+        downloadId: Long,
+    ): PersistedHistoryRefusal? {
+        val barrier = database.historyReplacementBarrierDao.getByDownloadId(downloadId)
+        val current = downloadDao.getNullableDownloadById(downloadId)
+        val issueCode = barrier?.issueCode ?: current?.lastIssueCode.orEmpty()
+        val issue = HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(issueCode)
+            ?: return null
+        return PersistedHistoryRefusal(issue.code.name, barrier?.issueStage ?: current?.lastIssueStage.orEmpty())
+    }
+
+    private fun historyRefusalTerminalState(
+        refusal: PersistedHistoryRefusal,
+        operation: LowQualityRedownloadOperation,
+        items: List<LowQualityRedownloadItem>,
+    ): LowQualityRedownloadOperationState? {
+        val selected = items.filter(LowQualityRedownloadItem::selected)
+        if (selected.any { !it.stateValue.isTerminal }) return null
+        val hasFailed = selected.any { it.stateValue == LowQualityRedownloadItemState.FAILED }
+        val hasCancelled = selected.any { it.stateValue == LowQualityRedownloadItemState.CANCELLED }
+        val hasSuccessfulOrSkipped = selected.any {
+            it.stateValue == LowQualityRedownloadItemState.SUCCEEDED ||
+                it.stateValue == LowQualityRedownloadItemState.SKIPPED
+        }
+        val targetDeleted = refusal.issueCode == "HISTORY_TARGET_DELETED"
+        return if (targetDeleted) {
+            when {
+                hasFailed && hasSuccessfulOrSkipped -> LowQualityRedownloadOperationState.PARTIAL_FAILURE
+                hasFailed -> LowQualityRedownloadOperationState.FAILED
+                hasCancelled && hasSuccessfulOrSkipped -> LowQualityRedownloadOperationState.PARTIAL_FAILURE
+                hasCancelled -> LowQualityRedownloadOperationState.PARTIAL_FAILURE
+                else -> LowQualityRedownloadOperationState.COMPLETED
+            }
+        } else {
+            when {
+                hasFailed && hasSuccessfulOrSkipped -> LowQualityRedownloadOperationState.PARTIAL_FAILURE
+                hasFailed -> LowQualityRedownloadOperationState.FAILED
+                hasCancelled && hasSuccessfulOrSkipped -> LowQualityRedownloadOperationState.PARTIAL_FAILURE
+                hasCancelled -> LowQualityRedownloadOperationState.FAILED
+                else -> LowQualityRedownloadOperationState.FAILED
+            }
+        }
+    }
+
+    private suspend fun convergeLinkedHistoryRefusalLocked(
+        downloadId: Long,
+        refusal: PersistedHistoryRefusal,
+    ): Set<String> {
+        val disposition = HistoryReplacementDiagnostic.refusalLedgerDisposition(refusal.issueCode)
+            ?: return emptySet()
+        val ledgerDao = database.lowQualityRedownloadDao
+        val ledgerItem = ledgerDao.getItemByDownloadId(downloadId) ?: return emptySet()
+        check(ledgerItem.stateValue != LowQualityRedownloadItemState.SUCCEEDED) {
+            "History refusal conflicts with a successful low-quality child $downloadId"
+        }
+        check(
+            ledgerDao.setHistoryReplacementRefusalItemState(
+                downloadId = downloadId,
+                state = disposition.itemState.name,
+                reason = disposition.reasonCode,
+                updatedAt = System.currentTimeMillis(),
+            ) == 1
+        ) {
+            "History refusal could not converge low-quality child $downloadId"
+        }
+        val operation = ledgerDao.getOperation(ledgerItem.operationId)
+            ?: error("Missing low-quality operation for linked download $downloadId")
+        val finalState = historyRefusalTerminalState(
+            refusal = refusal,
+            operation = operation,
+            items = ledgerDao.getItems(ledgerItem.operationId),
+        ) ?: return setOf(ledgerItem.operationId)
+        if (operation.state != finalState.name) {
+            check(
+                ledgerDao.setTerminalOperationState(
+                    operationId = ledgerItem.operationId,
+                    expectedState = operation.state,
+                    state = finalState.name,
+                    reason = disposition.reasonCode,
+                    completedAt = System.currentTimeMillis(),
+                ) == 1
+            ) {
+                "History refusal could not converge low-quality operation ${ledgerItem.operationId}"
+            }
+        }
+        return setOf(ledgerItem.operationId)
+    }
+
+    /**
+     * Moves an abandoned or user-reclassified refused replacement into a
+     * non-runnable diagnostic state without discarding its exact refusal.
+     * Paused/Cancelled are retained only for an explicit user stop; all other
+     * ordinary statuses converge to Error.
+     */
+    private suspend fun convergeHistoryReplacementRefusalLocked(
+        id: Long,
+        expectedExecutionId: String = "",
+        forceError: Boolean = true,
+    ): HistoryReplacementConvergenceResult {
+        val current = downloadDao.getNullableDownloadById(id)
+            ?: return HistoryReplacementConvergenceResult(downloadUpdated = false)
+        val refusal = persistedHistoryRefusalLocked(id)
+            ?: return HistoryReplacementConvergenceResult(downloadUpdated = false)
+        val nextStatus = if (
+            !forceError && current.status in setOf(Status.Paused.name, Status.Cancelled.name)
+        ) {
+            current.status
+        } else {
+            Status.Error.name
+        }
+        if (
+            downloadDao.convergeHistoryReplacementRefusal(
+                id = id,
+                expectedStatus = current.status,
+                expectedExecutionId = expectedExecutionId,
+                nextStatus = nextStatus,
+                issueCode = refusal.issueCode,
+                issueStage = refusal.issueStage,
+            ) != 1
+        ) {
+            return HistoryReplacementConvergenceResult(downloadUpdated = false)
+        }
+        return HistoryReplacementConvergenceResult(
+            downloadUpdated = true,
+            affectedOperationIds = convergeLinkedHistoryRefusalLocked(id, refusal),
+        )
+    }
+
+    suspend fun convergeHistoryReplacementRefusal(
+        id: Long,
+        expectedExecutionId: String = "",
+        forceError: Boolean = true,
+    ): HistoryReplacementConvergenceResult = database.withTransaction {
+        convergeHistoryReplacementRefusalInCurrentTransaction(id, expectedExecutionId, forceError)
+    }
+
+    /** Must be called while the caller already owns the Room transaction. */
+    internal suspend fun convergeHistoryReplacementRefusalInCurrentTransaction(
+        id: Long,
+        expectedExecutionId: String = "",
+        forceError: Boolean = true,
+    ): HistoryReplacementConvergenceResult =
+        convergeHistoryReplacementRefusalLocked(id, expectedExecutionId, forceError)
 
 
     suspend fun setDownloadStatus(id: Long, status: Status) {
@@ -347,9 +567,26 @@ class DownloadRepository(private val database: DBManager) {
                             DownloadCancellationRegistry.Reason.CANCELLED
                         },
                     )
+                    if (persistedHistoryRefusalLocked(id) != null) {
+                        convergeHistoryReplacementRefusalLocked(
+                            id = id,
+                            expectedExecutionId = current.executionId,
+                            forceError = false,
+                        )
+                    }
                 }
             } else {
                 downloadDao.setStatus(id, status.toString())
+                if (
+                    status in setOf(Status.Paused, Status.Cancelled) &&
+                        persistedHistoryRefusalLocked(id) != null
+                ) {
+                    convergeHistoryReplacementRefusalLocked(
+                        id = id,
+                        expectedExecutionId = current.executionId,
+                        forceError = false,
+                    )
+                }
             }
         }
     }
@@ -364,6 +601,13 @@ class DownloadRepository(private val database: DBManager) {
                 val current = downloadDao.getNullableDownloadById(id) ?: return@forEach
                 if (current.executionId.isBlank()) {
                     downloadDao.setStatus(id, status.toString())
+                    if (persistedHistoryRefusalLocked(id) != null) {
+                        convergeHistoryReplacementRefusalLocked(
+                            id = id,
+                            expectedExecutionId = current.executionId,
+                            forceError = false,
+                        )
+                    }
                 } else {
                     val changed = if (status == Status.Paused) {
                         downloadDao.pauseIfExecutionOwned(id, current.executionId)
@@ -380,12 +624,30 @@ class DownloadRepository(private val database: DBManager) {
                             DownloadCancellationRegistry.Reason.CANCELLED
                         },
                     )
+                    if (persistedHistoryRefusalLocked(id) != null) {
+                        convergeHistoryReplacementRefusalLocked(
+                            id = id,
+                            expectedExecutionId = current.executionId,
+                            forceError = false,
+                        )
+                    }
                 }
             }
         }
     }
 
     suspend fun saveForLater(item: DownloadItem): SavedDownloadResult = database.withTransaction {
+        if (item.id > 0L && persistedHistoryRefusalLocked(item.id) != null) {
+            return@withTransaction SavedDownloadResult(
+                downloadId = item.id,
+                affectedOperationIds = convergeHistoryReplacementRefusalLocked(
+                    id = item.id,
+                    expectedExecutionId = downloadDao.getNullableDownloadById(item.id)
+                        ?.executionId.orEmpty(),
+                    forceError = true,
+                ).affectedOperationIds,
+            )
+        }
         item.status = Status.Saved.name
         val upsertResult = if (item.id <= 0L) downloadDao.insert(item) else downloadDao.update(item)
         val downloadId = item.id.takeIf { it > 0L } ?: upsertResult
@@ -397,6 +659,13 @@ class DownloadRepository(private val database: DBManager) {
 
     suspend fun moveToSaved(id: Long): Set<String> = database.withTransaction {
         val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction emptySet()
+        if (persistedHistoryRefusalLocked(id) != null) {
+            return@withTransaction convergeHistoryReplacementRefusalLocked(
+                id = id,
+                expectedExecutionId = item.executionId,
+                forceError = true,
+            ).affectedOperationIds
+        }
         downloadDao.setStatus(item.id, Status.Saved.name)
         markLinkedDownloadSaved(item.id, System.currentTimeMillis())
     }
@@ -571,6 +840,13 @@ class DownloadRepository(private val database: DBManager) {
         if (!changed && item.status != Status.Cancelled.name) {
             return@withTransaction emptySet()
         }
+        if (persistedHistoryRefusalLocked(item.id) != null) {
+            return@withTransaction convergeHistoryReplacementRefusalLocked(
+                id = item.id,
+                expectedExecutionId = downloadDao.getNullableDownloadById(item.id)?.executionId.orEmpty(),
+                forceError = false,
+            ).affectedOperationIds
+        }
         terminalizeLinkedChildren(
             downloadIds = listOf(item.id),
             reason = REASON_USER_CANCELLED,
@@ -586,10 +862,16 @@ class DownloadRepository(private val database: DBManager) {
         assertTerminalExecutionOwned(id, expectedExecutionId)
         val ledgerDao = database.lowQualityRedownloadDao
         val ledgerItem = ledgerDao.getItemByDownloadId(id)
+        check(persistedHistoryRefusalLocked(id) == null) {
+            "History refusal cannot be completed as a successful replacement"
+        }
         val changedOperationIds = linkedSetOf<String>()
-        if (ledgerItem != null && !ledgerItem.stateValue.isTerminal) {
+        if (ledgerItem != null) {
             val operation = ledgerDao.getOperation(ledgerItem.operationId)
                 ?: error("Missing low-quality operation for linked download")
+            check(!ledgerItem.stateValue.isTerminal) {
+                "Terminal low-quality child cannot authorize History success"
+            }
             check(!operation.stateValue.isTerminal) {
                 "Terminal low-quality operation still owns a nonterminal child"
             }
@@ -630,35 +912,44 @@ class DownloadRepository(private val database: DBManager) {
             assertTerminalExecutionOwned(id, expectedExecutionId)
             val ledgerDao = database.lowQualityRedownloadDao
             val ledgerItem = ledgerDao.getItemByDownloadId(id)
+            val refusal = persistedHistoryRefusalLocked(id)
+            check(
+                refusal == null || refusal.issueCode == DownloadIssueCode.HISTORY_TARGET_DELETED.name
+            ) {
+                "Mismatch refusal cannot be completed as target-deleted"
+            }
             val changedOperationIds = linkedSetOf<String>()
-            if (ledgerItem != null && !ledgerItem.stateValue.isTerminal) {
+            if (ledgerItem != null) {
                 val operation = ledgerDao.getOperation(ledgerItem.operationId)
                     ?: error("Missing low-quality operation for linked download")
-                check(!operation.stateValue.isTerminal) {
-                    "Terminal low-quality operation still owns a nonterminal child"
-                }
-                val now = System.currentTimeMillis()
-                check(
-                    ledgerDao.setItemStateByDownloadId(
-                        id,
-                        LowQualityRedownloadItemState.SKIPPED.name,
-                        REASON_HISTORY_TARGET_DELETED,
-                        now
-                    ) == 1
-                ) {
-                    "History-target deletion lost ledger ownership"
-                }
-                val finalState = LowQualityRedownloadCompletionPolicy.terminalState(
-                    operation,
-                    ledgerDao.getItems(ledgerItem.operationId)
-                )
-                if (finalState != null) {
-                    ledgerDao.finishOperation(
-                        ledgerItem.operationId,
-                        finalState.name,
-                        "",
-                        now
+                if (ledgerItem.stateValue.isTerminal || operation.stateValue.isTerminal) {
+                    check(ledgerItem.stateValue == LowQualityRedownloadItemState.SKIPPED) {
+                        "Terminal low-quality child cannot be reclassified as target-deleted"
+                    }
+                } else {
+                    val now = System.currentTimeMillis()
+                    check(
+                        ledgerDao.setItemStateByDownloadId(
+                            id,
+                            LowQualityRedownloadItemState.SKIPPED.name,
+                            REASON_HISTORY_TARGET_DELETED,
+                            now
+                        ) == 1
+                    ) {
+                        "History-target deletion lost ledger ownership"
+                    }
+                    val finalState = LowQualityRedownloadCompletionPolicy.terminalState(
+                        operation,
+                        ledgerDao.getItems(ledgerItem.operationId)
                     )
+                    if (finalState != null) {
+                        ledgerDao.finishOperation(
+                            ledgerItem.operationId,
+                            finalState.name,
+                            "",
+                            now
+                        )
+                    }
                 }
                 changedOperationIds += ledgerItem.operationId
             }
@@ -690,6 +981,32 @@ class DownloadRepository(private val database: DBManager) {
         database.withTransaction {
             val item = downloadDao.getNullableDownloadById(id)
                 ?: return@withTransaction UndoableCancellation()
+            val refusal = persistedHistoryRefusalLocked(id)
+            if (refusal != null) {
+                val changed = if (item.executionId.isBlank()) {
+                    downloadDao.cancelByUser(id) == 1
+                } else {
+                    downloadDao.cancelIfExecutionOwned(id, item.executionId) == 1
+                }
+                if (changed) {
+                    DownloadCancellationRegistry.record(
+                        item.id,
+                        item.executionId,
+                        DownloadCancellationRegistry.Reason.CANCELLED,
+                    )
+                }
+                if (!changed && item.status != Status.Cancelled.name) {
+                    return@withTransaction UndoableCancellation()
+                }
+                return@withTransaction UndoableCancellation(
+                    affectedOperationIds = convergeHistoryReplacementRefusalLocked(
+                        id = id,
+                        expectedExecutionId = downloadDao.getNullableDownloadById(id)
+                            ?.executionId.orEmpty(),
+                        forceError = false,
+                    ).affectedOperationIds
+                )
+            }
             val ledgerDao = database.lowQualityRedownloadDao
             val ledgerItem = ledgerDao.getItemByDownloadId(id)
             val operation = ledgerItem?.let { ledgerDao.getOperation(it.operationId) }
@@ -754,6 +1071,15 @@ class DownloadRepository(private val database: DBManager) {
         }
         val operation = ledgerDao.getOperation(ledgerItem.operationId)
         val download = downloadDao.getNullableDownloadById(id)
+        if (download != null && persistedHistoryRefusalLocked(id) != null) {
+            return@withTransaction PendingCancellationResolution(
+                affectedOperationIds = convergeHistoryReplacementRefusalLocked(
+                    id = id,
+                    expectedExecutionId = download.executionId,
+                    forceError = false,
+                ).affectedOperationIds
+            )
+        }
         val canRestore =
             operation != null &&
                 !operation.stateValue.isTerminal &&
@@ -808,6 +1134,13 @@ class DownloadRepository(private val database: DBManager) {
             return emptySet()
         }
         val download = downloadDao.getNullableDownloadById(id)
+        if (download != null && persistedHistoryRefusalLocked(id) != null) {
+            return convergeHistoryReplacementRefusalLocked(
+                id = id,
+                expectedExecutionId = download.executionId,
+                forceError = false,
+            ).affectedOperationIds
+        }
         if (download != null && download.status != Status.Cancelled.name) {
             val changed = if (download.executionId.isBlank()) {
                 downloadDao.cancelByUser(id)
@@ -915,6 +1248,13 @@ class DownloadRepository(private val database: DBManager) {
                         item.id,
                         item.executionId,
                         DownloadCancellationRegistry.Reason.CANCELLED,
+                    )
+                }
+                if (persistedHistoryRefusalLocked(item.id) != null) {
+                    convergeHistoryReplacementRefusalLocked(
+                        id = item.id,
+                        expectedExecutionId = item.executionId,
+                        forceError = false,
                     )
                 }
             }

@@ -168,8 +168,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                                     if (wasWaitingForMembership) {
                                         downloadViewModel.restoreMembershipWaiting(item)
                                     } else {
-                                        downloadViewModel.deleteDownload(item.id)
-                                        downloadViewModel.queueDownloads(listOf(item))
+                                        downloadViewModel.undoCancelledDownload(item)
                                     }
                                 }
                             }
