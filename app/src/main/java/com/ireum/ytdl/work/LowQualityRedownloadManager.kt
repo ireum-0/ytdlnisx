@@ -15,11 +15,11 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.util.LowQualityRedownloadNotification
-import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
-import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class LowQualityRedownloadManager private constructor(context: Context) {
@@ -86,10 +86,20 @@ class LowQualityRedownloadManager private constructor(context: Context) {
     private suspend fun completeCancellation(operationId: String) {
         try {
             workManager.cancelAllWorkByTag(LowQualityRedownloadWorker.operationTag(operationId))
-            repository.completePersistedCancellation(operationId).forEach { id ->
-                runCatching { YoutubeDL.getInstance().destroyProcessById(id.toString()) }
-                runCatching { YoutubeDLCompat.destroyProcessById(id.toString()) }
-                DownloadWorker.cancelPostProcessingById(id)
+            val result = repository.completePersistedCancellationWithPublications(operationId)
+            DownloadCancellationRegistry.publish(result.publications)
+            result.publications.forEach { publication ->
+                withDownloadWorkerExecutionSideEffectLease(
+                    publication.downloadId,
+                    publication.executionId,
+                ) {
+                    withDownloadWorkerExecutionLock {
+                        DownloadWorker.cancelProcessesForExecution(
+                            publication.downloadId,
+                            publication.executionId,
+                        )
+                    }
+                }
             }
         } finally {
             repository.progress(operationId)?.let { notification.update(it) }
@@ -188,6 +198,8 @@ internal suspend fun dispatchLowQualityRedownloadRecovery(
 }
 
 object LowQualityRedownloadLedger {
+    private val convergenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     suspend fun transition(
         context: Context,
         downloadId: Long,
@@ -203,6 +215,43 @@ object LowQualityRedownloadLedger {
             expectedExecutionId = expectedExecutionId,
         ) ?: return
         refresh(context, setOf(operationId))
+    }
+
+    /**
+     * A Download terminal write is authoritative even when the independent
+     * ledger write fails.  Reconcile that durable Download state in the live
+     * process so the linked child/parent cannot remain nonterminal forever.
+     */
+    fun scheduleConvergence(context: Context, downloadId: Long) {
+        val appContext = context.applicationContext
+        convergenceScope.launch {
+            var retryDelayMs = 100L
+            while (true) {
+                val repository = LowQualityRedownloadRepository(DBManager.getInstance(appContext))
+                val operationId = try {
+                    repository.reconcileDownload(downloadId)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                }
+                if (operationId != null) {
+                    val child = repository.getItems(operationId)
+                        .firstOrNull { it.downloadId == downloadId }
+                    if (child == null || child.stateValue.isTerminal) {
+                        refresh(appContext, setOf(operationId))
+                        return@launch
+                    }
+                }
+                // The durable Download Error/refusal is the convergence debt:
+                // keep deriving the linked terminal state until the Room write
+                // succeeds.  A bounded best-effort loop could leave a live
+                // process with a nonterminal child forever after a transient
+                // ledger failure.
+                delay(retryDelayMs)
+                retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+            }
+        }
     }
 
     suspend fun refresh(context: Context, operationIds: Collection<String>) {

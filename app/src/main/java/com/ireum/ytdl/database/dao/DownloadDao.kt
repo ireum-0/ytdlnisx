@@ -29,8 +29,8 @@ private const val LOW_QUALITY_REPLACEMENT_RUNNABLE_PREDICATE =
         "LEFT JOIN low_quality_redownload_operations lqo " +
         "ON lqo.operationId = lqi.operationId " +
         "WHERE lqi.downloadId = downloads.id " +
-        "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-        "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING'))"
+        "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+        "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1))"
 
 private const val LOW_QUALITY_REPLACEMENT_RUNNABLE_GUARD =
     "AND $LOW_QUALITY_REPLACEMENT_RUNNABLE_PREDICATE"
@@ -102,6 +102,7 @@ interface DownloadDao {
 
     @Query(
         "UPDATE downloads SET status = 'Processing', executionId='' WHERE id IN (:ids) " +
+            "AND status NOT IN ('Active','PostProcessing') " +
             "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
             "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
             "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
@@ -184,8 +185,8 @@ interface DownloadDao {
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
             "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
             "WHERE lqi.downloadId = downloads.id " +
-            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING')) " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1)) " +
             "ORDER BY orderPosition, id"
     )
     fun getQueuedDownloads() : PagingSource<Int, DownloadItemSimple>
@@ -205,8 +206,8 @@ interface DownloadDao {
         AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi
             LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId
             WHERE lqi.downloadId = downloads.id
-            AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED')
-                OR lqo.operationId IS NULL OR lqo.state != 'RUNNING'))
+            AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED')
+                OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1))
         ORDER BY downloadStartTime, orderPosition, id
         LIMIT 10
     """)
@@ -224,8 +225,8 @@ interface DownloadDao {
         AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi
             LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId
             WHERE lqi.downloadId = downloads.id
-            AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED')
-                OR lqo.operationId IS NULL OR lqo.state != 'RUNNING'))
+            AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED')
+                OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1))
         ORDER BY 
             CASE
                 WHEN id in (:priorityItems) THEN 0
@@ -247,8 +248,8 @@ interface DownloadDao {
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
             "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
             "WHERE lqi.downloadId = downloads.id " +
-            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING')) " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1)) " +
             "ORDER BY orderPosition, id"
     )
     fun getQueuedDownloadsList() : List<DownloadItem>
@@ -267,8 +268,8 @@ interface DownloadDao {
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
             "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
             "WHERE lqi.downloadId = downloads.id " +
-            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING')) " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1)) " +
             "ORDER BY downloadStartTime, orderPosition, id"
     )
     fun getScheduledDownloadsList() : List<DownloadItem>
@@ -287,8 +288,8 @@ interface DownloadDao {
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
             "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
             "WHERE lqi.downloadId = downloads.id " +
-            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING')) " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1)) " +
             "ORDER BY orderPosition, id"
     )
     fun getQueuedDownloadsListIDs() : List<Long>
@@ -319,8 +320,8 @@ interface DownloadDao {
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
             "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
             "WHERE lqi.downloadId = downloads.id " +
-            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING')) " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1)) " +
             "ORDER BY downloadStartTime, orderPosition, id DESC"
     )
     fun getScheduledDownloadIDs(): List<Long>
@@ -344,8 +345,8 @@ interface DownloadDao {
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
             "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
             "WHERE lqi.downloadId = downloads.id " +
-            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING')) " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1)) " +
             "ORDER BY downloadStartTime, orderPosition, id DESC"
     )
     fun getScheduledDownloads() : PagingSource<Int, DownloadItemSimple>
@@ -385,8 +386,8 @@ interface DownloadDao {
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
             "LEFT JOIN low_quality_redownload_operations lqo ON lqo.operationId = lqi.operationId " +
             "WHERE lqi.downloadId = downloads.id " +
-            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING'))"
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1))"
     )
     suspend fun claimDownloadForWorker(
         id: Long,
@@ -486,6 +487,16 @@ interface DownloadDao {
     suspend fun pauseIfExecutionOwned(id: Long, executionId: String): Int
 
     @Query(
+        "UPDATE downloads SET status='Queued', downloadStartTime=0, executionId='' " +
+            "WHERE id=:id AND status='Paused' AND executionId=:expectedExecutionId " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
+            LOW_QUALITY_REPLACEMENT_RUNNABLE_GUARD
+    )
+    suspend fun resumePausedIfExecutionOwned(id: Long, expectedExecutionId: String): Int
+
+    @Query(
         "UPDATE downloads SET status='Cancelled' WHERE id=:id AND executionId=:executionId " +
             "AND status IN ('Queued','WaitingForMembership','Active','PostProcessing','Scheduled','Paused')"
     )
@@ -549,6 +560,7 @@ interface DownloadDao {
         ) {
             return false
         }
+        if (hasLowQualityCancellationRequested(item.id)) return false
         if (!preservesTargetDeletedIssue(current, item)) return false
         val barrier = getHistoryReplacementBarrier(item.id)
         if (
@@ -563,6 +575,69 @@ interface DownloadDao {
         updateRaw(item)
         return true
     }
+
+    /**
+     * Atomically applies a runnable transition from the exact source snapshot
+     * the caller evaluated.  A second retry/reconfigure action must observe
+     * zero rows after the first action has queued or claimed the item, rather
+     * than replaying a stale full-row snapshot over the newer execution.
+     */
+    @Transaction
+    suspend fun updateForQueueIfSnapshot(
+        item: DownloadItem,
+        expectedStatus: String,
+        expectedExecutionId: String,
+        expectedOperationId: String,
+        expectedRetryAttempt: Int,
+        expectedIssueCode: String,
+        expectedIssueStage: String,
+    ): Boolean {
+        val current = getNullableDownloadById(item.id)
+        if (
+            current == null ||
+                current.status != expectedStatus ||
+                expectedStatus in setOf("Active", "PostProcessing") ||
+                current.executionId != expectedExecutionId ||
+                current.operationId != expectedOperationId ||
+                current.retryAttempt != expectedRetryAttempt ||
+                current.lastIssueCode != expectedIssueCode ||
+                current.lastIssueStage != expectedIssueStage ||
+                getHistoryReplacementBarrier(item.id) != null ||
+                !isRunnableLowQualityReplacement(item.id)
+        ) {
+            return false
+        }
+        updateRaw(
+            item.copy(executionId = "")
+        )
+        return true
+    }
+
+    @Query(
+        "SELECT COUNT(*) = 1 FROM downloads AS d " +
+            "WHERE d.id=:id " +
+            "AND NOT (COALESCE(d.playlistURL, '') LIKE 'history-redownload:%:quality:%' " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items q " +
+            "WHERE q.downloadId = d.id)) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo " +
+            "ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = d.id " +
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1))"
+    )
+    suspend fun isRunnableLowQualityReplacement(id: Long): Boolean
+
+    @Query(
+        "SELECT EXISTS (" +
+            "SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo " +
+            "ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = :id " +
+            "AND (lqi.itemState = 'CANCELLATION_REQUESTED' OR lqo.cancelRequested = 1)" +
+            ")"
+    )
+    suspend fun hasLowQualityCancellationRequested(id: Long): Boolean
 
     @Transaction
     suspend fun updateAll(list: List<DownloadItem>) : List<DownloadItem> {
@@ -776,6 +851,7 @@ interface DownloadDao {
 
     @Query(
         "UPDATE downloads SET downloadStartTime=0, status='Queued', executionId='' WHERE id IN (:list) " +
+            "AND status IN ('Queued','Scheduled') " +
             "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
             "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
             "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +
@@ -805,7 +881,7 @@ interface DownloadDao {
 
     @Query(
         "UPDATE downloads SET status='Queued', downloadStartTime = 0, executionId='' " +
-            "WHERE id IN (:list) " +
+            "WHERE id IN (:list) AND status NOT IN ('Active','PostProcessing') " +
             "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
             "('HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY_REPLACEMENT_TYPE_MISMATCH', 'HISTORY_TARGET_DELETED')) " +
             "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId = downloads.id) " +

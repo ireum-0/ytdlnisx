@@ -11,6 +11,7 @@ import com.ireum.ytdl.util.MediaPublishedDateOrder
 import com.ireum.ytdl.util.MissingSourceDatePolicy
 import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
+import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import androidx.sqlite.db.SimpleSQLiteQuery
@@ -352,16 +353,24 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
     }
 
     suspend fun deleteRecords(ids: List<Long>) {
+        HistoryReferenceMutationCoordinator.withLock {
+            deleteRecordsWithinReferenceMutation(ids)
+        }
+    }
+
+    suspend fun deleteAllRecords() {
+        HistoryReferenceMutationCoordinator.withLock {
+            playlistDao.clearPlaylistItems()
+            historyDao.nuke()
+        }
+    }
+
+    suspend fun deleteRecordsWithinReferenceMutation(ids: List<Long>) {
         if (ids.isEmpty()) return
         ids.chunked(ID_BATCH_SIZE).forEach { batch ->
             playlistDao.deletePlaylistItemsByHistoryIds(batch)
             historyDao.deleteWithIds(batch)
         }
-    }
-
-    suspend fun deleteAllRecords() {
-        playlistDao.clearPlaylistItems()
-        historyDao.nuke()
     }
 
     fun getDuplicateGroups(): List<List<HistoryItem>> =

@@ -34,7 +34,7 @@ class CleanUpLeftoverDownloads(
         val dbManager = DBManager.getInstance(context)
         val downloadRepo = DownloadRepository(dbManager)
         LowQualityRedownloadLedger.refresh(context, downloadRepo.deleteCancelled())
-        downloadRepo.deleteErrored()
+        LowQualityRedownloadLedger.refresh(context, downloadRepo.deleteErrored())
 
         val activeDownloadCount = downloadRepo.getActiveDownloadsCount()
         if (activeDownloadCount == 0){

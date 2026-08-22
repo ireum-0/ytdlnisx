@@ -4,6 +4,7 @@ import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
@@ -45,6 +46,35 @@ class DownloadWorkerOwnershipRecoveryTest {
 
         DownloadWorkerProcessOwners.release(downloadId, "E2")
         DownloadWorkerProcessOwners.release(downloadId, "E1")
+    }
+
+    @Test
+    fun differentExecutionsCannotOverlapDownloadSideEffects() = runBlocking {
+        val downloadId = 908L
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        var secondEntered = false
+
+        val first = launch {
+            withDownloadWorkerExecutionSideEffectLease(downloadId, "E1") {
+                firstEntered.complete(Unit)
+                releaseFirst.await()
+            }
+        }
+        firstEntered.await()
+
+        val second = launch {
+            withDownloadWorkerExecutionSideEffectLease(downloadId, "E2") {
+                secondEntered = true
+            }
+        }
+        yield()
+        assertFalse(secondEntered)
+
+        releaseFirst.complete(Unit)
+        first.join()
+        second.join()
+        assertTrue(secondEntered)
     }
 
     @Test

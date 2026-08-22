@@ -13,6 +13,7 @@ import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.work.TerminalDownloadWorker
+import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -67,11 +68,12 @@ class TerminalViewModel(private val application: Application) : AndroidViewModel
     }
 
     fun cancelTerminalDownload(id: Long) = viewModelScope.launch(Dispatchers.IO) {
-        YoutubeDL.getInstance().destroyProcessById(id.toString())
-        YoutubeDLCompat.destroyProcessById(id.toString())
+        val processId = YtdlpProcessIdentity.terminal(id)
+        YoutubeDL.getInstance().destroyProcessById(processId)
+        YoutubeDLCompat.destroyProcessById(processId)
         WorkManager.getInstance(application).cancelUniqueWork(id.toString())
         delay(200)
-        notificationUtil.cancelDownloadNotification(id.toInt())
+        notificationUtil.cancelTerminalDownloadNotification(id.toInt())
         delete(id)
     }
 

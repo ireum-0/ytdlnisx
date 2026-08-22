@@ -68,14 +68,18 @@ import com.ireum.ytdl.util.preset.DownloadPreset
 import com.ireum.ytdl.util.preset.DownloadPresetMapper
 import com.ireum.ytdl.util.preset.DownloadPresetStore
 import com.ireum.ytdl.work.AlarmScheduler
+import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.UpdateMultipleDownloadsDataWorker
 import com.ireum.ytdl.work.UpdateMultipleDownloadsFormatsWorker
+import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import com.google.gson.Gson
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -102,6 +106,13 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     private val ytdlpUtil: YTDLPUtil
     private val resources : Resources
     private val downloadPresetStore: DownloadPresetStore
+
+    override fun onCleared() {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            repository.abandonPendingUndoSnapshots()
+        }
+        super.onCleared()
+    }
 
     val allDownloads : Flow<PagingData<DownloadItem>>
     val queuedDownloads : Flow<PagingData<DownloadItemSimple>>
@@ -255,6 +266,12 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             restoredId
         }
 
+    fun restoreDownloadUndoFromUi(handle: DownloadRepository.DownloadUndoHandle) {
+        viewModelScope.launch(Dispatchers.IO) {
+            restoreDownloadUndo(handle)
+        }
+    }
+
     suspend fun commitDownloadUndo(handle: DownloadRepository.DownloadUndoHandle) =
         withContext(Dispatchers.IO) {
             LowQualityRedownloadLedger.refresh(
@@ -263,13 +280,48 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             )
         }
 
+    fun commitDownloadUndoFromUi(handle: DownloadRepository.DownloadUndoHandle) {
+        viewModelScope.launch(Dispatchers.IO) {
+            commitDownloadUndo(handle)
+        }
+    }
+
     suspend fun updateDownload(item: DownloadItem){
         if (item.status == DownloadRepository.Status.Cancelled.name) {
-            val affected = repository.cancelByUser(item.id).toMutableSet()
-            if (sharedPreferences.getBoolean("incognito", false)) {
-                affected += repository.delete(item.id)
+            withContext(Dispatchers.IO) {
+                val expectedExecutionId = dao.getNullableDownloadById(item.id)?.executionId.orEmpty()
+                val cancel = suspend {
+                    withDownloadWorkerExecutionLock {
+                        val current = dao.getNullableDownloadById(item.id)
+                        if (current == null || current.executionId != expectedExecutionId) {
+                            return@withDownloadWorkerExecutionLock
+                        }
+                        val affected = repository.cancelByUser(
+                            item.id,
+                            expectedExecutionId,
+                        ).toMutableSet()
+                        if (
+                            expectedExecutionId.isNotBlank() &&
+                            dao.getNullableDownloadById(item.id)?.let {
+                                it.status == DownloadRepository.Status.Cancelled.name &&
+                                    it.executionId == expectedExecutionId
+                            } == true
+                        ) {
+                            DownloadWorker.cancelProcessesForExecution(
+                                item.id,
+                                expectedExecutionId,
+                            )
+                        }
+                        if (sharedPreferences.getBoolean("incognito", false)) {
+                            affected += repository.delete(item.id)
+                        }
+                        LowQualityRedownloadLedger.refresh(application, affected)
+                    }
+                }
+                if (expectedExecutionId.isBlank()) cancel() else {
+                    withDownloadWorkerExecutionSideEffectLease(item.id, expectedExecutionId) { cancel() }
+                }
             }
-            LowQualityRedownloadLedger.refresh(application, affected)
             return
         }
         if (sharedPreferences.getBoolean("incognito", false)){
@@ -897,6 +949,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             try {
                 itemIDs.forEach {
                     val item = repository.getItemByID(it)
+                    val errorSnapshot = item.takeIf {
+                        it.status == DownloadRepository.Status.Error.toString()
+                    }?.copy()
                     if (processingItemsJob?.isCancelled == true) throw CancellationException()
                     val refusalConverged = convergePersistedHistoryRefusal(item.id)
                     if (
@@ -928,7 +983,22 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                     }
                     if (!deleteExisting) item.id = 0
                     item.status = DownloadRepository.Status.Processing.toString()
-                    repository.update(item)
+                    if (errorSnapshot != null && deleteExisting) {
+                        val transitioned = withDownloadWorkerExecutionLock {
+                            dao.updateForQueueIfSnapshot(
+                                item = item,
+                                expectedStatus = errorSnapshot.status,
+                                expectedExecutionId = errorSnapshot.executionId,
+                                expectedOperationId = errorSnapshot.operationId,
+                                expectedRetryAttempt = errorSnapshot.retryAttempt,
+                                expectedIssueCode = errorSnapshot.lastIssueCode,
+                                expectedIssueStage = errorSnapshot.lastIssueStage,
+                            )
+                        }
+                        check(transitioned) { "Download changed before Processing transition ${item.id}" }
+                    } else {
+                        repository.update(item)
+                    }
                 }
                 processingItems.emit(false)
             } catch (e: Exception) {
@@ -1042,7 +1112,10 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     fun deleteErrored() = viewModelScope.launch(Dispatchers.IO) {
-        repository.deleteErrored()
+        LowQualityRedownloadLedger.refresh(
+            application,
+            repository.deleteErrored(),
+        )
     }
 
     fun deleteQueued() = viewModelScope.launch(Dispatchers.IO) {
@@ -1068,7 +1141,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         ids.distinct().forEach(notificationUtil::cancelMembershipWaitingNotification)
     }
 
-    private suspend fun cancelActiveQueued() = withContext(Dispatchers.IO) {
+    private suspend fun cancelActiveQueued(): List<com.ireum.ytdl.work.DownloadCancellationRegistry.Publication> = withContext(Dispatchers.IO) {
         processingItemsJob?.apply { cancel(CancellationException()) }
         repository.cancelActiveQueued()
     }
@@ -1182,22 +1255,80 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         repository.startDownloadWorker(emptyList(), application)
     }
 
-    suspend fun retryFailedDownload(itemId: Long): DownloadRetryDecision {
-        val item = repository.getItemByID(itemId)
-        val decision = prepareRetryMetadata(
-            item = item,
-            strategy = DownloadRetryStrategy.SAME_SETTINGS,
-            settingsConfirmed = false
-        )
-        if (decision is DownloadRetryDecision.Allowed) {
-            applyRetryMetadata(item, decision.metadata)
-            item.status = DownloadRepository.Status.Queued.toString()
-            item.downloadStartTime = 0L
-            repository.update(item)
-            repository.startDownloadWorker(listOf(item), application, false)
+    /** Resumes only the exact paused execution represented by a notification. */
+    suspend fun resumePausedDownloadAndWait(
+        id: Long,
+        expectedExecutionId: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (expectedExecutionId.isBlank()) return@withContext false
+        val current = dao.getNullableDownloadById(id) ?: return@withContext false
+        if (
+            HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(current.lastIssueCode) ||
+                dbManager.historyReplacementBarrierDao.getByDownloadId(id) != null ||
+                hasTerminalHistoryReplacementLedger(current)
+        ) {
+            convergePersistedHistoryRefusal(id)
+            return@withContext false
         }
-        return decision
+        if (dao.resumePausedIfExecutionOwned(id, expectedExecutionId) != 1) {
+            return@withContext false
+        }
+        repository.startDownloadWorker(emptyList(), application)
+        true
     }
+
+    suspend fun retryFailedDownload(
+        itemId: Long,
+        expectedOperationId: String? = null,
+        expectedRetryAttempt: Int? = null,
+    ): DownloadRetryDecision =
+        withContext(Dispatchers.IO) {
+            withDownloadWorkerExecutionLock {
+                val item = repository.getItemByID(itemId)
+                if (
+                    (expectedOperationId != null && item.operationId != expectedOperationId) ||
+                    (expectedRetryAttempt != null && item.retryAttempt != expectedRetryAttempt)
+                ) {
+                    return@withDownloadWorkerExecutionLock DownloadRetryDecision.Blocked(
+                        DownloadRetryBlockReason.NOT_FAILED
+                    )
+                }
+                val expectedExecutionId = item.executionId
+                val expectedOperationId = item.operationId
+                val expectedRetryAttempt = item.retryAttempt
+                val expectedIssueCode = item.lastIssueCode
+                val expectedIssueStage = item.lastIssueStage
+                val decision = prepareRetryMetadata(
+                    item = item,
+                    strategy = DownloadRetryStrategy.SAME_SETTINGS,
+                    settingsConfirmed = false
+                )
+                if (decision is DownloadRetryDecision.Allowed) {
+                    applyRetryMetadata(item, decision.metadata)
+                    item.status = DownloadRepository.Status.Queued.toString()
+                    item.downloadStartTime = 0L
+                    val transitioned = dao.updateForQueueIfSnapshot(
+                        item = item,
+                        expectedStatus = DownloadRepository.Status.Error.toString(),
+                        expectedExecutionId = expectedExecutionId,
+                        expectedOperationId = expectedOperationId,
+                        expectedRetryAttempt = expectedRetryAttempt,
+                        expectedIssueCode = expectedIssueCode,
+                        expectedIssueStage = expectedIssueStage,
+                    )
+                    if (!transitioned) {
+                        DownloadRetryDecision.Blocked(
+                            DownloadRetryBlockReason.NOT_FAILED
+                        )
+                    } else {
+                        repository.startDownloadWorker(listOf(item), application, false)
+                        decision
+                    }
+                } else {
+                    decision
+                }
+            }
+        }
 
     private suspend fun prepareRetryMetadata(
         item: DownloadItem,
@@ -1309,7 +1440,35 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         return detectAndMarkDuplicates(processingItems, ignoreDuplicates)
     }
 
-    private suspend fun hydrateHistoryRedownloadBeforeQueue(item: DownloadItem): Throwable? = withContext(Dispatchers.IO) {
+    private suspend fun hydrateHistoryRedownloadBeforeQueue(
+        item: DownloadItem,
+        sourceSnapshot: DownloadItem? = null,
+    ): Throwable? = withContext(Dispatchers.IO) {
+        suspend fun persistPreparationMetadata(): Boolean {
+            val source = sourceSnapshot
+            if (source == null || item.id == 0L) {
+                repository.update(item)
+                return true
+            }
+            val preparationItem = item.copy(
+                status = source.status,
+                downloadStartTime = source.downloadStartTime,
+                executionId = source.executionId,
+                operationId = source.operationId,
+                retryAttempt = source.retryAttempt,
+                retryStrategy = source.retryStrategy,
+            )
+            return dao.updateForQueueIfSnapshot(
+                item = preparationItem,
+                expectedStatus = source.status,
+                expectedExecutionId = source.executionId,
+                expectedOperationId = source.operationId,
+                expectedRetryAttempt = source.retryAttempt,
+                expectedIssueCode = source.lastIssueCode,
+                expectedIssueStage = source.lastIssueStage,
+            )
+        }
+
         if (item.type != DownloadType.video) return@withContext null
         val marker = item.playlistURL ?: return@withContext null
         val redownloadMarker = HistoryRedownloadMarker.parse(marker) ?: return@withContext null
@@ -1325,7 +1484,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             item.videoPreferences.embedSubs = false
             item.videoPreferences.writeSubs = false
             item.videoPreferences.writeAutoSubs = false
-            if (item.id != 0L) repository.update(item)
+            if (item.id != 0L && !persistPreparationMetadata()) {
+                return@withContext IllegalStateException(
+                    "Download changed before History redownload preparation ${item.id}"
+                )
+            }
             return@withContext null
         }
         val subsLanguages = sharedPreferences.getString("subs_lang", "en.*,.*-orig")!!
@@ -1362,7 +1525,11 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             item.videoPreferences.writeAutoSubs = false
         }
         if (item.id != 0L) {
-            repository.update(item)
+            if (!persistPreparationMetadata()) {
+                return@withContext IllegalStateException(
+                    "Download changed before History redownload preparation ${item.id}"
+                )
+            }
         }
         null
     }
@@ -1377,6 +1544,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         val context = App.instance
         val alarmScheduler = AlarmScheduler(context)
         val queuedItems = mutableListOf<DownloadItem>()
+        val sourceSnapshots = items.asSequence()
+            .filter { it.id > 0L }
+            .associate { it.id to it.copy() }
 
         //download id, history item id
         //history item id if the existing item is already downloaded
@@ -1458,6 +1628,36 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
         val result = QueueDownloadsResult("", listOf())
 
+        suspend fun persistQueuedItems(): List<DownloadItem> {
+            val persisted = mutableListOf<DownloadItem>()
+            queuedItems.forEach { item ->
+                val snapshot = sourceSnapshots[item.id]
+                val transitioned = if (snapshot == null || item.id <= 0L) {
+                    val persistedId = repository.update(item)
+                    if (item.id <= 0L) {
+                        item.id = persistedId
+                    }
+                    true
+                } else {
+                    dao.updateForQueueIfSnapshot(
+                        item = item,
+                        expectedStatus = snapshot.status,
+                        expectedExecutionId = snapshot.executionId,
+                        expectedOperationId = snapshot.operationId,
+                        expectedRetryAttempt = snapshot.retryAttempt,
+                        expectedIssueCode = snapshot.lastIssueCode,
+                        expectedIssueStage = snapshot.lastIssueStage,
+                    )
+                }
+                if (transitioned) {
+                    persisted += item
+                } else {
+                    result.succeeded = false
+                }
+            }
+            return persisted
+        }
+
         val duplicateIDs = detectAndMarkDuplicates(queuedItems, ignoreDuplicates)
         if (duplicateIDs.isNotEmpty()) {
             existingItemIDs.addAll(duplicateIDs)
@@ -1468,7 +1668,10 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
         var hydrationError: Throwable? = null
         for (item in queuedItems) {
-            hydrationError = hydrateHistoryRedownloadBeforeQueue(item)
+            hydrationError = hydrateHistoryRedownloadBeforeQueue(
+                item = item,
+                sourceSnapshot = sourceSnapshots[item.id],
+            )
             if (hydrationError != null) break
         }
         if (hydrationError != null) {
@@ -1485,7 +1688,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
         if (useScheduler && !alarmScheduler.isDuringTheScheduledTime()){
             if (alarmScheduler.canSchedule()){
-                repository.updateAll(queuedItems)
+                persistQueuedItems()
                 alarmScheduler.schedule()
             }else{
                 sharedPreferences.edit().putBoolean("use_scheduler", false).apply()
@@ -1493,7 +1696,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 result.message = context.getString(R.string.enable_alarm_permission)
             }
         }else{
-            val queued = repository.updateAll(queuedItems)
+            val queued = persistQueuedItems()
             println(queued.size)
 
             result.message = repository.startDownloadWorker(queued, context).fold(
@@ -1985,11 +2188,12 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         id: Long,
         status: DownloadRepository.Status,
         expectedExecutionId: String? = null,
-    ) {
+    ): Boolean {
         if (status == DownloadRepository.Status.Saved) {
             LowQualityRedownloadLedger.refresh(application, repository.moveToSaved(id))
+            return true
         } else {
-            repository.setDownloadStatus(id, status, expectedExecutionId)
+            return repository.setDownloadStatus(id, status, expectedExecutionId)
         }
     }
 
@@ -2080,8 +2284,16 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         expectedExecutionId: String? = null,
     ) {
         withContext(Dispatchers.IO) {
-            withDownloadWorkerExecutionLock {
-                cancelDownloadOnlyLocked(id, expectedExecutionId)
+            val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
+            val cancel = suspend {
+                withDownloadWorkerExecutionLock {
+                    cancelDownloadOnlyLocked(id, expected)
+                }
+            }
+            if (expected == null) {
+                cancel()
+            } else {
+                withDownloadWorkerExecutionSideEffectLease(id, expected) { cancel() }
             }
         }
     }
@@ -2092,38 +2304,57 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     ) {
         val current = dao.getNullableDownloadById(id)
         val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
-        if (
-            current != null &&
-                expected != null &&
-                current.executionId == expected
-        ) {
+        if (expected != null) {
+            if (current == null || current.executionId != expected) return
             com.ireum.ytdl.work.DownloadWorker.cancelProcessesForExecution(id, expected)
         }
-        notificationUtil.cancelDownloadNotification(id.toInt())
+        notificationUtil.cancelRunningDownloadNotification(id.toInt())
         notificationUtil.cancelMembershipWaitingNotification(id)
     }
 
     suspend fun cancelDownload(id: Long) {
         withContext(Dispatchers.IO) {
-            withDownloadWorkerExecutionLock {
-                val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
-                LowQualityRedownloadLedger.refresh(
-                    application,
-                    repository.cancelByUser(id, expectedExecutionId),
-                )
-                cancelDownloadOnlyLocked(id, expectedExecutionId)
+            val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
+            val cancel = suspend {
+                withDownloadWorkerExecutionLock {
+                    val current = dao.getNullableDownloadById(id)
+                    if (current == null || current.executionId != expectedExecutionId) return@withDownloadWorkerExecutionLock
+                    val affectedOperationIds = repository.cancelByUser(id, expectedExecutionId)
+                    cancelDownloadOnlyLocked(id, expectedExecutionId)
+                    LowQualityRedownloadLedger.refresh(application, affectedOperationIds)
+                }
+            }
+            if (expectedExecutionId.isBlank()) {
+                cancel()
+            } else {
+                withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
+                    cancel()
+                }
             }
         }
     }
 
     suspend fun beginUndoableCancellation(id: Long): String? {
         return withContext(Dispatchers.IO) {
-            withDownloadWorkerExecutionLock {
-                val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
-                val outcome = repository.beginUndoableCancellation(id, expectedExecutionId)
-                LowQualityRedownloadLedger.refresh(application, outcome.affectedOperationIds)
-                cancelDownloadOnlyLocked(id, expectedExecutionId)
-                outcome.pendingToken
+            val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
+            val begin = suspend {
+                withDownloadWorkerExecutionLock {
+                    val current = dao.getNullableDownloadById(id)
+                    if (current == null || current.executionId != expectedExecutionId) {
+                        return@withDownloadWorkerExecutionLock null
+                    }
+                    val outcome = repository.beginUndoableCancellation(id, expectedExecutionId)
+                    LowQualityRedownloadLedger.refresh(application, outcome.affectedOperationIds)
+                    cancelDownloadOnlyLocked(id, expectedExecutionId)
+                    outcome.pendingToken
+                }
+            }
+            if (expectedExecutionId.isBlank()) {
+                begin()
+            } else {
+                withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
+                    begin()
+                }
             }
         }
     }
@@ -2197,14 +2428,23 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     suspend fun pauseDownload(id: Long)  {
         withContext(Dispatchers.IO) {
-            withDownloadWorkerExecutionLock {
-                val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
-                updateToStatus(
-                    id,
-                    DownloadRepository.Status.Paused,
-                    expectedExecutionId,
-                )
-                cancelDownloadOnlyLocked(id, expectedExecutionId)
+            val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
+            val pause = suspend {
+                withDownloadWorkerExecutionLock {
+                    val current = dao.getNullableDownloadById(id)
+                    if (current == null || current.executionId != expectedExecutionId) return@withDownloadWorkerExecutionLock
+                    val changed = updateToStatus(
+                        id,
+                        DownloadRepository.Status.Paused,
+                        expectedExecutionId,
+                    )
+                    if (changed) {
+                        cancelDownloadOnlyLocked(id, expectedExecutionId)
+                    }
+                }
+            }
+            if (expectedExecutionId.isBlank()) pause() else {
+                withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) { pause() }
             }
         }
     }
@@ -2217,13 +2457,31 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         }
         if (activeDownloadsList.isNotEmpty()) {
             withContext(Dispatchers.IO){
-                repository.setDownloadStatusMultiple(activeDownloadsList.map { it.id }, DownloadRepository.Status.Paused)
+                withDownloadWorkerExecutionLock {
+                    activeDownloadsList.forEach { item ->
+                        val current = dao.getNullableDownloadById(item.id)
+                        if (current?.executionId == item.executionId) {
+                            val pause = suspend {
+                                val changed = repository.setDownloadStatus(
+                                    item.id,
+                                    DownloadRepository.Status.Paused,
+                                    item.executionId,
+                                )
+                                if (changed) {
+                                    DownloadWorker.cancelProcessesForExecution(item.id, item.executionId)
+                                    notificationUtil.cancelRunningDownloadNotification(item.id.toInt())
+                                }
+                            }
+                            if (item.executionId.isBlank()) pause() else {
+                                withDownloadWorkerExecutionSideEffectLease(item.id, item.executionId) { pause() }
+                            }
+                        }
+                        notificationUtil.cancelMembershipWaitingNotification(item.id)
+                    }
+                }
             }
         }
         WorkManager.getInstance(application).cancelAllWorkByTag("download")
-        activeDownloadsList.forEach {
-            cancelDownloadOnly(it.id, it.executionId)
-        }
         delay(1000)
         isPausingResuming = false
         pausedAllDownloads.value = PausedAllDownloadsState.RESUME
@@ -2263,14 +2521,32 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 dbManager.lowQualityRedownloadDao.getNonterminalDownloadIds(operation.operationId)
             }
             .orEmpty()
-        val downloadsToCancel = withContext(Dispatchers.IO){
-            getActiveAndPostProcessingDownloads() +
-                dao.getMembershipWaitingDownloads()
+        withContext(Dispatchers.IO) {
+            withDownloadWorkerExecutionLock {
+                val downloadsToCancel = getActiveAndPostProcessingDownloads() +
+                    dao.getMembershipWaitingDownloads()
+                downloadsToCancel.distinctBy(DownloadItem::id).forEach { item ->
+                    val current = dao.getNullableDownloadById(item.id)
+                    if (current != null) {
+                        val cancel = suspend {
+                            val affected = repository.cancelByUser(item.id, current.executionId)
+                            if (current.executionId.isNotBlank()) {
+                                DownloadWorker.cancelProcessesForExecution(item.id, current.executionId)
+                                notificationUtil.cancelRunningDownloadNotification(item.id.toInt())
+                            }
+                            LowQualityRedownloadLedger.refresh(application, affected)
+                        }
+                        if (current.executionId.isBlank()) cancel() else {
+                            withDownloadWorkerExecutionSideEffectLease(
+                                item.id,
+                                current.executionId,
+                            ) { cancel() }
+                        }
+                    }
+                    notificationUtil.cancelMembershipWaitingNotification(item.id)
+                }
+            }
         }
-        downloadsToCancel.distinctBy(DownloadItem::id).forEach {
-            cancelDownloadOnly(it.id, it.executionId)
-        }
-        cancelActiveQueued()
         linkedBatchIds.forEach { id ->
             LowQualityRedownloadLedger.transition(
                 application,
@@ -2283,31 +2559,14 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     fun resumeDownload(itemID: Long) = viewModelScope.launch {
         kotlin.runCatching {
-            val item = withContext(Dispatchers.IO){
-                repository.getItemByID(itemID)
-            }
             val persistedItem = withContext(Dispatchers.IO) {
                 dao.getNullableDownloadById(itemID)
             }
-            if (
-                persistedItem != null &&
-                (
-                    HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(persistedItem.lastIssueCode) ||
-                        dbManager.historyReplacementBarrierDao
-                            .getByDownloadIdBlocking(persistedItem.id) != null ||
-                        hasTerminalHistoryReplacementLedger(persistedItem)
-                )
-            ) {
-                return@runCatching
-            }
-            item.status = DownloadRepository.Status.Queued.toString()
-            withContext(Dispatchers.IO){
-                updateDownload(item)
-            }
-            putAtTopOfQueue(listOf(itemID))
-            withContext(Dispatchers.IO){
-                repository.startDownloadWorker(listOf(item), application, false)
-            }
+            val executionId = persistedItem?.takeIf {
+                it.status == DownloadRepository.Status.Paused.name
+            }?.executionId.orEmpty()
+            if (executionId.isBlank()) return@runCatching
+            resumePausedDownloadAndWait(itemID, executionId)
         }
     }
 }

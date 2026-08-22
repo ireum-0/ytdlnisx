@@ -15,6 +15,7 @@ import com.ireum.ytdl.database.models.KnownMediaPublishedDate
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
+import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -150,12 +151,13 @@ interface HistoryDao {
      * Compatibility writes cannot change the materialized keyword projection.
      * Keyword changes must go through HistoryKeywordAssignmentRepository.
      */
-    @Transaction
     fun update(item: HistoryItem) {
-        // Preserve the old @Update no-op behavior when a row was deleted between
-        // being loaded and written by a background/UI task.
-        val materialized = getMaterializedKeywordsOrNull(item.id) ?: return
-        updateRaw(item.copy(keywords = materialized))
+        HistoryReferenceMutationCoordinator.withLockBlocking {
+            // Preserve the old @Update no-op behavior when a row was deleted between
+            // being loaded and written by a background/UI task.
+            val materialized = getMaterializedKeywordsOrNull(item.id) ?: return@withLockBlocking
+            updateRaw(item.copy(keywords = materialized))
+        }
     }
 
     @Update

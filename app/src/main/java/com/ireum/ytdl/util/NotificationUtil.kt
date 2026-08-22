@@ -24,6 +24,7 @@ import com.ireum.ytdl.R
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.receiver.CancelDownloadNotificationReceiver
+import com.ireum.ytdl.receiver.CancelTerminalNotificationReceiver
 import com.ireum.ytdl.receiver.CancelWorkReceiver
 import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
 import com.ireum.ytdl.receiver.PauseDownloadNotificationReceiver
@@ -33,14 +34,6 @@ import kotlin.random.Random
 
 
 class NotificationUtil(var context: Context) {
-    private val downloadNotificationBuilder: NotificationCompat.Builder = NotificationCompat.Builder(context, DOWNLOAD_SERVICE_CHANNEL_ID)
-    private val workerNotificationBuilder: NotificationCompat.Builder = NotificationCompat.Builder(context, DOWNLOAD_WORKER_CHANNEL_ID)
-    private val commandDownloadNotificationBuilder: NotificationCompat.Builder = NotificationCompat.Builder(context, COMMAND_DOWNLOAD_SERVICE_CHANNEL_ID)
-    private val finishedDownloadNotificationBuilder: NotificationCompat.Builder = NotificationCompat.Builder(context, DOWNLOAD_FINISHED_CHANNEL_ID)
-    private val erroredDownloadNotificationBuilder: NotificationCompat.Builder = NotificationCompat.Builder(context, DOWNLOAD_ERRORED_CHANNEL_ID)
-    private val miscDownloadNotificationBuilder: NotificationCompat.Builder = NotificationCompat.Builder(context, DOWNLOAD_MISC_CHANNEL_ID)
-    private val playbackNotificationBuilder: NotificationCompat.Builder = NotificationCompat.Builder(context, PLAYBACK_CHANNEL_ID)
-
     private val notificationManager: NotificationManagerCompat = NotificationManagerCompat.from(context)
     private val resources: Resources = context.resources
 
@@ -103,17 +96,13 @@ class NotificationUtil(var context: Context) {
         }
     }
 
-    private fun getBuilder(channel: String) : NotificationCompat.Builder {
-        when(channel) {
-            DOWNLOAD_SERVICE_CHANNEL_ID -> { return downloadNotificationBuilder}
-            COMMAND_DOWNLOAD_SERVICE_CHANNEL_ID -> { return commandDownloadNotificationBuilder }
-            DOWNLOAD_FINISHED_CHANNEL_ID -> { return finishedDownloadNotificationBuilder }
-            DOWNLOAD_WORKER_CHANNEL_ID -> { return workerNotificationBuilder }
-            DOWNLOAD_ERRORED_CHANNEL_ID -> { return erroredDownloadNotificationBuilder }
-            DOWNLOAD_MISC_CHANNEL_ID -> { return miscDownloadNotificationBuilder }
-        }
-        return downloadNotificationBuilder
-    }
+    /**
+     * Builders are deliberately per-call.  Notification methods are invoked by
+     * independent download children and NotificationCompat.Builder is mutable;
+     * sharing one by channel can mix another download's actions or content.
+     */
+    private fun getBuilder(channel: String): NotificationCompat.Builder =
+        NotificationCompat.Builder(context, channel)
 
     @SuppressLint("MissingPermission")
     fun showPlaybackNotification(
@@ -124,6 +113,7 @@ class NotificationUtil(var context: Context) {
         pendingIntent: PendingIntent? = null,
         subText: String? = null
     ) {
+        val playbackNotificationBuilder = getBuilder(PLAYBACK_CHANNEL_ID)
         playbackNotificationBuilder
             .setContentTitle(title)
             .setContentText(content)
@@ -416,7 +406,11 @@ class NotificationUtil(var context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun createResumeDownload(itemID: Int, title: String?){
+    fun createResumeDownload(
+        itemID: Int,
+        title: String?,
+        expectedExecutionId: String? = null,
+    ){
         val notificationBuilder = getBuilder(DOWNLOAD_SERVICE_CHANNEL_ID)
 
         notificationBuilder
@@ -435,12 +429,16 @@ class NotificationUtil(var context: Context) {
         val intent = Intent(context, ResumeActivity::class.java).apply {
             action = ACTION_RESUME_DOWNLOAD
             putExtra("itemID", itemID)
+            expectedExecutionId?.takeIf { it.isNotBlank() }?.let {
+                putExtra("executionId", it)
+            }
+            data = actionUri("download", "resume", itemID.toLong(), expectedExecutionId)
         }
         val resumeNotificationPendingIntent = PendingIntent.getActivity(
             context,
-            itemID,
+            actionRequestCode("download", "resume", itemID.toLong(), expectedExecutionId),
             intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE
         )
 
         notificationBuilder.addAction(0, resources.getString(R.string.resume), resumeNotificationPendingIntent)
@@ -589,7 +587,9 @@ class NotificationUtil(var context: Context) {
         logID: Long?,
         res: Resources,
         retryable: Boolean = false,
-        allowReconfigure: Boolean = true
+        allowReconfigure: Boolean = true,
+        retryCapabilityOperationId: String? = null,
+        retryCapabilityAttempt: Int? = null,
     ) {
         val notificationBuilder = getBuilder(DOWNLOAD_ERRORED_CHANNEL_ID)
 
@@ -619,11 +619,13 @@ class NotificationUtil(var context: Context) {
             val intent2 = Intent(context, MainActivity::class.java)
             intent2.setAction(Intent.ACTION_VIEW)
             intent2.putExtra("reconfigure", id)
+            retryCapabilityOperationId?.let { intent2.putExtra("reconfigureOperationId", it) }
+            retryCapabilityAttempt?.let { intent2.putExtra("reconfigureRetryAttempt", it) }
             intent2.putExtra("tab", "error")
             intent2.putExtra("destination", "Queue")
             PendingIntent.getActivity(
                 context,
-                Random.nextInt(),
+                retryActionRequestCode("reconfigure", id, retryCapabilityOperationId, retryCapabilityAttempt),
                 intent2,
                 PendingIntent.FLAG_IMMUTABLE
             )
@@ -655,12 +657,15 @@ class NotificationUtil(var context: Context) {
                 action = ACTION_RETRY_DOWNLOAD
                 putExtra("itemID", id.toInt())
                 putExtra("retryError", true)
+                retryCapabilityOperationId?.let { putExtra("retryOperationId", it) }
+                retryCapabilityAttempt?.let { putExtra("retryAttempt", it) }
+                data = retryActionUri("retry", id, retryCapabilityOperationId, retryCapabilityAttempt)
             }
             val retryPendingIntent = PendingIntent.getActivity(
                 context,
-                id.toInt(),
+                retryActionRequestCode("retry", id, retryCapabilityOperationId, retryCapabilityAttempt),
                 retryIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_IMMUTABLE
             )
             notificationBuilder.addAction(0, res.getString(R.string.retry_download), retryPendingIntent)
         }
@@ -757,11 +762,12 @@ class NotificationUtil(var context: Context) {
         expectedExecutionId?.takeIf { it.isNotBlank() }?.let {
             pauseIntent.putExtra("executionId", it)
         }
+        pauseIntent.data = actionUri("download", "pause", id.toLong(), expectedExecutionId)
         val pauseNotificationPendingIntent = PendingIntent.getBroadcast(
             context,
-            id,
+            actionRequestCode("download", "pause", id.toLong(), expectedExecutionId),
             pauseIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE
         )
 
         val cancelIntent = Intent(context, CancelDownloadNotificationReceiver::class.java)
@@ -769,11 +775,12 @@ class NotificationUtil(var context: Context) {
         expectedExecutionId?.takeIf { it.isNotBlank() }?.let {
             cancelIntent.putExtra("executionId", it)
         }
+        cancelIntent.data = actionUri("download", "cancel", id.toLong(), expectedExecutionId)
         val cancelNotificationPendingIntent = PendingIntent.getBroadcast(
             context,
-            id,
+            actionRequestCode("download", "cancel", id.toLong(), expectedExecutionId),
             cancelIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE
         )
 
         try {
@@ -784,7 +791,7 @@ class NotificationUtil(var context: Context) {
                 .clearActions()
                 .addAction(0, resources.getString(R.string.pause), pauseNotificationPendingIntent)
                 .addAction(0, resources.getString(R.string.cancel), cancelNotificationPendingIntent)
-            notificationManager.notify(id, notificationBuilder.build())
+            notificationManager.notify(downloadRunningNotificationId(id), notificationBuilder.build())
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -803,11 +810,12 @@ class NotificationUtil(var context: Context) {
         var contentText = ""
         contentText += desc.replace("\\[.*?\\] ".toRegex(), "")
 
-        val cancelIntent = Intent(context, CancelDownloadNotificationReceiver::class.java)
-        cancelIntent.putExtra("itemID", id)
+        val cancelIntent = Intent(context, CancelTerminalNotificationReceiver::class.java)
+        cancelIntent.putExtra(CancelTerminalNotificationReceiver.EXTRA_TERMINAL_ID, id.toLong())
+        cancelIntent.data = actionUri("terminal", "cancel", id.toLong(), null)
         val cancelNotificationPendingIntent = PendingIntent.getBroadcast(
             context,
-            id,
+            actionRequestCode("terminal", "cancel", id.toLong(), null),
             cancelIntent,
             PendingIntent.FLAG_IMMUTABLE
         )
@@ -819,7 +827,7 @@ class NotificationUtil(var context: Context) {
                 .setGroup(DOWNLOAD_TERMINAL_RUNNING_NOTIFICATION_ID.toString())
                 .clearActions()
                 .addAction(0, resources.getString(R.string.cancel), cancelNotificationPendingIntent)
-            notificationManager.notify(id, notificationBuilder.build())
+            notificationManager.notify(terminalNotificationId(id), notificationBuilder.build())
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -827,6 +835,14 @@ class NotificationUtil(var context: Context) {
 
     fun cancelDownloadNotification(id: Int) {
         notificationManager.cancel(id)
+    }
+
+    fun cancelRunningDownloadNotification(id: Int) {
+        notificationManager.cancel(downloadRunningNotificationId(id))
+    }
+
+    fun cancelTerminalDownloadNotification(id: Int) {
+        notificationManager.cancel(terminalNotificationId(id))
     }
 
     fun cancelErroredNotification(id: Int) {
@@ -1123,6 +1139,46 @@ class NotificationUtil(var context: Context) {
 
         private const val PROGRESS_MAX = 100
         private const val PROGRESS_CURR = 0
+
+        fun downloadRunningNotificationId(downloadId: Int): Int =
+            DOWNLOAD_RUNNING_NOTIFICATION_ID + downloadId
+
+        fun terminalNotificationId(terminalId: Int): Int =
+            DOWNLOAD_TERMINAL_RUNNING_NOTIFICATION_ID + terminalId
+
+        private fun actionUri(
+            domain: String,
+            action: String,
+            id: Long,
+            executionId: String?,
+        ): Uri = Uri.parse(
+            "ytdlnisx://notification/$domain/$action/$id/" +
+                Uri.encode(executionId.orEmpty())
+        )
+
+        private fun actionRequestCode(
+            domain: String,
+            action: String,
+            id: Long,
+            executionId: String?,
+        ): Int = actionUri(domain, action, id, executionId).toString().hashCode()
+
+        private fun retryActionUri(
+            action: String,
+            id: Long,
+            operationId: String?,
+            attempt: Int?,
+        ): Uri = Uri.parse(
+            "ytdlnisx://notification/download/$action/$id/" +
+                Uri.encode(operationId.orEmpty()) + "?attempt=${attempt ?: -1}"
+        )
+
+        private fun retryActionRequestCode(
+            action: String,
+            id: Long,
+            operationId: String?,
+            attempt: Int?,
+        ): Int = retryActionUri(action, id, operationId, attempt).toString().hashCode()
 
         private fun observeRetryNotificationId(sourceId: Long): Int {
             // Keep at most one unanswered retry prompt per observed source.

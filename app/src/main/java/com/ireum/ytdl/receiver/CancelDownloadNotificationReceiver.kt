@@ -8,6 +8,7 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
+import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,21 +24,26 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
                 val dbManager = DBManager.getInstance(c)
                 CoroutineScope(Dispatchers.IO).launch{
                     try {
-                        withDownloadWorkerExecutionLock {
-                            val item = dbManager.downloadDao.getNullableDownloadById(id.toLong())
-                            val expectedExecutionId = intent.getStringExtra("executionId").orEmpty()
+                        val expectedExecutionId = intent.getStringExtra("executionId").orEmpty()
+                        if (expectedExecutionId.isBlank()) return@launch
+                        val cancel = suspend {
+                            withDownloadWorkerExecutionLock {
+                                val item = dbManager.downloadDao.getNullableDownloadById(id.toLong())
                             if (
-                                expectedExecutionId.isNotBlank() &&
                                 item?.executionId != expectedExecutionId
                             ) {
                                 return@withDownloadWorkerExecutionLock
                             }
-                            runCatching {
-                                val affectedOperationIds = DownloadRepository(dbManager).cancelByUser(
-                                    id.toLong(),
-                                    expectedExecutionId.takeIf { it.isNotBlank() },
-                                )
-                                LowQualityRedownloadLedger.refresh(c, affectedOperationIds)
+                            val affectedOperationIds = DownloadRepository(dbManager).cancelByUser(
+                                id.toLong(),
+                                expectedExecutionId,
+                            )
+                            val committed = dbManager.downloadDao.getNullableDownloadById(id.toLong())?.let {
+                                        it.status == DownloadRepository.Status.Cancelled.name &&
+                                    it.executionId == expectedExecutionId
+                            } == true
+                            if (!committed) {
+                                return@withDownloadWorkerExecutionLock
                             }
                             if (expectedExecutionId.isNotBlank()) {
                                 DownloadWorker.cancelProcessesForExecution(
@@ -45,10 +51,15 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
                                     expectedExecutionId,
                                 )
                             }
-                            notificationUtil.cancelDownloadNotification(id)
+                            LowQualityRedownloadLedger.refresh(c, affectedOperationIds)
+                            notificationUtil.cancelRunningDownloadNotification(id)
                             runCatching {
                                 dbManager.terminalDao.delete(id.toLong())
                             }
+                            }
+                        }
+                        withDownloadWorkerExecutionSideEffectLease(id.toLong(), expectedExecutionId) {
+                            cancel()
                         }
                     } finally {
                         result.finish()

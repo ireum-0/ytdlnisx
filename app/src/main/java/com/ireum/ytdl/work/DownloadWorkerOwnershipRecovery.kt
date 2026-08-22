@@ -1,5 +1,6 @@
 package com.ireum.ytdl.work
 
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 import com.ireum.ytdl.util.download.DownloadIssue
@@ -96,6 +97,70 @@ internal object DownloadWorkerProcessOwners {
     fun release(downloadId: Long, executionId: String) {
         if (executionId.isNotBlank()) owners.remove(downloadId, executionId)
     }
+}
+
+/**
+ * Serializes long-lived destructive work for one exact Download execution.
+ *
+ * The worker holds this lease around move/burn/temp mutation, while pause and
+ * cancel paths acquire the same lease before committing a durable stop.  A
+ * newer execution therefore cannot overlap resources with an older attempt,
+ * without serializing the whole yt-dlp lifetime or unrelated downloads.
+ */
+internal object DownloadWorkerExecutionSideEffectLeases {
+    // The mutex is per Download ID, not per execution token.  E1 and E2 use
+    // different tokens but still share the same temporary/output resources;
+    // separate token keys would allow their destructive side effects to
+    // overlap during a rapid requeue.
+    private val leases: MutableMap<Long, Mutex> = ConcurrentHashMap()
+
+    suspend fun <T> withLease(
+        downloadId: Long,
+        executionId: String,
+        block: suspend () -> T,
+    ): T {
+        require(executionId.isNotBlank()) { "Execution lease requires an execution token" }
+        val mutex = leases.computeIfAbsent(downloadId) { Mutex() }
+        mutex.lock()
+        return try {
+            block()
+        } finally {
+            mutex.unlock()
+        }
+    }
+}
+
+internal suspend inline fun <T> withDownloadWorkerExecutionSideEffectLease(
+    downloadId: Long,
+    executionId: String,
+    crossinline block: suspend () -> T,
+): T = DownloadWorkerExecutionSideEffectLeases.withLease(downloadId, executionId) {
+    block()
+}
+
+internal suspend fun <T> withDownloadWorkerExecutionSideEffectLeases(
+    executions: Collection<Pair<Long, String>>,
+    block: suspend () -> T,
+): T {
+    val distinctExecutions = executions
+        .filter { it.second.isNotBlank() }
+        // The lease is resource-scoped by Download ID.  Acquiring the same
+        // mutex twice for two historical tokens of one row would deadlock and
+        // would also suggest that the old token still owns the resource.
+        .distinctBy { it.first }
+        .sortedBy { it.first }
+
+    suspend fun acquire(index: Int): T {
+        val execution = distinctExecutions.getOrNull(index) ?: return block()
+        return DownloadWorkerExecutionSideEffectLeases.withLease(
+            downloadId = execution.first,
+            executionId = execution.second,
+        ) {
+            acquire(index + 1)
+        }
+    }
+
+    return acquire(0)
 }
 
 internal fun canCancelExecutionProcess(

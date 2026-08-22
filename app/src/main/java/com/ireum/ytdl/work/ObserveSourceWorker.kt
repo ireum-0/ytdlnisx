@@ -46,6 +46,7 @@ import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
 import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
 import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.util.storage.referencesSameFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -454,38 +455,39 @@ class ObserveSourceWorker(
                         trustedDocumentTargets = trustedDocumentTargets.toSet()
                     )
                 }
-                val deletionResult = HistoryFileDeletionEngine(
-                    deletionGateway
-                ).let { engine ->
-                    fun currentStoredTargets(): Map<Long, List<String>> =
-                        historyRepo.getDeletionReferenceRecordsByIds(selectedIds.toList())
-                            .associate { history -> history.id to history.downloadPath }
+                val deletionResult = HistoryReferenceMutationCoordinator.withLock {
+                    HistoryFileDeletionEngine(
+                        deletionGateway
+                    ).let { engine ->
+                        fun currentStoredTargets(): Map<Long, List<String>> =
+                            historyRepo.getDeletionReferenceRecordsByIds(selectedIds.toList())
+                                .associate { history -> history.id to history.downloadPath }
 
-                    val retainedTargets = historyRepo.getDeletionReferenceRecords()
-                        .asSequence()
-                        .filterNot { history -> history.id in selectedIds }
-                        .flatMap { history -> history.downloadPath.asSequence() }
-                    val validation = engine.excludeTargetsReferencedBy(
-                        validation = engine.validate(deletionRecords)
-                            .revalidateRecordSnapshots(currentStoredTargets()),
-                        retainedStoredTargets = retainedTargets
-                    )
-                    val result = engine.execute(validation)
-                    val unchangedAfterDeletion = validation
-                        .revalidateRecordSnapshots(currentStoredTargets())
-                        .recordTargetKeys
-                        .keys
-                    val removableRecordIds = result.removableRecordIds.intersect(unchangedAfterDeletion)
-                    result.copy(
-                        recordsRemoved = removableRecordIds.size,
-                        removableRecordIds = removableRecordIds
-                    )
+                        val retainedTargets = historyRepo.getDeletionReferenceRecords()
+                            .asSequence()
+                            .filterNot { history -> history.id in selectedIds }
+                            .flatMap { history -> history.downloadPath.asSequence() }
+                        val validation = engine.excludeTargetsReferencedBy(
+                            validation = engine.validate(deletionRecords)
+                                .revalidateRecordSnapshots(currentStoredTargets()),
+                            retainedStoredTargets = retainedTargets
+                        )
+                        val result = engine.execute(validation)
+                        val unchangedAfterDeletion = validation
+                            .revalidateRecordSnapshots(currentStoredTargets())
+                            .recordTargetKeys
+                            .keys
+                        val removableRecordIds = result.removableRecordIds.intersect(unchangedAfterDeletion)
+                        historyRepo.deleteRecordsWithinReferenceMutation(removableRecordIds.toList())
+                        result.copy(
+                            recordsRemoved = removableRecordIds.size,
+                            removableRecordIds = removableRecordIds
+                        )
+                    }
                 }
-                val removableIds = deletionResult.removableRecordIds
-                historyRepo.deleteRecords(removableIds.toList())
                 Log.d(
                     OBS_DUP_LOG_TAG,
-                    "sync remove result sourceId=$sourceID records=${removableIds.size} " +
+                    "sync remove result sourceId=$sourceID records=${deletionResult.removableRecordIds.size} " +
                         "deleted=${deletionResult.filesDeleted} absent=${deletionResult.filesAlreadyAbsent} " +
                         "skipped=${deletionResult.filesSkipped} failed=${deletionResult.filesPermissionDenied + deletionResult.filesFailed}"
                 )

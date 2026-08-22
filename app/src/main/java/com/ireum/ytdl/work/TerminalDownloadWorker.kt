@@ -46,11 +46,11 @@ class TerminalDownloadWorker(
     private suspend fun cleanupStoppedWorker() = withContext(Dispatchers.IO + NonCancellable) {
         if (itemId == 0) return@withContext
 
-        val processId = itemId.toString()
+        val processId = YtdlpProcessIdentity.terminal(itemId.toLong())
         YoutubeDL.getInstance().destroyProcessById(processId)
         YoutubeDLCompat.destroyProcessById(processId)
         runCatching {
-            NotificationUtil(context).cancelDownloadNotification(itemId)
+            NotificationUtil(context).cancelTerminalDownloadNotification(itemId)
         }
         if (shouldCleanupTerminalCache) runCatching {
             File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
@@ -96,9 +96,9 @@ class TerminalDownloadWorker(
         val pendingIntent = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         val notification = notificationUtil.createDownloadServiceNotification(pendingIntent, notificationTitle, NotificationUtil.DOWNLOAD_TERMINAL_RUNNING_NOTIFICATION_ID)
         val foregroundInfo = if (Build.VERSION.SDK_INT >= 33) {
-            ForegroundInfo(itemId, notification, FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            ForegroundInfo(NotificationUtil.terminalNotificationId(itemId), notification, FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         }else{
-            ForegroundInfo(itemId, notification)
+            ForegroundInfo(NotificationUtil.terminalNotificationId(itemId), notification)
         }
         runCatching {
             setForeground(foregroundInfo)
@@ -152,9 +152,15 @@ class TerminalDownloadWorker(
                 dao.updateLog(removedOptionWarning, itemId.toLong())
             }
 
-            YoutubeDL.getInstance().destroyProcessById(itemId.toString())
-            YoutubeDLCompat.destroyProcessById(itemId.toString())
-            val response = YoutubeDLCompat.execute(applicationContext, request, itemId.toString(), true){ progress, _, line ->
+            val processId = YtdlpProcessIdentity.terminal(itemId.toLong())
+            YoutubeDL.getInstance().destroyProcessById(processId)
+            YoutubeDLCompat.destroyProcessById(processId)
+            val response = YoutubeDLCompat.execute(
+                applicationContext,
+                request,
+                processId,
+                true,
+                callback = { progress, _, line ->
                 val redactedLine = SensitiveTextRedactor.redactOutput(line)
                 eventBus.post(DownloadWorker.WorkerProgress(progress.toInt(), redactedLine, itemId.toLong(), logItem.id))
 
@@ -167,7 +173,8 @@ class TerminalDownloadWorker(
                     if (logDownloads) logRepo.update(redactedLine, logItem.id)
                     dao.updateLog(redactedLine, itemId.toLong())
                 }
-            }
+                },
+            )
 
             withContext(Dispatchers.IO) {
                 if(!noCache){
@@ -185,13 +192,13 @@ class TerminalDownloadWorker(
             val redactedOutput = SensitiveTextRedactor.redactOutput(response.out)
             if (logDownloads) logRepo.update(initialLogDetails + redactedOutput, logItem.id, true)
             dao.updateLog(redactedOutput, itemId.toLong())
-            notificationUtil.cancelDownloadNotification(itemId)
+            notificationUtil.cancelTerminalDownloadNotification(itemId)
             delay(1000)
             dao.delete(itemId.toLong())
             return Result.success()
         } catch (it: Exception) {
             if (isStopped || it is YoutubeDL.CanceledException) {
-                notificationUtil.cancelDownloadNotification(itemId)
+                notificationUtil.cancelTerminalDownloadNotification(itemId)
                 if (!noCache) {
                     File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
                 }
@@ -212,7 +219,7 @@ class TerminalDownloadWorker(
                 if (logDownloads) logRepo.update(redactedMessage, logItem.id)
                 dao.updateLog(redactedMessage, itemId.toLong())
             }
-            notificationUtil.cancelDownloadNotification(itemId)
+            notificationUtil.cancelTerminalDownloadNotification(itemId)
             if (!noCache) {
                 File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
             }

@@ -82,7 +82,8 @@ object YoutubeDLCompat {
         request: YoutubeDLRequest,
         processId: String? = null,
         redirectErrorStream: Boolean = false,
-        callback: ((Float, Long, String) -> Unit)? = null
+        callback: ((Float, Long, String) -> Unit)? = null,
+        onProcessRegistered: (() -> Unit)? = null,
     ): YoutubeDLResponse {
         val runtime = runtimeLayout(context)
         val nativeBinDir = runtime.nativeBinDir
@@ -138,6 +139,7 @@ object YoutubeDLCompat {
         if (processId != null) {
             idProcessMap[processId] = process
         }
+        onProcessRegistered?.invoke()
 
         val stdOutProcessor = ProgressStreamReader(outBuffer, process.inputStream, callback)
         val stdErrProcessor = StreamCollector(errBuffer, process.errorStream)

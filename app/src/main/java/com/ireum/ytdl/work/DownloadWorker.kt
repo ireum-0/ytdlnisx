@@ -37,6 +37,7 @@ import com.ireum.ytdl.database.repository.HistoryReplacementCleanupResult
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementExecutionOwnershipLostException
 import com.ireum.ytdl.database.repository.HistoryReplacementQualityAuthorityLostException
+import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementRefusalPersistenceException
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcome
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcomePolicy
@@ -97,16 +98,21 @@ import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionSummary
 import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
+import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.referencesSameFile
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -132,6 +138,13 @@ class DownloadWorker(
     private val workerAuthoritativeIssues: MutableMap<Long, DownloadIssue> = ConcurrentHashMap()
     private val workerExecutionIds: MutableMap<Long, String> = ConcurrentHashMap()
 
+    private data class CleanupSnapshot(
+        val activeIds: List<Long>,
+        val executionIds: Map<Long, String>,
+        val authoritativeIssues: Map<Long, DownloadIssue>,
+        val workerExecutionIds: Map<Long, String>,
+    )
+
     override suspend fun getForegroundInfo(): ForegroundInfo {
         val workNotif = NotificationUtil(App.instance).createDefaultWorkerNotification()
 
@@ -150,9 +163,9 @@ class DownloadWorker(
         includeStaleRows: Boolean = true,
         propagateRequeueFailure: Boolean = false,
     ) = withContext(Dispatchers.IO + NonCancellable) {
-        withDownloadWorkerExecutionLock {
-            val dbManager = DBManager.getInstance(context)
-            val dao = dbManager.downloadDao
+        val dbManager = DBManager.getInstance(context)
+        val dao = dbManager.downloadDao
+        val snapshot = withDownloadWorkerExecutionLock {
             val workerOwnedIds = (workerCleanupDownloadIds + workerDownloadIds).distinct()
             val staleItems = if (includeStaleRows) {
                 runCatching {
@@ -169,7 +182,14 @@ class DownloadWorker(
             }
             val staleDbIds = staleItems.map { it.id }
             val activeIds = (workerOwnedIds + staleDbIds).distinct()
-            if (activeIds.isEmpty()) return@withContext
+            if (activeIds.isEmpty()) {
+                return@withDownloadWorkerExecutionLock CleanupSnapshot(
+                    activeIds = emptyList(),
+                    executionIds = emptyMap(),
+                    authoritativeIssues = emptyMap(),
+                    workerExecutionIds = emptyMap(),
+                )
+            }
 
             val executionIds = workerExecutionIds.toMutableMap().apply {
                 staleItems.forEach { item ->
@@ -189,39 +209,98 @@ class DownloadWorker(
                 }
             }
 
-            activeIds.forEach { downloadId ->
-                val expectedExecutionId = executionIds[downloadId].orEmpty()
-                val current = runCatching { dao.getNullableDownloadById(downloadId) }
-                    .getOrElse {
-                        Log.w(TAG, "Cannot verify process cleanup ownership id=$downloadId", it)
-                        return@forEach
+            CleanupSnapshot(
+                activeIds = activeIds,
+                executionIds = executionIds,
+                authoritativeIssues = authoritativeIssues,
+                workerExecutionIds = workerExecutionIds.toMap(),
+            )
+        }
+        if (snapshot.activeIds.isEmpty()) return@withContext
+
+        val releasedIds = linkedSetOf<Long>()
+
+        /**
+         * The side-effect lease is acquired before the worker mutex, matching
+         * withOwnedExecutionLease().  The current row is re-read while both
+         * guards are held, so a stale cleanup snapshot cannot kill or mutate a
+         * newer execution that claimed the same Download ID.
+         */
+        suspend fun withCleanupOwnership(
+            downloadId: Long,
+            requireRunning: Boolean,
+            block: suspend (currentExecutionId: String) -> Unit,
+        ): Boolean {
+            val expectedExecutionId = snapshot.executionIds[downloadId].orEmpty()
+            if (expectedExecutionId.isBlank()) {
+                return withDownloadWorkerExecutionLock {
+                    val current = dao.getNullableDownloadById(downloadId)
+                    if (
+                        current == null ||
+                            current.executionId.isNotBlank() ||
+                            (requireRunning && current.status !in setOf(
+                                DownloadRepository.Status.Active.name,
+                                DownloadRepository.Status.PostProcessing.name,
+                            ))
+                    ) {
+                        false
+                    } else {
+                        block("")
+                        true
                     }
-                if (
-                    expectedExecutionId.isNotBlank() &&
-                        current != null &&
-                        current.executionId != expectedExecutionId
-                ) {
-                    Log.i(
-                        TAG,
-                        "Skipping stale process cleanup for newer execution id=$downloadId " +
-                            "expected=$expectedExecutionId actual=${current.executionId}",
-                    )
-                    return@forEach
                 }
+            }
+
+            return withDownloadWorkerExecutionSideEffectLease(
+                downloadId = downloadId,
+                executionId = expectedExecutionId,
+            ) {
+                withDownloadWorkerExecutionLock {
+                    val current = dao.getNullableDownloadById(downloadId)
+                    if (
+                        current == null ||
+                            current.executionId != expectedExecutionId ||
+                            (requireRunning && current.status !in setOf(
+                                DownloadRepository.Status.Active.name,
+                                DownloadRepository.Status.PostProcessing.name,
+                            ))
+                    ) {
+                        false
+                    } else {
+                        block(expectedExecutionId)
+                        true
+                    }
+                }
+            }
+        }
+
+        snapshot.activeIds.forEach { downloadId ->
+            val cleaned = withCleanupOwnership(
+                downloadId = downloadId,
+                requireRunning = false,
+            ) { expectedExecutionId ->
                 if (expectedExecutionId.isNotBlank()) {
                     cancelProcessesForExecution(downloadId, expectedExecutionId)
                 }
                 runCatching {
-                    NotificationUtil(context).cancelDownloadNotification(downloadId.toInt())
+                    NotificationUtil(context).cancelRunningDownloadNotification(downloadId.toInt())
                 }
             }
-            val releasedIds = linkedSetOf<Long>()
-            val refusalRepository = DownloadRepository(dbManager)
-            val requeueFailure = try {
-                activeIds.forEach { downloadId ->
-                    val issue = authoritativeIssues[downloadId]
-                    val executionId = executionIds[downloadId].orEmpty()
-                    if (executionId.isBlank()) {
+            if (!cleaned) {
+                Log.i(TAG, "Skipping stale process cleanup for newer execution id=$downloadId")
+            }
+        }
+
+        val refusalRepository = DownloadRepository(dbManager)
+        val requeueFailure = try {
+            snapshot.activeIds.forEach { downloadId ->
+                val issue = snapshot.authoritativeIssues[downloadId]
+                var released = false
+                val owned = withCleanupOwnership(
+                    downloadId = downloadId,
+                    requireRunning = true,
+                ) { executionId ->
+                    val affected = if (executionId.isBlank()) {
                         if (issue != null) {
                             check(
                                 refusalRepository.convergeHistoryReplacementRefusal(
@@ -244,11 +323,8 @@ class DownloadWorker(
                                 DownloadRepository.Status.Queued.toString()
                             )
                         }
-                        releasedIds += downloadId
-                        return@forEach
-                    }
-
-                    val affected = if (issue != null) {
+                        1
+                    } else if (issue != null) {
                         if (
                             refusalRepository.convergeHistoryReplacementRefusal(
                                 id = downloadId,
@@ -259,6 +335,7 @@ class DownloadWorker(
                     } else {
                         dao.requeueActiveDownload(downloadId, executionId)
                     }
+
                     if (affected == 0 && issue != null) {
                         val current = dao.getNullableDownloadById(downloadId)
                         val currentHasIssue = current?.let {
@@ -288,7 +365,7 @@ class DownloadWorker(
                                 it.lastIssueStage == issue.stage.name
                         } == true
                         check(verifiedHasIssue || verifiedBarrier?.issueCode == issue.code.name) {
-                            "Mismatch barrier could not be verified for download $downloadId"
+                            "Mismatch barrier could not be durably verified for download $downloadId"
                         }
                         check(
                             verified?.executionId != executionId ||
@@ -298,9 +375,6 @@ class DownloadWorker(
                                 )
                         ) {
                             "Owned download $downloadId remained running after failed cleanup"
-                        }
-                        if (verified == null || verified.executionId == executionId) {
-                            releasedIds += downloadId
                         }
                     } else if (affected == 0) {
                         val current = dao.getNullableDownloadById(downloadId)
@@ -313,42 +387,58 @@ class DownloadWorker(
                         ) {
                             "Owned download $downloadId remained running after failed cleanup"
                         }
-                        if (current == null || current.executionId == executionId) {
-                            releasedIds += downloadId
-                        }
-                    } else if (affected == 1) {
-                        releasedIds += downloadId
                     }
+                    released = affected == 1 ||
+                        (dao.getNullableDownloadById(downloadId)?.status !in setOf(
+                            DownloadRepository.Status.Active.name,
+                            DownloadRepository.Status.PostProcessing.name,
+                        ))
                 }
-                null
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                error
+                if (owned && released) releasedIds += downloadId
             }
-            val activeIdSet = activeIds.toSet()
-            val workerExecutionSnapshot = workerExecutionIds.toMap()
-            workerDownloadIds.removeAll(activeIdSet)
-            workerCleanupDownloadIds.removeAll(activeIdSet)
-            workerExecutionIds.keys.removeAll(activeIdSet)
-            workerExecutionSnapshot.forEach { (downloadId, executionId) ->
-                // Release only this exact dead attempt.  A newer worker may have
-                // claimed the same Download ID while cleanup was failing.
-                DownloadWorkerExecutionOwners.release(downloadId, executionId)
+            null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            error
+        }
+
+        withDownloadWorkerExecutionLock {
+            snapshot.workerExecutionIds.forEach { (downloadId, executionId) ->
+                // Release only this exact dead attempt.  A newer worker may
+                // have claimed the same Download ID while cleanup was waiting.
+                if (workerExecutionIds[downloadId] == executionId) {
+                    workerExecutionIds.remove(downloadId, executionId)
+                    workerDownloadIds.remove(downloadId)
+                    workerCleanupDownloadIds.remove(downloadId)
+                    DownloadWorkerExecutionOwners.release(downloadId, executionId)
+                    workerAuthoritativeIssues.remove(downloadId)
+                }
             }
-            runningYTDLInstances.removeAll(releasedIds)
-            workerAuthoritativeIssues.keys.removeAll(activeIdSet)
-            if (requeueFailure == null) {
-                Log.i(TAG, "Stopped worker cleanup completed for ${activeIds.size} active download(s)")
-            } else {
-                Log.w(
-                    TAG,
-                    "Failed to requeue stopped active downloads ids=$activeIds; " +
-                        "ownership released without a durable non-running guarantee",
-                    requeueFailure
-                )
-                if (propagateRequeueFailure) throw requeueFailure
+            releasedIds.forEach { downloadId ->
+                val current = dao.getNullableDownloadById(downloadId)
+                if (
+                    current == null ||
+                        current.status !in setOf(
+                            DownloadRepository.Status.Active.name,
+                            DownloadRepository.Status.PostProcessing.name,
+                        )
+                ) {
+                    runningYTDLInstances.remove(downloadId)
+                }
             }
+        }
+
+        if (requeueFailure == null) {
+            Log.i(TAG, "Stopped worker cleanup completed for ${snapshot.activeIds.size} active download(s)")
+        } else {
+            Log.w(
+                TAG,
+                "Failed to requeue stopped active downloads ids=${snapshot.activeIds}; " +
+                    "ownership released without a durable non-running guarantee",
+                requeueFailure
+            )
+            if (propagateRequeueFailure) throw requeueFailure
         }
     }
 
@@ -366,6 +456,13 @@ class DownloadWorker(
                 val barriers = dbManager.historyReplacementBarrierDao
                     .getByDownloadIds(activeRows.map { it.id })
                     .associateBy { it.downloadId }
+                val committedHistoryReplacementIds = activeRows
+                    .filter { item ->
+                        val marker = HistoryRedownloadMarker.parse(item.playlistURL)
+                        marker != null &&
+                            dbManager.historyDao.getNullableItem(marker.historyId)?.downloadId == item.id
+                    }
+                    .mapTo(linkedSetOf()) { it.id }
                 val authoritativeIssues = activeRows.associate { item ->
                     val issue = barriers[item.id]?.let { barrier ->
                         when (barrier.issueCode) {
@@ -409,7 +506,17 @@ class DownloadWorker(
                     },
                     isOwnedBy = DownloadWorkerExecutionOwners::isOwnedBy,
                     requeue = { downloadId, executionId ->
-                        if (authoritativeIssues[downloadId] != null) {
+                        if (downloadId in committedHistoryReplacementIds) {
+                            // The History transaction is the semantic commit
+                            // boundary.  A process death after it must finish
+                            // the committed operation, never requeue it for a
+                            // second destructive replacement attempt.
+                            DownloadRepository(dbManager).completeAndDelete(
+                                id = downloadId,
+                                expectedExecutionId = executionId,
+                            )
+                            1
+                        } else if (authoritativeIssues[downloadId] != null) {
                             DownloadRepository(dbManager)
                                 .convergeHistoryReplacementRefusal(
                                     id = downloadId,
@@ -807,6 +914,12 @@ class DownloadWorker(
                                 DownloadRepository.Status.Cancelled.name,
                             )
                     }
+                    val notificationTitle = SensitiveTextRedactor.redactOutput(
+                        downloadItem.title.ifEmpty { downloadItem.url }
+                    )
+                    var historyReplacementCommitted = withContext(Dispatchers.IO + NonCancellable) {
+                        isDurablyCommittedHistoryReplacement(dbManager, downloadItem)
+                    }
                     try {
                     if (historyReplacementFailureIssue != null) {
                         preserveQueueRecord = true
@@ -814,15 +927,50 @@ class DownloadWorker(
                             "History replacement mismatch cannot be retried"
                         )
                     }
+                    if (historyReplacementCommitted) {
+                        val affectedOperations = DownloadRepository(dbManager)
+                            .completeAndDelete(
+                                id = downloadItem.id,
+                                expectedExecutionId = downloadItem.executionId,
+                            )
+                        runCatching {
+                            LowQualityRedownloadLedger.refresh(context, affectedOperations)
+                        }
+                        runCatching {
+                            withContext(Dispatchers.Main) {
+                                notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
+                                notificationUtil.createDownloadFinished(
+                                    downloadItem.id,
+                                    notificationTitle,
+                                    downloadItem.type,
+                                    null,
+                                    resources,
+                                )
+                            }
+                        }.onFailure { notificationError ->
+                            Log.w(
+                                TAG,
+                                "Committed History replacement notification failed id=${downloadItem.id}",
+                                notificationError,
+                            )
+                        }
+                        downloadOutcome = DownloadOutcome.completed(createdFileCount = 0)
+                        return@launch
+                    }
                     if (isHardSubRedownload(downloadItem)) {
                         registerHardSubTarget(downloadItem.id)
                         updateHardSubWorkerNotificationSafely(notificationUtil)
                     }
-                    val notificationTitle = SensitiveTextRedactor.redactOutput(
-                        downloadItem.title.ifEmpty { downloadItem.url }
-                    )
-                    val notification = notificationUtil.createDownloadServiceNotification(openDownloadQueue, notificationTitle)
-                    notificationUtil.notify(downloadItem.id.toInt(), notification)
+                    withOwnedExecutionSideEffect(downloadItem) {
+                        val notification = notificationUtil.createDownloadServiceNotification(
+                            openDownloadQueue,
+                            notificationTitle,
+                        )
+                        notificationUtil.notify(
+                            NotificationUtil.downloadRunningNotificationId(downloadItem.id.toInt()),
+                            notification,
+                        )
+                    }
 
                     val writtenPath = downloadItem.format.format_note.contains("-P ")
                     var shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
@@ -911,17 +1059,26 @@ class DownloadWorker(
                             }
                             val postProcessingMessage =
                                 resources.getString(R.string.post_processing_hard_subtitles)
-                            eventBus.post(WorkerProgress(100, postProcessingMessage, downloadItem.id, downloadItem.logID))
-                            notificationUtil.updateDownloadNotification(
-                                downloadItem.id.toInt(),
-                                postProcessingMessage,
-                                100,
-                                0,
-                                notificationTitle,
-                                NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
-                                getHardSubStatusText(resources),
-                                downloadItem.executionId,
-                            )
+                            withOwnedExecutionSideEffect(downloadItem) {
+                                eventBus.post(
+                                    WorkerProgress(
+                                        100,
+                                        postProcessingMessage,
+                                        downloadItem.id,
+                                        downloadItem.logID,
+                                    )
+                                )
+                                notificationUtil.updateDownloadNotification(
+                                    downloadItem.id.toInt(),
+                                    postProcessingMessage,
+                                    100,
+                                    0,
+                                    notificationTitle,
+                                    NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
+                                    getHardSubStatusText(resources),
+                                    downloadItem.executionId,
+                                )
+                            }
                             Log.i(TAG, "HardSub post-processing slot released id=${downloadItem.id}")
                             DownloadRepository(dbManager).startDownloadWorker(emptyList(), context)
                             hardSubPostProcessMutex.lock()
@@ -1048,7 +1205,16 @@ class DownloadWorker(
                                     Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${preMoveBurnPaths.size} mode=pre-move")
                                     eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                                     currentIssueStage = DownloadIssueStage.HARD_SUB
-                                    val burned = burnSubtitlesInPlace(preMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
+                                    val burned = withOwnedExecutionLease(downloadItem) {
+                                        burnSubtitlesInPlace(
+                                            preMoveBurnPaths,
+                                            noKeepSubs,
+                                            downloadItem.id,
+                                            downloadItem.executionId,
+                                            downloadItem.logID,
+                                            downloadItem.videoPreferences.subsLanguages,
+                                        )
+                                    }
                                     hardSubBurned = hardSubBurned || burned
                                     if (burned) {
                                         eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
@@ -1086,7 +1252,16 @@ class DownloadWorker(
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${latePreMoveBurnPaths.size} mode=pre-move-late")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                                 currentIssueStage = DownloadIssueStage.HARD_SUB
-                                val burned = burnSubtitlesInPlace(latePreMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
+                                val burned = withOwnedExecutionLease(downloadItem) {
+                                    burnSubtitlesInPlace(
+                                        latePreMoveBurnPaths,
+                                        noKeepSubs,
+                                        downloadItem.id,
+                                        downloadItem.executionId,
+                                        downloadItem.logID,
+                                        downloadItem.videoPreferences.subsLanguages,
+                                    )
+                                }
                                 hardSubBurned = hardSubBurned || burned
                                 if (burned) {
                                     deferBurnUntilPostMove = false
@@ -1146,9 +1321,11 @@ class DownloadWorker(
                                 )
                             }
                             try {
-                                finalPaths = withContext(Dispatchers.IO){
-                                    FileUtil.moveFile(tempFileDir.absoluteFile,context, downloadLocation, keepCache){ p ->
-                                        eventBus.post(WorkerProgress(p, "Moving file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
+                                finalPaths = withOwnedExecutionLease(downloadItem) {
+                                    withContext(Dispatchers.IO){
+                                        FileUtil.moveFile(tempFileDir.absoluteFile,context, downloadLocation, keepCache){ p ->
+                                            eventBus.post(WorkerProgress(p, "Moving file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
+                                        }
                                     }
                                 }.filter { !it.matches("\\.(description)|(txt)\$".toRegex()) }.toMutableList()
                                 if (forceMoveUnresolved) {
@@ -1234,7 +1411,7 @@ class DownloadWorker(
                                             tempFileDir = tempFileDir,
                                             downloadLocation = downloadLocation,
                                             keepCache = keepCache,
-                                            downloadItemId = downloadItem.id,
+                                            downloadItem = downloadItem,
                                             downloadLogId = downloadItem.logID,
                                             eventBus = eventBus
                                         ).toMutableList()
@@ -1361,7 +1538,16 @@ class DownloadWorker(
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${postMoveBurnPaths.size} mode=post-move")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                                 currentIssueStage = DownloadIssueStage.HARD_SUB
-                                val burned = burnSubtitlesInPlace(postMoveBurnPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
+                                val burned = withOwnedExecutionLease(downloadItem) {
+                                    burnSubtitlesInPlace(
+                                        postMoveBurnPaths,
+                                        noKeepSubs,
+                                        downloadItem.id,
+                                        downloadItem.executionId,
+                                        downloadItem.logID,
+                                        downloadItem.videoPreferences.subsLanguages,
+                                    )
+                                }
                                 hardSubBurned = hardSubBurned || burned
                                 if (!burned && isHardSubRedownload(downloadItem)) {
                                     throw IOException("HardSub aborted: no media was burned in post-move stage")
@@ -1426,7 +1612,16 @@ class DownloadWorker(
                             Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${finalPaths.size}")
                             eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                             currentIssueStage = DownloadIssueStage.HARD_SUB
-                            val burned = burnSubtitlesInPlace(finalPaths, noKeepSubs, downloadItem.id, downloadItem.logID, downloadItem.videoPreferences.subsLanguages)
+                            val burned = withOwnedExecutionLease(downloadItem) {
+                                burnSubtitlesInPlace(
+                                    finalPaths,
+                                    noKeepSubs,
+                                    downloadItem.id,
+                                    downloadItem.executionId,
+                                    downloadItem.logID,
+                                    downloadItem.videoPreferences.subsLanguages,
+                                )
+                            }
                             hardSubBurned = hardSubBurned || burned
                             if (!burned && isHardSubRedownload(downloadItem)) {
                                 throw IOException("HardSub aborted: no media was burned")
@@ -1641,7 +1836,14 @@ class DownloadWorker(
                                     } else {
                                         null
                                     }
-                                    if (shouldStopForUserRequest()) return@launch
+                                    if (replacementOutcome is HistoryReplacementOutcome.Updated) {
+                                        // The replacement transaction also records
+                                        // the linked quality-child success fact.
+                                        // Cancellation and ancillary failures after
+                                        // this point cannot undo the primary commit.
+                                        historyReplacementCommitted = true
+                                    }
+                                    if (!historyReplacementCommitted && shouldStopForUserRequest()) return@launch
                                     val persistedHistoryId = if (replacedHistoryId > 0L) {
                                         val replacement = replacementOutcome!!
                                         val replacementTerminalAction =
@@ -1682,7 +1884,7 @@ class DownloadWorker(
                                             )
                                     }
                                     if (replacedHistoryId > 0L && persistedHistoryId != null) {
-                                        if (shouldStopForUserRequest()) return@launch
+                                        if (!historyReplacementCommitted && shouldStopForUserRequest()) return@launch
                                         deleteReplacedHistoryMedia(
                                             previousHistoryItem =
                                                 (replacementOutcome as? HistoryReplacementOutcome.Updated)
@@ -1710,27 +1912,47 @@ class DownloadWorker(
                             }
                         } catch (historyError: Exception) {
                             if (historyError is CancellationException) throw historyError
-                            if (historyError is HistoryReplacementExecutionOwnershipLostException) {
+                            val committedHistoryReplacement = historyReplacementCommitted ||
+                                withContext(Dispatchers.IO + NonCancellable) {
+                                    isDurablyCommittedHistoryReplacement(dbManager, downloadItem)
+                                }
+                            if (committedHistoryReplacement) {
+                                historyReplacementCommitted = true
+                                completionIssues += DownloadIssue.create(
+                                    stage = DownloadIssueStage.HISTORY,
+                                    code = DownloadIssueCode.HISTORY_POST_COMMIT_WARNING,
+                                    severity = DownloadIssueSeverity.WARNING,
+                                    suggestedActions = setOf(DownloadSuggestedAction.VIEW_LOG),
+                                    details = historyError.message.orEmpty(),
+                                    source = DownloadIssueSource.TYPED_EXCEPTION,
+                                )
                                 Log.w(
                                     TAG,
-                                    "Stale History replacement attempt stopped id=${downloadItem.id}",
+                                    "History ancillary work failed after replacement commit id=${downloadItem.id}",
                                     historyError,
                                 )
-                                return@launch
-                            }
-                            if (historyError is DownloadExecutionOwnershipLostException) {
-                                Log.w(
-                                    TAG,
-                                    "Stale History cleanup attempt stopped id=${downloadItem.id}",
-                                    historyError,
-                                )
-                                return@launch
-                            }
-                            preserveQueueRecord = true
-                            downloadItem.status = DownloadRepository.Status.Error.toString()
-                            val historyIssue = if (
-                                historyError is HistoryReplacementNotAuthorizedException
-                            ) {
+                            } else {
+                                if (historyError is HistoryReplacementExecutionOwnershipLostException) {
+                                    Log.w(
+                                        TAG,
+                                        "Stale History replacement attempt stopped id=${downloadItem.id}",
+                                        historyError,
+                                    )
+                                    return@launch
+                                }
+                                if (historyError is DownloadExecutionOwnershipLostException) {
+                                    Log.w(
+                                        TAG,
+                                        "Stale History cleanup attempt stopped id=${downloadItem.id}",
+                                        historyError,
+                                    )
+                                    return@launch
+                                }
+                                preserveQueueRecord = true
+                                downloadItem.status = DownloadRepository.Status.Error.toString()
+                                val historyIssue = if (
+                                    historyError is HistoryReplacementNotAuthorizedException
+                                ) {
                                 historyReplacementTerminalAction =
                                     HistoryReplacementOutcomePolicy.mergeTerminalAction(
                                         historyReplacementTerminalAction,
@@ -1761,60 +1983,71 @@ class DownloadWorker(
                                     return@launch
                                 }
                                 establishQualityAuthorityLoss()
-                            } else {
-                                historyReplacementAuthoritativeIssue ?: DownloadIssue.create(
-                                    stage = DownloadIssueStage.HISTORY,
-                                    code = DownloadIssueCode.HISTORY_WRITE_FAILED,
-                                    severity = DownloadIssueSeverity.WARNING,
-                                    suggestedActions = setOf(
-                                        DownloadSuggestedAction.VIEW_LOG,
-                                        DownloadSuggestedAction.COPY_SUMMARY
-                                    ),
-                                    details = historyError.message.orEmpty(),
-                                    source = DownloadIssueSource.TYPED_EXCEPTION
-                                )
-                            }
-                            downloadItem.lastIssueCode = historyIssue.code.name
-                            downloadItem.lastIssueStage = DownloadIssueStage.HISTORY.name
-                            val persistenceResult = persistHistoryReplacementTerminalState(
-                                issue = historyIssue,
-                                persistDownload = {
-                                    check(
-                                        dao.updateIfExecutionOwnedAndRunning(
-                                            downloadItem,
-                                            downloadItem.executionId,
-                                        )
-                                    ) {
-                                        "History mismatch ownership lost for download ${downloadItem.id}"
-                                    }
-                                },
-                                transitionLinkedDownload = { reason ->
-                                    LowQualityRedownloadLedger.transition(
-                                        context,
-                                        downloadItem.id,
-                                        com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
-                                        reason = reason,
-                                        expectedExecutionId = downloadItem.executionId,
+                                } else {
+                                    historyReplacementAuthoritativeIssue ?: DownloadIssue.create(
+                                        stage = DownloadIssueStage.HISTORY,
+                                        code = DownloadIssueCode.HISTORY_WRITE_FAILED,
+                                        severity = DownloadIssueSeverity.WARNING,
+                                        suggestedActions = setOf(
+                                            DownloadSuggestedAction.VIEW_LOG,
+                                            DownloadSuggestedAction.COPY_SUMMARY
+                                        ),
+                                        details = historyError.message.orEmpty(),
+                                        source = DownloadIssueSource.TYPED_EXCEPTION
                                     )
-                                },
-                            )
-                            val unrecoverableMismatch =
-                                unrecoverableHistoryReplacementPersistenceFailure(
-                                    historyReplacementAuthoritativeIssue,
-                                    persistenceResult,
+                                }
+                                downloadItem.lastIssueCode = historyIssue.code.name
+                                downloadItem.lastIssueStage = DownloadIssueStage.HISTORY.name
+                                val persistenceResult = persistHistoryReplacementTerminalState(
+                                    issue = historyIssue,
+                                    persistDownload = {
+                                        check(
+                                            dao.updateIfExecutionOwnedAndRunning(
+                                                downloadItem,
+                                                downloadItem.executionId,
+                                            )
+                                        ) {
+                                            "History mismatch ownership lost for download ${downloadItem.id}"
+                                        }
+                                    },
+                                    transitionLinkedDownload = { reason ->
+                                        LowQualityRedownloadLedger.transition(
+                                            context,
+                                            downloadItem.id,
+                                            com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                            reason = reason,
+                                            expectedExecutionId = downloadItem.executionId,
+                                        )
+                                    },
+                                    isCancellationRequested = {
+                                        LowQualityRedownloadRepository(dbManager)
+                                            .isCancellationRequestedForDownload(downloadItem.id)
+                                    },
+                                    onLinkedTransitionFailure = {
+                                        LowQualityRedownloadLedger.scheduleConvergence(
+                                            context,
+                                            downloadItem.id,
+                                        )
+                                    },
                                 )
-                            if (unrecoverableMismatch != null) {
-                                throw unrecoverableMismatch
+                                val unrecoverableMismatch =
+                                    unrecoverableHistoryReplacementPersistenceFailure(
+                                        historyReplacementAuthoritativeIssue,
+                                        persistenceResult,
+                                    )
+                                if (unrecoverableMismatch != null) {
+                                    throw unrecoverableMismatch
+                                }
+                                if (persistenceResult is HistoryReplacementPersistenceResult.Failed) {
+                                    Log.e(
+                                        TAG,
+                                        "Failed to mark history recovery record id=${downloadItem.id}",
+                                        persistenceResult.error
+                                    )
+                                }
+                                completionIssues += historyIssue
+                                Log.e(TAG, "History update failed after file creation id=${downloadItem.id}", historyError)
                             }
-                            if (persistenceResult is HistoryReplacementPersistenceResult.Failed) {
-                                Log.e(
-                                    TAG,
-                                    "Failed to mark history recovery record id=${downloadItem.id}",
-                                    persistenceResult.error
-                                )
-                            }
-                            completionIssues += historyIssue
-                            Log.e(TAG, "History update failed after file creation id=${downloadItem.id}", historyError)
                         }
 
                         if (isHardSubRedownload(downloadItem)) {
@@ -1830,7 +2063,7 @@ class DownloadWorker(
                         }
                         try {
                             withContext(Dispatchers.Main) {
-                                notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
+                                notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
                                 if (historyReplacementFailureIssue == null) {
                                     notificationUtil.createDownloadFinished(
                                         downloadItem.id,
@@ -1895,7 +2128,7 @@ class DownloadWorker(
 //                        }
 
                         if (!preserveQueueRecord) {
-                            if (shouldStopForUserRequest()) return@launch
+                            if (!historyReplacementCommitted && shouldStopForUserRequest()) return@launch
                             val downloadRepository = DownloadRepository(dbManager)
                             val affectedOperations = if (
                                 historyReplacementTerminalAction ==
@@ -1975,10 +2208,17 @@ class DownloadWorker(
                                 downloadItem.id,
                                 downloadItem.executionId,
                             )
+                        val lowQualityCancellationRequested = try {
+                            LowQualityRedownloadRepository(dbManager)
+                                .isCancellationRequestedForDownload(downloadItem.id)
+                        } catch (_: Exception) {
+                            false
+                        }
                         if (
                             this@DownloadWorker.isStopped ||
                             it is YoutubeDL.CanceledException ||
                             itemLocallyCancelled ||
+                            lowQualityCancellationRequested ||
                             latestStatus == DownloadRepository.Status.Paused ||
                             latestStatus == DownloadRepository.Status.Cancelled
                         ) {
@@ -2209,9 +2449,13 @@ class DownloadWorker(
                         val failedOutcome = DownloadOutcome.failed(primaryIssue)
                         downloadOutcome = failedOutcome
                         if (it.message?.contains("JSONDecodeError") == true) {
-                            deleteLoadedAppInfoJson(
-                                failedYtdlpState?.effectiveCommand.orEmpty()
-                            )
+                            runCatching {
+                                withOwnedExecutionSideEffect(downloadItem) {
+                                    deleteLoadedAppInfoJson(
+                                        failedYtdlpState?.effectiveCommand.orEmpty()
+                                    )
+                                }
+                            }
                         }
 
                         val failureDiagnostics = buildFailureDiagnostics(
@@ -2222,7 +2466,14 @@ class DownloadWorker(
                             recentOutput = failedYtdlpState?.logging?.recentOutput.orEmpty()
                         ) + "\nStructured failure:\n$structuredFailureSummary\n"
                         if (failedYtdlpState?.logging?.enabled == true){
-                            logRepo.update(failureDiagnostics, failedYtdlpState.logging.logId ?: 0L)
+                            runCatching {
+                                withOwnedExecutionSideEffect(downloadItem) {
+                                    logRepo.update(
+                                        failureDiagnostics,
+                                        failedYtdlpState.logging.logId ?: 0L,
+                                    )
+                                }
+                            }
                         }
 
 
@@ -2316,9 +2567,33 @@ class DownloadWorker(
                                     expectedExecutionId = downloadItem.executionId,
                                 )
                             },
+                            isCancellationRequested = {
+                                LowQualityRedownloadRepository(dbManager)
+                                    .isCancellationRequestedForDownload(downloadItem.id)
+                            },
+                            onLinkedTransitionFailure = {
+                                LowQualityRedownloadLedger.scheduleConvergence(
+                                    context,
+                                    downloadItem.id,
+                                )
+                            },
                         )
                         if (terminalPersistence is HistoryReplacementPersistenceResult.Failed) {
                             throw terminalPersistence.error
+                        }
+                        if (
+                            runCatching {
+                                LowQualityRedownloadRepository(dbManager)
+                                    .isCancellationRequestedForDownload(downloadItem.id)
+                            }.getOrDefault(false)
+                        ) {
+                            // Phase-one low-quality cancellation may commit
+                            // while the terminal Download write/ledger
+                            // handoff is completing.  Cancellation remains the
+                            // terminal semantic; do not publish an Error
+                            // notification for the racing failure.
+                            downloadOutcome = DownloadOutcome.canceled()
+                            return@launch
                         }
                         if (isHardSubRedownload(downloadItem)) {
                             if (shouldStopForUserRequest()) return@launch
@@ -2350,7 +2625,9 @@ class DownloadWorker(
                                     DownloadRetryPolicy.canOffer(
                                         retryMetadata,
                                         DownloadRetryStrategy.RECONFIGURED
-                                    )
+                                    ),
+                            retryCapabilityOperationId = downloadItem.operationId,
+                            retryCapabilityAttempt = downloadItem.retryAttempt,
                         )
 
                         eventBus.post(
@@ -2371,6 +2648,55 @@ class DownloadWorker(
                             Log.w(
                                 TAG,
                                 "Stale Download attempt stopped before terminal handling id=${downloadItem.id}",
+                                unexpected,
+                            )
+                            return@launch
+                        }
+                        val committedHistoryReplacement = historyReplacementCommitted ||
+                            withContext(Dispatchers.IO + NonCancellable) {
+                                isDurablyCommittedHistoryReplacement(dbManager, downloadItem)
+                            }
+                        if (committedHistoryReplacement) {
+                            historyReplacementCommitted = true
+                            val current = withContext(Dispatchers.IO + NonCancellable) {
+                                dao.getNullableDownloadById(downloadItem.id)
+                            }
+                            if (current != null) {
+                                try {
+                                    val affectedOperations = DownloadRepository(dbManager)
+                                        .completeAndDelete(
+                                            id = downloadItem.id,
+                                            expectedExecutionId = downloadItem.executionId,
+                                        )
+                                    runCatching {
+                                        LowQualityRedownloadLedger.refresh(context, affectedOperations)
+                                    }
+                                } catch (finalizationError: Exception) {
+                                    if (finalizationError is CancellationException) throw finalizationError
+                                    Log.e(
+                                        TAG,
+                                        "Committed History replacement could not finalize download id=${downloadItem.id}",
+                                        finalizationError,
+                                    )
+                                    throw unexpected
+                                }
+                            }
+                            downloadOutcome = DownloadOutcome.completed(
+                                createdFileCount = 0,
+                                issues = listOf(
+                                    DownloadIssue.create(
+                                        stage = DownloadIssueStage.HISTORY,
+                                        code = DownloadIssueCode.HISTORY_POST_COMMIT_WARNING,
+                                        severity = DownloadIssueSeverity.WARNING,
+                                        suggestedActions = setOf(DownloadSuggestedAction.VIEW_LOG),
+                                        details = unexpected.message.orEmpty(),
+                                        source = DownloadIssueSource.TYPED_EXCEPTION,
+                                    )
+                                ),
+                            )
+                            Log.w(
+                                TAG,
+                                "Ancillary Download work failed after committed History replacement id=${downloadItem.id}",
                                 unexpected,
                             )
                             return@launch
@@ -2466,6 +2792,16 @@ class DownloadWorker(
                                                 expectedExecutionId = downloadItem.executionId,
                                             )
                                         },
+                                        isCancellationRequested = {
+                                            LowQualityRedownloadRepository(dbManager)
+                                                .isCancellationRequestedForDownload(downloadItem.id)
+                                        },
+                                        onLinkedTransitionFailure = {
+                                            LowQualityRedownloadLedger.scheduleConvergence(
+                                                context,
+                                                downloadItem.id,
+                                            )
+                                        },
                                     )
                                 } else if (targetDeleted) {
                                     val preserved = if (
@@ -2492,7 +2828,14 @@ class DownloadWorker(
                                         } catch (cancelled: CancellationException) {
                                             throw cancelled
                                         } catch (_: Exception) {
-                                            // Keep the Download issue as the authoritative carrier.
+                                            // Keep the Download issue as the
+                                            // authoritative carrier and retry
+                                            // the linked terminal convergence in
+                                            // this live process.
+                                            LowQualityRedownloadLedger.scheduleConvergence(
+                                                context,
+                                                downloadItem.id,
+                                            )
                                         }
                                         recoveryResult = HistoryReplacementPersistenceResult.Persisted
                                     } else {
@@ -2543,7 +2886,13 @@ class DownloadWorker(
                                         } catch (cancelled: CancellationException) {
                                             throw cancelled
                                         } catch (_: Exception) {
-                                            // Keep the deliberate Download/barrier and ledger boundary.
+                                            // Keep the deliberate Download/barrier
+                                            // and ledger boundary, then derive
+                                            // the child terminal state again.
+                                            LowQualityRedownloadLedger.scheduleConvergence(
+                                                context,
+                                                downloadItem.id,
+                                            )
                                         }
                                         recoveryResult = HistoryReplacementPersistenceResult.Persisted
                                     } else {
@@ -2569,7 +2918,7 @@ class DownloadWorker(
                                 )
                             }
                             try {
-                                notificationUtil.cancelDownloadNotification(downloadItem.id.toInt())
+                                notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
                                 notificationUtil.createDownloadErrored(
                                     downloadItem.id,
                                     SensitiveTextRedactor.redactOutput(
@@ -2579,7 +2928,9 @@ class DownloadWorker(
                                     downloadItem.logID,
                                     resources,
                                     retryable = false,
-                                    allowReconfigure = historyReplacementAuthoritativeIssue == null
+                                    allowReconfigure = historyReplacementAuthoritativeIssue == null,
+                                    retryCapabilityOperationId = downloadItem.operationId,
+                                    retryCapabilityAttempt = downloadItem.retryAttempt,
                                 )
                             } catch (cancelled: CancellationException) {
                                 throw cancelled
@@ -2595,6 +2946,15 @@ class DownloadWorker(
                                 result = recoveryResult,
                             )?.let { unrecoverableMismatch ->
                                 throw unrecoverableMismatch
+                            }
+                            if (
+                                runCatching {
+                                    LowQualityRedownloadRepository(dbManager)
+                                        .isCancellationRequestedForDownload(downloadItem.id)
+                                }.getOrDefault(false)
+                            ) {
+                                downloadOutcome = DownloadOutcome.canceled()
+                                return@launch
                             }
                         }
                         Log.e(TAG, "Unexpected download failure id=${downloadItem.id}", unexpected)
@@ -2891,13 +3251,17 @@ class DownloadWorker(
         services: YtdlpPhaseServices,
     ): YtdlpPhasePreparation {
         val downloadItem = input.downloadItem
+        ensureExecutionOwnedBeforeAttempt(downloadItem)
         val requestOwner = YtdlpPreparationRequestOwner<YoutubeDLRequest>(
             cleanupRequest = FileUtil::deleteConfigFiles,
         )
         return try {
-            val initialProfile = services.ytdlpUtil.resolveInitialYoutubeMediaAccessProfile(downloadItem)
-            val request = services.ytdlpUtil.buildYoutubeDLRequest(downloadItem, initialProfile)
-            requestOwner.register(request)
+            val (initialProfile, request) = withOwnedExecutionSideEffect(downloadItem) {
+                val profile = services.ytdlpUtil.resolveInitialYoutubeMediaAccessProfile(downloadItem)
+                val builtRequest = services.ytdlpUtil.buildYoutubeDLRequest(downloadItem, profile)
+                requestOwner.register(builtRequest)
+                profile to builtRequest
+            }
             val initialAttempt = run {
                 downloadItem.status = DownloadRepository.Status.Active.toString()
                 if (downloadItem.operationId.isBlank()) {
@@ -2937,10 +3301,13 @@ class DownloadWorker(
                 downloadItem.type,
                 System.currentTimeMillis(),
             )
+            ensureExecutionOwnedBeforeAttempt(downloadItem)
             val logId = if (input.loggingEnabled) {
-                services.logRepository.insert(logItem).also { insertedLogId ->
-                    logItem.id = insertedLogId
-                    downloadItem.logID = insertedLogId
+                withOwnedExecutionSideEffect(downloadItem) {
+                    services.logRepository.insert(logItem).also { insertedLogId ->
+                        logItem.id = insertedLogId
+                        downloadItem.logID = insertedLogId
+                    }
                 }
             } else {
                 downloadItem.logID = null
@@ -3013,7 +3380,20 @@ class DownloadWorker(
     ): (Float, Long, String) -> Unit {
         val item = input.downloadItem
         val notificationTitle = input.notificationTitle
-        return { progress, _, line ->
+        return progressCallback@{ progress, _, line ->
+            fun runOwnedSideEffect(block: suspend () -> Unit): Boolean = runCatching {
+                runBlocking(Dispatchers.IO) {
+                    withOwnedExecutionSideEffect(item, block)
+                }
+            }.isSuccess
+
+            val stillOwnsAttempt = runCatching {
+                runBlocking(Dispatchers.IO) {
+                    ensureExecutionOwnedBeforeAttempt(item)
+                }
+                true
+            }.getOrDefault(false)
+            if (!stillOwnsAttempt) return@progressCallback
             runtime.issueStage = DownloadIssueStageTracker.update(runtime.issueStage, line)
             val normalizedDownloadLine = line.trimStart()
             if (
@@ -3035,10 +3415,18 @@ class DownloadWorker(
                     lowerLine.contains("subtitle") ||
                     lowerLine.contains("subtitlesconvertor")
                 ) {
-                    Log.i(TAG, "HardSub sub log id=${item.id}: $redactedLine")
+                    if (!runOwnedSideEffect {
+                            Log.i(TAG, "HardSub sub log id=${item.id}: $redactedLine")
+                        }) {
+                        return@progressCallback
+                    }
                 }
             }
-            eventBus.post(WorkerProgress(progress.toInt(), redactedLine, item.id, item.logID))
+            if (!runOwnedSideEffect {
+                    eventBus.post(WorkerProgress(progress.toInt(), redactedLine, item.id, item.logID))
+                }) {
+                return@progressCallback
+            }
             val now = System.currentTimeMillis()
             val intProgress = progress.toInt()
             val progressAdvancedEnough = runtime.lastNotificationProgress < 0 ||
@@ -3058,31 +3446,37 @@ class DownloadWorker(
                         totalHardSubs,
                     )
                 }
-                services.notificationUtil.updateDownloadNotification(
-                    item.id.toInt(),
-                    redactedLine,
-                    intProgress,
-                    0,
-                    notificationTitle,
-                    NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
-                    hardSubStatus,
-                    item.executionId,
-                )
+                if (!runOwnedSideEffect {
+                        services.notificationUtil.updateDownloadNotification(
+                            item.id.toInt(),
+                            redactedLine,
+                            intProgress,
+                            0,
+                            notificationTitle,
+                            NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
+                            hardSubStatus,
+                            item.executionId,
+                        )
+                    }) {
+                    return@progressCallback
+                }
                 runtime.lastNotificationUpdateAt = now
                 runtime.lastNotificationProgress = intProgress
             }
-            runBlocking(Dispatchers.IO) {
-                if (runtime.loggingEnabled) {
-                    services.logRepository.update(redactedLine, runtime.logId ?: 0L)
-                }
-                runtime.recentOutput.addLast(redactedLine)
-                runtime.currentAttemptOutput.addLast(redactedLine)
-                while (runtime.recentOutput.size > FAILURE_YTDLP_TAIL_LINES) {
-                    runtime.recentOutput.removeFirst()
-                }
-                while (runtime.currentAttemptOutput.size > FAILURE_YTDLP_TAIL_LINES) {
-                    runtime.currentAttemptOutput.removeFirst()
-                }
+            if (!runOwnedSideEffect {
+                    if (runtime.loggingEnabled) {
+                        services.logRepository.update(redactedLine, runtime.logId ?: 0L)
+                    }
+                    runtime.recentOutput.addLast(redactedLine)
+                    runtime.currentAttemptOutput.addLast(redactedLine)
+                    while (runtime.recentOutput.size > FAILURE_YTDLP_TAIL_LINES) {
+                        runtime.recentOutput.removeFirst()
+                    }
+                    while (runtime.currentAttemptOutput.size > FAILURE_YTDLP_TAIL_LINES) {
+                        runtime.currentAttemptOutput.removeFirst()
+                    }
+                }) {
+                return@progressCallback
             }
         }
     }
@@ -3093,33 +3487,76 @@ class DownloadWorker(
         attempt: YtdlpAttempt,
         progressCallback: (Float, Long, String) -> Unit,
     ): YoutubeDLResponse {
+        ensureExecutionOwnedBeforeAttempt(input.downloadItem)
         runtime.issueStage = DownloadIssueStage.EXTRACT
-        val processId = input.downloadItem.id.toString()
-        withOwnedExecutionSideEffect(input.downloadItem) {
-            prepareProcessForExecution(
-                input.downloadItem.id,
-                input.downloadItem.executionId,
-            )
-            DownloadWorkerProcessOwners.claim(
-                input.downloadItem.id,
-                input.downloadItem.executionId,
-            )
-        }
-        return try {
-            YoutubeDLCompat.execute(
-                applicationContext,
-                attempt.request,
-                processId,
-                true,
-                progressCallback,
-            )
-        } finally {
-            withContext(Dispatchers.IO + NonCancellable) {
-                withDownloadWorkerExecutionLock {
-                    DownloadWorkerProcessOwners.release(
-                        input.downloadItem.id,
-                        input.downloadItem.executionId,
+        val processId = YtdlpProcessIdentity.download(
+            input.downloadItem.id,
+            input.downloadItem.executionId,
+        )
+        return coroutineScope {
+            val processRegistered = CompletableDeferred<Unit>()
+            val execution = async(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                try {
+                    YoutubeDLCompat.execute(
+                        applicationContext,
+                        attempt.request,
+                        processId,
+                        true,
+                        progressCallback,
+                        onProcessRegistered = { processRegistered.complete(Unit) },
                     )
+                } catch (failure: Throwable) {
+                    processRegistered.completeExceptionally(failure)
+                    throw failure
+                }
+            }
+            try {
+                // The global worker mutex only protects the exact ownership
+                // read/claim.  The per-download lease covers the final
+                // revalidation through native process registration, so a
+                // durable Pause/Cancel that wins before this gate prevents the
+                // stale execution from starting, while a start that wins the
+                // gate is quiesced by the same lease before cancellation can
+                // commit.
+                withDownloadWorkerExecutionSideEffectLease(
+                    downloadId = input.downloadItem.id,
+                    executionId = input.downloadItem.executionId,
+                ) {
+                    withDownloadWorkerExecutionLock {
+                        assertExecutionOwnedBeforeAttemptLocked(input.downloadItem)
+                        prepareProcessForExecution(
+                            input.downloadItem.id,
+                            input.downloadItem.executionId,
+                        )
+                        DownloadWorkerProcessOwners.claim(
+                            input.downloadItem.id,
+                            input.downloadItem.executionId,
+                        )
+                    }
+                    execution.start()
+                    processRegistered.await()
+                }
+                execution.await()
+            } finally {
+                withContext(Dispatchers.IO + NonCancellable) {
+                    withDownloadWorkerExecutionSideEffectLease(
+                        downloadId = input.downloadItem.id,
+                        executionId = input.downloadItem.executionId,
+                    ) {
+                        withDownloadWorkerExecutionLock {
+                            if (!execution.isCompleted) {
+                                cancelYtdlpProcess(
+                                    input.downloadItem.id,
+                                    input.downloadItem.executionId,
+                                )
+                                execution.cancel()
+                            }
+                            DownloadWorkerProcessOwners.release(
+                                input.downloadItem.id,
+                                input.downloadItem.executionId,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -3341,30 +3778,39 @@ class DownloadWorker(
         previousError: Exception,
         errorLabel: String,
     ): YtdlpAttempt {
+        ensureExecutionOwnedBeforeAttempt(input.downloadItem)
         if (plan is YtdlpRetryPlan.CachedInfo) {
-            deleteLoadedAppInfoJson(previousAttempt.command)
+            withOwnedExecutionSideEffect(input.downloadItem) {
+                deleteLoadedAppInfoJson(previousAttempt.command)
+            }
         }
-        announceYtdlpRetry(input, services, eventBus, plan.notice, previousError)
+        withOwnedExecutionSideEffect(input.downloadItem) {
+            announceYtdlpRetry(input, services, eventBus, plan.notice, previousError)
+        }
         resetYtdlpTempDirectory(
             downloadItem = input.downloadItem,
             rawTempDirectory = input.rawTempDirectory,
             beforeRetry = true,
         )
-        return buildYtdlpAttempt(
-            downloadItem = input.downloadItem,
-            ytdlpUtil = services.ytdlpUtil,
-            retryPlan = plan,
-            onRequestBuilt = runtime::registerRequest,
-            onCommandBuilt = { command -> runtime.effectiveCommand = command },
-        ).also { attempt ->
-            appendYtdlpRetryLog(
-                services = services,
-                runtime = runtime,
-                attempt = attempt,
-                notice = plan.notice,
-                errorLabel = errorLabel,
-                error = previousError,
+        return withOwnedExecutionSideEffect(input.downloadItem) {
+            buildYtdlpAttempt(
+                downloadItem = input.downloadItem,
+                ytdlpUtil = services.ytdlpUtil,
+                retryPlan = plan,
+                onRequestBuilt = runtime::registerRequest,
+                onCommandBuilt = { command -> runtime.effectiveCommand = command },
             )
+        }.also { attempt ->
+            withOwnedExecutionSideEffect(input.downloadItem) {
+                appendYtdlpRetryLog(
+                    services = services,
+                    runtime = runtime,
+                    attempt = attempt,
+                    notice = plan.notice,
+                    errorLabel = errorLabel,
+                    error = previousError,
+                )
+            }
         }
     }
 
@@ -3378,6 +3824,7 @@ class DownloadWorker(
         expectedHeight: Int?,
         isVerifiedReplacement: Boolean,
     ): CompletedYtdlpQualityOutcome {
+        ensureExecutionOwnedBeforeAttempt(input.downloadItem)
         val stagedQuality = probeStagedVideoQuality(input)
             ?: return CompletedYtdlpQualityOutcome.Accept(YtdlpAttemptsResult(completedResponse))
         val isYoutubeVideo = input.downloadItem.type == DownloadType.video &&
@@ -3462,22 +3909,25 @@ class DownloadWorker(
         profile: YoutubeMediaAccessProfile,
         routeAttempts: YoutubeMediaAttemptSet,
     ): Int? {
+        ensureExecutionOwnedBeforeAttempt(input.downloadItem)
         if (!routeAttempts.markProbed(profile)) return null
-        val request = services.ytdlpUtil.buildYoutubeDLRequest(
-            downloadItem = input.downloadItem,
-            mediaAccessProfile = profile,
-            useCachedInfoJson = false,
-            applyQualityGuard = false,
-            selectionOnly = true,
-        ).apply {
-            addOption("--simulate")
-            addOption("--skip-download")
-            addOption("--check-formats")
-            addOption("--no-write-info-json")
-            addOption("--no-write-thumbnail")
-            addOption("--no-write-subs")
-            addOption("--no-write-auto-subs")
-            addOption("--print", "ytdlnisx-selection-height:%(height|0)s")
+        val request = withOwnedExecutionSideEffect(input.downloadItem) {
+            services.ytdlpUtil.buildYoutubeDLRequest(
+                downloadItem = input.downloadItem,
+                mediaAccessProfile = profile,
+                useCachedInfoJson = false,
+                applyQualityGuard = false,
+                selectionOnly = true,
+            ).apply {
+                addOption("--simulate")
+                addOption("--skip-download")
+                addOption("--check-formats")
+                addOption("--no-write-info-json")
+                addOption("--no-write-thumbnail")
+                addOption("--no-write-subs")
+                addOption("--no-write-auto-subs")
+                addOption("--print", "ytdlnisx-selection-height:%(height|0)s")
+            }
         }
         runtime.registerRequest(request)
         val command = services.ytdlpUtil.parseYTDLRequestString(request)
@@ -3561,8 +4011,26 @@ class DownloadWorker(
 
     private suspend fun <T> withOwnedExecutionSideEffect(
         downloadItem: DownloadItem,
-        sideEffect: () -> T,
+        sideEffect: suspend () -> T,
     ): T = withDownloadWorkerExecutionLock {
+        assertExecutionOwnedBeforeAttemptLocked(downloadItem)
+        sideEffect()
+    }
+
+    private suspend fun <T> withOwnedExecutionLease(
+        downloadItem: DownloadItem,
+        sideEffect: suspend () -> T,
+    ): T = withDownloadWorkerExecutionSideEffectLease(
+        downloadId = downloadItem.id,
+        executionId = downloadItem.executionId,
+    ) {
+        withDownloadWorkerExecutionLock {
+            assertExecutionOwnedBeforeAttemptLocked(downloadItem)
+        }
+        sideEffect()
+    }
+
+    private suspend fun assertExecutionOwnedBeforeAttemptLocked(downloadItem: DownloadItem) {
         val current = DBManager.getInstance(context).downloadDao
             .getNullableDownloadById(downloadItem.id)
         if (
@@ -3583,7 +4051,47 @@ class DownloadWorker(
                 actualExecutionId = current?.executionId,
             )
         }
-        sideEffect()
+    }
+
+    private suspend fun ensureExecutionOwnedBeforeAttempt(downloadItem: DownloadItem) {
+        withDownloadWorkerExecutionLock {
+            val current = DBManager.getInstance(context).downloadDao
+                .getNullableDownloadById(downloadItem.id)
+            if (
+                this@DownloadWorker.isStopped ||
+                    DownloadCancellationRegistry.belongsTo(
+                        downloadItem.id,
+                        downloadItem.executionId,
+                    ) ||
+                    current?.status in setOf(
+                        DownloadRepository.Status.Paused.name,
+                        DownloadRepository.Status.Cancelled.name,
+                    )
+            ) {
+                throw CancellationException(
+                    "Download execution was cancelled before attempt side effects " +
+                        "id=${downloadItem.id}"
+                )
+            }
+            if (
+                current == null ||
+                    current.executionId != downloadItem.executionId ||
+                    current.status !in setOf(
+                        DownloadRepository.Status.Active.name,
+                        DownloadRepository.Status.PostProcessing.name,
+                    ) ||
+                    !DownloadWorkerExecutionOwners.isOwnedBy(
+                        downloadItem.id,
+                        downloadItem.executionId,
+                    )
+            ) {
+                throw DownloadExecutionOwnershipLostException(
+                    downloadId = downloadItem.id,
+                    expectedExecutionId = downloadItem.executionId,
+                    actualExecutionId = current?.executionId,
+                )
+            }
+        }
     }
 
     private suspend fun resetYtdlpTempDirectory(
@@ -3686,14 +4194,14 @@ class DownloadWorker(
         private val hardSubDisabledFfmpegSources: MutableSet<String> = ConcurrentHashMap.newKeySet()
         private val hardSubFilterSupportCache: MutableMap<String, Set<String>> = ConcurrentHashMap()
         private val hardSubPostProcessMutex = Mutex()
-        private val runningFfmpegProcesses: MutableMap<Long, MutableSet<Process>> = ConcurrentHashMap()
+        private val runningFfmpegProcesses: MutableMap<FfmpegProcessKey, MutableSet<Process>> = ConcurrentHashMap()
         private val loadInfoJsonOptionRegex = Regex("""--load-info-json\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
         private const val FAILURE_YTDLP_TAIL_LINES = 160
         private const val FAILURE_FILE_LIST_LIMIT = 80
         private const val FAILURE_STACK_TRACE_LIMIT = 6000
 
-        private fun cancelYtdlpProcess(downloadId: Long) {
-            val processId = downloadId.toString()
+        private fun cancelYtdlpProcess(downloadId: Long, executionId: String) {
+            val processId = YtdlpProcessIdentity.download(downloadId, executionId)
             YoutubeDL.getInstance().destroyProcessById(processId)
             YoutubeDLCompat.destroyProcessById(processId)
         }
@@ -3709,8 +4217,8 @@ class DownloadWorker(
         ) {
             if (expectedExecutionId.isBlank()) return
             if (!canCancelExecutionProcess(downloadId, expectedExecutionId)) return
-            cancelYtdlpProcess(downloadId)
-            cancelPostProcessingById(downloadId)
+            cancelYtdlpProcess(downloadId, expectedExecutionId)
+            cancelPostProcessingById(downloadId, expectedExecutionId)
         }
 
         /**
@@ -3724,12 +4232,13 @@ class DownloadWorker(
             expectedExecutionId: String,
         ) {
             if (expectedExecutionId.isBlank()) return
-            cancelYtdlpProcess(downloadId)
-            cancelPostProcessingById(downloadId)
+            cancelYtdlpProcess(downloadId, expectedExecutionId)
+            cancelPostProcessingById(downloadId, expectedExecutionId)
         }
 
-        fun cancelPostProcessingById(downloadId: Long) {
-            runningFfmpegProcesses[downloadId]?.toList().orEmpty().forEach { process ->
+        fun cancelPostProcessingById(downloadId: Long, expectedExecutionId: String) {
+            val key = FfmpegProcessKey(downloadId, expectedExecutionId)
+            runningFfmpegProcesses[key]?.toList().orEmpty().forEach { process ->
                 runCatching { process.destroy() }
             }
         }
@@ -3837,6 +4346,14 @@ class DownloadWorker(
         return item.type == com.ireum.ytdl.database.enums.DownloadType.video &&
             item.videoPreferences.embedSubs &&
             HistoryRedownloadMarker.parse(item.playlistURL) != null
+    }
+
+    private fun isDurablyCommittedHistoryReplacement(
+        dbManager: DBManager,
+        downloadItem: DownloadItem,
+    ): Boolean {
+        val marker = HistoryRedownloadMarker.parse(downloadItem.playlistURL) ?: return false
+        return dbManager.historyDao.getNullableItem(marker.historyId)?.downloadId == downloadItem.id
     }
 
     private fun buildYtdlpRetryProbeText(error: Exception, recentOutput: List<String>): String {
@@ -3971,7 +4488,7 @@ class DownloadWorker(
         downloadId: Long,
     ) {
         runNonAuthoritativeNotificationSideEffect(
-            action = { notificationUtil.cancelDownloadNotification(downloadId.toInt()) },
+            action = { notificationUtil.cancelRunningDownloadNotification(downloadId.toInt()) },
             onFailure = { notificationError ->
                 Log.w(
                     TAG,
@@ -4071,6 +4588,7 @@ class DownloadWorker(
         paths: List<String>,
         removeSubsAfterBurnIn: Boolean,
         downloadItemId: Long? = null,
+        downloadExecutionId: String? = null,
         downloadLogId: Long? = null,
         selectedSubtitleLanguages: String = ""
     ): Boolean {
@@ -4151,7 +4669,12 @@ class DownloadWorker(
             }
             consumedSubtitles.add(subtitle.file.absolutePath)
             val progressTarget = if (downloadItemId != null) {
-                FfmpegProgressTarget(downloadItemId, downloadLogId, media.name)
+                FfmpegProgressTarget(
+                    downloadItemId,
+                    downloadExecutionId.orEmpty(),
+                    downloadLogId,
+                    media.name,
+                )
             } else {
                 null
             }
@@ -4657,8 +5180,14 @@ class DownloadWorker(
 
     private data class FfmpegProgressTarget(
         val downloadItemId: Long,
+        val executionId: String,
         val logItemId: Long?,
         val mediaName: String
+    )
+
+    private data class FfmpegProcessKey(
+        val downloadItemId: Long,
+        val executionId: String,
     )
 
     private fun resolveFfmpegRuntime(excludedSources: Set<String> = emptySet()): FfmpegRuntime {
@@ -4956,8 +5485,11 @@ class DownloadWorker(
     ): FfmpegExecResult {
         return runCatching {
             val process = buildFfmpegProcess(runtime, args).start()
-            val processSet = progressTarget?.downloadItemId?.let { downloadItemId ->
-                runningFfmpegProcesses.computeIfAbsent(downloadItemId) { ConcurrentHashMap.newKeySet() }
+            val processKey = progressTarget?.let {
+                FfmpegProcessKey(it.downloadItemId, it.executionId)
+            }
+            val processSet = processKey?.let { key ->
+                runningFfmpegProcesses.computeIfAbsent(key) { ConcurrentHashMap.newKeySet() }
             }
             processSet?.add(process)
             val outputBuilder = StringBuilder()
@@ -5006,8 +5538,8 @@ class DownloadWorker(
                 FfmpegExecResult(exitCode = exitCode, output = outputBuilder.toString())
             } finally {
                 processSet?.remove(process)
-                progressTarget?.downloadItemId?.let { downloadItemId ->
-                    if (processSet?.isEmpty() == true) runningFfmpegProcesses.remove(downloadItemId)
+                processKey?.let { key ->
+                    if (processSet?.isEmpty() == true) runningFfmpegProcesses.remove(key)
                 }
             }
         }.getOrElse { error ->
@@ -5589,9 +6121,9 @@ class DownloadWorker(
         trustedHistoryItem: HistoryItem? = null,
         expectedDownloadId: Long = 0L,
         expectedExecutionId: String = "",
-    ): HistoryDeletionSummary {
+    ): HistoryDeletionSummary = HistoryReferenceMutationCoordinator.withLockBlocking {
         if (paths.isEmpty()) {
-            return HistoryDeletionSummary(
+            return@withLockBlocking HistoryDeletionSummary(
                 recordsRequested = 0,
                 recordsRemoved = 0,
                 removableRecordIds = emptySet(),
@@ -5642,7 +6174,7 @@ class DownloadWorker(
                 "skipped=${result.filesSkipped} permission=${result.filesPermissionDenied} " +
                 "failed=${result.filesFailed}"
         )
-        return result
+        result
     }
 
     private fun trustedResolvedTreeTargets(
@@ -5702,34 +6234,36 @@ class DownloadWorker(
         tempFileDir: File,
         downloadLocation: String,
         keepCache: Boolean,
-        downloadItemId: Long,
+        downloadItem: DownloadItem,
         downloadLogId: Long?,
         eventBus: EventBus
     ): List<String> {
         return try {
-            val recovered = withContext(Dispatchers.IO) {
-                FileUtil.moveFile(tempFileDir, context, downloadLocation, keepCache) { progress ->
-                    eventBus.post(
-                        WorkerProgress(
-                            progress,
-                            "Retrying move to ${FileUtil.formatPath(downloadLocation)}",
-                            downloadItemId,
-                            downloadLogId
+            val recovered = withOwnedExecutionLease(downloadItem) {
+                withContext(Dispatchers.IO) {
+                    FileUtil.moveFile(tempFileDir, context, downloadLocation, keepCache) { progress ->
+                        eventBus.post(
+                            WorkerProgress(
+                                progress,
+                                "Retrying move to ${FileUtil.formatPath(downloadLocation)}",
+                                downloadItem.id,
+                                downloadLogId
+                            )
                         )
-                    )
+                    }
                 }
             }.filter { !it.matches("\\.(description)|(txt)\$".toRegex()) }
             if (recovered.isNotEmpty()) {
                 Log.w(
                     TAG,
-                    "HardSub temp move retry succeeded id=$downloadItemId recovered=${recovered.size}"
+                    "HardSub temp move retry succeeded id=${downloadItem.id} recovered=${recovered.size}"
                 )
             }
             recovered
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            Log.e(TAG, "HardSub temp move retry failed id=$downloadItemId", error)
+            Log.e(TAG, "HardSub temp move retry failed id=${downloadItem.id}", error)
             emptyList()
         }
     }

@@ -21,8 +21,13 @@ internal suspend fun persistHistoryReplacementTerminalState(
     issue: DownloadIssue,
     persistDownload: suspend () -> Unit,
     transitionLinkedDownload: suspend (String) -> Unit,
+    isCancellationRequested: (suspend () -> Boolean)? = null,
+    onLinkedTransitionFailure: (suspend (Exception) -> Unit)? = null,
 ): HistoryReplacementPersistenceResult {
     try {
+        if (isCancellationRequested?.invoke() == true) {
+            throw CancellationException("Linked low-quality cancellation was already requested")
+        }
         persistDownload()
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -34,8 +39,18 @@ internal suspend fun persistHistoryReplacementTerminalState(
         transitionLinkedDownload(issue.code.name)
     } catch (cancelled: CancellationException) {
         throw cancelled
-    } catch (_: Exception) {
-        // Keep the existing non-atomic Download/ledger boundary.
+    } catch (error: Exception) {
+        // Keep the existing non-atomic Download/ledger boundary, but create a
+        // live-process convergence debt so a durable Download Error cannot
+        // strand a nonterminal linked child until the next app restart.
+        try {
+            onLinkedTransitionFailure?.invoke(error)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // The primary Download terminal state remains authoritative even
+            // if scheduling its convergence retry also fails.
+        }
     }
     return HistoryReplacementPersistenceResult.Persisted
 }

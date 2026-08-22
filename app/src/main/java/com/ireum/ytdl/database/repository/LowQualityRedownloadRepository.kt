@@ -14,6 +14,7 @@ import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import com.ireum.ytdl.work.DownloadCancellationRegistry
+import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLeases
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 
@@ -236,6 +237,21 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         val operation = dao.getOperation(item.operationId) ?: return@withTransaction null
         if (operation.stateValue.isTerminal) return@withTransaction null
         val now = System.currentTimeMillis()
+        if (
+            operation.cancelRequested ||
+            item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED
+        ) {
+            dao.markCancelledByDownloadId(
+                downloadId = downloadId,
+                reason = REASON_USER_CANCELLED,
+                updatedAt = now,
+            )
+            finalizeIfReadyLocked(item.operationId, now)
+            return@withTransaction item.operationId
+        }
+        if (state == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
+            return@withTransaction null
+        }
         if (dao.setItemStateByDownloadId(downloadId, state.name, reason, now) != 1) {
             return@withTransaction null
         }
@@ -268,95 +284,159 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     suspend fun requestCancellation(operationId: String): List<Long> =
         dao.requestCancellationAndMarkItems(operationId, System.currentTimeMillis())
 
-    internal suspend fun completePersistedCancellation(operationId: String): List<Long> {
-        val linkedDownloadIds = database.withTransaction {
-            val operation = dao.getOperation(operationId) ?: return@withTransaction emptyList()
-            if (operation.stateValue.isTerminal || !operation.cancelRequested) {
-                return@withTransaction emptyList()
-            }
-            val now = System.currentTimeMillis()
-            val linkedDownloadIds = dao.getNonterminalDownloadIds(operationId)
-            if (linkedDownloadIds.isNotEmpty()) {
-                cancelLinkedDownloadsAndRecordOwnership(linkedDownloadIds)
-            }
-            dao.terminalizeNonterminalItems(
-                operationId,
-                LowQualityRedownloadItemState.CANCELLED.name,
-                REASON_USER_CANCELLED,
-                now
-            )
-            val downloadRepository = DownloadRepository(database)
-            linkedDownloadIds.forEach { downloadId ->
-                downloadRepository.convergeHistoryReplacementRefusalInCurrentTransaction(
-                    id = downloadId,
-                    forceError = true,
-                )
-            }
-            if (dao.getOperation(operationId)?.stateValue == LowQualityRedownloadOperationState.RUNNING) {
-                check(
-                    dao.finishOperation(
-                        operationId,
-                        LowQualityRedownloadOperationState.CANCELLED.name,
-                        REASON_USER_CANCELLED,
-                        now
-                    ) == 1
-                ) { "Low-quality cancellation lost operation ownership" }
-            }
-            linkedDownloadIds
+    suspend fun isCancellationRequestedForDownload(downloadId: Long): Boolean =
+        database.withTransaction {
+            val item = dao.getItemByDownloadId(downloadId) ?: return@withTransaction false
+            val operation = dao.getOperation(item.operationId)
+            operation?.cancelRequested == true ||
+                item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED
         }
-        return linkedDownloadIds
+
+    internal data class CancellationCommitResult(
+        val downloadIds: List<Long>,
+        val publications: List<DownloadCancellationRegistry.Publication>,
+    )
+
+    internal suspend fun completePersistedCancellation(operationId: String): List<Long> {
+        val result = completePersistedCancellationWithPublications(operationId)
+        DownloadCancellationRegistry.publish(result.publications)
+        return result.downloadIds
+    }
+
+    internal suspend fun completePersistedCancellationWithPublications(
+        operationId: String,
+    ): CancellationCommitResult {
+        val candidateIds = dao.getNonterminalDownloadIds(operationId)
+        val expectedExecutionIds = candidateIds.mapNotNull { id ->
+            database.downloadDao.getNullableDownloadById(id)
+                ?.executionId
+                ?.takeIf { it.isNotBlank() }
+                ?.let { id to it }
+        }.toMap()
+        return withDownloadWorkerExecutionSideEffectLeases(
+            expectedExecutionIds.map { it.key to it.value },
+        ) {
+            val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
+            val linkedDownloadIds = database.withTransaction {
+                val operation = dao.getOperation(operationId)
+                    ?: return@withTransaction emptyList()
+                if (operation.stateValue.isTerminal || !operation.cancelRequested) {
+                    return@withTransaction emptyList()
+                }
+                val now = System.currentTimeMillis()
+                val linkedDownloadIds = dao.getNonterminalDownloadIds(operationId)
+                if (linkedDownloadIds.isNotEmpty()) {
+                    cancelLinkedDownloadsAndCollectOwnership(
+                        linkedDownloadIds,
+                        publications,
+                        expectedExecutionIds,
+                    )
+                }
+                dao.terminalizeNonterminalItems(
+                    operationId,
+                    LowQualityRedownloadItemState.CANCELLED.name,
+                    REASON_USER_CANCELLED,
+                    now
+                )
+                val downloadRepository = DownloadRepository(database)
+                linkedDownloadIds.forEach { downloadId ->
+                    downloadRepository.convergeHistoryReplacementRefusalInCurrentTransaction(
+                        id = downloadId,
+                        forceError = true,
+                    )
+                }
+                if (dao.getOperation(operationId)?.stateValue == LowQualityRedownloadOperationState.RUNNING) {
+                    check(
+                        dao.finishOperation(
+                            operationId,
+                            LowQualityRedownloadOperationState.CANCELLED.name,
+                            REASON_USER_CANCELLED,
+                            now
+                        ) == 1
+                    ) { "Low-quality cancellation lost operation ownership" }
+                }
+                linkedDownloadIds
+            }
+            CancellationCommitResult(linkedDownloadIds, publications)
+        }
     }
 
     suspend fun failCoordinator(
         operationId: String,
         reason: String = REASON_COORDINATOR_FAILURE
     ): List<Long> {
-        val linkedDownloadIds = database.withTransaction {
-            val operation = dao.getOperation(operationId) ?: return@withTransaction emptyList()
-            if (operation.stateValue.isTerminal) return@withTransaction emptyList()
-            val now = System.currentTimeMillis()
-            val cancelledByUser = operation.cancelRequested
-            val itemState = if (cancelledByUser) {
-                LowQualityRedownloadItemState.CANCELLED
-            } else {
-                LowQualityRedownloadItemState.FAILED
-            }
-            val terminalState = if (cancelledByUser) {
-                LowQualityRedownloadOperationState.CANCELLED
-            } else {
-                LowQualityRedownloadOperationState.FAILED
-            }
-            val terminalReason = if (cancelledByUser) REASON_USER_CANCELLED else reason
-            val linkedDownloadIds = dao.getNonterminalDownloadIds(operationId)
-            if (linkedDownloadIds.isNotEmpty()) {
-                cancelLinkedDownloadsAndRecordOwnership(linkedDownloadIds)
-            }
-            dao.terminalizeNonterminalItems(
-                operationId,
-                itemState.name,
-                terminalReason,
-                now
-            )
-            val downloadRepository = DownloadRepository(database)
-            linkedDownloadIds.forEach { downloadId ->
-                downloadRepository.convergeHistoryReplacementRefusalInCurrentTransaction(
-                    id = downloadId,
-                    forceError = true,
+        val result = failCoordinatorWithPublications(operationId, reason)
+        DownloadCancellationRegistry.publish(result.publications)
+        return result.downloadIds
+    }
+
+    internal suspend fun failCoordinatorWithPublications(
+        operationId: String,
+        reason: String = REASON_COORDINATOR_FAILURE,
+    ): CancellationCommitResult {
+        val candidateIds = dao.getNonterminalDownloadIds(operationId)
+        val expectedExecutionIds = candidateIds.mapNotNull { id ->
+            database.downloadDao.getNullableDownloadById(id)
+                ?.executionId
+                ?.takeIf { it.isNotBlank() }
+                ?.let { id to it }
+        }.toMap()
+        return withDownloadWorkerExecutionSideEffectLeases(
+            expectedExecutionIds.map { it.key to it.value },
+        ) {
+            val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
+            val linkedDownloadIds = database.withTransaction {
+                val operation = dao.getOperation(operationId)
+                    ?: return@withTransaction emptyList()
+                if (operation.stateValue.isTerminal) return@withTransaction emptyList()
+                val now = System.currentTimeMillis()
+                val cancelledByUser = operation.cancelRequested
+                val itemState = if (cancelledByUser) {
+                    LowQualityRedownloadItemState.CANCELLED
+                } else {
+                    LowQualityRedownloadItemState.FAILED
+                }
+                val terminalState = if (cancelledByUser) {
+                    LowQualityRedownloadOperationState.CANCELLED
+                } else {
+                    LowQualityRedownloadOperationState.FAILED
+                }
+                val terminalReason = if (cancelledByUser) REASON_USER_CANCELLED else reason
+                val linkedDownloadIds = dao.getNonterminalDownloadIds(operationId)
+                if (linkedDownloadIds.isNotEmpty()) {
+                    cancelLinkedDownloadsAndCollectOwnership(
+                        linkedDownloadIds,
+                        publications,
+                        expectedExecutionIds,
+                    )
+                }
+                dao.terminalizeNonterminalItems(
+                    operationId,
+                    itemState.name,
+                    terminalReason,
+                    now
                 )
+                val downloadRepository = DownloadRepository(database)
+                linkedDownloadIds.forEach { downloadId ->
+                    downloadRepository.convergeHistoryReplacementRefusalInCurrentTransaction(
+                        id = downloadId,
+                        forceError = true,
+                    )
+                }
+                if (dao.getOperation(operationId)?.stateValue == LowQualityRedownloadOperationState.RUNNING) {
+                    check(
+                        dao.finishOperation(
+                            operationId,
+                            terminalState.name,
+                            terminalReason,
+                            now
+                        ) == 1
+                    ) { "Low-quality coordinator failure lost operation ownership" }
+                }
+                linkedDownloadIds
             }
-            if (dao.getOperation(operationId)?.stateValue == LowQualityRedownloadOperationState.RUNNING) {
-                check(
-                    dao.finishOperation(
-                        operationId,
-                        terminalState.name,
-                        terminalReason,
-                        now
-                    ) == 1
-                ) { "Low-quality coordinator failure lost operation ownership" }
-            }
-            linkedDownloadIds
+            CancellationCommitResult(linkedDownloadIds, publications)
         }
-        return linkedDownloadIds
     }
 
     /**
@@ -364,21 +444,37 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
      * execution token is captured from the same Room transaction that changes
      * the row to Cancelled, before callers destroy the native process.
      */
-    private suspend fun cancelLinkedDownloadsAndRecordOwnership(ids: List<Long>) {
-        val linked = database.downloadDao.getDownloadsByIdsSuspend(ids)
-        database.downloadDao.cancelLinkedDownloads(ids)
-        linked.forEach { item ->
+    private suspend fun cancelLinkedDownloadsAndCollectOwnership(
+        ids: List<Long>,
+        publications: MutableList<DownloadCancellationRegistry.Publication>,
+        expectedExecutionIds: Map<Long, String> = emptyMap(),
+    ) {
+        ids.forEach { id ->
+            val item = database.downloadDao.getNullableDownloadById(id) ?: return@forEach
+            val expectedExecutionId = expectedExecutionIds[id]
             if (
+                item.executionId.isNotBlank() &&
+                expectedExecutionId != item.executionId
+            ) {
+                return@forEach
+            }
+            val changed = if (item.executionId.isBlank()) {
+                database.downloadDao.cancelByUser(item.id)
+            } else {
+                database.downloadDao.cancelIfExecutionOwned(item.id, item.executionId)
+            }
+            if (
+                changed == 1 &&
                 item.executionId.isNotBlank() &&
                 item.status in setOf(
                     DownloadRepository.Status.Active.name,
                     DownloadRepository.Status.PostProcessing.name,
                 )
             ) {
-                DownloadCancellationRegistry.record(
-                    item.id,
-                    item.executionId,
-                    DownloadCancellationRegistry.Reason.CANCELLED,
+                publications += DownloadCancellationRegistry.Publication(
+                    downloadId = item.id,
+                    executionId = item.executionId,
+                    reason = DownloadCancellationRegistry.Reason.CANCELLED,
                 )
             }
         }
@@ -386,9 +482,8 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
 
     suspend fun markLinkedCancelled(operationId: String, downloadIds: List<Long>) {
         downloadIds.forEach { id ->
-            dao.setItemStateByDownloadId(
+            dao.markCancelledByDownloadId(
                 id,
-                LowQualityRedownloadItemState.CANCELLED.name,
                 REASON_USER_CANCELLED,
                 System.currentTimeMillis()
             )
@@ -424,20 +519,25 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                 // A process death or coordinator reconciliation commits an
                 // unresolved delete-for-Undo token rather than inventing a
                 // generic failure for the missing, intentionally hidden row.
-                dao.setItemStateByDownloadId(
+                dao.markCancelledByDownloadId(
                     id,
-                    LowQualityRedownloadItemState.CANCELLED.name,
                     DownloadRepository.REASON_USER_REMOVED,
                     now,
                 )
                 return@forEach
             }
-            val terminalState = LowQualityRedownloadLinkedDownloadPolicy.reconciledState(
-                currentState = item.stateValue,
-                downloadStatus = download?.status,
-            )
+            val operation = dao.getOperation(item.operationId)
+            val terminalState = if (operation?.cancelRequested == true) {
+                LowQualityRedownloadItemState.CANCELLED
+            } else {
+                LowQualityRedownloadLinkedDownloadPolicy.reconciledState(
+                    currentState = item.stateValue,
+                    downloadStatus = download?.status,
+                )
+            }
             if (terminalState != null) {
                 val reason = when {
+                    operation?.cancelRequested == true -> REASON_USER_CANCELLED
                     download == null -> REASON_MISSING_DOWNLOAD
                     terminalState == LowQualityRedownloadItemState.SKIPPED ->
                         DownloadRepository.REASON_SAVED_FOR_LATER
@@ -448,12 +548,14 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                         ) -> REASON_USER_CANCELLED
                     else -> ""
                 }
-                dao.setItemStateByDownloadId(
-                    id,
-                    terminalState.name,
-                    reason,
-                    now
-                )
+                val changed = if (terminalState == LowQualityRedownloadItemState.CANCELLED) {
+                    dao.markCancelledByDownloadId(id, reason, now)
+                } else {
+                    dao.setItemStateByDownloadId(id, terminalState.name, reason, now)
+                }
+                if (changed == 0 && item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
+                    dao.markCancelledByDownloadId(id, REASON_USER_CANCELLED, now)
+                }
             }
         }
         finalizeIfReadyLocked(operationId, now)
@@ -473,6 +575,37 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         database.withTransaction {
             finalizeIfReadyLocked(operationId, System.currentTimeMillis())
         }
+
+    /**
+     * Re-derives one linked child from durable Download/operation state.  This
+     * is the same convergence rule used by startup reconciliation, exposed for
+     * the live-process recovery debt created when the Download terminal write
+     * commits but the independent ledger write fails.
+     */
+    suspend fun reconcileDownload(downloadId: Long): String? = database.withTransaction {
+        val item = dao.getItemByDownloadId(downloadId) ?: return@withTransaction null
+        val operation = dao.getOperation(item.operationId) ?: return@withTransaction null
+        val download = database.downloadDao.getNullableDownloadById(downloadId)
+        val now = System.currentTimeMillis()
+        if (operation.cancelRequested || item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
+            dao.markCancelledByDownloadId(downloadId, REASON_USER_CANCELLED, now)
+        } else if (operation.stateValue.isTerminal && item.stateValue.isTerminal) {
+            return@withTransaction item.operationId
+        } else {
+            LowQualityRedownloadLinkedDownloadPolicy.reconciledState(
+                currentState = item.stateValue,
+                downloadStatus = download?.status,
+            )?.let { state ->
+                if (state == LowQualityRedownloadItemState.CANCELLED) {
+                    dao.markCancelledByDownloadId(downloadId, REASON_USER_CANCELLED, now)
+                } else {
+                    dao.setItemStateByDownloadId(downloadId, state.name, "", now)
+                }
+            }
+        }
+        finalizeIfReadyLocked(item.operationId, now)
+        item.operationId
+    }
 
     private suspend fun finalizeIfReadyLocked(
         operationId: String,

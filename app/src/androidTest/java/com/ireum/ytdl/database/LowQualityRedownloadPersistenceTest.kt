@@ -378,8 +378,8 @@ class LowQualityRedownloadPersistenceTest {
             ),
         )
 
-        val restoredId = downloadRepository.restoreUndo(undoHandle.token)!!
-        assertEquals(DownloadRepository.Status.Queued.name, database.downloadDao.getDownloadById(restoredId).status)
+        assertNull(downloadRepository.restoreUndo(undoHandle.token))
+        assertNull(database.downloadDao.getNullableDownloadById(linkedId))
         assertEquals(
             LowQualityRedownloadItemState.CANCELLED,
             repository.getItems(operation.operationId).single().stateValue,
@@ -387,6 +387,27 @@ class LowQualityRedownloadPersistenceTest {
         val currentOperation = repository.getOperation(operation.operationId)!!
         assertEquals(LowQualityRedownloadOperationState.CANCELLED, currentOperation.stateValue)
         assertEquals("independent-cancel", currentOperation.terminalReason)
+    }
+
+    @Test
+    fun ordinaryUndoDoesNotReopenWhenParentCancellationWasRequested() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 312, DownloadRepository.Status.Queued)
+        val downloadRepository = DownloadRepository(database)
+        val undoHandle = downloadRepository.deleteForUndo(linkedId)!!
+
+        assertEquals(
+            1,
+            database.lowQualityRedownloadDao.requestCancellation(operation.operationId, 101L),
+        )
+
+        assertNull(downloadRepository.restoreUndo(undoHandle.token))
+        assertNull(database.downloadDao.getNullableDownloadById(linkedId))
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertTrue(repository.getOperation(operation.operationId)!!.cancelRequested)
     }
 
     @Test
@@ -458,6 +479,95 @@ class LowQualityRedownloadPersistenceTest {
         val child = repository.getItems(operation.operationId).single()
         assertEquals(LowQualityRedownloadItemState.CANCELLED, child.stateValue)
         assertEquals(DownloadRepository.REASON_USER_REMOVED, child.reasonCode)
+    }
+
+    @Test
+    fun disposingTheUndoOwnerReleasesItsLiveTokenForConvergence() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 315, DownloadRepository.Status.Error)
+        val downloadRepository = DownloadRepository(database)
+        downloadRepository.deleteForUndo(linkedId)!!
+
+        // Simulate the activity/ViewModel owner disappearing while the app
+        // process remains alive.  The process-level snapshot owner commits the
+        // exact pending token instead of leaving reconciliation blocked forever.
+        downloadRepository.abandonPendingUndoSnapshots()
+        LowQualityRedownloadRepository(database).reconcileLinkedDownloads(operation.operationId)
+
+        val child = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.CANCELLED, child.stateValue)
+        assertEquals(DownloadRepository.REASON_USER_REMOVED, child.reasonCode)
+        assertEquals(LowQualityRedownloadOperationState.CANCELLED, repository.getOperation(operation.operationId)?.stateValue)
+    }
+
+    @Test
+    fun cancellationRequestedChildCannotBeOverwrittenByLateWorkerFailure() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 316, DownloadRepository.Status.Active, "cancel-race")
+
+        assertEquals(1, repository.requestCancellation(operation.operationId).size)
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        // A stale E1 callback arrives after phase one.  It must converge the
+        // revocation to cancellation rather than write FAILED.
+        assertEquals(
+            operation.operationId,
+            repository.markDownloadState(
+                linkedId,
+                LowQualityRedownloadItemState.FAILED,
+                "LATE_FAILURE",
+                expectedExecutionId = "cancel-race",
+            ),
+        )
+        val child = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.CANCELLED, child.stateValue)
+        assertEquals(LowQualityRedownloadRepository.REASON_USER_CANCELLED, child.reasonCode)
+        assertEquals(LowQualityRedownloadOperationState.CANCELLED, repository.getOperation(operation.operationId)?.stateValue)
+    }
+
+    @Test
+    fun durableDownloadErrorCanReconcileLinkedLedgerWithoutRestart() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 317, DownloadRepository.Status.Error)
+
+        val affectedOperation = repository.reconcileDownload(linkedId)
+        assertEquals(operation.operationId, affectedOperation)
+        assertEquals(LowQualityRedownloadItemState.FAILED, repository.getItems(operation.operationId).single().stateValue)
+        assertEquals(LowQualityRedownloadOperationState.FAILED, repository.getOperation(operation.operationId)?.stateValue)
+
+        // Reconciliation is idempotent once the durable child is terminal.
+        repository.reconcileDownload(linkedId)
+        assertEquals(LowQualityRedownloadItemState.FAILED, repository.getItems(operation.operationId).single().stateValue)
+        assertEquals(LowQualityRedownloadOperationState.FAILED, repository.getOperation(operation.operationId)?.stateValue)
+    }
+
+    @Test
+    fun bulkErrorDeletionConvergesLinkedLedgerAndReturnsOperationIds() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 318, DownloadRepository.Status.Error)
+        database.historyReplacementBarrierDao.insertIfAbsent(
+            HistoryReplacementBarrier(
+                downloadId = linkedId,
+                operationId = operation.operationId,
+                historyId = 318,
+                expectedSourceUrl = "https://example.com/318",
+                expectedType = DownloadType.video.name,
+                issueCode = DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name,
+                issueStage = "HISTORY",
+                createdAt = 1L,
+            )
+        )
+
+        assertEquals(setOf(operation.operationId), DownloadRepository(database).deleteErrored())
+        assertNull(database.downloadDao.getNullableDownloadById(linkedId))
+        assertNull(database.historyReplacementBarrierDao.getByDownloadId(linkedId))
+        val child = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.CANCELLED, child.stateValue)
+        assertEquals(DownloadRepository.REASON_USER_REMOVED, child.reasonCode)
+        assertEquals(LowQualityRedownloadOperationState.CANCELLED, repository.getOperation(operation.operationId)?.stateValue)
     }
 
     @Test
@@ -1517,6 +1627,47 @@ class LowQualityRedownloadPersistenceTest {
         val persisted = database.downloadDao.getDownloadById(id)
         assertEquals(DownloadRepository.Status.Queued.name, persisted.status)
         assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED.name, persisted.lastIssueCode)
+    }
+
+    @Test
+    fun cancelRequestedQualityReplacementCannotBeQueuedOrClaimed() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 313, DownloadRepository.Status.Queued)
+
+        assertEquals(1, database.lowQualityRedownloadDao.requestCancellation(operation.operationId, 101L))
+        assertTrue(database.downloadDao.getQueuedDownloadsList().none { it.id == linkedId })
+        assertEquals(0, database.downloadDao.reQueueDownloadItems(listOf(linkedId)))
+        assertEquals(
+            0,
+            database.downloadDao.claimDownloadForWorker(
+                id = linkedId,
+                expectedOperationId = "download-operation",
+                expectedRetryAttempt = 0,
+                executionId = "cancel-requested-worker",
+            ),
+        )
+
+        val childOperation = repository.createOrReconnect(now = 200)
+        val childPendingId = linkDownload(childOperation.operationId, 314, DownloadRepository.Status.Queued)
+        assertEquals(
+            1,
+            database.lowQualityRedownloadDao.markPendingUserCancellation(
+                downloadId = childPendingId,
+                token = "PENDING_USER_CANCEL:314",
+                updatedAt = 201L,
+            ),
+        )
+        assertTrue(database.downloadDao.getQueuedDownloadsList().none { it.id == childPendingId })
+        assertEquals(0, database.downloadDao.reQueueDownloadItems(listOf(childPendingId)))
+        assertEquals(
+            0,
+            database.downloadDao.claimDownloadForWorker(
+                id = childPendingId,
+                expectedOperationId = "download-operation",
+                expectedRetryAttempt = 0,
+                executionId = "child-cancel-requested-worker",
+            ),
+        )
     }
 
     private suspend fun linkDownload(

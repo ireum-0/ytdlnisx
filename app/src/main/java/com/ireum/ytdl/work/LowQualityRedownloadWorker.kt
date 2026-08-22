@@ -29,8 +29,6 @@ import com.ireum.ytdl.util.LowQualityRedownloadNotification
 import com.ireum.ytdl.util.MediaPublishedDateSource
 import com.ireum.ytdl.util.VideoQualityPolicy
 import com.ireum.ytdl.util.WebUrlInput
-import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
-import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -81,10 +79,20 @@ class LowQualityRedownloadWorker(
             if (runAttemptCount < MAX_COORDINATOR_ATTEMPTS - 1) {
                 Result.retry()
             } else {
-                repository.failCoordinator(operationId).forEach { downloadId ->
-                    runCatching { YoutubeDL.getInstance().destroyProcessById(downloadId.toString()) }
-                    runCatching { YoutubeDLCompat.destroyProcessById(downloadId.toString()) }
-                    DownloadWorker.cancelPostProcessingById(downloadId)
+                val result = repository.failCoordinatorWithPublications(operationId)
+                DownloadCancellationRegistry.publish(result.publications)
+                result.publications.forEach { publication ->
+                    withDownloadWorkerExecutionSideEffectLease(
+                        publication.downloadId,
+                        publication.executionId,
+                    ) {
+                        withDownloadWorkerExecutionLock {
+                            DownloadWorker.cancelProcessesForExecution(
+                                publication.downloadId,
+                                publication.executionId,
+                            )
+                        }
+                    }
                 }
                 repository.progress(operationId)?.let { notification.update(it) }
                 Result.failure()

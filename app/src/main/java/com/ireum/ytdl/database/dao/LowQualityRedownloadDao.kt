@@ -190,7 +190,7 @@ interface LowQualityRedownloadDao {
     @Query(
         "UPDATE low_quality_redownload_items SET itemState = :state, reasonCode = :reason, updatedAt = :updatedAt " +
             "WHERE downloadId = :downloadId " +
-            "AND itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED')"
+            "AND itemState IN ('PROVISIONAL','PENDING','CHECKING','QUEUED','ACTIVE','WAITING')"
     )
     suspend fun setItemStateByDownloadId(
         downloadId: Long,
@@ -200,12 +200,36 @@ interface LowQualityRedownloadDao {
     ): Int
 
     @Query(
+        "UPDATE low_quality_redownload_items SET itemState = 'CANCELLED', " +
+            "reasonCode = :reason, updatedAt = :updatedAt WHERE downloadId = :downloadId " +
+            "AND itemState IN ('PROVISIONAL','PENDING','CHECKING','QUEUED','ACTIVE','WAITING','CANCELLATION_REQUESTED')"
+    )
+    suspend fun markCancelledByDownloadId(
+        downloadId: Long,
+        reason: String,
+        updatedAt: Long,
+    ): Int
+
+    @Query(
         "UPDATE low_quality_redownload_items SET itemState = :state, reasonCode = :reason, " +
             "updatedAt = :updatedAt WHERE downloadId = :downloadId AND itemState != 'SUCCEEDED'"
     )
     suspend fun setHistoryReplacementRefusalItemState(
         downloadId: Long,
         state: String,
+        reason: String,
+        updatedAt: Long,
+    ): Int
+
+    @Query(
+        "UPDATE low_quality_redownload_items SET itemState = 'SUCCEEDED', " +
+            "reasonCode = :reason, updatedAt = :updatedAt " +
+            "WHERE downloadId = :downloadId AND operationId = :operationId " +
+            "AND itemState IN ('QUEUED','ACTIVE','WAITING')"
+    )
+    suspend fun markHistoryReplacementCommitted(
+        downloadId: Long,
+        operationId: String,
         reason: String,
         updatedAt: Long,
     ): Int

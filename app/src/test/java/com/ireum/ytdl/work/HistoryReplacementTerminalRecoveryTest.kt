@@ -120,20 +120,40 @@ class HistoryReplacementTerminalRecoveryTest {
     }
 
     @Test
+    fun durableCancellationRequestPreventsGenericTerminalWrite() {
+        val issue = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
+        var persisted = false
+
+        assertCancellation {
+            persistHistoryReplacementTerminalState(
+                issue = issue,
+                persistDownload = { persisted = true },
+                transitionLinkedDownload = { error("linked transition must not run") },
+                isCancellationRequested = { true },
+            )
+        }
+
+        assertFalse(persisted)
+    }
+
+    @Test
     fun ledgerFailureDoesNotEraseDurableMismatchWrite() {
         val issue = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.TYPE)
         var downloadStatus = "Active"
+        var convergenceRequested = false
 
         val result = runBlocking {
             persistHistoryReplacementTerminalState(
                 issue = issue,
                 persistDownload = { downloadStatus = "Error" },
                 transitionLinkedDownload = { throw IOException("ledger unavailable") },
+                onLinkedTransitionFailure = { convergenceRequested = true },
             )
         }
 
         assertEquals(HistoryReplacementPersistenceResult.Persisted, result)
         assertEquals("Error", downloadStatus)
+        assertTrue(convergenceRequested)
     }
 
     @Test

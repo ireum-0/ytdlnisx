@@ -125,6 +125,9 @@ class DownloadQueueMainFragment : Fragment(){
             viewPager2.postDelayed( {
                 viewPager2.setCurrentItem(4, false)
                 val reconfigureID = arguments?.getLong("reconfigure")
+                val reconfigureOperationId = arguments?.getString("reconfigureOperationId")
+                val reconfigureRetryAttempt = arguments?.getInt("reconfigureRetryAttempt", -1)
+                    ?.takeIf { it >= 0 }
                 reconfigureID?.apply {
                     notificationUtil.cancelErroredNotification(this.toInt())
                     lifecycleScope.launch {
@@ -132,12 +135,17 @@ class DownloadQueueMainFragment : Fragment(){
                             val item = withContext(Dispatchers.IO){
                                 downloadViewModel.getItemByID(reconfigureID)
                             }
-                            findNavController().navigate(R.id.downloadBottomSheetDialog, bundleOf(
-                                Pair("downloadItem", item),
-                                Pair("result", downloadViewModel.createResultItemFromDownload(item)),
-                                Pair("type", item.type)
-                            )
-                            )
+                            val capabilityStillMatches =
+                                (reconfigureOperationId != null && item.operationId != reconfigureOperationId) ||
+                                (reconfigureRetryAttempt != null && item.retryAttempt != reconfigureRetryAttempt) ||
+                                item.status != com.ireum.ytdl.database.repository.DownloadRepository.Status.Error.name
+                            if (!capabilityStillMatches) {
+                                findNavController().navigate(R.id.downloadBottomSheetDialog, bundleOf(
+                                    Pair("downloadItem", item),
+                                    Pair("result", downloadViewModel.createResultItemFromDownload(item)),
+                                    Pair("type", item.type)
+                                ))
+                            }
                         }
                     }
 

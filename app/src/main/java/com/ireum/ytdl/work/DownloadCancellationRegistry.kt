@@ -15,11 +15,23 @@ internal object DownloadCancellationRegistry {
         CANCELLED,
     }
 
+    data class Publication(
+        val downloadId: Long,
+        val executionId: String,
+        val reason: Reason,
+    )
+
     private val requests = ConcurrentHashMap<String, Reason>()
 
     fun record(downloadId: Long, executionId: String, reason: Reason) {
         if (executionId.isNotBlank()) {
             requests[key(downloadId, executionId)] = reason
+        }
+    }
+
+    fun publish(publications: Iterable<Publication>) {
+        publications.forEach { publication ->
+            record(publication.downloadId, publication.executionId, publication.reason)
         }
     }
 

@@ -42,6 +42,7 @@ import com.ireum.ytdl.util.storage.HistoryDeletionPolicy
 import com.ireum.ytdl.util.storage.HistoryDeletionSummary
 import com.ireum.ytdl.util.storage.HistoryDeletionValidation
 import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
+import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.referencesSameFile
 import kotlinx.coroutines.Dispatchers
@@ -1746,30 +1747,32 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         validation: HistoryDeletionValidation
     ): HistoryDeletionSummary {
         return withContext(Dispatchers.IO) {
-            fun currentStoredTargets(): Map<Long, List<String>> {
-                return repository.getDeletionReferenceRecordsByIds(
-                    validation.records.map(HistoryDeletionRecord::id)
-                ).associate { item -> item.id to item.downloadPath }
-            }
+            HistoryReferenceMutationCoordinator.withLock {
+                fun currentStoredTargets(): Map<Long, List<String>> {
+                    return repository.getDeletionReferenceRecordsByIds(
+                        validation.records.map(HistoryDeletionRecord::id)
+                    ).associate { item -> item.id to item.downloadPath }
+                }
 
-            val selectedIds = validation.records.mapTo(hashSetOf(), HistoryDeletionRecord::id)
-            val engine = historyFileDeletionEngine()
-            val currentValidation = engine.excludeTargetsReferencedBy(
-                validation = validation.revalidateRecordSnapshots(currentStoredTargets()),
-                retainedStoredTargets = retainedStoredTargets(selectedIds)
-            )
-            val result = engine.execute(currentValidation)
-            val unchangedAfterDeletion = currentValidation
-                .revalidateRecordSnapshots(currentStoredTargets())
-                .recordTargetKeys
-                .keys
-            val removableRecordIds = result.removableRecordIds.intersect(unchangedAfterDeletion)
-            repository.deleteRecords(removableRecordIds.toList())
-            invalidateCachedIds(triggerRefresh = true)
-            result.copy(
-                recordsRemoved = removableRecordIds.size,
-                removableRecordIds = removableRecordIds
-            )
+                val selectedIds = validation.records.mapTo(hashSetOf(), HistoryDeletionRecord::id)
+                val engine = historyFileDeletionEngine()
+                val currentValidation = engine.excludeTargetsReferencedBy(
+                    validation = validation.revalidateRecordSnapshots(currentStoredTargets()),
+                    retainedStoredTargets = retainedStoredTargets(selectedIds)
+                )
+                val result = engine.execute(currentValidation)
+                val unchangedAfterDeletion = currentValidation
+                    .revalidateRecordSnapshots(currentStoredTargets())
+                    .recordTargetKeys
+                    .keys
+                val removableRecordIds = result.removableRecordIds.intersect(unchangedAfterDeletion)
+                repository.deleteRecordsWithinReferenceMutation(removableRecordIds.toList())
+                invalidateCachedIds(triggerRefresh = true)
+                result.copy(
+                    recordsRemoved = removableRecordIds.size,
+                    removableRecordIds = removableRecordIds
+                )
+            }
         }
     }
 

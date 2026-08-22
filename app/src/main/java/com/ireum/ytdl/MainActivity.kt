@@ -508,6 +508,15 @@ class MainActivity : BaseActivity() {
                             bundle.putLong("reconfigure", this)
                         }
                     }
+                    intent.getStringExtra("reconfigureOperationId")?.let {
+                        bundle.putString("reconfigureOperationId", it)
+                    }
+                    if (intent.hasExtra("reconfigureRetryAttempt")) {
+                        bundle.putInt(
+                            "reconfigureRetryAttempt",
+                            intent.getIntExtra("reconfigureRetryAttempt", -1),
+                        )
+                    }
                     navController.navigate(R.id.downloadQueueMainFragment, bundle)
                 }
                 "Search" -> {

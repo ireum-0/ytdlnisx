@@ -1205,25 +1205,19 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                     if (processingItemsCount > 0){
                         val snackbar = Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
                             .setAction(getString(R.string.undo)) {
-                                lifecycleScope.launch(Dispatchers.IO) {
-                                    processingItemsCount++
-                                    downloadViewModel.restoreDownloadUndo(undoHandle)
-                                }
+                                processingItemsCount++
+                                downloadViewModel.restoreDownloadUndoFromUi(undoHandle)
                             }
                         snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
                             override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
                                 if (event != DISMISS_EVENT_ACTION) {
-                                    lifecycleScope.launch(Dispatchers.IO) {
-                                        downloadViewModel.commitDownloadUndo(undoHandle)
-                                    }
+                                    downloadViewModel.commitDownloadUndoFromUi(undoHandle)
                                 }
                             }
                         })
                         snackbar.show()
                     }else{
-                        withContext(Dispatchers.IO) {
-                            downloadViewModel.commitDownloadUndo(undoHandle)
-                        }
+                        downloadViewModel.commitDownloadUndoFromUi(undoHandle)
                         dismiss()
                     }
 
@@ -1286,25 +1280,19 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                             if (processingItemsCount > 0) {
                                 val snackbar = Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
                                     .setAction(getString(R.string.undo)) {
-                                        lifecycleScope.launch(Dispatchers.IO) {
-                                            processingItemsCount++
-                                            downloadViewModel.restoreDownloadUndo(undoHandle)
-                                        }
+                                        processingItemsCount++
+                                        downloadViewModel.restoreDownloadUndoFromUi(undoHandle)
                                     }
                                 snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
                                     override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
                                         if (event != DISMISS_EVENT_ACTION) {
-                                            lifecycleScope.launch(Dispatchers.IO) {
-                                                downloadViewModel.commitDownloadUndo(undoHandle)
-                                            }
+                                                downloadViewModel.commitDownloadUndoFromUi(undoHandle)
                                         }
                                     }
                                 })
                                 snackbar.show()
                             }else{
-                                withContext(Dispatchers.IO) {
-                                    downloadViewModel.commitDownloadUndo(undoHandle)
-                                }
+                                downloadViewModel.commitDownloadUndoFromUi(undoHandle)
                                 dismiss()
                             }
                         }

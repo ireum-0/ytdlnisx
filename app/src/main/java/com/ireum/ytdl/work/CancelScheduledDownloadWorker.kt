@@ -43,34 +43,52 @@ class CancelScheduledDownloadWorker(
                     ) {
                         return@forEach
                     }
-                    if (current.executionId.isNotBlank()) {
-                        DownloadWorker.cancelProcessesForExecution(
-                            current.id,
-                            current.executionId,
-                        )
-                    }
-                    val hasHistoryRefusal =
-                        HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(
-                            current.lastIssueCode
-                        ) || dbManager.historyReplacementBarrierDao.getByDownloadId(current.id) != null
-                    if (hasHistoryRefusal) {
-                        check(
-                            repository.convergeHistoryReplacementRefusal(
-                                id = current.id,
-                                expectedExecutionId = current.executionId,
-                                forceError = true,
-                            ).downloadUpdated
-                        ) {
-                            "History refusal could not converge for download ${current.id}"
+                    suspend fun cancelAndRequeue(latest: com.ireum.ytdl.database.models.DownloadItem) {
+                        if (latest.executionId.isNotBlank()) {
+                            DownloadWorker.cancelProcessesForExecution(
+                                latest.id,
+                                latest.executionId,
+                            )
                         }
-                    } else if (current.executionId.isNotBlank()) {
-                        dao.requeueActiveDownload(current.id, current.executionId)
+                        val hasHistoryRefusal =
+                            HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(
+                                latest.lastIssueCode
+                            ) || dbManager.historyReplacementBarrierDao.getByDownloadId(latest.id) != null
+                        if (hasHistoryRefusal) {
+                            check(
+                                repository.convergeHistoryReplacementRefusal(
+                                    id = latest.id,
+                                    expectedExecutionId = latest.executionId,
+                                    forceError = true,
+                                ).downloadUpdated
+                            ) {
+                                "History refusal could not converge for download ${latest.id}"
+                            }
+                        } else if (latest.executionId.isNotBlank()) {
+                            dao.requeueActiveDownload(latest.id, latest.executionId)
+                        } else {
+                            dao.setStatusMultipleFromStatus(
+                                listOf(latest.id),
+                                latest.status,
+                                DownloadRepository.Status.Queued.toString(),
+                            )
+                        }
+                    }
+                    if (current.executionId.isNotBlank()) {
+                        withDownloadWorkerExecutionSideEffectLease(current.id, current.executionId) {
+                            val latest = dao.getNullableDownloadById(current.id)
+                            if (
+                                latest?.executionId == current.executionId &&
+                                latest.status in setOf(
+                                    DownloadRepository.Status.Active.name,
+                                    DownloadRepository.Status.PostProcessing.name,
+                                )
+                            ) {
+                                cancelAndRequeue(latest)
+                            }
+                        }
                     } else {
-                        dao.setStatusMultipleFromStatus(
-                            listOf(current.id),
-                            current.status,
-                            DownloadRepository.Status.Queued.toString(),
-                        )
+                        cancelAndRequeue(current)
                     }
                 }
             }

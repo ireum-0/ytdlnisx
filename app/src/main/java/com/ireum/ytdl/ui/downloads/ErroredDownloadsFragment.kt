@@ -452,16 +452,12 @@ class ErroredDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickL
                             val deletedItem = undoHandle.item
                             val snackbar = Snackbar.make(erroredRecyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title.ifEmpty { deletedItem.url }, Snackbar.LENGTH_INDEFINITE)
                                 .setAction(getString(R.string.undo)) {
-                                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-                                        downloadViewModel.restoreDownloadUndo(undoHandle)
-                                    }
+                                    downloadViewModel.restoreDownloadUndoFromUi(undoHandle)
                                 }
                             snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
                                 override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
                                     if (event != DISMISS_EVENT_ACTION) {
-                                        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-                                            downloadViewModel.commitDownloadUndo(undoHandle)
-                                        }
+                                        downloadViewModel.commitDownloadUndoFromUi(undoHandle)
                                     }
                                 }
                             })

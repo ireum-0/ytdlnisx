@@ -10,7 +10,9 @@ import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
+import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityReplacementAuthority
+import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssue
 import kotlinx.coroutines.CancellationException
@@ -107,6 +109,10 @@ sealed interface HistoryReplacementOutcome {
  * transaction as a materialized compatibility projection for existing readers.
  */
 class HistoryKeywordAssignmentRepository(private val db: DBManager) {
+    private companion object {
+        const val HISTORY_REPLACEMENT_COMMITTED_REASON = "HISTORY_REPLACEMENT_COMMITTED"
+    }
+
     private val dao = db.automaticKeywordRuleDao
 
     suspend fun initializeManualAssignments(historyItemId: Long, keywords: String) {
@@ -294,7 +300,8 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
     suspend fun insertHistory(item: HistoryItem): Long {
         val manualKeywords = AutomaticKeywordNormalizer.parseKeywords(item.keywords)
         val videoKey = AutomaticKeywordNormalizer.videoKey(item.url)
-        return db.withTransaction {
+        return HistoryReferenceMutationCoordinator.withLock {
+            db.withTransaction {
             val id = db.historyDao.insertAndGetIdRaw(item.copy(keywords = ""))
             replaceSourceKeywordsInTransaction(
                 id,
@@ -313,6 +320,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 }
             }
             id
+            }
         }
     }
 
@@ -329,7 +337,8 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         assignmentSnapshot: List<HistoryKeywordAssignment>
     ): Long {
         require(item.id > 0)
-        return db.withTransaction {
+        return HistoryReferenceMutationCoordinator.withLock {
+            db.withTransaction {
             db.historyDao.insertRaw(item.copy(keywords = ""))
             val existingRuleIds = assignmentSnapshot.asSequence()
                 .filter { it.sourceType == HistoryKeywordAssignmentSources.RULE }
@@ -350,6 +359,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             }
             materializeInTransaction(item.id)
             item.id
+            }
         }
     }
 
@@ -459,7 +469,8 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         replacementFactory: (HistoryItem) -> HistoryItem,
     ): HistoryReplacementOutcome {
         require(historyId > 0L)
-        return db.withTransaction {
+        return HistoryReferenceMutationCoordinator.withLock {
+            db.withTransaction {
             val outcome = when (
                 val authorization = authorizeHistoryReplacementInTransaction(
                     historyId = historyId,
@@ -493,6 +504,9 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                         if (db.historyDao.updateRaw(replacement) != 1) {
                             HistoryReplacementOutcome.TargetMissing
                         } else {
+                            markQualityReplacementCommittedInTransaction(
+                                replacementDownloadId = replacementDownloadId,
+                            )
                             if (legacyManual.isNotEmpty()) {
                                 replaceSourceKeywordsInTransaction(
                                     existingHistory.id,
@@ -522,6 +536,59 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 replacementDownloadId = replacementDownloadId,
                 replacementOperationId = replacementOperationId,
             )
+            }
+        }
+    }
+
+    /**
+     * History replacement and its linked low-quality success fact are one
+     * semantic commit.  The Download row is intentionally finalized later by
+     * the owner, but a process death after this transaction cannot turn a
+     * committed History replacement back into a cancelled/failed child.
+     */
+    private suspend fun markQualityReplacementCommittedInTransaction(
+        replacementDownloadId: Long,
+    ) {
+        val marker = HistoryRedownloadMarker.parse(
+            db.downloadDao.getNullableDownloadById(replacementDownloadId)?.playlistURL
+        )
+            ?.takeIf { it.isQualityReplacement }
+            ?: return
+        val ledgerDao = db.lowQualityRedownloadDao
+        val ledgerItem = ledgerDao.getItemByDownloadId(replacementDownloadId)
+            ?: error("Quality replacement lost its linked low-quality item before History commit")
+        val operation = ledgerDao.getOperation(ledgerItem.operationId)
+            ?: error("Quality replacement lost its low-quality operation before History commit")
+        check(
+            ledgerItem.historyId == marker.historyId &&
+                !ledgerItem.stateValue.isTerminal &&
+                !operation.stateValue.isTerminal &&
+                !operation.cancelRequested
+        ) {
+            "Quality replacement authority changed before History commit"
+        }
+        check(
+            ledgerDao.markHistoryReplacementCommitted(
+                downloadId = replacementDownloadId,
+                operationId = ledgerItem.operationId,
+                reason = HISTORY_REPLACEMENT_COMMITTED_REASON,
+                updatedAt = System.currentTimeMillis(),
+            ) == 1
+        ) {
+            "Quality replacement lost linked-child ownership at History commit"
+        }
+        LowQualityRedownloadCompletionPolicy.terminalState(
+            operation,
+            ledgerDao.getItems(ledgerItem.operationId),
+        )?.let { finalState ->
+            check(
+                ledgerDao.finishOperation(
+                    operationId = ledgerItem.operationId,
+                    state = finalState.name,
+                    reason = HISTORY_REPLACEMENT_COMMITTED_REASON,
+                    completedAt = System.currentTimeMillis(),
+                ) == 1
+            ) { "Quality replacement lost low-quality operation ownership at History commit" }
         }
     }
 

@@ -47,6 +47,7 @@ internal fun summaryResourceId(code: DownloadIssueCode): Int = when (code) {
     DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED -> R.string.download_issue_history_failed
     DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH -> R.string.download_issue_history_source_mismatch
     DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH -> R.string.download_issue_history_type_mismatch
+    DownloadIssueCode.HISTORY_POST_COMMIT_WARNING -> R.string.download_issue_history_failed
     DownloadIssueCode.NOTIFICATION_FAILED -> R.string.download_issue_notification_failed
     DownloadIssueCode.UNKNOWN -> R.string.download_issue_unknown
 }

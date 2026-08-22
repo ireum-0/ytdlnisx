@@ -10,6 +10,7 @@ import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
+import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementAuthorization
@@ -280,6 +281,224 @@ class HistoryReplacementBarrierPersistenceTest {
             rejected = true
         }
         assertTrue(rejected)
+    }
+
+    @Test
+    fun missingQualityLedgerIsBlockedAtRunnableAndDestructiveBoundaries() = runBlocking {
+        val historyId = insertHistory()
+        val item = insertDownload(DownloadType.video).copy(
+            playlistURL = HistoryRedownloadMarker.quality(historyId, 720),
+        )
+        db.downloadDao.update(item)
+
+        assertEquals(
+            0,
+            db.downloadDao.claimDownloadForWorker(
+                id = item.id,
+                expectedOperationId = item.operationId,
+                expectedRetryAttempt = item.retryAttempt,
+                executionId = "missing-ledger-claim",
+            ),
+        )
+
+        val activeItem = item.copy(
+            status = DownloadRepository.Status.Active.name,
+            executionId = "missing-ledger-execution",
+        )
+        db.downloadDao.updateRaw(activeItem)
+        var rejected = false
+        try {
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = item.id,
+                replacementOperationId = item.operationId,
+                expectedExecutionId = activeItem.executionId,
+            )
+        } catch (_: HistoryReplacementQualityAuthorityLostException) {
+            rejected = true
+        }
+        assertTrue(rejected)
+        assertEquals("Previous", db.historyDao.getItem(historyId).title)
+    }
+
+    @Test
+    fun staleErrorRetryCasCannotResetAClaimedNewerExecution() = runBlocking {
+        val original = insertDownload(DownloadType.video).copy(
+            status = DownloadRepository.Status.Error.name,
+            lastIssueCode = "FFMPEG_FAILED",
+            lastIssueStage = "POST_PROCESSING",
+            executionId = "",
+        )
+        db.downloadDao.updateRaw(original)
+        val queued = original.copy(
+            status = DownloadRepository.Status.Queued.name,
+            retryAttempt = original.retryAttempt + 1,
+        )
+
+        assertTrue(
+            db.downloadDao.updateForQueueIfSnapshot(
+                item = queued,
+                expectedStatus = original.status,
+                expectedExecutionId = original.executionId,
+                expectedOperationId = original.operationId,
+                expectedRetryAttempt = original.retryAttempt,
+                expectedIssueCode = original.lastIssueCode,
+                expectedIssueStage = original.lastIssueStage,
+            )
+        )
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = original.id,
+                expectedOperationId = queued.operationId,
+                expectedRetryAttempt = queued.retryAttempt,
+                executionId = "E2",
+            ),
+        )
+
+        assertEquals(
+            false,
+            db.downloadDao.updateForQueueIfSnapshot(
+                item = queued,
+                expectedStatus = original.status,
+                expectedExecutionId = original.executionId,
+                expectedOperationId = original.operationId,
+                expectedRetryAttempt = original.retryAttempt,
+                expectedIssueCode = original.lastIssueCode,
+                expectedIssueStage = original.lastIssueStage,
+            ),
+        )
+        val current = db.downloadDao.getDownloadById(original.id)
+        assertEquals(DownloadRepository.Status.Active.name, current.status)
+        assertEquals("E2", current.executionId)
+    }
+
+    @Test
+    fun qualityHistoryCommitDurablyFinalizesLinkedChildWithHistoryUpdate() = runBlocking {
+        val historyId = insertHistory()
+        val parent = LowQualityRedownloadRepository(db).createOrReconnect(now = 60L)
+        val downloadOperationId = "quality-commit-download-$historyId"
+        val inserted = insertDownload(DownloadType.video)
+        val item = inserted.copy(
+            playlistURL = HistoryRedownloadMarker.quality(historyId, 720),
+            operationId = downloadOperationId,
+        )
+        db.downloadDao.update(item)
+        db.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = parent.operationId,
+                historyId = historyId,
+                intendedSourceUrl = HISTORY_URL,
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.QUEUED.name,
+                downloadId = item.id,
+            )
+        )
+        val executionId = "quality-commit-worker"
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = item.id,
+                expectedOperationId = downloadOperationId,
+                expectedRetryAttempt = item.retryAttempt,
+                executionId = executionId,
+            ),
+        )
+
+        val replacement = repository().replaceHistoryPreservingAssignmentsAuthorized(
+            historyId = historyId,
+            expectedSourceUrl = HISTORY_URL,
+            expectedType = DownloadType.video,
+            replacementDownloadId = item.id,
+            replacementOperationId = downloadOperationId,
+            expectedExecutionId = executionId,
+        ) { current -> current.copy(title = "Committed replacement", downloadId = item.id) }
+
+        assertTrue(replacement is com.ireum.ytdl.database.repository.HistoryReplacementOutcome.Updated)
+        assertEquals(
+            LowQualityRedownloadItemState.SUCCEEDED,
+            db.lowQualityRedownloadDao.getItemByDownloadId(item.id)?.stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.COMPLETED,
+            db.lowQualityRedownloadDao.getOperation(parent.operationId)?.stateValue,
+        )
+        assertEquals("Committed replacement", db.historyDao.getItem(historyId).title)
+    }
+
+    @Test
+    fun startupRecoveryAfterCommittedHistoryReplacementFinalizesOnceWithoutReplay() = runBlocking {
+        val historyId = insertHistory()
+        val parent = LowQualityRedownloadRepository(db).createOrReconnect(now = 70L)
+        val downloadOperationId = "quality-restart-download-$historyId"
+        val inserted = insertDownload(DownloadType.video)
+        val item = inserted.copy(
+            playlistURL = HistoryRedownloadMarker.quality(historyId, 720),
+            operationId = downloadOperationId,
+        )
+        db.downloadDao.update(item)
+        db.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = parent.operationId,
+                historyId = historyId,
+                intendedSourceUrl = HISTORY_URL,
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.QUEUED.name,
+                downloadId = item.id,
+            )
+        )
+        val executionId = "quality-restart-worker"
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = item.id,
+                expectedOperationId = downloadOperationId,
+                expectedRetryAttempt = item.retryAttempt,
+                executionId = executionId,
+            ),
+        )
+
+        val beforeCommit = db.historyDao.getItem(historyId)
+        val outcome = repository().replaceHistoryPreservingAssignmentsAuthorized(
+            historyId = historyId,
+            expectedSourceUrl = HISTORY_URL,
+            expectedType = DownloadType.video,
+            replacementDownloadId = item.id,
+            replacementOperationId = downloadOperationId,
+            expectedExecutionId = executionId,
+        ) { current -> current.copy(title = "Restart-committed", downloadId = item.id) }
+        assertTrue(outcome is com.ireum.ytdl.database.repository.HistoryReplacementOutcome.Updated)
+
+        // Simulate death after the History transaction but before the worker's
+        // final Download deletion.  The durable History downloadId plus the
+        // linked SUCCEEDED fact is the startup-recovery commit record.
+        assertEquals(
+            LowQualityRedownloadItemState.SUCCEEDED,
+            db.lowQualityRedownloadDao.getItemByDownloadId(item.id)?.stateValue,
+        )
+        assertEquals(
+            setOf(parent.operationId),
+            DownloadRepository(db).completeAndDelete(
+                id = item.id,
+                expectedExecutionId = executionId,
+            ),
+        )
+        assertEquals("Restart-committed", db.historyDao.getItem(historyId).title)
+        assertEquals(item.id, db.historyDao.getItem(historyId).downloadId)
+        assertEquals(beforeCommit.downloadPath, db.historyDao.getItem(historyId).downloadPath)
+        assertEquals(null, db.downloadDao.getNullableDownloadById(item.id))
+        assertEquals(
+            LowQualityRedownloadItemState.SUCCEEDED,
+            db.lowQualityRedownloadDao.getItems(parent.operationId).single().stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.COMPLETED,
+            db.lowQualityRedownloadDao.getOperation(parent.operationId)?.stateValue,
+        )
     }
 
     @Test

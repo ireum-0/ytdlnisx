@@ -66,6 +66,10 @@ class ResumeActivity : BaseActivity() {
     private fun handleIntents(intent: Intent) {
         val id = intent.getIntExtra("itemID", 0)
         val retryError = intent.getBooleanExtra("retryError", false)
+        val expectedExecutionId = intent.getStringExtra("executionId").orEmpty()
+        val expectedRetryOperationId = intent.getStringExtra("retryOperationId")
+        val expectedRetryAttempt = intent.getIntExtra("retryAttempt", -1)
+            .takeIf { it >= 0 }
         if (id != 0) {
             try {
                 val loadingBottomSheet = BottomSheetDialog(this)
@@ -77,10 +81,27 @@ class ResumeActivity : BaseActivity() {
                         try {
                             val decision = withContext(Dispatchers.IO) {
                                 if (retryError) {
-                                    downloadViewModel.retryFailedDownload(id.toLong())
+                                    downloadViewModel.retryFailedDownload(
+                                        itemId = id.toLong(),
+                                        expectedOperationId = expectedRetryOperationId,
+                                        expectedRetryAttempt = expectedRetryAttempt,
+                                    )
+                                } else if (expectedExecutionId.isNotBlank()) {
+                                    if (!downloadViewModel.resumePausedDownloadAndWait(
+                                            id = id.toLong(),
+                                            expectedExecutionId = expectedExecutionId,
+                                        )
+                                    ) {
+                                        DownloadRetryDecision.Blocked(
+                                            com.ireum.ytdl.util.download.DownloadRetryBlockReason.NOT_FAILED
+                                        )
+                                    } else {
+                                        null
+                                    }
                                 } else {
-                                    downloadViewModel.reQueueDownloadItemsAndWait(listOf(id.toLong()))
-                                    null
+                                    DownloadRetryDecision.Blocked(
+                                        com.ireum.ytdl.util.download.DownloadRetryBlockReason.NOT_FAILED
+                                    )
                                 }
                             }
                             if (decision !is DownloadRetryDecision.Blocked) {
