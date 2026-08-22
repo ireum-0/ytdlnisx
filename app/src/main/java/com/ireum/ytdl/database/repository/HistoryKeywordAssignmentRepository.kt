@@ -12,6 +12,8 @@ import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import com.ireum.ytdl.util.LowQualityReplacementAuthority
 import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.util.download.DownloadIssue
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 
 enum class HistoryReplacementResult {
@@ -48,6 +50,21 @@ class HistoryReplacementQualityAuthorityLostException(
     val downloadId: Long,
 ) : IllegalStateException(
     "Low-quality History replacement authority is missing or terminal for download $downloadId"
+)
+
+/**
+ * The History refusal was authoritative, but its first durable carrier could
+ * not be inserted or verified.  Callers must retain [authorization] and
+ * [issue] while surfacing [persistenceFailure]; the database must never claim
+ * a barrier that Room did not actually persist.
+ */
+class HistoryReplacementRefusalPersistenceException(
+    val authorization: HistoryReplacementAuthorization,
+    val issue: DownloadIssue,
+    val persistenceFailure: Exception,
+) : IllegalStateException(
+    "History replacement refusal could not be durably recorded",
+    persistenceFailure,
 )
 
 sealed interface HistoryReplacementOutcome {
@@ -638,22 +655,32 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             is HistoryReplacementAuthorization.Authorized ->
                 error("Authorized History result is not a refusal")
         }
-        val barrierDao = db.historyReplacementBarrierDao
-        barrierDao.insertIfAbsent(
-            HistoryReplacementBarrier(
-                downloadId = replacementDownloadId,
-                operationId = replacementOperationId,
-                historyId = historyId,
-                expectedSourceUrl = expectedSourceUrl,
-                expectedType = expectedType.name,
-                issueCode = issue.code.name,
-                issueStage = issue.stage.name,
-                createdAt = System.currentTimeMillis(),
+        return try {
+            val barrierDao = db.historyReplacementBarrierDao
+            barrierDao.insertIfAbsent(
+                HistoryReplacementBarrier(
+                    downloadId = replacementDownloadId,
+                    operationId = replacementOperationId,
+                    historyId = historyId,
+                    expectedSourceUrl = expectedSourceUrl,
+                    expectedType = expectedType.name,
+                    issueCode = issue.code.name,
+                    issueStage = issue.stage.name,
+                    createdAt = System.currentTimeMillis(),
+                )
             )
-        )
-        val persisted = barrierDao.getByDownloadId(replacementDownloadId)
-            ?: error("History replacement refusal barrier was not durably recorded")
-        return authorizationForPersistedRefusal(persisted.issueCode)
+            val persisted = barrierDao.getByDownloadId(replacementDownloadId)
+                ?: error("History replacement refusal barrier was not durably recorded")
+            authorizationForPersistedRefusal(persisted.issueCode)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (persistenceFailure: Exception) {
+            throw HistoryReplacementRefusalPersistenceException(
+                authorization = authorization,
+                issue = issue,
+                persistenceFailure = persistenceFailure,
+            )
+        }
     }
 
     private suspend fun durableRefusalOutcome(

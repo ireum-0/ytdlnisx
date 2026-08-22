@@ -36,6 +36,7 @@ import com.ireum.ytdl.database.repository.HistoryReplacementCleanupAction
 import com.ireum.ytdl.database.repository.HistoryReplacementCleanupResult
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementExecutionOwnershipLostException
+import com.ireum.ytdl.database.repository.HistoryReplacementRefusalPersistenceException
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcome
 import com.ireum.ytdl.database.repository.HistoryReplacementOutcomePolicy
 import com.ireum.ytdl.database.repository.HistoryReplacementTerminalAction
@@ -1731,6 +1732,11 @@ class DownloadWorker(
                                 adoptHistoryReplacementAuthorization(historyError.authorization)
                                 historyReplacementAuthoritativeIssue
                                     ?: error("History replacement refusal did not establish an issue")
+                            } else if (
+                                historyError is HistoryReplacementRefusalPersistenceException
+                            ) {
+                                adoptHistoryReplacementAuthorization(historyError.authorization)
+                                historyError.issue
                             } else {
                                 historyReplacementAuthoritativeIssue ?: DownloadIssue.create(
                                     stage = DownloadIssueStage.HISTORY,
@@ -1915,7 +1921,10 @@ class DownloadWorker(
                             downloadOutcome = DownloadOutcome.canceled()
                             throw it
                         }
-                        if (it is HistoryReplacementAuthorizationRefusalException) {
+                        if (
+                            it is HistoryReplacementAuthorizationRefusalException ||
+                            it is HistoryReplacementRefusalPersistenceException
+                        ) {
                             // Preserve the typed History decision for the outer
                             // terminal state machine; do not classify it as the
                             // later hard-sub/yt-dlp exception.
@@ -2335,10 +2344,13 @@ class DownloadWorker(
                             )
                             return@launch
                         }
-                        (unexpected as? HistoryReplacementAuthorizationRefusalException)
-                            ?.let { refusal ->
-                                adoptHistoryReplacementAuthorization(refusal.authorization)
-                            }
+                        when (unexpected) {
+                            is HistoryReplacementAuthorizationRefusalException ->
+                                adoptHistoryReplacementAuthorization(unexpected.authorization)
+                            is HistoryReplacementRefusalPersistenceException ->
+                                adoptHistoryReplacementAuthorization(unexpected.authorization)
+                            else -> Unit
+                        }
                         refreshDurableHistoryReplacementBarrier()
                         val targetDeleted = historyReplacementTerminalAction ==
                             HistoryReplacementTerminalAction.TARGET_DELETED
