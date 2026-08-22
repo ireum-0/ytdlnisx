@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **40 active correctness defects** in this checkpoint. The previous
+There are **62 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 40-defect registry is intentionally retained here. The separate
+The broader 62-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 40-defect count unless they are explicitly promoted
+below do **not** change the 62-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-40-defect registry below.
+62-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 40 active defects
+### F1 remediation-discovered follow-up not counted in the 62 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -388,6 +388,216 @@ Required result:
   download-time enrichment, mutating non-metadata fields while lookup is in
   progress.
 
+### P1 — BUG-TERMINAL-02 — Separate terminal task identity from Download identity
+
+**State:** Open
+
+**Failure path:** the production terminal UI inserts `TerminalItem` rows into the
+independent `terminalDownloads` table, whose primary key is auto-generated.
+Normal downloads use a separate auto-generated primary key in the `downloads`
+table. `TerminalDownloadWorker` nevertheless uses the bare terminal row ID as
+its yt-dlp process ID and foreground/running notification ID. Its progress
+notification also builds the Cancel action with
+`CancelDownloadNotificationReceiver`, passing that terminal ID as `itemID`.
+That receiver interprets `itemID` as a normal Download ID: it calls
+`DownloadRepository.cancelByUser(id)`, refreshes any linked low-quality ledger,
+destroys the yt-dlp process with the same bare ID, cancels Download
+post-processing, cancels the untagged notification, and finally deletes a
+Terminal row with that number. `DownloadWorker` independently uses the bare
+Download row ID for its own running notification and yt-dlp process identity.
+
+Because the two tables allocate IDs independently, a live Terminal task and an
+unrelated normal Download can legitimately have the same numeric ID. In that
+case starting/updating the two jobs aliases their yt-dlp/notification identity,
+and pressing Cancel on the Terminal notification can durably change the
+unrelated Download to `Cancelled`, terminalize its linked low-quality child, and
+kill its process/post-processing. Cleanup or notification cancellation from
+either path can also remove the other live task's notification. No production
+parser or validation layer namespaces or rejects the collision.
+
+**Why this is a defect:** a user action addressed to one Terminal task can mutate
+the persistent state and execution of an unrelated normal Download solely
+because two independent database primary keys happen to be numerically equal.
+This is cross-record ownership corruption rather than a notification-only
+cosmetic collision, and can abort active work or falsely terminalize a
+low-quality operation.
+
+Required result:
+
+- give Terminal and normal Download execution/process identities disjoint
+  namespaces rather than deriving both from an unqualified numeric primary key;
+- use distinct tagged/offset notification identities and a Terminal-specific
+  cancel action that never calls normal `DownloadRepository.cancelByUser()` or
+  Download post-processing cancellation;
+- make every destroy/cancel/cleanup path target the same typed owner identity
+  that created the process/work/notification;
+- add deterministic same-numeric-ID regressions with both jobs live, covering
+  terminal start, normal start, progress updates, Terminal Cancel, normal
+  Cancel/Pause, cleanup, and a linked low-quality Download, proving neither
+  workflow mutates or terminates the other.
+
+### P2 — BUG-OBSERVE-02 — Preserve Observe Source runtime state across configuration edits
+
+**State:** Open
+
+**Failure path:** editing an existing Observe Source enters
+`ObserveSourcesBottomSheetDialog` with the current `ObserveSourcesItem`. On Save,
+the dialog does not update only the user-editable configuration fields. It builds
+a new `ObserveSourcesItem` with the same primary key, explicitly sets
+`runCount = 0`, conditionally copies the processed/ignored/retry/observed link
+lists, and omits `runHistory`, `runInProgress`, and `currentRunStatus`, so those
+fields take their constructor defaults. `ObserveSourcesViewModel.insertUpdate()`
+then passes this reconstructed item to `ObserveSourcesRepository.update()`, whose
+DAO uses a full-row `@Update`, and reschedules the observation.
+
+`runCount` is not cosmetic. `ObserveSourceWorker.finishRunAndSchedule()` increments
+it and stops a source with `endsAfterCount` only when the persisted count reaches
+the configured limit. For example, a source configured to stop after 10 runs
+with 8 already completed is reset to zero by editing an unrelated field and can
+run up to 10 more times. The same edit also silently clears the user-visible
+`runHistory`. The explicit Start action separately resets `runCount` to zero,
+so ordinary configuration Save is not the only lifecycle transition available
+to own restart semantics.
+
+**Why this is a defect:** a normal configuration edit rewrites worker-owned
+durable runtime/progress state that the edit does not semantically own. This
+changes the source's termination contract and loses recorded run history even
+when the user did not request a reset.
+
+Required result:
+
+- separate user-editable Observe Source configuration from worker-owned runtime
+  state, using partial updates or a transactional merge against the current row;
+- preserve `runCount`, `runHistory`, `runInProgress`, and `currentRunStatus`
+  across ordinary edits unless a dedicated reset action explicitly owns them;
+- make `resetProcessedLinks` affect only the documented processed/ignored/retry/
+  observed membership state, not run-count/history state;
+- ensure rescheduling uses the committed merged configuration without resetting
+  prior execution progress;
+- add regressions for editing name/cadence/template at nonzero `runCount`,
+  `endsAfterCount` near its terminal boundary, preserved `runHistory`, explicit
+  processed-link reset, and editing while a run is active.
+
+### P2 — BUG-OBSERVE-03 — Recover active Observe Source schedules after enqueue loss
+
+**State:** Open
+
+**Failure path:** creating or editing an Observe Source enters
+`ObserveSourcesViewModel.insertUpdate()`. For an existing source it first commits
+the reconstructed source row, then `ObserveSourcesRepository.observeTask()`
+cancels the current unique/tagged work and enqueues a replacement one-time
+`ObserveSourceWorker`. For a new source the row is likewise inserted before its
+first work request is enqueued. `observeTask()` discards the `Operation` returned
+by `enqueueUniqueWork()`, so asynchronous enqueue failure is not observed; an
+edit can additionally remove the previously valid schedule before the
+replacement enqueue is durably accepted.
+
+The recurring handoff has the same split boundary. At the end of a normal or
+recovered run, `ObserveSourceWorker.finishRunAndSchedule()` first persists the
+updated `runHistory`, `runCount`, `runInProgress = false`, current status, and any
+STOPPED decision. If the source remains active it then builds a new one-time work
+request, calls `enqueueUniqueWork(..., REPLACE, ...)`, ignores its returned
+`Operation`, and immediately returns `Result.success()`. An enqueue failure or
+process death after the source-state commit but before the successor WorkManager
+record is durable therefore leaves the source persisted as `ACTIVE` with no
+future execution owner.
+
+Normal app startup does not rebuild this missing schedule. `App.onCreate()`
+reconciles automatic-keyword observation coverage, low-quality re-downloads, and
+History date-fetch operations, but has no reconciliation that enumerates every
+active USER Observe Source and proves a corresponding WorkManager chain exists.
+`AutomaticKeywordObservationCoverage.reconcile()` is not such a repair: it uses
+USER sources only to decide whether managed discovery coverage is necessary,
+and for an already-`ACTIVE` managed source it also does not call `observeTask()`
+merely because its WorkManager record is absent. A lost handoff can therefore
+remain silent across process/app restart until the user explicitly edits or
+restarts the source.
+
+**Why this is a defect:** `ACTIVE` is durable user intent for recurring
+observation, while each one-time WorkManager request is only the current carrier
+of that intent. The implementation can commit the former while losing the latter
+and then report the current worker as successful. Observation can silently stop
+forever even though the source still appears active, causing new uploads,
+retry-missing processing, synchronization, or automatic-keyword discovery to be
+missed. This is distinct from `BUG-OBSERVE-01`, which concerns destructive use of
+non-authoritative source snapshots, and from `BUG-OBSERVE-02`, which concerns
+runtime state being overwritten by configuration edits.
+
+Required result:
+
+- represent active Observe Source scheduling with a durable generation/outbox or
+  equivalent contract and reconcile every active source to exactly one matching
+  WorkManager execution after startup/restart;
+- observe enqueue completion/failure rather than treating invocation as a
+  completed handoff, and make `finishRunAndSchedule()` return retry/failure or a
+  durable recoverable scheduling state when the successor was not accepted;
+- replace an existing schedule under a protocol that does not cancel the last
+  valid carrier before a replacement is durably established, or guarantees
+  recovery from that intermediate state;
+- bind replacement work to the committed source generation/configuration so
+  stale work cannot overwrite or reschedule a newer edit;
+- add deterministic initial-save, edit-replacement, end-of-run handoff,
+  asynchronous enqueue-failure, and process-death tests, plus startup recovery
+  for USER and managed sources and exactly-one-work regressions.
+
+### P2 — BUG-OBSERVE-04 — Prevent stale Observe Source workers from overwriting newer edits
+
+**State:** Open
+
+**Failure path:** `ObserveSourceWorker.runSourceWork()` loads one full
+`ObserveSourcesItem` snapshot near the start of a run and keeps mutating that
+same object throughout extraction, membership processing, History/download
+reconciliation, and final scheduling. Worker progress and completion are
+persisted through `ObserveSourcesRepository.update(item)`, whose DAO sink is a
+full-row `@Update`; there is no source revision, expected configuration, or
+worker-generation predicate on those writes.
+
+The production edit path can race directly with that stale snapshot.
+`ObserveSourcesViewModel.insertUpdate()` persists the user's newly reconstructed
+source row **before** it calls `observeTask()` to cancel/replace the previous
+worker. Consequently an old worker can still be executing when the edit commit
+becomes authoritative. If that worker subsequently reaches `updateRunStatus()`
+or `finishRunAndSchedule()`, its full-row update writes the pre-edit values back
+over the same source ID. Fields owned by the user edit, such as URL/name,
+cadence, filters, templates, retry/sync options, termination settings, and other
+configuration, can therefore be silently reverted along with runtime fields.
+Cancellation of the old WorkManager request after the edit does not close the
+race because cancellation is not the commit boundary for the preceding DB edit,
+and no DAO CAS rejects a late stale write.
+
+The stale worker can then calculate and enqueue its successor from the reverted
+snapshot. A newer replacement worker scheduled by the edit and the stale
+worker's later `enqueueUniqueWork(..., REPLACE, ...)` use the same unique work
+name, so whichever handoff occurs last can also replace the execution carrier
+for the newer configuration. The user can therefore save a visible edit, have
+it durably overwritten by an older run, and continue observing under the old
+configuration without another explicit action.
+
+**Why this is a defect:** runtime progress ownership and configuration ownership
+are not separated. A worker that was authorized under an earlier source snapshot
+can overwrite a later authoritative user edit and can reschedule work using that
+obsolete configuration. This is a lost-update/data-integrity race distinct from
+`BUG-OBSERVE-02`, where the edit itself resets runtime fields, and from
+`BUG-OBSERVE-03`, where a valid durable source intent loses its WorkManager
+carrier.
+
+Required result:
+
+- add a monotonically increasing source revision/generation and bind each worker
+  request to the revision it loaded;
+- make worker-owned persistence update only runtime/progress fields, or use a
+  revision-checked transaction/CAS that rejects stale workers without rewriting
+  user-owned configuration;
+- make edits increment the generation before cancelling/replacing work so every
+  older worker is durably invalidated at the same authoritative boundary as the
+  new configuration;
+- prevent a stale worker from enqueueing/replacing a successor after its
+  generation has been superseded;
+- add deterministic edit-vs-worker races at initial status write, source fetch,
+  download/History processing, final full-row update, and successor enqueue,
+  proving the edited configuration remains durable and exactly one current-
+  generation worker survives.
+
 ### P2 — BUG-KEYWORD-02 — Recompute derived RULE assignments on History Undo
 
 **State:** Open
@@ -410,6 +620,67 @@ Required result:
   an immutable matching rule revision before restoring derived rows;
 - add Undo tests covering rule edit, deletion/recreation, and changed keyword
   membership while the History row is absent.
+
+### P2 — BUG-KEYWORD-03 — Recover queued automatic-keyword sync after enqueue failure
+
+**State:** Open
+
+**Failure path:** the production automatic-keyword editor calls
+`AutomaticKeywordRuleRepository.save()`. The repository first commits the rule
+revision, keyword rows, and affected existing RULE assignments in a Room
+transaction. When the enabled rule needs an initial/baseline/apply-existing
+sync, it then persists `manualSyncStatus = QUEUED` and only afterward calls
+`AutomaticKeywordRuleScheduler.enqueue()`. The user-facing Sync Now path has the
+same split boundary: `requestApplyExistingSync()` first increments the durable
+rule revision, sets `pendingApplyToExisting = 1`, and stores
+`manualSyncStatus = QUEUED`, then `syncNow()` calls the scheduler.
+
+`AutomaticKeywordRuleScheduler.enqueue()` calls
+`WorkManager.enqueueUniqueWork(...)` and discards the returned `Operation`.
+WorkManager exposes that `Operation` specifically so callers can observe when
+enqueue has completed; an enqueue failure reported through it therefore does not
+become a repository failure here. A process death between the rule/QUEUED commit
+and durable WorkManager insertion creates the same state. On the next app start,
+startup reconciliation restores automatic-keyword **observation coverage**,
+low-quality re-download state, and History date-fetch state, but it does not scan
+rules whose `manualSyncStatus` is `QUEUED` or whose
+`pendingApplyToExisting` flag still requires a manual/baseline sync.
+`AutomaticKeywordObservationCoverage.reconcile()` only creates, removes, or
+restarts discovery-only Observe Source rows; it never re-enqueues
+`AutomaticKeywordRuleSyncWorker` for orphaned rule-sync intent.
+
+The result can therefore remain durably `QUEUED` with no matching WorkManager
+work. A new rule may never establish its baseline, and an Apply Existing request
+may never apply the rule to existing History until some later explicit edit,
+toggle, or Sync Now action happens to enqueue fresh work. Because the enqueue
+`Operation` is ignored, the normal editor can also dismiss after a save whose
+rule transaction committed even though the associated sync enqueue later fails.
+
+**Why this is a defect:** the database state is the durable source of truth for
+an explicitly requested synchronization, but its queued/pending intent can
+outlive the only executor record capable of carrying it out. The UI can therefore
+show a synchronization as queued indefinitely while the requested baseline or
+existing-History mutation never occurs. This is distinct from
+`BUG-KEYWORD-01`, which concerns whether an executed fetch is authoritative, and
+from `BUG-KEYWORD-02`, which concerns restoring stale derived assignments on
+History Undo.
+
+Required result:
+
+- represent rule-sync intent with a durable generation/outbox or equivalent
+  recoverable contract and reconcile every nonterminal queued/pending request to
+  exactly one WorkManager execution after restart;
+- observe enqueue completion/failure, or otherwise rely on durable
+  reconciliation, so a rule save or Sync Now action is not reported as fully
+  queued when no work was durably accepted;
+- if the rule mutation has already committed but scheduling fails, preserve that
+  distinction instead of implying that the rule save itself was uncommitted;
+- bind worker execution to the intended rule revision/generation so stale
+  replaced work cannot consume or clear a newer sync request;
+- add deterministic enqueue-failure and process-death tests after the rule or
+  `requestApplyExistingSync()` QUEUED commit but before WorkManager persistence,
+  plus startup recovery, exactly-once replacement, revision-race, new-rule,
+  edited-rule, and Apply Existing regressions.
 
 ### P2 — BUG-METADATA-02 — Validate source identity before applying download metadata
 
@@ -503,8 +774,8 @@ Required result:
 **Failure path:** custom thumbnails are written before destination History IDs
 are allocated. The path is derived from the backup-local ID as
 `restored_<oldHistoryId>.<extension>`, and `writeBytes()` overwrites an existing
-file at that location. The later `importedHistoryIdMap` cannot repair a file
-that was already overwritten.
+file at that location. The later `importedHistoryIdMap` cannot repair a file that
+was already overwritten.
 
 **Why this is a defect:** two independent backups can legitimately contain
 different History records with the same source-local numeric ID. Restoring the
@@ -686,6 +957,53 @@ Required result:
   another, an unrelated query/path containing an archived ID, the same bare ID
   under different extractors, and canonical-equivalent YouTube URLs.
 
+### P2 — BUG-DUPLICATE-03 — Preserve SAF authority for custom download-archive storage
+
+**State:** Open
+
+**Failure path:** the production Download settings screen lets the user choose a
+custom download-archive folder with `ACTION_OPEN_DOCUMENT_TREE`, takes a
+persistable read/write URI grant, and stores the returned `content://` tree URI
+in `download_archive_path`. `FileUtil.getDownloadArchivePath()` does not keep
+that provider-backed authority. It calls `formatPath()` on the stored tree URI,
+turning it into a raw `/storage/.../` path, appends `download_archive.txt`, and
+returns that raw path. `DownloadViewModel.detectAndMarkDuplicates()` then opens
+the path with `java.io.File`; any read failure is swallowed into an empty archive.
+`YTDLPUtil` independently passes the same raw path to yt-dlp through
+`--download-archive`.
+
+The app targets Android 36 and does not request broad all-files access. On
+scoped-storage Android, a successful SAF tree grant authorizes provider/document
+access; converting that URI to a raw shared-storage pathname does not transfer
+the grant to direct `File` or native yt-dlp access. No production validation
+proves that the derived raw archive file is readable and writable before the
+setting is accepted or a queued download uses it.
+
+**Why this is a defect:** a normal user can successfully choose and authorize a
+custom archive folder while the duplicate precheck silently behaves as if the
+archive were empty and yt-dlp receives a path it may not be able to read or
+update. Duplicate prevention can therefore stop working without an honest
+failure signal, and archive-enabled downloads can fail or stop recording future
+archive entries despite the UI showing an authorized custom folder. This is
+distinct from `BUG-DUPLICATE-02`, which concerns media-identity comparison after
+archive content has been read successfully.
+
+Required result:
+
+- retain custom archive storage under a provider-aware URI contract, or keep an
+  app-owned filesystem archive and synchronize it to/from the selected SAF tree
+  through `ContentResolver`/`DocumentFile` under an explicit commit contract;
+- never collapse archive access failure into an authoritative empty archive;
+- pass yt-dlp only a filesystem archive path the app/native process can actually
+  access, and surface/safely recover any failure to synchronize the authoritative
+  archive state;
+- validate read/write authority when configuring and before using a custom
+  archive, while preserving the existing app-owned default path behavior;
+- add scoped-storage regressions for a custom shared-storage tree, revoked grant,
+  read-only/unwritable provider state, an exact duplicate already in the archive,
+  archive-write failure after a successful download, and the default app-owned
+  archive path.
+
 ### P2 — BUG-CLEANUP-01 — Make automatic leftover cleanup actually recurring
 
 **State:** Open
@@ -778,6 +1096,119 @@ Required result:
 - add deterministic active-download and post-processing races proving live temp
   files are never moved, plus an idle-leftover regression proving intended cache
   recovery still works.
+
+### P2 — BUG-CACHE-02 — Preserve SAF authority for custom download cache storage
+
+**State:** Open
+
+**Failure path:** the production Folder settings screen lets the user choose the
+custom download cache directory through `ACTION_OPEN_DOCUMENT_TREE`, takes a
+persistable read/write URI grant, and stores that `content://` tree URI in
+`cache_path`. The setting remains available on scoped-storage devices even when
+broad all-files access is unavailable. `FileUtil.getCachePath()` then discards
+that provider-backed identity by passing the stored URI through `formatPath()`,
+which converts external-storage tree/document URIs into raw `/storage/.../`
+paths.
+
+Normal download execution consumes that converted path directly. After a queued
+row is claimed, `DownloadWorker` constructs
+`File(FileUtil.getCachePath(context), downloadItem.id.toString())` as the
+operation's temporary directory. Before yt-dlp runs,
+`executeYtdlpPhase()` calls `resetYtdlpTempDirectory()`, which again obtains the
+raw cache root, validates the child with `canonicalFile`, recursively deletes an
+old directory if present, and recreates it with `java.io.File.mkdirs()`. Later
+retry, staged-quality, hard-sub, info-JSON, and output-recovery paths use the
+same filesystem cache identity. There is no `DocumentFile`/`ContentResolver`
+implementation for this live yt-dlp temp tree and no validation proving that the
+raw path is directly writable after the SAF-only grant.
+
+The app targets Android 36. On scoped-storage Android, the first authoritative
+observation is only that the selected tree is writable through the document
+provider; converting that tree URI to a filesystem-looking path does not transfer
+that authority to `File` or the native yt-dlp process. A user can therefore
+successfully authorize and persist a custom cache folder, then have the next
+ordinary download fail while creating or using its temporary directory even
+though the settings UI accepted the location.
+
+**Why this is a defect:** a normal supported cache-directory selection loses the
+very authority that made the selection writable before the core download path
+uses it. This can make ordinary downloads, retries, staged quality checks, or
+hard-sub work fail solely because a provider-authorized cache tree was
+reinterpreted as directly writable raw storage. It is distinct from
+`BUG-CACHE-01`, which concerns moving live cache files during maintenance, from
+`BUG-DUPLICATE-03`, which concerns custom download-archive storage, and from
+`BUG-TERMINAL-03`, which concerns Terminal destination output.
+
+Required result:
+
+- keep cache storage under a typed authority contract: either restrict live
+  yt-dlp cache roots to app-owned/directly writable filesystem locations, or add
+  an explicit provider-backed staging design that never assumes a SAF grant is
+  raw-path authority;
+- validate the exact cache mode at configuration time and immediately before a
+  worker acquires it; reject or safely migrate an inaccessible custom cache
+  rather than accepting the tree and failing after the Download is claimed;
+- ensure retry, hard-sub, staged-quality, info-JSON, cleanup, and cache-migration
+  code all use the same authoritative cache abstraction and cannot independently
+  re-derive an unauthorized raw path;
+- preserve the current app-owned default cache as the safe fallback and define
+  recovery for an already-stored custom tree whose grant is revoked or whose raw
+  path is inaccessible;
+- add scoped-storage regressions for primary and non-primary SAF trees, revoked
+  grants, the app-owned default cache, any deliberately supported directly
+  writable raw cache, normal download, retry, staged-quality/hard-sub, and cache
+  maintenance, proving an accepted cache location remains usable by the actual
+  execution path.
+
+### P2 — BUG-MOVE-01 — Preserve uncopied source files after partial SAF fallback
+
+**State:** Open
+
+**Failure path:** normal downloads and Terminal cache-output publication both use
+`FileUtil.moveFile()` to move an app-owned source directory into the selected
+destination. For a provider-backed destination, `moveFile()` first tries
+`DocumentFile.copyFolderTo()`. If that operation reports failure, its `onFailed`
+callback falls back to walking every source file and calling
+`moveFileInputStream()` individually. A per-file `createDocument()` or
+`openOutputStream()` failure makes `moveFileInputStream()` return `null`; the
+fallback simply skips that file and continues. It tracks only whether **any**
+file was copied. After the loop it unconditionally calls
+`sourceDir.deleteRecursively()` and reports the fallback as recovered whenever
+`copiedAny` is true.
+
+With a two-file output, for example, file A can copy successfully while file B
+fails to create/open at the provider. A makes `copiedAny = true`; B is silently
+skipped; then the entire source directory, including B's only recoverable cache
+copy, is deleted. Because the fallback returns success, `hasMoveFailure` is not
+set and `fileList` contains only the successfully copied subset. `moveFile()` can
+therefore return that subset as a successful move. `DownloadWorker` can accept
+it as `finalPaths` and continue toward History/terminal completion, while
+`TerminalDownloadWorker` can likewise continue as though cache publication
+completed.
+
+**Why this is a defect:** a provider-specific partial copy failure is converted
+into successful publication and destructive cleanup. Files that were never
+published are deleted from the only recoverable source copy, so a normal SAF
+output move can silently lose media or sidecars while downstream state describes
+the move as successful. This is distinct from `BUG-TERMINAL-03`, which concerns
+losing SAF authority before Terminal execution, and from `BUG-CACHE-01`, which
+concerns maintenance code moving files owned by a live download.
+
+Required result:
+
+- make fallback publication outcome authoritative per source file and do not
+  delete a source file until its corresponding destination copy is durably
+  verified;
+- never delete the whole source directory when any eligible source file failed
+  or remained unverified; preserve those files for retry/recovery;
+- surface a partial move as an explicit failed/partial outcome rather than a
+  success containing only the copied subset;
+- make DownloadWorker and Terminal commit only outputs proven published under
+  that move contract and preserve recoverable cache otherwise;
+- add deterministic SAF regressions where `copyFolderTo()` fails and the fallback
+  has all files succeed, first-succeeds/second-fails, first-fails/second-succeeds,
+  `createDocument()` failure, and `openOutputStream()` failure, proving uncopied
+  files remain recoverable and no success-labelled partial publication occurs.
 
 ### P2 — BUG-LOCALADD-01 — Do not treat a bare filename stem as local-file identity
 
@@ -951,6 +1382,67 @@ Required result:
   proving committed output remains a success and does not invite duplicate
   retry.
 
+### P2 — BUG-TERMINAL-03 — Preserve SAF authority for Terminal output-folder selection
+
+**State:** Open
+
+**Failure path:** the production Terminal screen exposes a Folder action backed
+by `ACTION_OPEN_DOCUMENT_TREE`. After the user selects a tree, the activity takes
+a persistable read/write URI grant, but the selected `content://` tree is not
+kept as the authority used by the command. `TerminalFragment` immediately passes
+it through `FileUtil.formatPath()` and inserts the resulting raw
+`/storage/.../` pathname into the command text. The configured Terminal output
+path has a second production route to the same loss of authority:
+`TerminalCommandPlanFactory` reads `command_path`, calls
+`FileUtil.canWriteToDestination()` on the original value, and for a writable SAF
+tree that check can succeed through `DocumentFile`/persisted URI permission.
+`TerminalCommandPlanner` then chooses direct output and passes
+`environment.formattedDownloadLocation` — the raw path produced by
+`FileUtil.formatPath()` — to yt-dlp as `-P`.
+
+A user-entered command containing `-P ` bypasses even that destination-writable
+decision: `TerminalCommandPlanner.create()` treats the presence of `-P ` in the
+sanitized config as proof that output is direct and sets `usesAppCache = false`
+without validating whether the path is writable by the native yt-dlp process.
+`TerminalDownloadWorker` consequently skips the provider-aware
+`FileUtil.moveFile()` stage whenever this direct-output decision is made and lets
+yt-dlp write to the raw path itself.
+
+The app targets Android 36 and does not have broad all-files access. A SAF grant
+authorizes access through the document provider; converting the tree URI to a
+filesystem-looking path does not grant equivalent raw/native access under scoped
+storage. The first authoritative observation — that the app can write the SAF
+tree through the provider — is therefore discarded before the actual yt-dlp
+filesystem mutation. No later validation proves that the raw path is writable by
+yt-dlp.
+
+**Why this is a defect:** the Terminal UI can successfully present and persist a
+folder authorization that the execution path cannot actually use. A command can
+be routed away from the safe app-cache + provider-aware move path precisely
+because provider authority was observed as writable, then fail when yt-dlp is
+asked to use an unauthorized raw path. This is a normal production path on
+scoped-storage devices, not a malformed-command-only edge case, and it is
+distinct from `BUG-DUPLICATE-03`, which concerns custom download-archive storage.
+
+Required result:
+
+- retain SAF destinations as provider-backed identities through Terminal command
+  planning and stage output in app-owned storage before moving/copying it through
+  `ContentResolver`/`DocumentFile` when raw filesystem authority is unavailable;
+- permit direct yt-dlp `-P` output only after proving the exact raw destination is
+  writable by the native execution path, not merely that the corresponding SAF
+  tree is writable through the app process;
+- do not translate a successful SAF grant into raw-path authority, and make the
+  Terminal Folder action insert/retain a typed destination rather than an
+  authority-losing pathname;
+- define explicit handling for user-supplied `-P`/`--paths` destinations that
+  cannot be proven writable instead of unconditionally disabling cache staging;
+- add Android scoped-storage regressions for primary and non-primary SAF trees,
+  cache enabled/disabled, a writable provider with raw-path denial, revoked
+  grants, an actually writable app/raw destination, and explicit `-P`, proving
+  provider-authorized destinations either complete through staged movement or
+  fail before yt-dlp begins with an actionable error.
+
 ### P2 — BUG-FORMAT-01 — Do not commit or report partial bulk format refresh as success
 
 **State:** Open
@@ -986,6 +1478,68 @@ Required result:
   success;
 - add fault-injection regressions for format extraction, Result-row write,
   Download-row write, cancellation, and mixed-success batches.
+
+### P2 — BUG-FORMAT-02 — Do not let stale format-update notifications overwrite live download ownership
+
+**State:** Open
+
+**Failure path:** continuing a multi-download format refresh in the background
+first moves the current `Processing` rows to durable `Saved` rows and enqueues
+`UpdateMultipleDownloadsFormatsWorker`. When that worker finishes, its
+`showFormatsUpdatedNotification()` PendingIntent deep-links to `HomeFragment`
+with the numeric Download IDs and `showDownloadsWithUpdatedFormats = true`.
+Those IDs are retained in the notification with no status, generation, or
+execution-owner snapshot and the notification can be opened later.
+
+Before the notification is tapped, the user can normally open one of those Saved
+rows and queue it. `DownloadWorker.claimDownloadForWorker()` can then
+transition that same ID to `Active` and install a fresh `executionId`. Tapping
+the older format-update notification afterward reaches `HomeFragment.onResume()`,
+which calls `turnDownloadItemsToProcessingDownloads(ids, deleteExisting = true)`.
+That method deletes any current Processing session, reloads each row only by
+numeric ID, retains the existing ID when `deleteExisting` is true, unconditionally
+sets `status = Processing`, and persists the full row through
+`DownloadRepository.update()`. It has no expected `Saved` status or execution-
+ownership predicate, so it can rewrite the live `Active`/`PostProcessing` row
+as `Processing` while the original worker still owns and executes the same
+attempt.
+
+The deep link immediately opens `DownloadMultipleBottomSheetDialog`. Its normal
+Download action queues the Processing rows, and the DAO path clears execution
+ownership when moving them to `Queued`. A second worker can therefore claim the
+same Download ID while the original execution is still downloading, moving, or
+post-processing. Even before that second queue action, the first worker's owner-
+guarded `Active`/`PostProcessing` writes can fail because the stale notification
+already changed the durable status out from under it. No notification parser or
+Home navigation validation rejects IDs whose state has advanced since the
+background-format operation completed.
+
+**Why this is a defect:** a completion notification is only a stale navigation
+hint, but it is treated as authority to reclassify current durable Download
+state. A normal Saved → Queued → Active progression can therefore have its live
+execution ownership revoked by tapping an older notification, allowing duplicate
+execution, conflicting output/terminal commits, or a false failure of the
+original worker. This is distinct from `BUG-FORMAT-01`, which concerns the
+format worker's own persistence/result semantics, and from scheduler/pause races
+whose stale commands enter through different state transitions.
+
+Required result:
+
+- treat format-update notification IDs as navigation hints only and revalidate
+  each row against the expected post-refresh state before any mutation;
+- allow notification-driven reconfiguration only for rows still durably owned by
+  the completed format-refresh flow (normally `Saved`) and never rewrite
+  `Queued`, `Active`, `PostProcessing`, `Paused`, `Cancelled`, `Error`, or an
+  unrelated current `Processing` session;
+- preserve `executionId` ownership by using an expected-state/CAS or generation
+  token that a later queue/worker transition invalidates;
+- do not delete an unrelated Processing configuration session merely because an
+  older format-update notification was opened; scope any replacement to the
+  notification-owned rows;
+- add deterministic regressions for Saved → Active before notification tap,
+  Saved → Queued, already-PostProcessing, unrelated Processing-session presence,
+  normal still-Saved reopening, and pressing Download after a stale notification,
+  proving no second execution owner can be created.
 
 ### P2 — BUG-TERMINATE-01 — Requeue active work before no-confirmation app termination
 
@@ -1075,6 +1629,102 @@ Required result:
 - add same-day and 23:00→05:00 boundary tests plus multi-day, no-new-user-action,
   restart/re-arm, and queued-work-survives-end regressions.
 
+### P2 — BUG-SCHEDULER-02 — Preserve live execution ownership when forcing scheduled items to run now
+
+**State:** Open
+
+**Failure path:** the production Scheduled Downloads screen offers per-item and
+multi-selection “Download now” actions. Both retain the selected numeric
+Download IDs and call
+`DownloadViewModel.resetScheduleTimeForItemsAndStartDownload()`, which directly
+executes `DownloadDao.resetScheduleTimeForItems(ids)`. That DAO update has no
+expected-status or execution-owner predicate: for every matching ID it sets
+`downloadStartTime = 0`, `status = 'Queued'`, and `executionId = ''`.
+
+A scheduled row can independently become eligible at its configured time and be
+claimed by `DownloadWorker`, whose claim changes the same row from `Scheduled`
+to `Active` and installs a fresh `executionId`. If that claim occurs after the
+Scheduled UI selected the row but before the user action reaches
+`resetScheduleTimeForItems()`, the unguarded update rewrites the live `Active`
+row back to `Queued` and erases its execution token while the original worker
+continues running. The view model then starts the download worker again; the
+queued row is eligible for a fresh claim and a second execution owner can start.
+The all-Scheduled variant does not have this exact defect because
+`resetScheduleTimeForAllScheduledItems()` requires `status = 'Scheduled'`, and
+`rescheduleQueuedOrScheduled()` likewise has an expected-status predicate.
+
+**Why this is a defect:** a stale UI selection can revoke durable ownership from
+a genuinely running download without cancelling or synchronizing with that
+owner. The database then advertises the same request as queueable while the old
+worker may still be downloading, moving, or post-processing files, allowing
+duplicate execution, conflicting output, and competing terminal writes.
+
+Required result:
+
+- make per-ID “Download now” an expected-state transition that changes only
+  rows still durably `Scheduled` (or another explicitly permitted non-running
+  state) and never clears the `executionId` of `Active`/`PostProcessing` work;
+- use the same authoritative ownership/status contract for single-item and
+  multi-selection actions as the already status-guarded all-Scheduled path;
+- if the target has already been claimed, treat the action as already running
+  rather than requeueing it;
+- keep worker acquisition and UI status transitions under a CAS/transactional
+  contract so no stale selection can manufacture a second owner;
+- add deterministic races where a selected Scheduled row is claimed immediately
+  before the per-item and multi-item “Download now” write, plus normal still-
+  Scheduled and already-PostProcessing regressions.
+
+### P2 — BUG-SCHEDULER-03 — Re-arm individually scheduled downloads after each exact alarm
+
+**State:** Open
+
+**Failure path:** the production download-card Schedule action persists
+`Processing` rows as `Scheduled` with their selected `downloadStartTime` and then
+runs the normal queue path. `DownloadRepository.startDownloadWorker()` merges
+those rows with every already-Scheduled row, groups future start times, and,
+when the user-facing `use_alarm_for_scheduling` setting is enabled, does not
+create one delayed WorkManager request per group. Instead it calls
+`AlarmScheduler.scheduleAt(futureScheduleGroups.keys.min())`, so AlarmManager
+represents only the earliest future start time. `scheduleAt()` itself stores a
+single one-shot exact alarm using the same request-code-1 PendingIntent.
+
+When that alarm fires, `ScheduleAlarmReceiver` only enqueues an immediate
+`DownloadWorker`; it does not inspect remaining future Scheduled rows or arm a
+successor alarm. `DownloadWorker` captures an eligibility cutoff near its own
+start and observes only rows whose `downloadStartTime` is at or before that
+cutoff, so a second scheduled group at a later time is not kept alive by the
+first worker. Once the due group and any current running work are gone, the
+worker can cancel itself. There is no other production caller that re-arms
+`scheduleAt()` after the alarm fires. With scheduled groups at `T1 < T2` and no
+later user/queue mutation, `T1` can run normally while `T2` remains durably
+`Scheduled` after its requested time with no execution carrier.
+
+**Why this is a defect:** enabling the explicit AlarmManager scheduling option
+changes multiple independently scheduled downloads into a chain whose only
+carrier is the first one-shot alarm, but no handoff to the next start time
+exists. A normal pair of user-scheduled downloads at different times can
+therefore silently lose the later execution even though its row still records
+the requested schedule. This is distinct from `BUG-SCHEDULER-01`, which covers
+the recurring daily scheduler window, and from `BUG-SCHEDULER-02`, which covers
+stale “Download now” ownership races.
+
+Required result:
+
+- after each individual exact alarm fires, atomically/reliably discover and arm
+  the next future Scheduled start time, or represent all pending future groups
+  with independently durable alarm/work identities;
+- keep one authoritative earliest-alarm contract when rows are added,
+  rescheduled, deleted, or forced to run now, replacing the current alarm only
+  when the next due time actually changes;
+- recover the next individual schedule after process/device restart or lost
+  platform alarm without requiring another user mutation;
+- ensure a worker launched for `T1` cannot be treated as the carrier for `T2`
+  when its eligibility cutoff excludes `T2`;
+- add deterministic two- and three-time-group regressions with AlarmManager
+  enabled, no intervening user action, cancellation/deletion of the earliest
+  group, rescheduling, process/device restart, and the WorkManager-delayed mode
+  as a non-regression control.
+
 ### P2 — BUG-HARDSUB-01 — Preserve ambiguous subtitle lookup failures instead of excluding scan candidates
 
 **State:** Open
@@ -1118,6 +1768,108 @@ Required result:
   set from a fetch that produced no item at all;
 - add ignored-error empty-result, thrown-failure, authoritative-no-subtitle,
   requested-subtitle, retry-exhaustion, and subsequent-rescan regressions.
+
+### P2 — BUG-HARDSUB-02 — Preserve hard-sub guarantees across History re-download replacement
+
+**State:** Open
+
+**Failure path:** a normal History re-download is prepared with
+`DownloadViewModel.createDownloadItemFromHistory()` and later revalidated by
+`hydrateHistoryRedownloadBeforeQueue()`. For a video whose existing History row
+has `hardSubDone = true`, hydration deliberately sets `requiresHardSubLookup =
+true`, because replacing that row should not silently discard its established
+hard-sub state. The subtitle lookup nevertheless takes
+`firstOrNull()?.availableSubtitles.orEmpty()`. A thrown lookup exception blocks
+queueing when `requiresHardSubLookup` is true, but a non-throwing missing
+`ResultItem` is collapsed to an empty subtitle list and is treated as a valid
+lookup. This is production-reachable because the yt-dlp metadata path uses
+`--ignore-errors` and can return normally with no parsed item.
+
+If the global/current re-download configuration did not already request subtitle
+burn-in, that ambiguous empty result leaves `videoPreferences.embedSubs = false`
+and the re-download proceeds without burning subtitles. `DownloadWorker` then
+uses the regular `HistoryRedownloadMarker` to authorize replacement of the same
+History row. When `hardSubBurned` is false, the replacement factory does not set
+`hardSubDone`/`hardSubScanRemoved` from the newly produced media; instead it
+copies `previous.hardSubDone` and `previous.hardSubScanRemoved`. After the
+History replacement commits, `deleteReplacedHistoryMedia()` deletes the previous
+media. The new file can therefore be unburned while the durable History row still
+claims `hardSubDone = true` and may remain excluded from future hard-sub scans.
+
+**Why this is a defect:** a non-authoritative metadata-empty result can erase an
+already-established media property during a destructive replacement while the
+persistent state falsely says that property survived. The user can lose the old
+hard-subbed file, receive an unburned replacement, and have automatic recovery
+skip it because the stale `hardSubDone` flag was inherited. This is distinct
+from `BUG-HARDSUB-01`, which concerns excluding scan candidates before any
+History replacement occurs.
+
+Required result:
+
+- carry an explicit authoritative subtitle-lookup outcome through History
+  re-download preparation, distinguishing a successful empty subtitle set from
+  an ignored-error/absent-item result;
+- when the target History row has `hardSubDone = true` or the current request
+  otherwise requires hard-sub verification, keep ambiguous/failed lookup
+  retryable or block replacement rather than treating it as “no subtitles”;
+- derive replacement `hardSubDone` and `hardSubScanRemoved` from the newly
+  produced media/current burn result, never by inheriting a prior file's hard-sub
+  claim without proof that the replacement satisfies it;
+- preserve the previous History media until the replacement has authoritatively
+  re-established the required hard-sub property, and fail safely if it cannot;
+- add direct Download-now and multi-Processing queue regressions for ignored-error
+  empty lookup, thrown lookup failure, authoritative empty subtitles, requested
+  subtitle discovery, prior `hardSubDone = true` with global embed disabled, and
+  successful burn-in, proving old media is not deleted and flags are not falsely
+  retained when the guarantee is not re-established.
+
+### P2 — BUG-HARDSUB-03 — Replace split-stream merge output without a delete-before-rename loss window
+
+**State:** Open
+
+**Failure path:** `DownloadWorker.burnSubtitlesInPlace()` prepares media for
+hard-sub burn-in by calling `mergeSeparatedVideoAudioIfNeeded()`. When yt-dlp has
+produced a video-only stream plus a matching audio-only stream and the current
+parent directory can create sibling output, that helper calls
+`mergeVideoAudioPairInDirectory()`. ffmpeg first writes a non-empty
+`<video>.muxed.<ext>` candidate. The publish step then deletes the original video
+**before** renaming the muxed candidate onto the original pathname. If
+`renameTo(primaryVideo)` returns false, the failure path deletes `mergedTemp`
+and returns `null`; its caller converts that into an IOException.
+
+A filesystem/provider/storage failure can therefore occur after the original
+video was successfully deleted but before the rename committed. In the explicit
+rename-failure path the code then deletes the only completed merged video as
+well, leaving neither the original video-only stream nor the merged candidate;
+the audio-only stream remains but cannot replace the lost video. A process death
+between original deletion and rename creates the same non-atomic publication
+window. This path is production-reachable whenever hard-sub processing receives
+split video/audio outputs; it occurs before subtitle burn-in and can run on the
+app cache or on a directly writable output directory.
+
+**Why this is a defect:** a helper whose job is to improve the current download's
+media layout uses destructive delete-before-publish ordering. A late rename or
+process failure can turn an otherwise completed yt-dlp video stream plus a
+successfully generated mux candidate into irreversible loss of the video output,
+rather than preserving either the prior stream or the candidate for recovery.
+This is distinct from `BUG-HARDSUB-02`, which concerns preserving an existing
+History hard-sub guarantee across replacement, and from `BUG-MOVE-01`, which
+concerns partial SAF destination publication.
+
+Required result:
+
+- publish the muxed candidate with a replacement protocol that never removes the
+  last valid video copy before the replacement is durably established;
+- preserve the original video or the completed mux candidate on rename/publish
+  failure and expose a recoverable failure rather than deleting both;
+- make process-death recovery able to distinguish and safely resume/clean an
+  interrupted split-stream merge without losing completed media;
+- delete the companion audio-only stream only after the replacement video is
+  authoritatively committed and validated;
+- add deterministic same-directory rename failure, process death between old-file
+  removal and replacement, cache-directory, direct-output, successful merge, and
+  already-audio-containing-video regressions proving at least one valid video
+  copy always survives a failed publish.
 
 ### P2 — BUG-CANCEL-01 — Persist cancel/requeue intent before terminating live work
 
@@ -1385,6 +2137,66 @@ Required result:
   queue -> success/failure, cancellation before queueing, and a fault between
   replacement insertion, ownership transfer, and old-row deletion.
 
+### P2 — BUG-LOWQUALITY-03 — Preserve low-quality ledger semantics across same-settings retry
+
+**State:** Open
+
+**Failure path:** a normal low-quality re-download child is linked to its
+concrete Download row by `LowQualityRedownloadItem.downloadId`. When that
+Download fails, `DownloadWorker` can successfully persist the Download as
+`Error` and transition the linked child to `FAILED`; `markDownloadState()` then
+runs `finalizeIfReadyLocked()`, so once the selected children are terminal the
+parent operation can itself become terminal `FAILED` or `PARTIAL_FAILURE`.
+The Error Download row remains available in the normal Errored Downloads UI.
+
+Pressing the single-card Download action calls
+`DownloadViewModel.retryFailedDownload()`. For an issue that permits a
+same-settings retry, the view model applies new retry metadata to the **same
+Download ID**, changes that row from `Error` to `Queued`, and starts the normal
+worker. It does not reopen the linked terminal child, create a new child/attempt,
+or move an already-terminal low-quality parent back to a running state. The
+worker can therefore execute a new attempt while the durable ledger still says
+that this child — and potentially its parent operation — has already failed.
+
+If the retry succeeds, `DownloadRepository.completeAndDelete()` looks up the
+linked child but changes it to `SUCCEEDED` only when the current child is
+nonterminal. A child already terminalized as `FAILED` by the first attempt is
+skipped, after which the Download row is deleted as a successful completion.
+Startup reconciliation cannot repair the discrepancy: `reconcileLinkedDownloads()`
+explicitly filters to linked children whose state is nonterminal, and
+`finalizeIfReadyLocked()` preserves an already-terminal operation. The final
+durable state can therefore remain child=`FAILED` and parent=`FAILED` or
+`PARTIAL_FAILURE` even though the same low-quality Download retry later
+succeeded and its Download row was removed as success.
+
+**Why this is a defect:** the generic retry contract recognizes a newer attempt
+on the Download row, but the owning low-quality ledger treats the first attempt's
+terminal failure as permanently authoritative. A user can successfully repair
+the media through the normal supported same-settings retry while the operation
+that created and tracks that repair continues to report failure, with no restart
+reconciliation path capable of correcting it. This is distinct from
+`BUG-LOWQUALITY-02`, which loses ownership while creating a different Download
+ID through bulk reconfiguration; this path reuses the original Download ID and
+enters through the ordinary single-item `SAME_SETTINGS` retry.
+
+Required result:
+
+- represent retry attempts explicitly in the low-quality ledger or atomically
+  reopen/rebind the existing child and parent when an allowed retry is queued;
+- make the low-quality retry transition and Download `Error -> Queued` transition
+  one ownership transaction so a terminal child cannot remain `FAILED` while
+  the same logical child is running again;
+- on retry success, failure, cancellation, or save-for-later, commit the newer
+  attempt outcome into the owning child/parent and do not let
+  `completeAndDelete()` silently skip an older terminal child that owns the
+  current retry;
+- make startup reconciliation generation-aware so an old terminal attempt cannot
+  remain authoritative for a newer durable Download retry;
+- add production-path regressions for low-quality Error -> single-card
+  `SAME_SETTINGS` -> success/failure, mixed parent outcomes, cancellation,
+  process restart, and retry-attempt limits, with bulk `RECONFIGURED` ownership
+  transfer retained as separate coverage.
+
 ### P2 — BUG-RETRY-01 — Require actual reconfiguration before bypassing same-settings retry policy
 
 **State:** Open
@@ -1467,6 +2279,168 @@ Required result:
   successful output, thrown execution failure, and an error line containing
   unrelated success-like text.
 
+### P2 — BUG-PLAYLIST-01 — Make playlist and playlist-group deletion atomic
+
+**State:** Open
+
+**Failure path:** the production History playlist UI confirms single- or
+multi-playlist deletion and calls `PlaylistViewModel.deletePlaylist()`, which
+launches `PlaylistRepository.deletePlaylist()`. That repository performs
+`playlistDao.deletePlaylistItemsByPlaylistId()`,
+`playlistDao.deletePlaylist()`, and
+`playlistGroupDao.deleteMembersByPlaylist()` as three independent DAO mutations
+without a Room transaction. `PlaylistGroupMember` has no foreign-key cascade
+tying its `playlistId` to `playlists`, so the final cleanup is not repaired
+automatically.
+
+If playlist-item deletion commits and the subsequent playlist-row delete throws,
+the playlist remains but its History membership has already been lost. If the
+playlist row is deleted and the final group-membership cleanup throws, stale
+`playlist_group_members` rows remain for a playlist that no longer exists. The
+production playlist-group Delete action has the same split boundary in
+`HistoryFragment`: for each selected group it calls `deleteMembersByGroup()` and
+then `deleteGroup()` separately, so a failure after the membership delete can
+leave the group present but emptied. The UI does not expose a recoverable
+partial-deletion state; selection/filter UI is closed or reset after the command
+is issued.
+
+**Why this is a defect:** one user-facing destructive action mutates one logical
+playlist/group relationship graph, but the durable state can commit only a
+prefix of that mutation. A transient Room failure or process death between
+statements can silently erase memberships, leave orphan group links, or leave an
+existing group/playlist with relationships already removed. This is separate
+from `BUG-HISTORY-01`, which covers deleting History rows and Undo, and from
+`BUG-BACKUP-07`, which covers backup/restore omission.
+
+Required result:
+
+- delete a playlist, its `PlaylistItemCrossRef` rows, and every
+  `PlaylistGroupMember` reference in one Room transaction, or enforce equivalent
+  foreign-key/cascade semantics under one authoritative repository operation;
+- delete each playlist group and its member rows atomically, and define whether
+  multi-selection deletion is all-or-nothing or returns an explicit per-item
+  partial result rather than silently mixing success and failure;
+- surface persistence failure without closing/resetting the UI as though the
+  relationship graph definitely committed;
+- add fault-injection/process-death regressions after playlist-item deletion,
+  after playlist-row deletion, and after group-member deletion, plus normal
+  single/multi playlist and playlist-group deletion tests proving no surviving
+  object loses membership and no orphan relation survives.
+
+### P2 — BUG-QUEUE-02 — Preserve worker ownership when moving a queued item to Saved
+
+**State:** Open
+
+**Failure path:** the production Queued Downloads screen loads a `DownloadItem`
+and opens `UiUtil.showDownloadItemDetailsCard()`. Its long-click Download action
+uses that earlier UI snapshot to enter the reconfiguration/save flow: it changes
+the snapshot status to `Saved`, calls
+`DownloadViewModel.updateToStatus(id, Saved)`, and then opens the normal download
+configuration sheet. The selected row is not reserved while that details card is
+open. `DownloadWorker` can independently claim the still-Queued row in the
+meantime through `claimDownloadForWorker()`, changing it to `Active` and
+installing a fresh `executionId`.
+
+The stale UI action does reload the row indirectly, but the repository does not
+use that newer state as a veto. `updateToStatus(..., Saved)` delegates to
+`DownloadRepository.moveToSaved()`, whose Room transaction reads the current row
+and then unconditionally calls `downloadDao.setStatus(id, 'Saved')`. The DAO
+update has no expected `Queued` status or execution-owner predicate and does not
+clear or coordinate the active execution token. The same transaction calls
+`markLinkedDownloadSaved()`, which can terminalize an attached low-quality child
+as `SKIPPED / SAVED_FOR_LATER` and finalize its parent operation even though the
+claimed Download worker is still executing.
+
+`DownloadWorker` does not treat `Saved` as a user-stop state; its ordinary stop
+check covers `Paused` and `Cancelled`. The worker can therefore continue doing
+network/filesystem work until a later owner-and-running-state guarded write fails,
+or can already have produced output before that conflict is observed. The
+configuration sheet opened by the stale action can subsequently mutate or queue
+the same durable row again, creating further competing state transitions while
+the original execution still exists.
+
+**Why this is a defect:** a navigation action that was authorized only by an old
+Queued UI snapshot can overwrite a newer authoritative worker claim and can
+simultaneously tell the low-quality ledger that the work was intentionally
+skipped. Durable Download state, ledger state, and the real live process can
+therefore disagree, with possible duplicate/reconfigured execution, orphaned
+output, false low-quality completion, or a spurious failure of the original
+worker. This is distinct from `BUG-FORMAT-02`, whose stale authority comes from a
+completed format-notification deep link, and from scheduler/pause defects whose
+state transitions enter through different commands.
+
+Required result:
+
+- make Queued -> Saved an expected-state transition that succeeds only while the
+  row is still in the UI-authorized non-running state and has no current worker
+  ownership; if it has already become `Active`/`PostProcessing`, report it as
+  already running instead of rewriting its status;
+- bind the details/reconfiguration action to an expected status/generation or
+  re-read and validate current ownership immediately before the mutation;
+- terminalize a linked low-quality child as `SKIPPED / SAVED_FOR_LATER` only in
+  the same transaction that successfully commits the authorized non-running
+  Download -> Saved transition;
+- never allow a stale Saved/reconfiguration UI to clear, replace, or compete with
+  an existing `executionId`; coordinate any deliberate stop-and-reconfigure flow
+  through the normal durable cancellation/pause ownership protocol first;
+- add deterministic Queued-details -> worker-claim -> Save races for ordinary and
+  low-quality-linked downloads, plus already-PostProcessing, normal still-Queued,
+  and subsequent configuration/queue-action regressions.
+
+### P2 — BUG-GROUP-01 — Make keyword and Youtuber group deletion atomic
+
+**State:** Open
+
+**Failure path:** the production History group-management UI deletes selected
+keyword groups and Youtuber groups directly from `HistoryFragment`. For each
+keyword group it calls `KeywordGroupDao.deleteMembersByGroup(id)` and then
+`deleteGroup(id)` as separate Room statements. For each Youtuber group it calls
+`YoutuberGroupDao.deleteMembersByGroup(id)`,
+`deleteRelationsByGroup(id)`, and finally `deleteGroup(id)`, again without one
+transaction spanning the logical deletion. The entity models do not declare
+foreign keys or cascade behavior from `keyword_group_members`,
+`youtuber_group_members`, or `youtuber_group_relations` to their group rows, so a
+later statement cannot rely on Room/SQLite to repair an earlier committed
+prefix.
+
+If keyword membership deletion commits and group deletion then throws or the
+process dies, the group survives but is silently emptied. In the Youtuber path,
+a failure after membership or relation deletion can leave the group present with
+part of its relationship graph already erased; a failure of the final group-row
+delete can leave an emptied/disconnected group, while a future reordering of the
+statements would also permit orphan relation rows because no FK protects them.
+Multi-selection repeats this non-atomic sequence group by group, so earlier
+groups can be fully deleted while a later one is only partially mutated. The UI
+resets filters/action state immediately after launching the IO coroutine and does
+not expose a partial-deletion result or rollback contract.
+
+**Why this is a defect:** deleting one logical group is a destructive mutation of
+the group and all relationships that define its contents/hierarchy, but the
+production command can durably commit only a prefix. A transient Room failure or
+process death can therefore lose keyword memberships, Youtuber memberships, or
+parent/child relationships while the affected group itself remains, and the
+normal UI gives no indication of which prefix committed. This is distinct from
+`BUG-PLAYLIST-01`, which owns playlist and playlist-group relationship deletion,
+and from `BUG-BACKUP-06`, which concerns remapping group identities during
+restore.
+
+Required result:
+
+- delete each keyword group together with all `KeywordGroupMember` rows in one
+  Room transaction or equivalent FK/cascade contract;
+- delete each Youtuber group together with every member row and every parent or
+  child `YoutuberGroupRelation` in one authoritative transaction;
+- define multi-selection deletion as all-or-nothing or return an explicit
+  per-group result rather than silently accepting a partially committed batch;
+- surface persistence failure without clearing/resetting the management UI as if
+  deletion definitely committed, and keep surviving groups' relationship graphs
+  intact;
+- add fault-injection/process-death regressions after keyword-member deletion,
+  after Youtuber-member deletion, after relation deletion, and before group-row
+  deletion, plus normal single/multi deletion and parent/child hierarchy tests
+  proving no surviving group loses only part of its graph and no orphan relation
+  survives.
+
 ### P3 — BUG-LOCALADD-02 — Persist local-add session input before durable worker enqueue
 
 **State:** Open
@@ -1526,6 +2500,196 @@ Required result:
 - make direct, mixed, select-all, and inverted selection obey the same rule as
   drag/per-item controls;
 - add focused membership-waiting selection/reorder regressions.
+
+### P3 — BUG-METADATA-03 — Do not report failed Saved-item metadata enrichment as success
+
+**State:** Open
+
+**Failure path:** the production download card's Save for Later action calls
+`DownloadViewModel.putToSaved()`, which first persists the Download row as
+`Saved`. If title, author, or thumbnail is blank, the view model then enqueues a
+one-time `UpdateMultipleDownloadsDataWorker` for that durable row. The worker
+runs each requested ID through `MetadataBatchProcessor`. Non-cancellation
+exceptions while loading, checking, extracting, or persisting one item are
+caught inside the processor and reduced to `MetadataBatchResult.failed`; the
+worker only logs that count and still returns `Result.success()`.
+
+There is also a non-throwing loss path. `ResultRepository.updateDownloadItem()`
+returns `null` when no usable metadata candidate is available. The worker invokes
+it with `?.let { ... }`, so that `null` performs no persistence but returns from
+the per-item callback normally. `MetadataBatchProcessor` consequently counts the
+item as completed, and the worker again returns success. The Saved row can
+therefore retain the same missing metadata that caused background enrichment to
+be scheduled, while WorkManager records the one-time request as successfully
+finished.
+
+**Why this is a defect:** a production-requested repair of visibly incomplete
+Saved metadata can become a durable scheduler success even though no repair was
+committed. Transient extractor/database failures and ambiguous empty metadata no
+longer have a retry signal, and there is no durable failed/pending enrichment
+state for recovery after restart. This is distinct from `BUG-METADATA-01`, which
+covers stale full-row writes, and `BUG-METADATA-02`, which covers applying
+metadata from the wrong source identity.
+
+Required result:
+
+- return an explicit per-item enrichment outcome that distinguishes updated,
+  no-longer-needed, retryable lookup failure/ambiguous empty result, and durable
+  persistence failure instead of using nullable success semantics;
+- make the worker's WorkManager result reflect unresolved requested items under
+  a bounded retry/failure contract rather than returning success whenever the
+  outer loop completes;
+- treat a request as successful only after an authoritative re-read proves the
+  row no longer needs enrichment, or the intended metadata mutation commits;
+- preserve `CancellationException` as cancellation and avoid retrying already
+  completed items unnecessarily;
+- add single-item and mixed-batch regressions for empty metadata, extractor
+  exception, Download-row persistence failure, cancellation, process restart,
+  retry exhaustion, and successful enrichment.
+
+### P3 — BUG-INCOGNITO-01 — Represent mixed multi-download incognito state correctly
+
+**State:** Open
+
+**Failure path:** the production multi-download configuration sheet initializes
+its Incognito control by calling `DownloadViewModel.areAllProcessingIncognito()`
+for either the current checked subset or, when no subset is checked, every
+Processing row. Despite the function name, both branches return `true` whenever
+the corresponding DAO count is merely greater than zero. A mixed set containing
+one `incognito = true` item and one `incognito = false` item is therefore
+reported to the UI as though every selected item were incognito, and the menu
+icon is rendered in the fully-enabled state.
+
+The same menu item uses that icon state as the semantic input for the next
+mutation. If the icon is fully enabled, tapping it calls
+`updateProcessingIncognito(..., false)`, whose DAO path updates every targeted
+Processing row. No parser, adapter normalization, or repository merge prevents
+mixed persisted values before this check. A user who selects a mixed set and
+sees the incorrect all-enabled state can therefore turn Incognito off for the
+entire set with one tap, including items whose previous privacy setting was not
+represented accurately by the control.
+
+**Why this is a defect:** a Boolean aggregate named and presented as “all” is
+implemented as “any”, and that false authoritative UI state is then used to
+choose a persistent bulk mutation. This is not only an icon inconsistency: mixed
+per-item privacy configuration is collapsed into a different durable state by a
+normal production action without an explicit mixed-state decision.
+
+Required result:
+
+- derive Incognito selection state from the complete targeted set, not from
+  `count > 0`; represent all-on, all-off, and mixed explicitly or otherwise
+  define a deterministic bulk-toggle contract that does not mislabel mixed data;
+- make the mutation depend on the authoritative targeted-row state or an
+  explicit user command rather than icon alpha;
+- preserve unselected Processing rows and make checked-subset versus no-selection
+  semantics unambiguous;
+- refresh the aggregate after selection membership or row state changes so the
+  displayed state cannot become stale before the write;
+- add regressions for all-on, all-off, mixed, selected-subset mixed, no-selection
+  whole-batch mixed, selection changes, and one-tap persistence outcomes.
+
+### P3 — BUG-RESULT-01 — Make Result reverse ordering atomic and independent of primary keys
+
+**State:** Open
+
+**Failure path:** the production playlist-selection sheet exposes a Reverse action
+that calls `ResultViewModel.reverseResults(resultItemIDs)`. The view model takes
+the maximum current Result primary key, assigns each existing Result a future
+primary key above that maximum in reverse order, immediately returns those not-
+yet-committed IDs to the UI, then launches a background coroutine that waits one
+second and calls `ResultRepository.updateID()` once per row. The DAO implements
+that operation as `UPDATE results SET id = :newID WHERE id = :id`; the sequence is
+not wrapped in one Room transaction and no revision or reservation protects the
+future IDs.
+
+A normal concurrent Result insertion can occur after the future IDs are computed
+but before all of those delayed PK rewrites finish. SQLite can allocate one of
+the supposedly reserved future IDs to that new Result, causing a later
+`UPDATE ... SET id = <same value>` to fail on the primary-key uniqueness
+constraint. Process death or coroutine failure after only a prefix of updates
+creates the same persistent partial-reorder state. Meanwhile
+`SelectPlaylistItemsDialog` has already replaced `resultItemIDs` with the full
+future-ID list and treats any mismatch between that list and the observed Result
+rows as loading, suppressing the recycler layout and disabling selection
+controls. No parser or repository layer later reconstructs the intended order or
+rolls back a partially remapped set.
+
+**Why this is a defect:** a UI-only ordering command mutates database identity in
+multiple independent commits and exposes uncommitted IDs as though they were
+already authoritative. A normal insertion race or process interruption can leave
+persistent Result rows only partly reordered and can strand the selection sheet
+waiting for IDs that will never all appear. Result rows are transient compared
+with History, so the impact is limited, but the production action still has a
+real consistency and recoverability failure.
+
+Required result:
+
+- represent Result display/order with a dedicated ordering field or an in-memory
+  ordered ID list rather than rewriting primary keys for presentation;
+- if persistent reordering is required, commit the complete reorder atomically
+  under one transaction using a collision-free mapping and do not publish new
+  identities before commit;
+- keep concurrent Result insertion from colliding with the reorder, or serialize
+  insertion/reorder under the same authoritative ordering contract;
+- on failure, retain the prior committed order and keep the selection UI usable
+  instead of waiting on speculative IDs;
+- add deterministic concurrent-insert, process-death/exception-between-updates,
+  normal reverse, repeated reverse, and selection-after-reverse regressions.
+
+### P3 — BUG-LOCALADD-03 — Persist unresolved local-add session before worker success
+
+**State:** Open
+
+**Failure path:** the production History local-add flow persists the selected URI
+list and enqueues `LocalAddWorker`. During the worker run, candidates that cannot
+be accepted into History automatically are accumulated in `pending`. When that
+list is non-empty, the worker generates a new session ID, calls
+`LocalAddStorage.savePending()`, calls `LocalAddStorage.setOpenSession()`, posts a
+system notification whose PendingIntent contains the session ID, and then
+returns `Result.success()`. Both `savePending()` and `setOpenSession()` use
+`SharedPreferences.Editor.apply()`: they update process memory synchronously but
+write to disk asynchronously and expose no durable-write failure result.
+
+The notification and WorkManager completion are independent of those preference
+writes. A process death or failed asynchronous preference write after the
+notification/worker success boundary can therefore leave the notification's
+session ID without a durable `local_add_pending_<id>` payload, or can persist the
+payload without the open-session pointer that makes it discoverable after a
+restart. Tapping the notification does not recover the missing candidate list:
+`MainActivity` forwards the session ID, but `HistoryFragment.openPendingLocalAddSession()`
+calls `LocalAddStorage.loadPending()` and simply returns when it observes an empty
+list. There is no startup reconciliation that enumerates orphan pending-session
+keys or recreates a missing payload from the already-successful worker. The
+original selected files remain untouched, but the app can silently lose the
+user's pending import/resolution work and report the worker as successfully
+finished.
+
+**Why this is a defect:** unresolved candidates are the authoritative output of
+the first local-add phase, but that output is stored less durably than both its
+success result and its user-visible continuation token. A normal abrupt process
+death or preference-write failure can therefore turn a completed local-add scan
+into a dead notification/no-op or an undiscoverable pending session, with no
+retry or failure signal. This is distinct from `BUG-LOCALADD-02`, which covers
+losing the **input URI list before the worker starts**; this path loses the
+worker's unresolved **output session after processing has completed**.
+
+Required result:
+
+- persist pending local-add candidates and their session/continuation identity in
+  durable database or file-backed state before the worker can return success or
+  publish a continuation notification;
+- make the pending payload and discoverable/open-session ownership one atomic or
+  recoverably ordered contract so neither can survive without the other;
+- publish the notification only after that durable commit, and make opening a
+  missing/corrupt pending session surface a typed recoverable failure rather than
+  silently returning;
+- reconcile durable unresolved sessions on startup so a lost notification or
+  process death cannot orphan already-processed pending work;
+- add deterministic asynchronous-write failure and process-death tests after
+  candidate classification, after pending-payload persistence, after open-session
+  persistence, after notification publication, and immediately before worker
+  success, plus normal notification-open and restart-recovery coverage.
 
 ## Current status
 
