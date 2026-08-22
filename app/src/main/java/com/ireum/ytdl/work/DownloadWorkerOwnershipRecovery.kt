@@ -6,6 +6,47 @@ import com.ireum.ytdl.util.download.DownloadIssueStage
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 
+internal data class AbandonedDownloadExecution(
+    val downloadId: Long,
+    val executionId: String,
+    val status: String,
+)
+
+/**
+ * Reconciles rows left in a running state by an execution that no longer has
+ * a process-local owner.  The caller supplies the execution-scoped CAS and a
+ * reread so a newer attempt can win without being touched by stale recovery.
+ */
+internal suspend fun recoverAbandonedDownloadExecutions(
+    rows: Collection<AbandonedDownloadExecution>,
+    isOwnedBy: (Long, String) -> Boolean,
+    requeue: suspend (Long, String) -> Int,
+    readCurrent: suspend (Long) -> AbandonedDownloadExecution?,
+) {
+    val runningStatuses = setOf("Active", "PostProcessing")
+    rows.forEach { row ->
+        if (isOwnedBy(row.downloadId, row.executionId)) return@forEach
+
+        val affected = requeue(row.downloadId, row.executionId)
+        if (affected > 0) return@forEach
+
+        val current = readCurrent(row.downloadId)
+        if (
+            current == null ||
+            current.executionId != row.executionId ||
+            current.status !in runningStatuses ||
+            isOwnedBy(current.downloadId, current.executionId)
+        ) {
+            return@forEach
+        }
+
+        error(
+            "Abandoned download execution remained running after startup recovery " +
+                "id=${row.downloadId} executionId=${row.executionId}"
+        )
+    }
+}
+
 /**
  * Process-local liveness registry keyed by the exact Download execution token.
  * A dead E1 must not hide a recoverable row, and releasing E1 must never clear

@@ -345,47 +345,81 @@ class DownloadWorker(
     }
 
     /**
-     * Recover a row left running by process death after the History mismatch
-     * decision committed but before the ordinary Download Error projection.
+     * Reconcile every abandoned execution before queue observation.  The same
+     * mutex serializes this scan with claim plus process-local owner
+     * registration, so an E2 claim cannot be mistaken for a dead E1 between
+     * those two operations.
      */
-    private suspend fun recoverDurableMismatchRowsAtStartup(dbManager: DBManager) =
+    private suspend fun recoverAbandonedDownloadExecutionsAtStartup(dbManager: DBManager) =
         withContext(Dispatchers.IO + NonCancellable) {
-            val dao = dbManager.downloadDao
-            val activeRows = dao.getActiveAndPostProcessingDownloadsList()
-            val barriers = dbManager.historyReplacementBarrierDao
-                .getByDownloadIds(activeRows.map { it.id })
-                .associateBy { it.downloadId }
-            activeRows.forEach { item ->
-                val barrier = barriers[item.id] ?: return@forEach
-                val issue = HistoryReplacementDiagnostic.persistedMismatchIssue(barrier.issueCode)
-                    ?: error("Invalid History replacement barrier issue ${barrier.issueCode}")
-                val affected = if (item.executionId.isBlank()) {
-                    dao.requeueActiveDownloadsWithIssue(
-                        listOf(item.id),
-                        issue.code.name,
-                        issue.stage.name,
-                    )
-                } else {
-                    dao.requeueActiveDownloadWithIssue(
-                        id = item.id,
-                        executionId = item.executionId,
-                        issueCode = issue.code.name,
-                        issueStage = issue.stage.name,
-                    )
-                }
-                if (affected == 0) {
-                    val current = dao.getNullableDownloadById(item.id)
-                    check(
-                        current?.let {
-                            it.status !in setOf(
-                                DownloadRepository.Status.Active.name,
-                                DownloadRepository.Status.PostProcessing.name,
-                            ) || it.executionId != item.executionId
-                        } ?: true
-                    ) {
-                        "Durable History mismatch row remained running after startup recovery ${item.id}"
+            downloadWorkerMutex.withLock {
+                val dao = dbManager.downloadDao
+                val activeRows = dao.getActiveAndPostProcessingDownloadsList()
+                val barriers = dbManager.historyReplacementBarrierDao
+                    .getByDownloadIds(activeRows.map { it.id })
+                    .associateBy { it.downloadId }
+                val authoritativeIssues = activeRows.associate { item ->
+                    val issue = barriers[item.id]?.let { barrier ->
+                        when (barrier.issueCode) {
+                            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
+                                HistoryReplacementDiagnostic.issue(
+                                    HistoryReplacementMismatchKind.SOURCE
+                                )
+                            DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
+                                HistoryReplacementDiagnostic.issue(
+                                    HistoryReplacementMismatchKind.TYPE
+                                )
+                            DownloadIssueCode.HISTORY_TARGET_DELETED.name ->
+                                HistoryReplacementDiagnostic.targetDeletedIssue()
+                            else -> error(
+                                "Invalid History replacement barrier issue ${barrier.issueCode}"
+                            )
+                        }
+                    } ?: when (item.lastIssueCode) {
+                        DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
+                            HistoryReplacementDiagnostic.issue(
+                                HistoryReplacementMismatchKind.SOURCE
+                            )
+                        DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
+                            HistoryReplacementDiagnostic.issue(
+                                HistoryReplacementMismatchKind.TYPE
+                            )
+                        DownloadIssueCode.HISTORY_TARGET_DELETED.name ->
+                            HistoryReplacementDiagnostic.targetDeletedIssue()
+                        else -> null
                     }
+                    item.id to issue
                 }
+
+                recoverAbandonedDownloadExecutions(
+                    rows = activeRows.map {
+                        AbandonedDownloadExecution(
+                            downloadId = it.id,
+                            executionId = it.executionId,
+                            status = it.status,
+                        )
+                    },
+                    isOwnedBy = DownloadWorkerExecutionOwners::isOwnedBy,
+                    requeue = { downloadId, executionId ->
+                        authoritativeIssues[downloadId]?.let { issue ->
+                            dao.requeueActiveDownloadWithIssue(
+                                id = downloadId,
+                                executionId = executionId,
+                                issueCode = issue.code.name,
+                                issueStage = issue.stage.name,
+                            )
+                        } ?: dao.requeueActiveDownload(downloadId, executionId)
+                    },
+                    readCurrent = { downloadId ->
+                        dao.getNullableDownloadById(downloadId)?.let {
+                            AbandonedDownloadExecution(
+                                downloadId = it.id,
+                                executionId = it.executionId,
+                                status = it.status,
+                            )
+                        }
+                    },
+                )
             }
         }
 
@@ -483,7 +517,7 @@ class DownloadWorker(
             (inputData.getLongArray("priority_item_ids") ?: longArrayOf()).toList()
         var priorityItemIDs = requestedPriorityItemIDs
         val continueAfterPriorityIds = inputData.getBoolean("continue_after_priority_ids", true)
-        recoverDurableMismatchRowsAtStartup(dbManager)
+        recoverAbandonedDownloadExecutionsAtStartup(dbManager)
         val queuedItems = when (DownloadQueuePolicy.observationMode(priorityItemIDs)) {
             DownloadQueueObservationMode.STANDARD -> dao.getQueuedScheduledDownloadsUntil(time)
             DownloadQueueObservationMode.PRIORITY ->

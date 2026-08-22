@@ -26,6 +26,49 @@ class DownloadWorkerOwnershipRecoveryTest {
     }
 
     @Test
+    fun abandonedOrdinaryExecutionIsRequeuedWithItsExactToken() = runBlocking {
+        val row = AbandonedDownloadExecution(904L, "E1", "Active")
+        var persistedToken = ""
+        var status = row.status
+
+        recoverAbandonedDownloadExecutions(
+            rows = listOf(row),
+            isOwnedBy = { _, _ -> false },
+            requeue = { id, executionId ->
+                assertEquals(row.downloadId, id)
+                persistedToken = executionId
+                status = "Queued"
+                1
+            },
+            readCurrent = { AbandonedDownloadExecution(row.downloadId, persistedToken, status) },
+        )
+
+        assertEquals("E1", persistedToken)
+        assertEquals("Queued", status)
+    }
+
+    @Test
+    fun abandonedExecutionCasDoesNotTouchNewerExecution() = runBlocking {
+        val stale = AbandonedDownloadExecution(905L, "E1", "PostProcessing")
+        val newer = AbandonedDownloadExecution(905L, "E2", "Active")
+        var requeueAttempts = 0
+
+        recoverAbandonedDownloadExecutions(
+            rows = listOf(stale),
+            isOwnedBy = { id, executionId -> id == newer.downloadId && executionId == newer.executionId },
+            requeue = { _, _ ->
+                requeueAttempts += 1
+                0
+            },
+            readCurrent = { newer },
+        )
+
+        assertEquals(1, requeueAttempts)
+        assertEquals("E2", newer.executionId)
+        assertEquals("Active", newer.status)
+    }
+
+    @Test
     fun unrecoverableSourceAndTypeMismatchWritesRequeueWithExactBarrierAndPropagate() = runBlocking {
         listOf(
             HistoryReplacementMismatchKind.SOURCE,
