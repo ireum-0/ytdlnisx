@@ -25,6 +25,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -215,13 +216,15 @@ class HistoryReplacementBarrierPersistenceTest {
     fun qualityHistoryReplacementRequiresLiveImmutableLedgerAuthority() = runBlocking {
         val historyId = insertHistory()
         val operation = LowQualityRedownloadRepository(db).createOrReconnect(now = 10L)
+        val downloadOperationId = "quality-download-operation-$historyId"
         val item = insertDownload(DownloadType.video)
         db.downloadDao.update(
             item.copy(
                 playlistURL = HistoryRedownloadMarker.quality(historyId, 720),
-                operationId = operation.operationId,
+                operationId = downloadOperationId,
             )
         )
+        assertNotEquals(operation.operationId, downloadOperationId)
         db.lowQualityRedownloadDao.upsertItem(
             LowQualityRedownloadItem(
                 operationId = operation.operationId,
@@ -238,7 +241,7 @@ class HistoryReplacementBarrierPersistenceTest {
             1,
             db.downloadDao.claimDownloadForWorker(
                 id = item.id,
-                expectedOperationId = operation.operationId,
+                expectedOperationId = downloadOperationId,
                 expectedRetryAttempt = item.retryAttempt,
                 executionId = "quality-authority-worker",
             ),
@@ -251,7 +254,7 @@ class HistoryReplacementBarrierPersistenceTest {
                 expectedSourceUrl = HISTORY_URL,
                 expectedType = DownloadType.video,
                 replacementDownloadId = item.id,
-                replacementOperationId = operation.operationId,
+                replacementOperationId = downloadOperationId,
                 expectedExecutionId = "quality-authority-worker",
             )::class.java,
         )
@@ -270,13 +273,265 @@ class HistoryReplacementBarrierPersistenceTest {
                 expectedSourceUrl = HISTORY_URL,
                 expectedType = DownloadType.video,
                 replacementDownloadId = item.id,
-                replacementOperationId = operation.operationId,
+                replacementOperationId = downloadOperationId,
                 expectedExecutionId = "quality-authority-worker",
             )
         } catch (_: HistoryReplacementQualityAuthorityLostException) {
             rejected = true
         }
         assertTrue(rejected)
+    }
+
+    @Test
+    fun qualityAuthorityRejectsWrongDownloadLineageWithoutHistoryMutation() = runBlocking {
+        val historyId = insertHistory()
+        val parentOperation = LowQualityRedownloadRepository(db).createOrReconnect(now = 20L)
+        val downloadOperationId = "quality-download-lineage-$historyId"
+        val item = insertDownload(DownloadType.video)
+        db.downloadDao.update(
+            item.copy(
+                playlistURL = HistoryRedownloadMarker.quality(historyId, 720),
+                operationId = downloadOperationId,
+            )
+        )
+        db.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = parentOperation.operationId,
+                historyId = historyId,
+                intendedSourceUrl = HISTORY_URL,
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.QUEUED.name,
+                downloadId = item.id,
+            )
+        )
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = item.id,
+                expectedOperationId = downloadOperationId,
+                expectedRetryAttempt = item.retryAttempt,
+                executionId = "quality-lineage-worker",
+            ),
+        )
+        val before = db.historyDao.getItem(historyId)
+        var rejected = false
+        try {
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = item.id,
+                replacementOperationId = "wrong-download-lineage",
+                expectedExecutionId = "quality-lineage-worker",
+            )
+        } catch (_: com.ireum.ytdl.database.repository.HistoryReplacementExecutionOwnershipLostException) {
+            rejected = true
+        }
+        assertTrue(rejected)
+        assertEquals(before, db.historyDao.getItem(historyId))
+    }
+
+    @Test
+    fun qualityAuthorityRejectsMissingAndTerminalLedgerAuthority() = runBlocking {
+        val missingHistoryId = insertHistory()
+        val missingDownloadOperationId = "quality-missing-download-$missingHistoryId"
+        val missingItem = insertDownload(DownloadType.video)
+        db.downloadDao.update(
+            missingItem.copy(
+                playlistURL = HistoryRedownloadMarker.quality(missingHistoryId, 720),
+                operationId = missingDownloadOperationId,
+            )
+        )
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = missingItem.id,
+                expectedOperationId = missingDownloadOperationId,
+                expectedRetryAttempt = missingItem.retryAttempt,
+                executionId = "quality-missing-worker",
+            ),
+        )
+        var missingRejected = false
+        try {
+            repository().authorizeHistoryReplacement(
+                historyId = missingHistoryId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = missingItem.id,
+                replacementOperationId = missingDownloadOperationId,
+                expectedExecutionId = "quality-missing-worker",
+            )
+        } catch (_: HistoryReplacementQualityAuthorityLostException) {
+            missingRejected = true
+        }
+        assertTrue(missingRejected)
+
+        val terminalHistoryId = insertHistory()
+        val parentOperation = LowQualityRedownloadRepository(db).createOrReconnect(now = 30L)
+        val terminalDownloadOperationId = "quality-terminal-download-$terminalHistoryId"
+        val terminalItem = insertDownload(DownloadType.video)
+        db.downloadDao.update(
+            terminalItem.copy(
+                playlistURL = HistoryRedownloadMarker.quality(terminalHistoryId, 720),
+                operationId = terminalDownloadOperationId,
+            )
+        )
+        db.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = parentOperation.operationId,
+                historyId = terminalHistoryId,
+                intendedSourceUrl = HISTORY_URL,
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.QUEUED.name,
+                downloadId = terminalItem.id,
+            )
+        )
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = terminalItem.id,
+                expectedOperationId = terminalDownloadOperationId,
+                expectedRetryAttempt = terminalItem.retryAttempt,
+                executionId = "quality-terminal-worker",
+            ),
+        )
+        assertEquals(
+            1,
+            db.lowQualityRedownloadDao.setItemStateByDownloadId(
+                terminalItem.id,
+                LowQualityRedownloadItemState.FAILED.name,
+                "terminal-child",
+                31L,
+            ),
+        )
+        var terminalRejected = false
+        try {
+            repository().authorizeHistoryReplacement(
+                historyId = terminalHistoryId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = terminalItem.id,
+                replacementOperationId = terminalDownloadOperationId,
+                expectedExecutionId = "quality-terminal-worker",
+            )
+        } catch (_: HistoryReplacementQualityAuthorityLostException) {
+            terminalRejected = true
+        }
+        assertTrue(terminalRejected)
+    }
+
+    @Test
+    fun qualityAuthorityRejectsImmutableSourceAndTypeMismatch() = runBlocking {
+        val sourceHistoryId = insertHistory()
+        val sourceOperation = LowQualityRedownloadRepository(db).createOrReconnect(now = 40L)
+        val sourceDownloadOperationId = "quality-source-download-$sourceHistoryId"
+        val sourceItem = insertDownload(DownloadType.video)
+        db.downloadDao.update(
+            sourceItem.copy(
+                playlistURL = HistoryRedownloadMarker.quality(sourceHistoryId, 720),
+                operationId = sourceDownloadOperationId,
+            )
+        )
+        db.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = sourceOperation.operationId,
+                historyId = sourceHistoryId,
+                intendedSourceUrl = OTHER_URL,
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.QUEUED.name,
+                downloadId = sourceItem.id,
+            )
+        )
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = sourceItem.id,
+                expectedOperationId = sourceDownloadOperationId,
+                expectedRetryAttempt = sourceItem.retryAttempt,
+                executionId = "quality-source-worker",
+            ),
+        )
+        var sourceRejected = false
+        try {
+            repository().authorizeHistoryReplacement(
+                historyId = sourceHistoryId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = sourceItem.id,
+                replacementOperationId = sourceDownloadOperationId,
+                expectedExecutionId = "quality-source-worker",
+            )
+        } catch (_: HistoryReplacementQualityAuthorityLostException) {
+            sourceRejected = true
+        }
+        assertTrue(sourceRejected)
+
+        val typeHistoryId = insertHistory()
+        val typeOperation = LowQualityRedownloadRepository(db).createOrReconnect(now = 50L)
+        val typeDownloadOperationId = "quality-type-download-$typeHistoryId"
+        val typeItem = insertDownload(DownloadType.video)
+        db.downloadDao.update(
+            typeItem.copy(
+                playlistURL = HistoryRedownloadMarker.quality(typeHistoryId, 720),
+                operationId = typeDownloadOperationId,
+            )
+        )
+        db.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = typeOperation.operationId,
+                historyId = typeHistoryId,
+                intendedSourceUrl = HISTORY_URL,
+                intendedType = DownloadType.audio.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.QUEUED.name,
+                downloadId = typeItem.id,
+            )
+        )
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = typeItem.id,
+                expectedOperationId = typeDownloadOperationId,
+                expectedRetryAttempt = typeItem.retryAttempt,
+                executionId = "quality-type-worker",
+            ),
+        )
+        var typeRejected = false
+        try {
+            repository().authorizeHistoryReplacement(
+                historyId = typeHistoryId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = typeItem.id,
+                replacementOperationId = typeDownloadOperationId,
+                expectedExecutionId = "quality-type-worker",
+            )
+        } catch (_: HistoryReplacementQualityAuthorityLostException) {
+            typeRejected = true
+        }
+        assertTrue(typeRejected)
+    }
+
+    @Test
+    fun regularHistoryMarkerWithoutLowQualityLedgerRemainsAuthorized() = runBlocking {
+        val historyId = insertHistory()
+        val item = insertDownload(DownloadType.video)
+        db.downloadDao.update(
+            item.copy(playlistURL = HistoryRedownloadMarker.regular(historyId))
+        )
+
+        assertTrue(
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = item.id,
+                replacementOperationId = item.operationId,
+            ) is HistoryReplacementAuthorization.Authorized
+        )
     }
 
     @Test

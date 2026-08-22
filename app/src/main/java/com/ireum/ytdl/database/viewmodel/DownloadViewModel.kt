@@ -1253,7 +1253,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                     marker = marker,
                     item = ledgerItem,
                     operation = operation,
-                    expectedOperationId = item.operationId,
+                    expectedDownloadId = item.id,
                     expectedSourceUrl = item.url,
                     expectedType = item.type,
                 )

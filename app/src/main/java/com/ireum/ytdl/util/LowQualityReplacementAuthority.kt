@@ -2,6 +2,7 @@ package com.ireum.ytdl.util
 
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.LowQualityRedownloadItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 
 /**
@@ -13,19 +14,22 @@ object LowQualityReplacementAuthority {
         marker: HistoryRedownloadMarker,
         item: LowQualityRedownloadItem?,
         operation: LowQualityRedownloadOperation?,
-        expectedOperationId: String,
+        expectedDownloadId: Long,
         expectedSourceUrl: String,
         expectedType: DownloadType,
     ): Boolean {
         if (!marker.isQualityReplacement) return true
         return item != null &&
             operation != null &&
-            item.downloadId != null &&
+            item.downloadId == expectedDownloadId &&
             item.historyId == marker.historyId &&
-            expectedOperationId.isNotBlank() &&
-            item.operationId == expectedOperationId &&
-            !item.stateValue.isTerminal &&
+            item.stateValue in setOf(
+                LowQualityRedownloadItemState.QUEUED,
+                LowQualityRedownloadItemState.ACTIVE,
+                LowQualityRedownloadItemState.WAITING,
+            ) &&
             !operation.stateValue.isTerminal &&
+            !operation.cancelRequested &&
             item.intendedSourceUrl.isNotBlank() &&
             item.intendedType.isNotBlank() &&
             item.intendedType == expectedType.name &&

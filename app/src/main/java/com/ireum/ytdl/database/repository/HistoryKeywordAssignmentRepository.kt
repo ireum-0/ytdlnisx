@@ -38,6 +38,8 @@ class HistoryReplacementExecutionOwnershipLostException(
     val downloadId: Long,
     val expectedExecutionId: String,
     val actualExecutionId: String?,
+    val expectedOperationId: String = "",
+    val actualOperationId: String? = null,
 ) : IllegalStateException(
     "History replacement execution ownership lost for download $downloadId"
 )
@@ -508,8 +510,9 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         replacementOperationId: String,
         expectedExecutionId: String,
     ): HistoryReplacementAuthorization {
-        assertReplacementExecutionOwned(
+        val replacementDownload = assertReplacementExecutionOwned(
             replacementDownloadId = replacementDownloadId,
+            expectedOperationId = replacementOperationId,
             expectedExecutionId = expectedExecutionId,
         )
         if (replacementDownloadId > 0L) {
@@ -517,7 +520,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 return authorizationForPersistedRefusal(barrier.issueCode)
             }
             val marker = HistoryRedownloadMarker.parse(
-                db.downloadDao.getNullableDownloadById(replacementDownloadId)?.playlistURL
+                replacementDownload?.playlistURL
             )
             if (marker?.isQualityReplacement == true) {
                 val ledgerItem = db.lowQualityRedownloadDao
@@ -530,7 +533,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                         marker = marker,
                         item = ledgerItem,
                         operation = operation,
-                        expectedOperationId = replacementOperationId,
+                        expectedDownloadId = replacementDownloadId,
                         expectedSourceUrl = expectedSourceUrl,
                         expectedType = expectedType,
                     )
@@ -576,21 +579,32 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
 
     private suspend fun assertReplacementExecutionOwned(
         replacementDownloadId: Long,
+        expectedOperationId: String,
         expectedExecutionId: String,
-    ) {
-        if (replacementDownloadId <= 0L || expectedExecutionId.isBlank()) return
+    ): com.ireum.ytdl.database.models.DownloadItem? {
+        if (replacementDownloadId <= 0L) return null
         val current = db.downloadDao.getNullableDownloadById(replacementDownloadId)
+        val executionOwned = expectedExecutionId.isBlank() || (
+            current != null &&
+                current.executionId == expectedExecutionId &&
+                current.status in setOf("Active", "PostProcessing")
+            )
+        val downloadLineageOwned = expectedOperationId.isNotBlank() &&
+            current?.operationId == expectedOperationId
         if (
             current == null ||
-            current.executionId != expectedExecutionId ||
-            current.status !in setOf("Active", "PostProcessing")
+            !executionOwned ||
+            !downloadLineageOwned
         ) {
             throw HistoryReplacementExecutionOwnershipLostException(
                 downloadId = replacementDownloadId,
                 expectedExecutionId = expectedExecutionId,
                 actualExecutionId = current?.executionId,
+                expectedOperationId = expectedOperationId,
+                actualOperationId = current?.operationId,
             )
         }
+        return current
     }
 
     private fun authorizationForPersistedRefusal(
