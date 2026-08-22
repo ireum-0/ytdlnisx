@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **60 active correctness defects** in this checkpoint. The previous
+There are **61 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 60-defect registry is intentionally retained here. The separate
+The broader 61-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 60-defect count unless they are explicitly promoted
+below do **not** change the 61-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-60-defect registry below.
+61-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 60 active defects
+### F1 remediation-discovered follow-up not counted in the 61 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1096,6 +1096,69 @@ Required result:
 - add deterministic active-download and post-processing races proving live temp
   files are never moved, plus an idle-leftover regression proving intended cache
   recovery still works.
+
+### P2 — BUG-CACHE-02 — Preserve SAF authority for custom download cache storage
+
+**State:** Open
+
+**Failure path:** the production Folder settings screen lets the user choose the
+custom download cache directory through `ACTION_OPEN_DOCUMENT_TREE`, takes a
+persistable read/write URI grant, and stores that `content://` tree URI in
+`cache_path`. The setting remains available on scoped-storage devices even when
+broad all-files access is unavailable. `FileUtil.getCachePath()` then discards
+that provider-backed identity by passing the stored URI through `formatPath()`,
+which converts external-storage tree/document URIs into raw `/storage/.../`
+paths.
+
+Normal download execution consumes that converted path directly. After a queued
+row is claimed, `DownloadWorker` constructs
+`File(FileUtil.getCachePath(context), downloadItem.id.toString())` as the
+operation's temporary directory. Before yt-dlp runs,
+`executeYtdlpPhase()` calls `resetYtdlpTempDirectory()`, which again obtains the
+raw cache root, validates the child with `canonicalFile`, recursively deletes an
+old directory if present, and recreates it with `java.io.File.mkdirs()`. Later
+retry, staged-quality, hard-sub, info-JSON, and output-recovery paths use the
+same filesystem cache identity. There is no `DocumentFile`/`ContentResolver`
+implementation for this live yt-dlp temp tree and no validation proving that the
+raw path is directly writable after the SAF-only grant.
+
+The app targets Android 36. On scoped-storage Android, the first authoritative
+observation is only that the selected tree is writable through the document
+provider; converting that tree URI to a filesystem-looking path does not transfer
+that authority to `File` or the native yt-dlp process. A user can therefore
+successfully authorize and persist a custom cache folder, then have the next
+ordinary download fail while creating or using its temporary directory even
+though the settings UI accepted the location.
+
+**Why this is a defect:** a normal supported cache-directory selection loses the
+very authority that made the selection writable before the core download path
+uses it. This can make ordinary downloads, retries, staged quality checks, or
+hard-sub work fail solely because a provider-authorized cache tree was
+reinterpreted as directly writable raw storage. It is distinct from
+`BUG-CACHE-01`, which concerns moving live cache files during maintenance, from
+`BUG-DUPLICATE-03`, which concerns custom download-archive storage, and from
+`BUG-TERMINAL-03`, which concerns Terminal destination output.
+
+Required result:
+
+- keep cache storage under a typed authority contract: either restrict live
+  yt-dlp cache roots to app-owned/directly writable filesystem locations, or add
+  an explicit provider-backed staging design that never assumes a SAF grant is
+  raw-path authority;
+- validate the exact cache mode at configuration time and immediately before a
+  worker acquires it; reject or safely migrate an inaccessible custom cache
+  rather than accepting the tree and failing after the Download is claimed;
+- ensure retry, hard-sub, staged-quality, info-JSON, cleanup, and cache-migration
+  code all use the same authoritative cache abstraction and cannot independently
+  re-derive an unauthorized raw path;
+- preserve the current app-owned default cache as the safe fallback and define
+  recovery for an already-stored custom tree whose grant is revoked or whose raw
+  path is inaccessible;
+- add scoped-storage regressions for primary and non-primary SAF trees, revoked
+  grants, the app-owned default cache, any deliberately supported directly
+  writable raw cache, normal download, retry, staged-quality/hard-sub, and cache
+  maintenance, proving an accepted cache location remains usable by the actual
+  execution path.
 
 ### P2 — BUG-MOVE-01 — Preserve uncopied source files after partial SAF fallback
 
