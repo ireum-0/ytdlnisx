@@ -223,12 +223,36 @@ interface LowQualityRedownloadDao {
     @Query(
         "UPDATE low_quality_redownload_items SET itemState = :state, reasonCode = :reason, " +
             "updatedAt = :updatedAt WHERE downloadId = :downloadId " +
-            "AND itemState = 'CANCELLED' AND reasonCode = 'USER_REMOVED'"
+            "AND itemState = 'CANCELLATION_REQUESTED' AND reasonCode = :expectedToken"
     )
     suspend fun restoreUndoableLinkedItem(
         downloadId: Long,
+        expectedToken: String,
         state: String,
         reason: String,
+        updatedAt: Long,
+    ): Int
+
+    @Query(
+        "UPDATE low_quality_redownload_items SET itemState = 'CANCELLED', reasonCode = :reason, " +
+            "updatedAt = :updatedAt WHERE downloadId = :downloadId " +
+            "AND itemState = 'CANCELLATION_REQUESTED' AND reasonCode = :expectedToken"
+    )
+    suspend fun commitUndoableLinkedItem(
+        downloadId: Long,
+        expectedToken: String,
+        reason: String,
+        updatedAt: Long,
+    ): Int
+
+    @Query(
+        "UPDATE low_quality_redownload_items SET itemState = 'CANCELLATION_REQUESTED', " +
+            "reasonCode = :token, updatedAt = :updatedAt WHERE downloadId = :downloadId " +
+            "AND itemState IN ('QUEUED','ACTIVE','WAITING')"
+    )
+    suspend fun markPendingUserRemoval(
+        downloadId: Long,
+        token: String,
         updatedAt: Long,
     ): Int
 

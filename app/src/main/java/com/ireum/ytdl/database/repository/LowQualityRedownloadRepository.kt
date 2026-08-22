@@ -410,6 +410,22 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         items.forEach { item ->
             val id = item.downloadId ?: return@forEach
             val download = byId[id]
+            if (
+                download == null &&
+                    item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
+                    item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX)
+            ) {
+                // A process death or coordinator reconciliation commits an
+                // unresolved delete-for-Undo token rather than inventing a
+                // generic failure for the missing, intentionally hidden row.
+                dao.setItemStateByDownloadId(
+                    id,
+                    LowQualityRedownloadItemState.CANCELLED.name,
+                    DownloadRepository.REASON_USER_REMOVED,
+                    now,
+                )
+                return@forEach
+            }
             val terminalState = LowQualityRedownloadLinkedDownloadPolicy.reconciledState(
                 currentState = item.stateValue,
                 downloadStatus = download?.status,

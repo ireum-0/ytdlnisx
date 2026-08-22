@@ -8,13 +8,19 @@ import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementAuthorization
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementQualityAuthorityLostException
+import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
+import com.ireum.ytdl.database.viewmodel.HistoryRedownloadRestorePolicy
 import com.ireum.ytdl.util.BackupSettingsUtil
+import com.ireum.ytdl.util.HistoryRedownloadMarker
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -161,6 +167,116 @@ class HistoryReplacementBarrierPersistenceTest {
             listOf("/tmp/previous.mp4"),
             db.historyDao.getItem(historyId).downloadPath,
         )
+    }
+
+    @Test
+    fun qualityMarkerBackupWithoutLedgerIsRevokedBeforeRestore() = runBlocking {
+        val historyId = insertHistory()
+        val item = insertDownload(DownloadType.video)
+        db.downloadDao.update(
+            item.copy(playlistURL = HistoryRedownloadMarker.quality(historyId, 720))
+        )
+
+        val backupItem = DownloadRepository(db).getQueuedDownloadsForBackup().single()
+        assertTrue(DownloadRepository(db).getQueuedDownloadsList().isEmpty())
+        assertEquals(0, db.downloadDao.reQueueDownloadItems(listOf(item.id)))
+        assertEquals(0, db.downloadDao.updateItemsToProcessing(listOf(item.id)))
+        assertEquals(0, db.downloadDao.rescheduleQueuedOrScheduled(item.id, 1L))
+        db.downloadDao.update(item.copy(playlistURL = HistoryRedownloadMarker.regular(historyId)))
+        assertEquals(1, db.downloadDao.reQueueDownloadItems(listOf(item.id)))
+        val revoked = HistoryRedownloadRestorePolicy.revokeOrphanQualityMarker(
+            item = backupItem.copy(id = 0L),
+            hasPersistedRefusal = false,
+        )
+
+        assertEquals("", revoked?.playlistURL)
+        assertEquals(DownloadRepository.Status.Error.name, revoked?.status)
+        assertEquals(
+            com.ireum.ytdl.util.download.DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED.name,
+            revoked?.lastIssueCode,
+        )
+        val restoredId = DownloadRepository(db).insertRestoredDownload(revoked!!, null)
+        assertEquals("", db.downloadDao.getDownloadById(restoredId).playlistURL)
+
+        val regular = backupItem.copy(
+            id = 0L,
+            playlistURL = HistoryRedownloadMarker.regular(historyId),
+        )
+        assertEquals(
+            null,
+            HistoryRedownloadRestorePolicy.revokeOrphanQualityMarker(
+                regular,
+                hasPersistedRefusal = false,
+            )
+        )
+    }
+
+    @Test
+    fun qualityHistoryReplacementRequiresLiveImmutableLedgerAuthority() = runBlocking {
+        val historyId = insertHistory()
+        val operation = LowQualityRedownloadRepository(db).createOrReconnect(now = 10L)
+        val item = insertDownload(DownloadType.video)
+        db.downloadDao.update(
+            item.copy(
+                playlistURL = HistoryRedownloadMarker.quality(historyId, 720),
+                operationId = operation.operationId,
+            )
+        )
+        db.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = operation.operationId,
+                historyId = historyId,
+                intendedSourceUrl = HISTORY_URL,
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.QUEUED.name,
+                downloadId = item.id,
+            )
+        )
+
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = item.id,
+                expectedOperationId = operation.operationId,
+                expectedRetryAttempt = item.retryAttempt,
+                executionId = "quality-authority-worker",
+            ),
+        )
+
+        assertEquals(
+            HistoryReplacementAuthorization.Authorized::class.java,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = item.id,
+                replacementOperationId = operation.operationId,
+                expectedExecutionId = "quality-authority-worker",
+            )::class.java,
+        )
+
+        db.lowQualityRedownloadDao.finishOperation(
+            operation.operationId,
+            com.ireum.ytdl.database.models.LowQualityRedownloadOperationState.COMPLETED.name,
+            "done",
+            11L,
+        )
+        assertEquals(0, db.downloadDao.reQueueDownloadItems(listOf(item.id)))
+        var rejected = false
+        try {
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = item.id,
+                replacementOperationId = operation.operationId,
+                expectedExecutionId = "quality-authority-worker",
+            )
+        } catch (_: HistoryReplacementQualityAuthorityLostException) {
+            rejected = true
+        }
+        assertTrue(rejected)
     }
 
     @Test
@@ -318,6 +434,69 @@ class HistoryReplacementBarrierPersistenceTest {
                 replacementDownloadId = restoredId,
                 replacementOperationId = item.operationId,
             )
+        )
+    }
+
+    @Test
+    fun typeAndTargetDeletedRefusalsSurviveRepositoryUndo() = runBlocking {
+        val typeHistoryId = insertHistory()
+        val typeItem = insertDownload(DownloadType.audio)
+        assertEquals(
+            HistoryReplacementAuthorization.TypeMismatch,
+            repository().authorizeHistoryReplacement(
+                historyId = typeHistoryId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.audio,
+                replacementDownloadId = typeItem.id,
+                replacementOperationId = typeItem.operationId,
+            ),
+        )
+        val typeRestoredId = DownloadRepository(db)
+            .restoreUndo(DownloadRepository(db).deleteForUndo(typeItem.id)!!.token)!!
+        assertEquals(
+            HistoryReplacementAuthorization.TypeMismatch,
+            repository().authorizeHistoryReplacement(
+                historyId = typeHistoryId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = typeRestoredId,
+                replacementOperationId = typeItem.operationId,
+            ),
+        )
+        assertEquals(
+            HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.TYPE).code.name,
+            db.historyReplacementBarrierDao.getByDownloadId(typeRestoredId)?.issueCode,
+        )
+
+        val targetHistoryId = insertHistory()
+        val targetItem = insertDownload(DownloadType.video)
+        db.historyDao.deleteById(targetHistoryId)
+        assertEquals(
+            HistoryReplacementAuthorization.TargetMissing,
+            repository().authorizeHistoryReplacement(
+                historyId = targetHistoryId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = targetItem.id,
+                replacementOperationId = targetItem.operationId,
+            ),
+        )
+        val targetRepository = DownloadRepository(db)
+        val targetHandle = targetRepository.deleteForUndo(targetItem.id)!!
+        val targetRestoredId = targetRepository.restoreUndo(targetHandle.token)!!
+        assertEquals(
+            HistoryReplacementAuthorization.TargetMissing,
+            repository().authorizeHistoryReplacement(
+                historyId = targetHistoryId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = targetRestoredId,
+                replacementOperationId = targetItem.operationId,
+            ),
+        )
+        assertEquals(
+            "HISTORY_TARGET_DELETED",
+            db.historyReplacementBarrierDao.getByDownloadId(targetRestoredId)?.issueCode,
         )
     }
 

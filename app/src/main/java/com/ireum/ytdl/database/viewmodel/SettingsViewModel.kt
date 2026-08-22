@@ -596,9 +596,17 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                                     status = DownloadRepository.Status.Error.toString(),
                                 )
                             )
-                        }
+                    }
                     is com.ireum.ytdl.util.RestoreRemapResult.Mapped -> {
                         val mappedItem = remappedItem.copy(playlistURL = marker.encodedMarker)
+                        HistoryRedownloadRestorePolicy
+                            .revokeOrphanQualityMarker(
+                                item = mappedItem,
+                                hasPersistedRefusal = persistedRefusal != null,
+                            )
+                            ?.let { revoked ->
+                                return RemappedDownload(item = revoked)
+                            }
                         val mappedHistoryId = HistoryRedownloadMarker.parse(marker.encodedMarker)
                             ?.historyId
                         val canReconstructBarrier = persistedRefusal != null &&
@@ -635,18 +643,24 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                             )
                         }
                     }
-                    com.ireum.ytdl.util.RestoreRemapResult.Unmappable ->
+                    com.ireum.ytdl.util.RestoreRemapResult.Unmappable -> {
+                        val unmappableMarker = HistoryRedownloadMarker.parse(remappedItem.playlistURL)
                         RemappedDownload(
                             item = remappedItem.copy(
                                 playlistURL = "",
                                 status = DownloadRepository.Status.Error.toString(),
                                 lastIssueCode = persistedRefusal?.code?.name
-                                    ?: DownloadIssueCode.HISTORY_TARGET_DELETED.name,
+                                    ?: if (unmappableMarker?.isQualityReplacement == true) {
+                                        DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED.name
+                                    } else {
+                                        DownloadIssueCode.HISTORY_TARGET_DELETED.name
+                                    },
                                 lastIssueStage = remappedItem.lastIssueStage.ifBlank {
                                     persistedRefusal?.stage?.name ?: DownloadIssueStage.HISTORY.name
                                 },
                             )
                         )
+                    }
                 }
             }
 

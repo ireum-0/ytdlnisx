@@ -1,5 +1,7 @@
 package com.ireum.ytdl.work
 
+import kotlinx.coroutines.sync.withLock
+
 import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
@@ -11,6 +13,11 @@ internal data class AbandonedDownloadExecution(
     val executionId: String,
     val status: String,
 )
+
+/** Serializes queue claim/publication with every stale-owner recovery scan. */
+internal suspend inline fun <T> withDownloadWorkerExecutionLock(
+    block: suspend () -> T,
+): T = DownloadWorker.downloadWorkerMutex.withLock { block() }
 
 /**
  * Reconciles rows left in a running state by an execution that no longer has

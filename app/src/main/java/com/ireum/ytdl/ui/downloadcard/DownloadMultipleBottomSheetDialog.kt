@@ -66,6 +66,7 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.elevation.SurfaceColors
+import com.google.android.material.snackbar.BaseTransientBottomBar
 import com.google.android.material.snackbar.Snackbar
 import it.xabaras.android.recyclerview.swipedecorator.RecyclerViewSwipeDecorator
 import kotlinx.coroutines.CancellationException
@@ -1202,14 +1203,27 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                     processingItemsCount--
 
                     if (processingItemsCount > 0){
-                        Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
+                        val snackbar = Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
                             .setAction(getString(R.string.undo)) {
                                 lifecycleScope.launch(Dispatchers.IO) {
                                     processingItemsCount++
                                     downloadViewModel.restoreDownloadUndo(undoHandle)
                                 }
-                            }.show()
+                            }
+                        snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
+                            override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
+                                if (event != DISMISS_EVENT_ACTION) {
+                                    lifecycleScope.launch(Dispatchers.IO) {
+                                        downloadViewModel.commitDownloadUndo(undoHandle)
+                                    }
+                                }
+                            }
+                        })
+                        snackbar.show()
                     }else{
+                        withContext(Dispatchers.IO) {
+                            downloadViewModel.commitDownloadUndo(undoHandle)
+                        }
                         dismiss()
                     }
 
@@ -1270,14 +1284,27 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
 
 
                             if (processingItemsCount > 0) {
-                                Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
+                                val snackbar = Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
                                     .setAction(getString(R.string.undo)) {
                                         lifecycleScope.launch(Dispatchers.IO) {
                                             processingItemsCount++
                                             downloadViewModel.restoreDownloadUndo(undoHandle)
                                         }
-                                    }.show()
+                                    }
+                                snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
+                                    override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
+                                        if (event != DISMISS_EVENT_ACTION) {
+                                            lifecycleScope.launch(Dispatchers.IO) {
+                                                downloadViewModel.commitDownloadUndo(undoHandle)
+                                            }
+                                        }
+                                    }
+                                })
+                                snackbar.show()
                             }else{
+                                withContext(Dispatchers.IO) {
+                                    downloadViewModel.commitDownloadUndo(undoHandle)
+                                }
                                 dismiss()
                             }
                         }

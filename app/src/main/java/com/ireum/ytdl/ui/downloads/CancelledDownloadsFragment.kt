@@ -45,6 +45,7 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.BaseTransientBottomBar
 import com.google.android.material.snackbar.Snackbar
 import it.xabaras.android.recyclerview.swipedecorator.RecyclerViewSwipeDecorator
 import kotlinx.coroutines.CoroutineScope
@@ -401,12 +402,22 @@ class CancelledDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClic
                                 downloadViewModel.deleteDownloadForUndo(itemID)
                             } ?: return@launch
                             val deletedItem = undoHandle.item
-                            Snackbar.make(cancelledRecyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title.ifEmpty { deletedItem.url }, Snackbar.LENGTH_INDEFINITE)
+                            val snackbar = Snackbar.make(cancelledRecyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title.ifEmpty { deletedItem.url }, Snackbar.LENGTH_INDEFINITE)
                                 .setAction(getString(R.string.undo)) {
                                     viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
                                         downloadViewModel.restoreDownloadUndo(undoHandle)
                                     }
-                                }.show()
+                                }
+                            snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
+                                override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
+                                    if (event != DISMISS_EVENT_ACTION) {
+                                        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                                            downloadViewModel.commitDownloadUndo(undoHandle)
+                                        }
+                                    }
+                                }
+                            })
+                            snackbar.show()
                         }
                     }
                     ItemTouchHelper.RIGHT -> {

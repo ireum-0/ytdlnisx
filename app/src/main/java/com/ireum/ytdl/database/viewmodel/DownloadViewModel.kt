@@ -52,6 +52,7 @@ import com.ireum.ytdl.util.FormatUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.HistoryRedownloadQueuePolicy
 import com.ireum.ytdl.util.LinkUtil
+import com.ireum.ytdl.util.LowQualityReplacementAuthority
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import com.ireum.ytdl.util.download.DownloadIssueCode
@@ -242,7 +243,6 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     suspend fun deleteDownloadForUndo(id: Long): DownloadRepository.DownloadUndoHandle? =
         withContext(Dispatchers.IO) {
             val handle = repository.deleteForUndo(id) ?: return@withContext null
-            LowQualityRedownloadLedger.refresh(application, handle.affectedOperationIds)
             notificationUtil.cancelMembershipWaitingNotification(id)
             handle
         }
@@ -254,6 +254,14 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 LowQualityRedownloadLedger.refresh(application, handle.affectedOperationIds)
             }
             restoredId
+        }
+
+    suspend fun commitDownloadUndo(handle: DownloadRepository.DownloadUndoHandle) =
+        withContext(Dispatchers.IO) {
+            LowQualityRedownloadLedger.refresh(
+                application,
+                repository.commitUndo(handle.token),
+            )
         }
 
     suspend fun updateDownload(item: DownloadItem){
@@ -1233,12 +1241,27 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     private suspend fun hasTerminalHistoryReplacementLedger(item: DownloadItem): Boolean {
-        if (item.id <= 0L || HistoryRedownloadMarker.parse(item.playlistURL) == null) {
-            return false
-        }
+        val marker = HistoryRedownloadMarker.parse(item.playlistURL) ?: return false
+        if (item.id <= 0L) return marker.isQualityReplacement
         val ledgerItem = dbManager.lowQualityRedownloadDao.getItemByDownloadId(item.id)
-            ?: return false
-        val operation = dbManager.lowQualityRedownloadDao.getOperation(ledgerItem.operationId)
+        val operation = ledgerItem?.let {
+            dbManager.lowQualityRedownloadDao.getOperation(it.operationId)
+        }
+        if (marker.isQualityReplacement) {
+            if (
+                !LowQualityReplacementAuthority.isCoherent(
+                    marker = marker,
+                    item = ledgerItem,
+                    operation = operation,
+                    expectedOperationId = item.operationId,
+                    expectedSourceUrl = item.url,
+                    expectedType = item.type,
+                )
+            ) {
+                return true
+            }
+        }
+        if (ledgerItem == null) return false
         return ledgerItem.stateValue.isTerminal || operation?.stateValue?.isTerminal == true
     }
 

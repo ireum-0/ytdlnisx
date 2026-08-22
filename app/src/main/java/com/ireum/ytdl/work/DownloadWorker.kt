@@ -148,202 +148,204 @@ class DownloadWorker(
         includeStaleRows: Boolean = true,
         propagateRequeueFailure: Boolean = false,
     ) = withContext(Dispatchers.IO + NonCancellable) {
-        val dbManager = DBManager.getInstance(context)
-        val dao = dbManager.downloadDao
-        val workerOwnedIds = (workerCleanupDownloadIds + workerDownloadIds).distinct()
-        val staleItems = if (includeStaleRows) {
-            runCatching {
-                dao.getActiveAndPostProcessingDownloadsList()
-                    .filter { item ->
-                        !DownloadWorkerExecutionOwners.isOwnedBy(
-                            item.id,
-                            item.executionId,
-                        )
-                    }
-            }.getOrDefault(emptyList())
-        } else {
-            emptyList()
-        }
-        val staleDbIds = staleItems.map { it.id }
-        val activeIds = (workerOwnedIds + staleDbIds).distinct()
-        if (activeIds.isEmpty()) return@withContext
+        withDownloadWorkerExecutionLock {
+            val dbManager = DBManager.getInstance(context)
+            val dao = dbManager.downloadDao
+            val workerOwnedIds = (workerCleanupDownloadIds + workerDownloadIds).distinct()
+            val staleItems = if (includeStaleRows) {
+                runCatching {
+                    dao.getActiveAndPostProcessingDownloadsList()
+                        .filter { item ->
+                            !DownloadWorkerExecutionOwners.isOwnedBy(
+                                item.id,
+                                item.executionId,
+                            )
+                        }
+                }.getOrDefault(emptyList())
+            } else {
+                emptyList()
+            }
+            val staleDbIds = staleItems.map { it.id }
+            val activeIds = (workerOwnedIds + staleDbIds).distinct()
+            if (activeIds.isEmpty()) return@withContext
 
-        val executionIds = workerExecutionIds.toMutableMap().apply {
-            staleItems.forEach { item ->
-                if (item.executionId.isNotBlank()) put(item.id, item.executionId)
-            }
-        }
-        val authoritativeIssues = workerAuthoritativeIssues.toMutableMap().apply {
-            staleItems.forEach { item ->
-                HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(item.lastIssueCode)
-                    ?.let { put(item.id, it) }
-            }
-            runCatching {
-                dbManager.historyReplacementBarrierDao.getByDownloadIds(activeIds)
-            }.getOrDefault(emptyList()).forEach { barrier ->
-                HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(barrier.issueCode)
-                    ?.let { put(barrier.downloadId, it) }
-            }
-        }
-
-        activeIds.forEach { downloadId ->
-            val expectedExecutionId = executionIds[downloadId].orEmpty()
-            val current = runCatching { dao.getNullableDownloadById(downloadId) }
-                .getOrElse {
-                    Log.w(TAG, "Cannot verify process cleanup ownership id=$downloadId", it)
-                    return@forEach
+            val executionIds = workerExecutionIds.toMutableMap().apply {
+                staleItems.forEach { item ->
+                    if (item.executionId.isNotBlank()) put(item.id, item.executionId)
                 }
-            if (
-                expectedExecutionId.isNotBlank() &&
-                    current != null &&
-                    current.executionId != expectedExecutionId
-            ) {
-                Log.i(
-                    TAG,
-                    "Skipping stale process cleanup for newer execution id=$downloadId " +
-                        "expected=$expectedExecutionId actual=${current.executionId}",
-                )
-                return@forEach
             }
-            cancelYtdlpProcess(downloadId)
-            cancelPostProcessingById(downloadId)
-            runCatching {
-                NotificationUtil(context).cancelDownloadNotification(downloadId.toInt())
+            val authoritativeIssues = workerAuthoritativeIssues.toMutableMap().apply {
+                staleItems.forEach { item ->
+                    HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(item.lastIssueCode)
+                        ?.let { put(item.id, it) }
+                }
+                runCatching {
+                    dbManager.historyReplacementBarrierDao.getByDownloadIds(activeIds)
+                }.getOrDefault(emptyList()).forEach { barrier ->
+                    HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(barrier.issueCode)
+                        ?.let { put(barrier.downloadId, it) }
+                }
             }
-        }
-        val releasedIds = linkedSetOf<Long>()
-        val refusalRepository = DownloadRepository(dbManager)
-        val requeueFailure = try {
+
             activeIds.forEach { downloadId ->
-                val issue = authoritativeIssues[downloadId]
-                val executionId = executionIds[downloadId].orEmpty()
-                if (executionId.isBlank()) {
-                    if (issue != null) {
-                        check(
-                            refusalRepository.convergeHistoryReplacementRefusal(
-                            id = downloadId,
-                            expectedExecutionId = "",
-                            forceError = true,
-                            ).downloadUpdated
-                        ) {
-                            "History refusal could not converge for download $downloadId"
-                        }
-                    } else {
-                        dao.setStatusMultipleFromStatus(
-                            listOf(downloadId),
-                            DownloadRepository.Status.Active.toString(),
-                            DownloadRepository.Status.Queued.toString()
-                        )
-                        dao.setStatusMultipleFromStatus(
-                            listOf(downloadId),
-                            DownloadRepository.Status.PostProcessing.toString(),
-                            DownloadRepository.Status.Queued.toString()
-                        )
+                val expectedExecutionId = executionIds[downloadId].orEmpty()
+                val current = runCatching { dao.getNullableDownloadById(downloadId) }
+                    .getOrElse {
+                        Log.w(TAG, "Cannot verify process cleanup ownership id=$downloadId", it)
+                        return@forEach
                     }
-                    releasedIds += downloadId
+                if (
+                    expectedExecutionId.isNotBlank() &&
+                        current != null &&
+                        current.executionId != expectedExecutionId
+                ) {
+                    Log.i(
+                        TAG,
+                        "Skipping stale process cleanup for newer execution id=$downloadId " +
+                            "expected=$expectedExecutionId actual=${current.executionId}",
+                    )
                     return@forEach
                 }
-
-                val affected = if (issue != null) {
-                    if (
-                        refusalRepository.convergeHistoryReplacementRefusal(
-                            id = downloadId,
-                            expectedExecutionId = executionId,
-                            forceError = true,
-                        ).downloadUpdated
-                    ) 1 else 0
-                } else {
-                    dao.requeueActiveDownload(downloadId, executionId)
-                }
-                if (affected == 0 && issue != null) {
-                    val current = dao.getNullableDownloadById(downloadId)
-                    val currentHasIssue = current?.let {
-                        it.lastIssueCode == issue.code.name &&
-                            it.lastIssueStage == issue.stage.name
-                    } == true
-                    val barrierHasIssue = dbManager.historyReplacementBarrierDao
-                        .getByDownloadId(downloadId)
-                        ?.issueCode == issue.code.name
-                    if (!currentHasIssue && !barrierHasIssue && current?.executionId == executionId) {
-                        check(
-                            dao.persistMismatchIssueForExecution(
-                                id = downloadId,
-                                executionId = executionId,
-                                issueCode = issue.code.name,
-                                issueStage = issue.stage.name,
-                            ) == 1
-                        ) {
-                            "Mismatch barrier was not durably preserved for download $downloadId"
-                        }
-                    }
-                    val verified = dao.getNullableDownloadById(downloadId)
-                    val verifiedBarrier = dbManager.historyReplacementBarrierDao
-                        .getByDownloadId(downloadId)
-                    val verifiedHasIssue = verified?.let {
-                        it.lastIssueCode == issue.code.name &&
-                            it.lastIssueStage == issue.stage.name
-                    } == true
-                    check(verifiedHasIssue || verifiedBarrier?.issueCode == issue.code.name) {
-                        "Mismatch barrier could not be verified for download $downloadId"
-                    }
-                    check(
-                        verified?.executionId != executionId ||
-                            verified.status !in setOf(
-                                DownloadRepository.Status.Active.name,
-                                DownloadRepository.Status.PostProcessing.name,
-                            )
-                    ) {
-                        "Owned download $downloadId remained running after failed cleanup"
-                    }
-                    if (verified == null || verified.executionId == executionId) {
-                        releasedIds += downloadId
-                    }
-                } else if (affected == 0) {
-                    val current = dao.getNullableDownloadById(downloadId)
-                    check(
-                        current?.executionId != executionId ||
-                            current.status !in setOf(
-                                DownloadRepository.Status.Active.name,
-                                DownloadRepository.Status.PostProcessing.name,
-                            )
-                    ) {
-                        "Owned download $downloadId remained running after failed cleanup"
-                    }
-                    if (current == null || current.executionId == executionId) {
-                        releasedIds += downloadId
-                    }
-                } else if (affected == 1) {
-                    releasedIds += downloadId
+                cancelYtdlpProcess(downloadId)
+                cancelPostProcessingById(downloadId)
+                runCatching {
+                    NotificationUtil(context).cancelDownloadNotification(downloadId.toInt())
                 }
             }
-            null
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            error
-        }
-        val activeIdSet = activeIds.toSet()
-        val workerExecutionSnapshot = workerExecutionIds.toMap()
-        workerDownloadIds.removeAll(activeIdSet)
-        workerCleanupDownloadIds.removeAll(activeIdSet)
-        workerExecutionIds.keys.removeAll(activeIdSet)
-        workerExecutionSnapshot.forEach { (downloadId, executionId) ->
-            // Release only this exact dead attempt.  A newer worker may have
-            // claimed the same Download ID while cleanup was failing.
-            DownloadWorkerExecutionOwners.release(downloadId, executionId)
-        }
-        runningYTDLInstances.removeAll(releasedIds)
-        workerAuthoritativeIssues.keys.removeAll(activeIdSet)
-        if (requeueFailure == null) {
-            Log.i(TAG, "Stopped worker cleanup completed for ${activeIds.size} active download(s)")
-        } else {
-            Log.w(
-                TAG,
-                "Failed to requeue stopped active downloads ids=$activeIds; " +
-                    "ownership released without a durable non-running guarantee",
-                requeueFailure
-            )
-            if (propagateRequeueFailure) throw requeueFailure
+            val releasedIds = linkedSetOf<Long>()
+            val refusalRepository = DownloadRepository(dbManager)
+            val requeueFailure = try {
+                activeIds.forEach { downloadId ->
+                    val issue = authoritativeIssues[downloadId]
+                    val executionId = executionIds[downloadId].orEmpty()
+                    if (executionId.isBlank()) {
+                        if (issue != null) {
+                            check(
+                                refusalRepository.convergeHistoryReplacementRefusal(
+                                    id = downloadId,
+                                    expectedExecutionId = "",
+                                    forceError = true,
+                                ).downloadUpdated
+                            ) {
+                                "History refusal could not converge for download $downloadId"
+                            }
+                        } else {
+                            dao.setStatusMultipleFromStatus(
+                                listOf(downloadId),
+                                DownloadRepository.Status.Active.toString(),
+                                DownloadRepository.Status.Queued.toString()
+                            )
+                            dao.setStatusMultipleFromStatus(
+                                listOf(downloadId),
+                                DownloadRepository.Status.PostProcessing.toString(),
+                                DownloadRepository.Status.Queued.toString()
+                            )
+                        }
+                        releasedIds += downloadId
+                        return@forEach
+                    }
+
+                    val affected = if (issue != null) {
+                        if (
+                            refusalRepository.convergeHistoryReplacementRefusal(
+                                id = downloadId,
+                                expectedExecutionId = executionId,
+                                forceError = true,
+                            ).downloadUpdated
+                        ) 1 else 0
+                    } else {
+                        dao.requeueActiveDownload(downloadId, executionId)
+                    }
+                    if (affected == 0 && issue != null) {
+                        val current = dao.getNullableDownloadById(downloadId)
+                        val currentHasIssue = current?.let {
+                            it.lastIssueCode == issue.code.name &&
+                                it.lastIssueStage == issue.stage.name
+                        } == true
+                        val barrierHasIssue = dbManager.historyReplacementBarrierDao
+                            .getByDownloadId(downloadId)
+                            ?.issueCode == issue.code.name
+                        if (!currentHasIssue && !barrierHasIssue && current?.executionId == executionId) {
+                            check(
+                                dao.persistMismatchIssueForExecution(
+                                    id = downloadId,
+                                    executionId = executionId,
+                                    issueCode = issue.code.name,
+                                    issueStage = issue.stage.name,
+                                ) == 1
+                            ) {
+                                "Mismatch barrier was not durably preserved for download $downloadId"
+                            }
+                        }
+                        val verified = dao.getNullableDownloadById(downloadId)
+                        val verifiedBarrier = dbManager.historyReplacementBarrierDao
+                            .getByDownloadId(downloadId)
+                        val verifiedHasIssue = verified?.let {
+                            it.lastIssueCode == issue.code.name &&
+                                it.lastIssueStage == issue.stage.name
+                        } == true
+                        check(verifiedHasIssue || verifiedBarrier?.issueCode == issue.code.name) {
+                            "Mismatch barrier could not be verified for download $downloadId"
+                        }
+                        check(
+                            verified?.executionId != executionId ||
+                                verified.status !in setOf(
+                                    DownloadRepository.Status.Active.name,
+                                    DownloadRepository.Status.PostProcessing.name,
+                                )
+                        ) {
+                            "Owned download $downloadId remained running after failed cleanup"
+                        }
+                        if (verified == null || verified.executionId == executionId) {
+                            releasedIds += downloadId
+                        }
+                    } else if (affected == 0) {
+                        val current = dao.getNullableDownloadById(downloadId)
+                        check(
+                            current?.executionId != executionId ||
+                                current.status !in setOf(
+                                    DownloadRepository.Status.Active.name,
+                                    DownloadRepository.Status.PostProcessing.name,
+                                )
+                        ) {
+                            "Owned download $downloadId remained running after failed cleanup"
+                        }
+                        if (current == null || current.executionId == executionId) {
+                            releasedIds += downloadId
+                        }
+                    } else if (affected == 1) {
+                        releasedIds += downloadId
+                    }
+                }
+                null
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                error
+            }
+            val activeIdSet = activeIds.toSet()
+            val workerExecutionSnapshot = workerExecutionIds.toMap()
+            workerDownloadIds.removeAll(activeIdSet)
+            workerCleanupDownloadIds.removeAll(activeIdSet)
+            workerExecutionIds.keys.removeAll(activeIdSet)
+            workerExecutionSnapshot.forEach { (downloadId, executionId) ->
+                // Release only this exact dead attempt.  A newer worker may have
+                // claimed the same Download ID while cleanup was failing.
+                DownloadWorkerExecutionOwners.release(downloadId, executionId)
+            }
+            runningYTDLInstances.removeAll(releasedIds)
+            workerAuthoritativeIssues.keys.removeAll(activeIdSet)
+            if (requeueFailure == null) {
+                Log.i(TAG, "Stopped worker cleanup completed for ${activeIds.size} active download(s)")
+            } else {
+                Log.w(
+                    TAG,
+                    "Failed to requeue stopped active downloads ids=$activeIds; " +
+                        "ownership released without a durable non-running guarantee",
+                    requeueFailure
+                )
+                if (propagateRequeueFailure) throw requeueFailure
+            }
         }
     }
 
@@ -355,7 +357,7 @@ class DownloadWorker(
      */
     private suspend fun recoverAbandonedDownloadExecutionsAtStartup(dbManager: DBManager) =
         withContext(Dispatchers.IO + NonCancellable) {
-            downloadWorkerMutex.withLock {
+            withDownloadWorkerExecutionLock {
                 val dao = dbManager.downloadDao
                 val activeRows = dao.getActiveAndPostProcessingDownloadsList()
                 val barriers = dbManager.historyReplacementBarrierDao
@@ -563,7 +565,7 @@ class DownloadWorker(
         queuedItems.collect { items ->
             if (this@DownloadWorker.isStopped) return@collect
 
-            val eligibleDownloads = downloadWorkerMutex.withLock {
+            val eligibleDownloads = withDownloadWorkerExecutionLock {
                 runningYTDLInstances.clear()
                 val activeDownloads = dao.getActiveDownloadsList()
                 activeDownloads.forEach {
@@ -3556,7 +3558,7 @@ class DownloadWorker(
     companion object {
         val runningYTDLInstances: MutableSet<Long> = ConcurrentHashMap.newKeySet()
         const val TAG = "DownloadWorker"
-        private val downloadWorkerMutex = Mutex()
+        internal val downloadWorkerMutex = Mutex()
         private val hardSubH264Containers = setOf(
             "mp4", "m4v", "mov", "mkv", "avi", "flv",
             "ts", "m2ts", "mts", "m2t", "3gp", "3g2"

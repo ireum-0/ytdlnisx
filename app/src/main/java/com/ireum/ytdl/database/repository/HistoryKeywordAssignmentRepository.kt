@@ -8,7 +8,9 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
+import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
+import com.ireum.ytdl.util.LowQualityReplacementAuthority
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import kotlinx.coroutines.runBlocking
 
@@ -38,6 +40,12 @@ class HistoryReplacementExecutionOwnershipLostException(
     val actualExecutionId: String?,
 ) : IllegalStateException(
     "History replacement execution ownership lost for download $downloadId"
+)
+
+class HistoryReplacementQualityAuthorityLostException(
+    val downloadId: Long,
+) : IllegalStateException(
+    "Low-quality History replacement authority is missing or terminal for download $downloadId"
 )
 
 sealed interface HistoryReplacementOutcome {
@@ -507,6 +515,28 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         if (replacementDownloadId > 0L) {
             db.historyReplacementBarrierDao.getByDownloadId(replacementDownloadId)?.let { barrier ->
                 return authorizationForPersistedRefusal(barrier.issueCode)
+            }
+            val marker = HistoryRedownloadMarker.parse(
+                db.downloadDao.getNullableDownloadById(replacementDownloadId)?.playlistURL
+            )
+            if (marker?.isQualityReplacement == true) {
+                val ledgerItem = db.lowQualityRedownloadDao
+                    .getItemByDownloadId(replacementDownloadId)
+                val operation = ledgerItem?.let {
+                    db.lowQualityRedownloadDao.getOperation(it.operationId)
+                }
+                if (
+                    !LowQualityReplacementAuthority.isCoherent(
+                        marker = marker,
+                        item = ledgerItem,
+                        operation = operation,
+                        expectedOperationId = replacementOperationId,
+                        expectedSourceUrl = expectedSourceUrl,
+                        expectedType = expectedType,
+                    )
+                ) {
+                    throw HistoryReplacementQualityAuthorityLostException(replacementDownloadId)
+                }
             }
         }
         val existingHistory = db.historyDao.getNullableItem(historyId)

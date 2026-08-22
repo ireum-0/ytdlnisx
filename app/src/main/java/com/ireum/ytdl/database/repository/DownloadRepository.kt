@@ -28,6 +28,7 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
 import com.ireum.ytdl.util.Extensions.toListString
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
 import com.ireum.ytdl.util.download.DownloadIssueCode
@@ -119,6 +120,7 @@ class DownloadRepository(private val database: DBManager) {
         val download: DownloadItem,
         val barrier: HistoryReplacementBarrier? = null,
         val linkedItem: LowQualityRedownloadItem? = null,
+        val pendingUndoToken: String? = null,
     )
 
     private data class DownloadRemovalResult(
@@ -192,9 +194,9 @@ class DownloadRepository(private val database: DBManager) {
      * replaying an old DownloadItem by numeric id.
      */
     suspend fun deleteForUndo(id: Long): DownloadUndoHandle? {
-        val result = removeDownloadWithSnapshot(id) ?: return null
+        val token = DownloadUndoToken("$PENDING_REMOVAL_TOKEN_PREFIX${UUID.randomUUID()}")
+        val result = removeDownloadWithSnapshot(id, token.value) ?: return null
         val snapshot = result.snapshot ?: return null
-        val token = DownloadUndoToken(UUID.randomUUID().toString())
         pendingRemovalSnapshots[token.value] = snapshot
         return DownloadUndoHandle(
             token = token,
@@ -209,8 +211,15 @@ class DownloadRepository(private val database: DBManager) {
         return result.affectedOperationIds
     }
 
-    private suspend fun removeDownloadWithSnapshot(id: Long): DownloadRemovalResult? {
-        val result = removeDownloadTransaction(id, captureUndo = true) ?: return null
+    private suspend fun removeDownloadWithSnapshot(
+        id: Long,
+        pendingUndoToken: String,
+    ): DownloadRemovalResult? {
+        val result = removeDownloadTransaction(
+            id = id,
+            captureUndo = true,
+            pendingUndoToken = pendingUndoToken,
+        ) ?: return null
         deleteCache(listOf(result.download))
         return result
     }
@@ -218,24 +227,51 @@ class DownloadRepository(private val database: DBManager) {
     private suspend fun removeDownloadTransaction(
         id: Long,
         captureUndo: Boolean,
+        pendingUndoToken: String? = null,
     ): DownloadRemovalResult? = database.withTransaction {
         val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction null
         val barrier = database.historyReplacementBarrierDao.getByDownloadId(id)
         val linkedItem = database.lowQualityRedownloadDao.getItemByDownloadId(id)
+        val ledgerDao = database.lowQualityRedownloadDao
+        val pendingLinkedItem = if (
+            captureUndo &&
+                pendingUndoToken != null &&
+                linkedItem != null &&
+                !linkedItem.stateValue.isTerminal &&
+                linkedItem.stateValue in setOf(
+                    LowQualityRedownloadItemState.QUEUED,
+                    LowQualityRedownloadItemState.ACTIVE,
+                    LowQualityRedownloadItemState.WAITING,
+                ) &&
+                ledgerDao.markPendingUserRemoval(
+                    downloadId = id,
+                    token = pendingUndoToken,
+                    updatedAt = System.currentTimeMillis(),
+                ) == 1
+        ) {
+            pendingUndoToken
+        } else {
+            null
+        }
+        val affectedOperationIds = if (pendingLinkedItem != null) {
+            setOf(linkedItem!!.operationId)
+        } else {
+            terminalizeLinkedChildren(
+                downloadIds = listOf(id),
+                reason = REASON_USER_REMOVED,
+                now = System.currentTimeMillis(),
+            )
+        }
         val snapshot = if (captureUndo) {
             DownloadRemovalSnapshot(
                 download = item,
                 barrier = barrier,
                 linkedItem = linkedItem,
+                pendingUndoToken = pendingLinkedItem,
             )
         } else {
             null
         }
-        val affectedOperationIds = terminalizeLinkedChildren(
-            downloadIds = listOf(id),
-            reason = REASON_USER_REMOVED,
-            now = System.currentTimeMillis(),
-        )
         database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
         downloadDao.delete(id)
         DownloadRemovalResult(item, affectedOperationIds, snapshot)
@@ -270,6 +306,52 @@ class DownloadRepository(private val database: DBManager) {
         }
     }
 
+    /** Commits a pending Undo removal when its Snackbar is dismissed. */
+    suspend fun commitUndo(token: DownloadUndoToken): Set<String> {
+        val snapshot = pendingRemovalSnapshots.remove(token.value) ?: return emptySet()
+        return try {
+            commitRemovalSnapshot(snapshot)
+        } catch (error: Exception) {
+            pendingRemovalSnapshots[token.value] = snapshot
+            throw error
+        }
+    }
+
+    private suspend fun commitRemovalSnapshot(
+        snapshot: DownloadRemovalSnapshot,
+    ): Set<String> = database.withTransaction {
+        val linkedSnapshot = snapshot.linkedItem ?: return@withTransaction emptySet()
+        val pendingToken = snapshot.pendingUndoToken ?: return@withTransaction emptySet()
+        val ledgerDao = database.lowQualityRedownloadDao
+        if (
+            ledgerDao.commitUndoableLinkedItem(
+                downloadId = snapshot.download.id,
+                expectedToken = pendingToken,
+                reason = REASON_USER_REMOVED,
+                updatedAt = System.currentTimeMillis(),
+            ) != 1
+        ) {
+            return@withTransaction emptySet()
+        }
+        val operation = ledgerDao.getOperation(linkedSnapshot.operationId)
+        if (operation != null && !operation.stateValue.isTerminal) {
+            LowQualityRedownloadCompletionPolicy.terminalState(
+                operation,
+                ledgerDao.getItems(linkedSnapshot.operationId),
+            )?.let { finalState ->
+                check(
+                    ledgerDao.finishOperation(
+                        linkedSnapshot.operationId,
+                        finalState.name,
+                        REASON_USER_REMOVED,
+                        System.currentTimeMillis(),
+                    ) == 1
+                ) { "Undoable low-quality removal lost operation ownership" }
+            }
+        }
+        setOf(linkedSnapshot.operationId)
+    }
+
     private suspend fun restoreRemovalSnapshot(
         snapshot: DownloadRemovalSnapshot,
     ): Long = database.withTransaction {
@@ -295,34 +377,58 @@ class DownloadRepository(private val database: DBManager) {
                     updatedAt = System.currentTimeMillis(),
                 )
                 val operation = ledgerDao.getOperation(linkedSnapshot.operationId)
-                if (operation != null && !operation.stateValue.isTerminal) {
+                if (snapshot.pendingUndoToken != null &&
+                    (operation == null || operation.stateValue.isTerminal)
+                ) {
+                    // The parent finished independently while Undo was open.
+                    // Restore the Download only; close the pending child without
+                    // replaying or reopening the stale parent snapshot.
+                    val committed = ledgerDao.commitUndoableLinkedItem(
+                        downloadId = restoredId,
+                        expectedToken = snapshot.pendingUndoToken,
+                        reason = REASON_USER_REMOVED,
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                    if (committed != 1) {
+                        check(
+                            ledgerDao.getItemByDownloadId(restoredId)
+                                ?.stateValue
+                                ?.isTerminal == true
+                        ) {
+                            "Undoable low-quality child lost terminal parent ownership $restoredId"
+                        }
+                    }
+                } else if (
+                    operation != null &&
+                        !operation.stateValue.isTerminal &&
+                        snapshot.pendingUndoToken != null
+                ) {
                     val restoredState = when (linkedSnapshot.stateValue) {
                         LowQualityRedownloadItemState.ACTIVE,
                         LowQualityRedownloadItemState.CANCELLATION_REQUESTED ->
                             LowQualityRedownloadItemState.QUEUED
                         else -> linkedSnapshot.stateValue
                     }
-                    check(
-                        ledgerDao.restoreUndoableLinkedItem(
-                            downloadId = restoredId,
-                            state = restoredState.name,
-                            reason = linkedSnapshot.reasonCode,
-                            updatedAt = System.currentTimeMillis(),
-                        ) == 1
-                    ) {
-                        "Undoable low-quality child restore lost ownership $restoredId"
-                    }
-                    val finalState = LowQualityRedownloadCompletionPolicy.terminalState(
-                        operation,
-                        ledgerDao.getItems(linkedSnapshot.operationId),
+                    val restored = ledgerDao.restoreUndoableLinkedItem(
+                        downloadId = restoredId,
+                        expectedToken = snapshot.pendingUndoToken,
+                        state = restoredState.name,
+                        reason = linkedSnapshot.reasonCode,
+                        updatedAt = System.currentTimeMillis(),
                     )
-                    if (finalState != null && finalState.name != operation.state) {
-                        ledgerDao.finishOperation(
-                            linkedSnapshot.operationId,
-                            finalState.name,
-                            "",
-                            System.currentTimeMillis(),
+                    if (restored == 1) {
+                        val finalState = LowQualityRedownloadCompletionPolicy.terminalState(
+                            operation,
+                            ledgerDao.getItems(linkedSnapshot.operationId),
                         )
+                        if (finalState != null && finalState.name != operation.state) {
+                            ledgerDao.finishOperation(
+                                linkedSnapshot.operationId,
+                                finalState.name,
+                                "",
+                                System.currentTimeMillis(),
+                            )
+                        }
                     }
                 }
             }
@@ -355,9 +461,9 @@ class DownloadRepository(private val database: DBManager) {
             restoredId,
             PersistedHistoryRefusal(restoredBarrier.issueCode, restoredBarrier.issueStage),
         )
-        // Deletion already terminalized the linked child.  Do not replay the
-        // stale child/parent snapshots: sibling progress, cancellation, and a
-        // terminal parent may have changed while Undo was available.
+        // Do not replay stale child/parent snapshots: sibling progress,
+        // cancellation, and a terminal parent may have changed while Undo was
+        // available.
         restoredId
     }
 
@@ -471,6 +577,7 @@ class DownloadRepository(private val database: DBManager) {
             operation = operation,
             items = ledgerDao.getItems(ledgerItem.operationId),
         ) ?: return setOf(ledgerItem.operationId)
+        if (operation.stateValue.isTerminal) return setOf(ledgerItem.operationId)
         if (operation.state != finalState.name) {
             check(
                 ledgerDao.setTerminalOperationState(
@@ -862,6 +969,20 @@ class DownloadRepository(private val database: DBManager) {
         assertTerminalExecutionOwned(id, expectedExecutionId)
         val ledgerDao = database.lowQualityRedownloadDao
         val ledgerItem = ledgerDao.getItemByDownloadId(id)
+        val currentDownload = downloadDao.getNullableDownloadById(id)
+            ?: error("Missing download for History replacement completion")
+        val qualityMarker = HistoryRedownloadMarker.parse(currentDownload.playlistURL)
+        if (qualityMarker?.isQualityReplacement == true) {
+            val operation = ledgerItem?.let { ledgerDao.getOperation(it.operationId) }
+            check(
+                ledgerItem != null &&
+                    operation != null &&
+                    !ledgerItem.stateValue.isTerminal &&
+                    !operation.stateValue.isTerminal
+            ) {
+                "Orphaned quality replacement cannot complete History successfully"
+            }
+        }
         check(persistedHistoryRefusalLocked(id) == null) {
             "History refusal cannot be completed as a successful replacement"
         }
@@ -1374,6 +1495,7 @@ class DownloadRepository(private val database: DBManager) {
         const val REASON_SAVED_FOR_LATER = "SAVED_FOR_LATER"
         const val REASON_HISTORY_TARGET_DELETED = "HISTORY_TARGET_DELETED"
         const val PENDING_CANCELLATION_TOKEN_PREFIX = "PENDING_USER_CANCELLATION:"
+        const val PENDING_REMOVAL_TOKEN_PREFIX = "PENDING_USER_REMOVAL:"
         private const val DOWNLOAD_WORK_NAME = "download"
         private const val SCHEDULED_DOWNLOAD_WORK_NAME = "scheduledDownload"
     }

@@ -4,10 +4,13 @@ import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
@@ -66,6 +69,40 @@ class DownloadWorkerOwnershipRecoveryTest {
         assertEquals(1, requeueAttempts)
         assertEquals("E2", newer.executionId)
         assertEquals("Active", newer.status)
+    }
+
+    @Test
+    fun staleRecoveryWaitsForClaimOwnerPublication() = runBlocking {
+        val downloadId = 906L
+        var requeued = false
+
+        val recovery = withDownloadWorkerExecutionLock {
+            // The DB claim has completed, but publication of E2 is deliberately
+            // paused while a stopped-worker recovery attempts to enter.
+            val job = launch {
+                withDownloadWorkerExecutionLock {
+                    recoverAbandonedDownloadExecutions(
+                        rows = listOf(AbandonedDownloadExecution(downloadId, "E2", "Active")),
+                        isOwnedBy = DownloadWorkerExecutionOwners::isOwnedBy,
+                        requeue = { _, _ ->
+                            requeued = true
+                            1
+                        },
+                        readCurrent = { AbandonedDownloadExecution(downloadId, "E2", "Active") },
+                    )
+                }
+            }
+            yield()
+            assertFalse(requeued)
+            DownloadWorkerExecutionOwners.claim(downloadId, "E2")
+            job
+        }
+
+        // The recovery sees the published owner after the shared lock opens.
+        recovery.join()
+        assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, "E2"))
+        DownloadWorkerExecutionOwners.release(downloadId, "E2")
+        assertFalse(requeued)
     }
 
     @Test
