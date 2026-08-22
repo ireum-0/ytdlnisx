@@ -13,13 +13,23 @@ enum class HistoryReplacementMismatchKind {
 }
 
 object HistoryReplacementDiagnostic {
-    fun persistedMismatchIssue(issueCode: String): DownloadIssue? = when (issueCode) {
+    fun persistedHistoryReplacementIssue(issueCode: String): DownloadIssue? = when (issueCode) {
         DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
             issue(HistoryReplacementMismatchKind.SOURCE)
         DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
             issue(HistoryReplacementMismatchKind.TYPE)
+        DownloadIssueCode.HISTORY_TARGET_DELETED.name ->
+            targetDeletedIssue()
         else -> null
     }
+
+    fun persistedMismatchIssue(issueCode: String): DownloadIssue? =
+        persistedHistoryReplacementIssue(issueCode)?.takeIf {
+            it.code != DownloadIssueCode.HISTORY_TARGET_DELETED
+        }
+
+    fun isPersistedHistoryReplacementRefusal(issueCode: String): Boolean =
+        persistedHistoryReplacementIssue(issueCode) != null
 
     fun isPersistedMismatch(issueCode: String): Boolean =
         persistedMismatchIssue(issueCode) != null

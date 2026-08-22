@@ -175,16 +175,13 @@ class DownloadWorker(
         }
         val authoritativeIssues = workerAuthoritativeIssues.toMutableMap().apply {
             staleItems.forEach { item ->
-                HistoryReplacementDiagnostic.persistedMismatchIssue(item.lastIssueCode)
+                HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(item.lastIssueCode)
                     ?.let { put(item.id, it) }
-                if (item.lastIssueCode == DownloadIssueCode.HISTORY_TARGET_DELETED.name) {
-                    put(item.id, HistoryReplacementDiagnostic.targetDeletedIssue())
-                }
             }
             runCatching {
                 dbManager.historyReplacementBarrierDao.getByDownloadIds(activeIds)
             }.getOrDefault(emptyList()).forEach { barrier ->
-                HistoryReplacementDiagnostic.persistedMismatchIssue(barrier.issueCode)
+                HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(barrier.issueCode)
                     ?.let { put(barrier.downloadId, it) }
             }
         }
@@ -689,19 +686,29 @@ class DownloadWorker(
                     val durableReplacementBarrier = withContext(Dispatchers.IO + NonCancellable) {
                         dbManager.historyReplacementBarrierDao.getByDownloadId(downloadItem.id)
                     }
+                    val persistedHistoryRefusal = durableReplacementBarrier
+                        ?.let { HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(it.issueCode) }
+                        ?: HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(downloadItem.lastIssueCode)
                     var historyReplacementFailureIssue: DownloadIssue? =
-                        durableReplacementBarrier
-                            ?.let { HistoryReplacementDiagnostic.persistedMismatchIssue(it.issueCode) }
-                            ?: HistoryReplacementDiagnostic.persistedMismatchIssue(downloadItem.lastIssueCode)
-                    var historyReplacementAuthoritativeIssue: DownloadIssue? =
-                        historyReplacementFailureIssue
+                        persistedHistoryRefusal?.takeUnless {
+                            it.code == DownloadIssueCode.HISTORY_TARGET_DELETED
+                        }
+                    var historyReplacementAuthoritativeIssue: DownloadIssue? = persistedHistoryRefusal
                     historyReplacementFailureIssue?.let { issue ->
                         workerAuthoritativeIssues[downloadItem.id] = issue
                     }
-                    var historyReplacementTerminalAction: HistoryReplacementTerminalAction? =
-                        historyReplacementFailureIssue?.let {
-                            HistoryReplacementTerminalAction.PRESERVE_FAILED
+                    persistedHistoryRefusal
+                        ?.takeIf { it.code == DownloadIssueCode.HISTORY_TARGET_DELETED }
+                        ?.let { issue ->
+                            workerAuthoritativeIssues[downloadItem.id] = issue
                         }
+                    var historyReplacementTerminalAction: HistoryReplacementTerminalAction? = when {
+                        persistedHistoryRefusal?.code == DownloadIssueCode.HISTORY_TARGET_DELETED ->
+                            HistoryReplacementTerminalAction.TARGET_DELETED
+                        historyReplacementFailureIssue != null ->
+                            HistoryReplacementTerminalAction.PRESERVE_FAILED
+                        else -> null
+                    }
                     fun establishHistoryReplacementFailure(issue: DownloadIssue) {
                         historyReplacementFailureIssue = issue
                         historyReplacementAuthoritativeIssue = issue
@@ -745,8 +752,14 @@ class DownloadWorker(
                             dbManager.historyReplacementBarrierDao.getByDownloadId(downloadItem.id)
                         }
                         barrier?.let {
-                            HistoryReplacementDiagnostic.persistedMismatchIssue(it.issueCode)
-                                ?.let(::establishHistoryReplacementFailure)
+                            HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(it.issueCode)
+                                ?.let { issue ->
+                                    if (issue.code == DownloadIssueCode.HISTORY_TARGET_DELETED) {
+                                        establishHistoryTargetDeleted()
+                                    } else {
+                                        establishHistoryReplacementFailure(issue)
+                                    }
+                                }
                         }
                     }
                     var downloadOutcome: DownloadOutcome? = null

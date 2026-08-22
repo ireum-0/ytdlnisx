@@ -10,7 +10,6 @@ import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import com.ireum.ytdl.util.download.DownloadIssueCode
-import com.ireum.ytdl.util.download.DownloadIssueStage
 import kotlinx.coroutines.runBlocking
 
 enum class HistoryReplacementResult {
@@ -462,7 +461,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 HistoryReplacementAuthorization.TypeMismatch ->
                     HistoryReplacementOutcome.TypeMismatch
             }
-            durableMismatchOutcome(
+            durableRefusalOutcome(
                 outcome = outcome,
                 historyId = historyId,
                 expectedSourceUrl = expectedSourceUrl,
@@ -507,22 +506,23 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         )
         if (replacementDownloadId > 0L) {
             db.historyReplacementBarrierDao.getByDownloadId(replacementDownloadId)?.let { barrier ->
-                return when (barrier.issueCode) {
-                    DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
-                        HistoryReplacementAuthorization.SourceMismatch
-                    DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
-                        HistoryReplacementAuthorization.TypeMismatch
-                    else -> error("Invalid History replacement barrier issue ${barrier.issueCode}")
-                }
+                return authorizationForPersistedRefusal(barrier.issueCode)
             }
         }
         val existingHistory = db.historyDao.getNullableItem(historyId)
-            ?: return HistoryReplacementAuthorization.TargetMissing
+            ?: return durableRefusalAuthorization(
+                authorization = HistoryReplacementAuthorization.TargetMissing,
+                historyId = historyId,
+                expectedSourceUrl = expectedSourceUrl,
+                expectedType = expectedType,
+                replacementDownloadId = replacementDownloadId,
+                replacementOperationId = replacementOperationId,
+            )
         if (
             expectedSourceUrl.isBlank() ||
             !HistoryReplacementSourceIdentity.matches(expectedSourceUrl, existingHistory.url)
         ) {
-            return durableMismatchAuthorization(
+            return durableRefusalAuthorization(
                 authorization = HistoryReplacementAuthorization.SourceMismatch,
                 historyId = historyId,
                 expectedSourceUrl = expectedSourceUrl,
@@ -532,7 +532,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             )
         }
         if (existingHistory.type != expectedType) {
-            return durableMismatchAuthorization(
+            return durableRefusalAuthorization(
                 authorization = HistoryReplacementAuthorization.TypeMismatch,
                 historyId = historyId,
                 expectedSourceUrl = expectedSourceUrl,
@@ -563,7 +563,19 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         }
     }
 
-    private suspend fun durableMismatchAuthorization(
+    private fun authorizationForPersistedRefusal(
+        issueCode: String,
+    ): HistoryReplacementAuthorization = when (issueCode) {
+        DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
+            HistoryReplacementAuthorization.SourceMismatch
+        DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
+            HistoryReplacementAuthorization.TypeMismatch
+        DownloadIssueCode.HISTORY_TARGET_DELETED.name ->
+            HistoryReplacementAuthorization.TargetMissing
+        else -> error("Invalid History replacement barrier issue $issueCode")
+    }
+
+    private suspend fun durableRefusalAuthorization(
         authorization: HistoryReplacementAuthorization,
         historyId: Long,
         expectedSourceUrl: String,
@@ -572,9 +584,16 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         replacementOperationId: String,
     ): HistoryReplacementAuthorization {
         if (replacementDownloadId <= 0L) return authorization
-        val kind = HistoryReplacementDiagnostic.mismatchKind(authorization)
-            ?: return authorization
-        val issueCode = HistoryReplacementDiagnostic.issueCode(kind).name
+        val issue = when (authorization) {
+            HistoryReplacementAuthorization.TargetMissing ->
+                HistoryReplacementDiagnostic.targetDeletedIssue()
+            HistoryReplacementAuthorization.SourceMismatch ->
+                HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
+            HistoryReplacementAuthorization.TypeMismatch ->
+                HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.TYPE)
+            is HistoryReplacementAuthorization.Authorized ->
+                error("Authorized History result is not a refusal")
+        }
         val barrierDao = db.historyReplacementBarrierDao
         barrierDao.insertIfAbsent(
             HistoryReplacementBarrier(
@@ -583,23 +602,17 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 historyId = historyId,
                 expectedSourceUrl = expectedSourceUrl,
                 expectedType = expectedType.name,
-                issueCode = issueCode,
-                issueStage = DownloadIssueStage.HISTORY.name,
+                issueCode = issue.code.name,
+                issueStage = issue.stage.name,
                 createdAt = System.currentTimeMillis(),
             )
         )
         val persisted = barrierDao.getByDownloadId(replacementDownloadId)
-            ?: error("History replacement mismatch barrier was not durably recorded")
-        return when (persisted.issueCode) {
-            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
-                HistoryReplacementAuthorization.SourceMismatch
-            DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
-                HistoryReplacementAuthorization.TypeMismatch
-            else -> error("Invalid History replacement barrier issue ${persisted.issueCode}")
-        }
+            ?: error("History replacement refusal barrier was not durably recorded")
+        return authorizationForPersistedRefusal(persisted.issueCode)
     }
 
-    private suspend fun durableMismatchOutcome(
+    private suspend fun durableRefusalOutcome(
         outcome: HistoryReplacementOutcome,
         historyId: Long,
         expectedSourceUrl: String,
@@ -608,14 +621,17 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         replacementOperationId: String,
     ): HistoryReplacementOutcome {
         if (replacementDownloadId <= 0L) return outcome
-        val kind = HistoryReplacementDiagnostic.mismatchKind(outcome)
-            ?: return outcome
-        val authorization = when (kind) {
-            HistoryReplacementMismatchKind.SOURCE -> HistoryReplacementAuthorization.SourceMismatch
-            HistoryReplacementMismatchKind.TYPE -> HistoryReplacementAuthorization.TypeMismatch
+        val authorization = when (outcome) {
+            HistoryReplacementOutcome.SourceMismatch ->
+                HistoryReplacementAuthorization.SourceMismatch
+            HistoryReplacementOutcome.TypeMismatch ->
+                HistoryReplacementAuthorization.TypeMismatch
+            HistoryReplacementOutcome.TargetMissing ->
+                HistoryReplacementAuthorization.TargetMissing
+            is HistoryReplacementOutcome.Updated -> return outcome
         }
         return when (
-            durableMismatchAuthorization(
+            durableRefusalAuthorization(
                 authorization = authorization,
                 historyId = historyId,
                 expectedSourceUrl = expectedSourceUrl,
@@ -626,9 +642,8 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         ) {
             HistoryReplacementAuthorization.SourceMismatch -> HistoryReplacementOutcome.SourceMismatch
             HistoryReplacementAuthorization.TypeMismatch -> HistoryReplacementOutcome.TypeMismatch
-            is HistoryReplacementAuthorization.Authorized,
-            HistoryReplacementAuthorization.TargetMissing ->
-                error("Invalid non-mismatch History replacement barrier")
+            HistoryReplacementAuthorization.TargetMissing -> HistoryReplacementOutcome.TargetMissing
+            is HistoryReplacementAuthorization.Authorized -> error("Invalid History replacement refusal barrier")
         }
     }
 

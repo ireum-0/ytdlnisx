@@ -269,7 +269,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         if (
             persistedItem != null &&
             (
-                HistoryReplacementDiagnostic.isPersistedMismatch(persistedItem.lastIssueCode) ||
+                HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(persistedItem.lastIssueCode) ||
                     dbManager.historyReplacementBarrierDao
                         .getByDownloadIdBlocking(persistedItem.id) != null
                 )
@@ -875,7 +875,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                     val item = repository.getItemByID(it)
                     if (processingItemsJob?.isCancelled == true) throw CancellationException()
                     if (
-                        HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode) ||
+                        HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
                             dbManager.historyReplacementBarrierDao
                                 .getByDownloadIdBlocking(item.id) != null
                     ) {
@@ -1182,7 +1182,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             hasValidOutput = hasValidOutput,
             settingsConfirmed = settingsConfirmed,
             historyReplacementMismatch =
-                HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode) ||
+                HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
                     dbManager.historyReplacementBarrierDao
                         .getByDownloadIdBlocking(item.id) != null,
             operationIdFactory = { UUID.randomUUID().toString() }
@@ -1302,7 +1302,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                 ?.let { ids ->
                     dao.getDownloadsByIdsSuspend(ids)
                         .filter { item ->
-                            HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode)
+                            HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode)
                         }
                         .mapTo(hashSetOf<Long>(), DownloadItem::id)
                         .also { mismatchIds ->
@@ -1316,7 +1316,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         items.forEach { item ->
             if (
                 item.id in durableMismatchIds ||
-                HistoryReplacementDiagnostic.isPersistedMismatch(item.lastIssueCode)
+                HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode)
             ) {
                 return QueueDownloadsResult(
                     message = retryBlockedMessage(
@@ -2078,7 +2078,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             if (
                 persistedItem != null &&
                 (
-                    HistoryReplacementDiagnostic.isPersistedMismatch(persistedItem.lastIssueCode) ||
+                    HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(persistedItem.lastIssueCode) ||
                         dbManager.historyReplacementBarrierDao
                             .getByDownloadIdBlocking(persistedItem.id) != null
                     )

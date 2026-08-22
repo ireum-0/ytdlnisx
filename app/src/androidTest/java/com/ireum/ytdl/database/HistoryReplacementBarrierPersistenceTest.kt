@@ -124,6 +124,45 @@ class HistoryReplacementBarrierPersistenceTest {
     }
 
     @Test
+    fun targetMissingBarrierSurvivesHistoryRecreationWithTheSameId() = runBlocking {
+        val historyId = insertHistory()
+        val item = insertDownload(DownloadType.video)
+        db.historyDao.deleteById(historyId)
+
+        assertEquals(
+            HistoryReplacementAuthorization.TargetMissing,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = item.id,
+                replacementOperationId = item.operationId,
+            )
+        )
+        assertEquals(
+            "HISTORY_TARGET_DELETED",
+            db.historyReplacementBarrierDao.getByDownloadId(item.id)?.issueCode,
+        )
+
+        db.historyDao.insertRaw(history().copy(id = historyId))
+
+        assertEquals(
+            HistoryReplacementAuthorization.TargetMissing,
+            repository().authorizeHistoryReplacement(
+                historyId = historyId,
+                expectedSourceUrl = HISTORY_URL,
+                expectedType = DownloadType.video,
+                replacementDownloadId = item.id,
+                replacementOperationId = item.operationId,
+            )
+        )
+        assertEquals(
+            listOf("/tmp/previous.mp4"),
+            db.historyDao.getItem(historyId).downloadPath,
+        )
+    }
+
+    @Test
     fun staleSecondWorkerClaimCannotRunAfterFirstWorkerRecordsMismatch() = runBlocking {
         val historyId = insertHistory()
         val item = insertDownload(DownloadType.video)
