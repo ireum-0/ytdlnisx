@@ -2938,7 +2938,7 @@ later inside that coroutine.
 
 There is a concrete production failure path even without an injected clipboard
 exception. `exportToClipboard()` resolves the runtime `cookies.txt`; if the file
-not exist it calls `updateCookiesFile()`, but that method itself launches a
+does not exist it calls `updateCookiesFile()`, but that method itself launches a
 separate IO coroutine and returns immediately. The export coroutine then calls
 `cookieFile.readText()` without waiting for the rebuild to create/write the
 file. A missing runtime projection can therefore produce a read failure before
