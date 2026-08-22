@@ -29,6 +29,25 @@ class DownloadWorkerOwnershipRecoveryTest {
     }
 
     @Test
+    fun staleExecutionCannotCancelNewerWorkerOrProcessOwner() {
+        val downloadId = 907L
+        DownloadWorkerExecutionOwners.claim(downloadId, "E1")
+        DownloadWorkerProcessOwners.claim(downloadId, "E1")
+        DownloadWorkerExecutionOwners.claim(downloadId, "E2")
+
+        assertFalse(canCancelExecutionProcess(downloadId, "E1"))
+        assertTrue(canCancelExecutionProcess(downloadId, "E2"))
+
+        DownloadWorkerExecutionOwners.release(downloadId, "E2")
+        DownloadWorkerProcessOwners.claim(downloadId, "E2")
+        assertFalse(canCancelExecutionProcess(downloadId, "E1"))
+        assertTrue(canCancelExecutionProcess(downloadId, "E2"))
+
+        DownloadWorkerProcessOwners.release(downloadId, "E2")
+        DownloadWorkerProcessOwners.release(downloadId, "E1")
+    }
+
+    @Test
     fun abandonedOrdinaryExecutionIsRequeuedWithItsExactToken() = runBlocking {
         val row = AbandonedDownloadExecution(904L, "E1", "Active")
         var persistedToken = ""

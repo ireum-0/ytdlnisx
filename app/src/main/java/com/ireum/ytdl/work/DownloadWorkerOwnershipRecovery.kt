@@ -69,6 +69,8 @@ internal object DownloadWorkerExecutionOwners {
     fun isOwnedBy(downloadId: Long, executionId: String): Boolean =
         executionId.isNotBlank() && owners[downloadId] == executionId
 
+    fun ownerOf(downloadId: Long): String? = owners[downloadId]
+
     fun release(downloadId: Long, executionId: String) {
         if (executionId.isNotBlank()) owners.remove(downloadId, executionId)
     }
@@ -94,6 +96,19 @@ internal object DownloadWorkerProcessOwners {
     fun release(downloadId: Long, executionId: String) {
         if (executionId.isNotBlank()) owners.remove(downloadId, executionId)
     }
+}
+
+internal fun canCancelExecutionProcess(
+    downloadId: Long,
+    expectedExecutionId: String,
+): Boolean {
+    if (expectedExecutionId.isBlank()) return false
+    val liveProcessOwner = DownloadWorkerProcessOwners.ownerOf(downloadId)
+    if (liveProcessOwner != null && liveProcessOwner != expectedExecutionId) {
+        return false
+    }
+    val liveExecutionOwner = DownloadWorkerExecutionOwners.ownerOf(downloadId)
+    return liveExecutionOwner == null || liveExecutionOwner == expectedExecutionId
 }
 
 /**

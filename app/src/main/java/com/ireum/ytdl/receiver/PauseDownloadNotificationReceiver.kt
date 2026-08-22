@@ -6,9 +6,8 @@ import android.content.Intent
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.NotificationUtil
-import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.work.DownloadWorker
-import com.yausername.youtubedl_android.YoutubeDL
+import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -28,15 +27,25 @@ class PauseDownloadNotificationReceiver : BroadcastReceiver() {
             val dbManager = DBManager.getInstance(c)
             CoroutineScope(Dispatchers.IO).launch{
                 try {
-                    val item = dbManager.downloadDao.getDownloadById(id.toLong())
-                    DownloadRepository(dbManager).setDownloadStatus(
-                        item.id,
-                        DownloadRepository.Status.Paused,
-                    )
-                    notificationUtil.cancelDownloadNotification(id)
-                    YoutubeDL.getInstance().destroyProcessById(id.toString())
-                    YoutubeDLCompat.destroyProcessById(id.toString())
-                    DownloadWorker.cancelPostProcessingById(id.toLong())
+                    withDownloadWorkerExecutionLock {
+                        val item = dbManager.downloadDao.getDownloadById(id.toLong())
+                        val expectedExecutionId = intent.getStringExtra("executionId").orEmpty()
+                        if (
+                            expectedExecutionId.isBlank() ||
+                            item.executionId != expectedExecutionId
+                        ) {
+                            return@withDownloadWorkerExecutionLock
+                        }
+                        DownloadRepository(dbManager).setDownloadStatus(
+                            item.id,
+                            DownloadRepository.Status.Paused,
+                        )
+                        notificationUtil.cancelDownloadNotification(id)
+                        DownloadWorker.cancelProcessesForExecution(
+                            item.id,
+                            expectedExecutionId,
+                        )
+                    }
                 }finally {
                     withContext(Dispatchers.Main){
                         notificationUtil.createResumeDownload(id, title)

@@ -2079,10 +2079,9 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
             withDownloadWorkerExecutionLock {
                 val current = dao.getNullableDownloadById(id)
                 val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
-                    ?: current?.executionId.orEmpty()
                 if (
                     current != null &&
-                        expected.isNotBlank() &&
+                        expected != null &&
                         current.executionId == expected
                 ) {
                     com.ireum.ytdl.work.DownloadWorker.cancelProcessesForExecution(id, expected)

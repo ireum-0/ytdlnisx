@@ -919,7 +919,8 @@ class DownloadWorker(
                                 0,
                                 notificationTitle,
                                 NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
-                                getHardSubStatusText(resources)
+                                getHardSubStatusText(resources),
+                                downloadItem.executionId,
                             )
                             Log.i(TAG, "HardSub post-processing slot released id=${downloadItem.id}")
                             DownloadRepository(dbManager).startDownloadWorker(emptyList(), context)
@@ -1753,7 +1754,10 @@ class DownloadWorker(
                                 historyError is HistoryReplacementQualityAuthorityLostException
                             ) {
                                 if (historyError.cancellationOrigin) {
-                                    downloadOutcome = DownloadOutcome.canceled()
+                                    downloadOutcome =
+                                        HistoryReplacementDiagnostic.qualityAuthorityLossOutcome(
+                                            cancellationOrigin = true,
+                                        )
                                     return@launch
                                 }
                                 establishQualityAuthorityLoss()
@@ -2378,7 +2382,10 @@ class DownloadWorker(
                                 adoptHistoryReplacementAuthorization(unexpected.authorization)
                             is HistoryReplacementQualityAuthorityLostException -> {
                                 if (unexpected.cancellationOrigin) {
-                                    downloadOutcome = DownloadOutcome.canceled()
+                                    downloadOutcome =
+                                        HistoryReplacementDiagnostic.qualityAuthorityLossOutcome(
+                                            cancellationOrigin = true,
+                                        )
                                     return@launch
                                 }
                                 establishQualityAuthorityLoss()
@@ -3059,6 +3066,7 @@ class DownloadWorker(
                     notificationTitle,
                     NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
                     hardSubStatus,
+                    item.executionId,
                 )
                 runtime.lastNotificationUpdateAt = now
                 runtime.lastNotificationProgress = intProgress
@@ -3360,7 +3368,7 @@ class DownloadWorker(
         }
     }
 
-    private fun resolveCompletedYtdlpQuality(
+    private suspend fun resolveCompletedYtdlpQuality(
         input: YtdlpPhaseInput,
         services: YtdlpPhaseServices,
         runtime: YtdlpPhaseRuntimeState,
@@ -3447,7 +3455,7 @@ class DownloadWorker(
         }
     }
 
-    private fun runSelectionProbe(
+    private suspend fun runSelectionProbe(
         input: YtdlpPhaseInput,
         services: YtdlpPhaseServices,
         runtime: YtdlpPhaseRuntimeState,
@@ -3658,6 +3666,7 @@ class DownloadWorker(
             input.notificationTitle,
             NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID,
             getHardSubStatusText(services.resources),
+            item.executionId,
         )
     }
 
@@ -3699,12 +3708,7 @@ class DownloadWorker(
             expectedExecutionId: String,
         ) {
             if (expectedExecutionId.isBlank()) return
-            val processOwner = DownloadWorkerProcessOwners.ownerOf(downloadId)
-            if (
-                processOwner != null &&
-                    processOwner != expectedExecutionId &&
-                    DownloadWorkerExecutionOwners.isOwnedBy(downloadId, processOwner)
-            ) return
+            if (!canCancelExecutionProcess(downloadId, expectedExecutionId)) return
             cancelYtdlpProcess(downloadId)
             cancelPostProcessingById(downloadId)
         }

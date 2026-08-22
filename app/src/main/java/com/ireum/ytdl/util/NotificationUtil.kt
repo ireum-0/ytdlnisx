@@ -739,7 +739,8 @@ class NotificationUtil(var context: Context) {
         queue: Int,
         title: String?,
         channel : String,
-        hardSubStatus: String? = null
+        hardSubStatus: String? = null,
+        expectedExecutionId: String? = null,
     ) {
 
         val notificationBuilder = getBuilder(channel)
@@ -753,20 +754,26 @@ class NotificationUtil(var context: Context) {
         val pauseIntent = Intent(context, PauseDownloadNotificationReceiver::class.java)
         pauseIntent.putExtra("itemID", id)
         pauseIntent.putExtra("title", title)
+        expectedExecutionId?.takeIf { it.isNotBlank() }?.let {
+            pauseIntent.putExtra("executionId", it)
+        }
         val pauseNotificationPendingIntent = PendingIntent.getBroadcast(
             context,
             id,
             pauseIntent,
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val cancelIntent = Intent(context, CancelDownloadNotificationReceiver::class.java)
         cancelIntent.putExtra("itemID", id)
+        expectedExecutionId?.takeIf { it.isNotBlank() }?.let {
+            cancelIntent.putExtra("executionId", it)
+        }
         val cancelNotificationPendingIntent = PendingIntent.getBroadcast(
             context,
             id,
             cancelIntent,
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         try {
