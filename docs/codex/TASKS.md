@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **61 active correctness defects** in this checkpoint. The previous
+There are **62 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 61-defect registry is intentionally retained here. The separate
+The broader 62-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 61-defect count unless they are explicitly promoted
+below do **not** change the 62-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-61-defect registry below.
+62-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 61 active defects
+### F1 remediation-discovered follow-up not counted in the 62 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2636,6 +2636,60 @@ Required result:
   instead of waiting on speculative IDs;
 - add deterministic concurrent-insert, process-death/exception-between-updates,
   normal reverse, repeated reverse, and selection-after-reverse regressions.
+
+### P3 — BUG-LOCALADD-03 — Persist unresolved local-add session before worker success
+
+**State:** Open
+
+**Failure path:** the production History local-add flow persists the selected URI
+list and enqueues `LocalAddWorker`. During the worker run, candidates that cannot
+be accepted into History automatically are accumulated in `pending`. When that
+list is non-empty, the worker generates a new session ID, calls
+`LocalAddStorage.savePending()`, calls `LocalAddStorage.setOpenSession()`, posts a
+system notification whose PendingIntent contains the session ID, and then
+returns `Result.success()`. Both `savePending()` and `setOpenSession()` use
+`SharedPreferences.Editor.apply()`: they update process memory synchronously but
+write to disk asynchronously and expose no durable-write failure result.
+
+The notification and WorkManager completion are independent of those preference
+writes. A process death or failed asynchronous preference write after the
+notification/worker success boundary can therefore leave the notification's
+session ID without a durable `local_add_pending_<id>` payload, or can persist the
+payload without the open-session pointer that makes it discoverable after a
+restart. Tapping the notification does not recover the missing candidate list:
+`MainActivity` forwards the session ID, but `HistoryFragment.openPendingLocalAddSession()`
+calls `LocalAddStorage.loadPending()` and simply returns when it observes an empty
+list. There is no startup reconciliation that enumerates orphan pending-session
+keys or recreates a missing payload from the already-successful worker. The
+original selected files remain untouched, but the app can silently lose the
+user's pending import/resolution work and report the worker as successfully
+finished.
+
+**Why this is a defect:** unresolved candidates are the authoritative output of
+the first local-add phase, but that output is stored less durably than both its
+success result and its user-visible continuation token. A normal abrupt process
+death or preference-write failure can therefore turn a completed local-add scan
+into a dead notification/no-op or an undiscoverable pending session, with no
+retry or failure signal. This is distinct from `BUG-LOCALADD-02`, which covers
+losing the **input URI list before the worker starts**; this path loses the
+worker's unresolved **output session after processing has completed**.
+
+Required result:
+
+- persist pending local-add candidates and their session/continuation identity in
+  durable database or file-backed state before the worker can return success or
+  publish a continuation notification;
+- make the pending payload and discoverable/open-session ownership one atomic or
+  recoverably ordered contract so neither can survive without the other;
+- publish the notification only after that durable commit, and make opening a
+  missing/corrupt pending session surface a typed recoverable failure rather than
+  silently returning;
+- reconcile durable unresolved sessions on startup so a lost notification or
+  process death cannot orphan already-processed pending work;
+- add deterministic asynchronous-write failure and process-death tests after
+  candidate classification, after pending-payload persistence, after open-session
+  persistence, after notification publication, and immediately before worker
+  success, plus normal notification-open and restart-recovery coverage.
 
 ## Current status
 
