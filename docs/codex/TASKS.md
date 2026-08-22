@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **62 active correctness defects** in this checkpoint. The previous
+There are **63 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 62-defect registry is intentionally retained here. The separate
+The broader 63-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 62-defect count unless they are explicitly promoted
+below do **not** change the 63-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-62-defect registry below.
+63-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 62 active defects
+### F1 remediation-discovered follow-up not counted in the 63 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2440,6 +2440,69 @@ Required result:
   deletion, plus normal single/multi deletion and parent/child hierarchy tests
   proving no surviving group loses only part of its graph and no orphan relation
   survives.
+
+### P2 — BUG-COOKIE-01 — Make cookie revocation authoritative before yt-dlp reuse
+
+**State:** Open
+
+**Failure path:** the Cookies screen persists cookie records in Room, but yt-dlp
+does not read those rows at request time. `CookieViewModel.updateCookiesFile()`
+projects the currently enabled rows into the separate app-cache file
+`cacheDir/cookies.txt`, and `YTDLPUtil` attaches that existing file through
+`--cookies` for metadata/date fetches and ordinary download requests whenever
+`use_cookies` is enabled. The runtime file is therefore an independent
+credential-bearing execution input whose contents can outlive a Room mutation.
+
+The production Delete All action does not use one ordered repository operation.
+`CookiesFragment` calls `cookiesViewModel.deleteAll()`, which launches an IO
+coroutine that only runs `cookieDao.deleteAll()`, and then independently executes
+a best-effort `File.writeText("")` against `cookies.txt` inside `runCatching`.
+The two mutations race and the filesystem failure is discarded. If the Room
+delete commits while truncating the cookie file fails, the visible cookie list
+becomes empty but the old credential file remains; the next metadata lookup,
+date fetch, or normal download can still attach and send cookies that the user
+just deleted. A process death in the split window can produce the same state.
+The per-cookie Delete and enabled/disabled paths are ordered slightly better but
+still call `updateCookiesFile()` as a new fire-and-forget coroutine after the
+Room mutation, so process death after the DB commit can likewise leave a stale
+runtime credential projection until some later refresh. `MainActivity` rebuilds
+the file on creation, but that eventual repair does not protect requests issued
+before recreation and cannot make the deletion boundary atomic.
+
+The inverse split is also observable: the file can be cleared before the Room
+Delete All coroutine commits. If the DB mutation then fails or the process dies,
+Room still contains enabled cookies while the current runtime file is empty;
+a later `MainActivity` recreation regenerates those credentials from the rows.
+No generation, pending-revocation state, or extractor preflight proves that the
+file being attached corresponds to the latest committed cookie state.
+
+**Why this is a defect:** deleting or disabling authentication cookies is a
+user-visible revocation command, but the durable UI state and the actual
+credential source consumed by yt-dlp do not share a commit boundary. A normal
+filesystem/Room failure or abrupt process death can therefore either keep using
+credentials after the UI says they were deleted or later resurrect credentials
+from rows after the runtime file was cleared. This is not merely stale display
+state: subsequent network requests can be authenticated under a credential set
+that contradicts the user's last completed cookie action.
+
+Required result:
+
+- define one authoritative cookie-state generation and commit deletion/enable
+  changes together with a recoverable runtime-projection state before reporting
+  the revocation as complete;
+- never swallow failure to clear/rebuild the credential file after a committed
+  revocation; if projection cannot be made current, prevent `--cookies` from
+  being attached and surface/retry the projection failure rather than using a
+  stale file;
+- make Delete All, single Delete, enable/disable, import/update, startup rebuild,
+  metadata/date fetches, Terminal authentication, and ordinary downloads use the
+  same current-generation projection contract;
+- ensure process restart reconciles any pending projection/revocation before an
+  extractor can consume cookies, without resurrecting a user-completed delete;
+- add deterministic Room failure, cookie-file write/truncate failure, process-
+  death-between-boundaries, immediate post-delete metadata/download, disabled-
+  cookie, Delete All, single Delete, and restart regressions proving yt-dlp can
+  never consume credentials older than the authoritative cookie state.
 
 ### P3 — BUG-LOCALADD-02 — Persist local-add session input before durable worker enqueue
 
