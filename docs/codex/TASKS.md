@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **66 active correctness defects** in this checkpoint. The previous
+There are **69 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 66-defect registry is intentionally retained here. The separate
+The broader 69-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 66-defect count unless they are explicitly promoted
+below do **not** change the 69-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-66-defect registry below.
+69-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 66 active defects
+### F1 remediation-discovered follow-up not counted in the 69 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2455,6 +2455,69 @@ Required result:
   low-quality-linked downloads, plus already-PostProcessing, normal still-Queued,
   and subsequent configuration/queue-action regressions.
 
+### P2 — BUG-QUEUE-03 — Recover runnable queued downloads after worker enqueue loss
+
+**State:** Open
+
+**Failure path:** the ordinary production queue path in `DownloadViewModel`
+first persists the selected `Processing` downloads as durable `Queued` rows via
+`DownloadRepository.updateAll()`, then calls
+`DownloadRepository.startDownloadWorker()`. The same commit-then-dispatch
+ordering is used by supported retry, resume, requeue, and related queue entry
+points. `HardSubScanWorker` likewise inserts new hard-sub download rows as
+`Queued` before handing them to `startDownloadWorker()`.
+
+For an immediate queue, `startDownloadWorker()` builds a one-time
+`DownloadWorker` and calls `WorkManager.enqueueUniqueWork(...)`. It discards the
+returned WorkManager `Operation`; invocation is treated as completed scheduling,
+and the repository immediately returns `Result.success()`. The normal queue UI
+uses that result to report that the downloads have been queued. An asynchronous
+enqueue failure reported through the discarded `Operation`, or process death
+after the Room `Queued` commit but before WorkManager has durably recorded the
+request, can therefore leave the database intent without any execution carrier.
+Delayed WorkManager-backed scheduled groups have the same split boundary when
+the AlarmManager option is not being used.
+
+There is no general recovery that proves every runnable `Queued` row has a
+matching worker after restart. `App.onCreate()` reconciles automatic-keyword
+observation coverage, low-quality re-download operations, and History date-fetch
+operations, but it does not scan orphan runnable Download rows and re-establish a
+`DownloadWorker`. `DownloadViewModel` construction likewise only exposes queue
+flows and does not repair missing work. Without another user action that happens
+to call `startDownloadWorker()`, a successfully persisted ordinary download,
+retry, resume, or hard-sub-generated request can therefore remain `Queued`
+indefinitely even though no worker exists to claim it.
+
+**Why this is a defect:** `Queued` is durable user intent to execute a download,
+while WorkManager is only the carrier for that intent. The implementation can
+commit the durable intent, lose the carrier, and still report the queue action
+as successful. A normal requested download can silently never start and the
+failure survives app/process restart. This is distinct from `BUG-OBSERVE-03` and
+`BUG-KEYWORD-03`, which own analogous enqueue-loss contracts for their separate
+durable domains, from `BUG-SCHEDULER-03`, which owns the AlarmManager chain for
+future individually scheduled downloads, and from `BUG-QUEUE-02`, which concerns
+stale UI overwriting an already-established worker owner.
+
+Required result:
+
+- make runnable Download scheduling recoverable from durable queue state, using a
+  generation/outbox or startup reconciliation that guarantees every eligible
+  `Queued` request has an execution carrier after enqueue failure or restart;
+- observe WorkManager enqueue completion/failure when it is part of the immediate
+  result contract, or preserve an explicit recoverable scheduling state rather
+  than treating invocation alone as accepted work;
+- bind reconciliation and worker claims to the existing `executionId`/status CAS
+  contract so recovery cannot manufacture duplicate execution owners while a
+  valid worker is already active;
+- apply the same carrier contract to ordinary queue, same-settings retry,
+  resume/requeue, hard-sub-generated queued work, and WorkManager-backed delayed
+  scheduled groups while keeping AlarmManager-specific scheduling semantics
+  under the existing scheduler defects;
+- add deterministic asynchronous enqueue-failure and process-death tests after
+  the `Queued` Room commit but before WorkManager persistence, plus cold-start
+  recovery, normal successful enqueue, already-owned work, retry, resume,
+  hard-sub insertion, delayed scheduling, and exactly-one-execution regressions.
+
 ### P2 — BUG-GROUP-01 — Make keyword and Youtuber group deletion atomic
 
 **State:** Open
@@ -2886,9 +2949,9 @@ DAO sink is `DELETE FROM results`. There is no Result-session ID, generation, or
 expected-owner predicate. At the same time, the normal `HomeFragment` uses its
 own `ResultViewModel` and directly observes the same Room Result table as the
 current search/playlist result set, updating the visible list and selection
-controls from those rows. Because `ShareActivity` is `singleInstance` rather
-than a replacement for the Main activity's Result owner, an external share can
-run while an existing Home result session still exists. The global delete can
+controls from those rows. Because `ShareActivity` is `singleInstance` rather than
+a replacement for the Main activity's Result owner, an external share can run
+while an existing Home result session still exists. The global delete can
 therefore erase that unrelated session simply because the shared URL was new.
 
 The ordering is additionally non-authoritative because `deleteAll()` is declared
@@ -2924,6 +2987,106 @@ Required result:
   `ACTION_SEND` URL and browsable `ACTION_VIEW` URL, an exact cached URL, duplicate
   exact matches, and a deterministic concurrent Home parse/insert while Share is
   handling its request, proving unrelated Result rows are never cleared.
+
+### P3 — BUG-COOKIE-02 — Await Cookie clipboard export before reporting success
+
+**State:** Open
+
+**Failure path:** the production Cookies overflow menu handles Export Clipboard
+by calling `CookieViewModel.exportToClipboard()` and immediately showing the
+`copied_to_clipboard` success Snackbar. The view-model operation is not awaited
+by the Fragment: `exportToClipboard()` starts a `viewModelScope` coroutine and
+returns its `Job`, while the actual runtime-file read and clipboard mutation run
+later inside that coroutine.
+
+There is a concrete production failure path even without an injected clipboard
+exception. `exportToClipboard()` resolves the runtime `cookies.txt`; if the file
+does not exist it calls `updateCookiesFile()`, but that method itself launches a
+separate IO coroutine and returns immediately. The export coroutine then calls
+`cookieFile.readText()` without waiting for the rebuild to create/write the
+file. A missing runtime projection can therefore produce a read failure before
+the detached rebuild finishes. File reads, service lookup, and
+`ClipboardManager.setText()` can also throw independently. The export coroutine
+catches every `Exception` and only prints the stack trace, so none of those
+failures reaches the Fragment or retracts the already-shown success message; the
+clipboard can retain unrelated or older contents.
+
+**Why this is a defect:** a user-requested Cookie export can be reported as
+successfully copied before the clipboard write occurs, and can remain reported
+as successful when no clipboard mutation occurs at all. The missing-runtime-file
+case is reachable through ordinary runtime projection lifecycle rather than only
+fault injection. The impact is limited to this export path and does not itself
+mutate persistent application data, so it is P3. This is distinct from
+`BUG-COOKIE-01`, which owns the authoritative Room-to-runtime credential
+projection/revocation contract, and from `BUG-TEMPLATE-01`, which owns the
+separate Command Template export path.
+
+Required result:
+
+- expose Cookie clipboard export as one suspending or otherwise awaitable
+  operation whose result covers obtaining the current runtime cookie projection,
+  reading it, and completing the actual clipboard mutation;
+- if the runtime cookie file is missing or stale, await creation of the current
+  projection under the same authoritative cookie-generation contract rather
+  than launching a detached rebuild and racing its file read;
+- propagate projection/read/clipboard failure to the caller, preserve coroutine
+  cancellation, and do not swallow failure in a detached `viewModelScope` job;
+- show `copied_to_clipboard` only after a successful clipboard write and surface
+  an explicit failure without implying that pre-existing clipboard contents are
+  the requested export;
+- add deterministic missing-`cookies.txt` + delayed-rebuild, projection/file-read
+  failure, clipboard failure, pre-existing-stale-clipboard, normal existing-file,
+  and empty-cookie export regressions proving success cannot precede or outlive
+  the requested clipboard content.
+
+### P3 — BUG-CACHE-03 — Do not report failed legacy cache migration as success
+
+**State:** Open
+
+**Failure path:** the production Folder settings screen exposes the cache-move
+action and directly enqueues `MoveCacheFilesWorker`. The app still supports
+Android API 24 and 25 (`minSdk 24`). For each non-directory cache entry the
+worker uses `Files.move(..., REPLACE_EXISTING)` only on API 26 and newer; on API
+24–25 it instead calls `File.renameTo(destFile)` and discards the returned
+Boolean. `renameTo()` reports ordinary filesystem move failure by returning
+`false`, including when the public Downloads destination cannot be created or is
+not writable. That state is production-reachable on the supported legacy path:
+external-storage permission can be denied/revoked, and `BaseActivity`'s denial
+flow does not make successful broad-storage authorization a prerequisite for
+opening Folder settings or enqueueing the cache-move worker.
+
+When `renameTo()` returns false, the source file remains in the cache and the
+worker neither records nor propagates that failure. It continues walking the
+remaining entries, posts the normal OK Toast, and returns `Result.success()`.
+If some renames succeed before another returns false, the same path reports a
+fully successful migration after only a subset of the cache was moved. There is
+no later re-scan that proves the intended source set is absent or that the
+corresponding destination files exist before the success result becomes
+authoritative.
+
+**Why this is a defect:** a user-requested cache recovery/migration can be
+reported as completed even though one or all requested files remain unmoved.
+The failure is limited to API 24–25 and does not itself delete the failed source
+file, so it is P3, but it is a real production result-integrity defect rather
+than defensive hardening. It is distinct from `BUG-CACHE-01`, which concerns
+moving files owned by live downloads, and `BUG-CACHE-02`, which concerns losing
+SAF authority for the configured live cache root.
+
+Required result:
+
+- treat the API 24–25 `renameTo()` Boolean as the authoritative per-file move
+  result and never count a false return as completed migration;
+- validate/create the destination under the actual storage authority before
+  moving and surface an explicit permission/storage failure when it is not
+  writable;
+- return WorkManager success and show the success Toast only after every eligible
+  file has been verified at its destination, or expose a deliberate partial
+  result that identifies retained source files and remains recoverable;
+- preserve every source whose move failed and avoid cleanup/state changes that
+  would make a later retry ambiguous;
+- add API 24/25 regressions for denied/revoked storage permission, destination
+  creation failure, `renameTo(false)`, first-file-success/second-file-failure,
+  all-success, and API 26+ throwing `Files.move` as a non-regression control.
 
 ## Current status
 
