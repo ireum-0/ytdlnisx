@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **67 active correctness defects** in this checkpoint. The previous
+There are **68 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 67-defect registry is intentionally retained here. The separate
+The broader 68-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 67-defect count unless they are explicitly promoted
+below do **not** change the 68-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-67-defect registry below.
+68-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 67 active defects
+### F1 remediation-discovered follow-up not counted in the 68 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -2455,6 +2455,69 @@ Required result:
   low-quality-linked downloads, plus already-PostProcessing, normal still-Queued,
   and subsequent configuration/queue-action regressions.
 
+### P2 — BUG-QUEUE-03 — Recover runnable queued downloads after worker enqueue loss
+
+**State:** Open
+
+**Failure path:** the ordinary production queue path in `DownloadViewModel`
+first persists the selected `Processing` downloads as durable `Queued` rows via
+`DownloadRepository.updateAll()`, then calls
+`DownloadRepository.startDownloadWorker()`. The same commit-then-dispatch
+ordering is used by supported retry, resume, requeue, and related queue entry
+points. `HardSubScanWorker` likewise inserts new hard-sub download rows as
+`Queued` before handing them to `startDownloadWorker()`.
+
+For an immediate queue, `startDownloadWorker()` builds a one-time
+`DownloadWorker` and calls `WorkManager.enqueueUniqueWork(...)`. It discards the
+returned WorkManager `Operation`; invocation is treated as completed scheduling,
+and the repository immediately returns `Result.success()`. The normal queue UI
+uses that result to report that the downloads have been queued. An asynchronous
+enqueue failure reported through the discarded `Operation`, or process death
+after the Room `Queued` commit but before WorkManager has durably recorded the
+request, can therefore leave the database intent without any execution carrier.
+Delayed WorkManager-backed scheduled groups have the same split boundary when
+the AlarmManager option is not being used.
+
+There is no general recovery that proves every runnable `Queued` row has a
+matching worker after restart. `App.onCreate()` reconciles automatic-keyword
+observation coverage, low-quality re-download operations, and History date-fetch
+operations, but it does not scan orphan runnable Download rows and re-establish a
+`DownloadWorker`. `DownloadViewModel` construction likewise only exposes queue
+flows and does not repair missing work. Without another user action that happens
+to call `startDownloadWorker()`, a successfully persisted ordinary download,
+retry, resume, or hard-sub-generated request can therefore remain `Queued`
+indefinitely even though no worker exists to claim it.
+
+**Why this is a defect:** `Queued` is durable user intent to execute a download,
+while WorkManager is only the carrier for that intent. The implementation can
+commit the durable intent, lose the carrier, and still report the queue action
+as successful. A normal requested download can silently never start and the
+failure survives app/process restart. This is distinct from `BUG-OBSERVE-03` and
+`BUG-KEYWORD-03`, which own analogous enqueue-loss contracts for their separate
+durable domains, from `BUG-SCHEDULER-03`, which owns the AlarmManager chain for
+future individually scheduled downloads, and from `BUG-QUEUE-02`, which concerns
+stale UI overwriting an already-established worker owner.
+
+Required result:
+
+- make runnable Download scheduling recoverable from durable queue state, using a
+  generation/outbox or startup reconciliation that guarantees every eligible
+  `Queued` request has an execution carrier after enqueue failure or restart;
+- observe WorkManager enqueue completion/failure when it is part of the immediate
+  result contract, or preserve an explicit recoverable scheduling state rather
+  than treating invocation alone as accepted work;
+- bind reconciliation and worker claims to the existing `executionId`/status CAS
+  contract so recovery cannot manufacture duplicate execution owners while a
+  valid worker is already active;
+- apply the same carrier contract to ordinary queue, same-settings retry,
+  resume/requeue, hard-sub-generated queued work, and WorkManager-backed delayed
+  scheduled groups while keeping AlarmManager-specific scheduling semantics
+  under the existing scheduler defects;
+- add deterministic asynchronous enqueue-failure and process-death tests after
+  the `Queued` Room commit but before WorkManager persistence, plus cold-start
+  recovery, normal successful enqueue, already-owned work, retry, resume,
+  hard-sub insertion, delayed scheduling, and exactly-one-execution regressions.
+
 ### P2 — BUG-GROUP-01 — Make keyword and Youtuber group deletion atomic
 
 **State:** Open
@@ -2998,7 +3061,7 @@ Required result:
 | `PLAYER-01` | Partial | `PlaybackQueueState` centralizes queue data, but lifecycle, Media3, subtitle, PiP, URI, and navigation behavior remains concentrated in `VideoPlayerActivity`. |
 | `TERM-01` | Implemented | Terminal command planning includes a dry-run/preview path and argument policy. |
 
-## Newly implemented capability
+## newly implemented capability
 
 The current branch also stores media source-publication time through result,
 download, and history records; reads provider-specific dates; displays and
