@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **69 active correctness defects** in this checkpoint. The previous
+There are **70 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 69-defect registry is intentionally retained here. The separate
+The broader 70-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 69-defect count unless they are explicitly promoted
+below do **not** change the 70-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-69-defect registry below.
+70-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 69 active defects
+### F1 remediation-discovered follow-up not counted in the 70 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1510,6 +1510,67 @@ Required result:
   grants, an actually writable app/raw destination, and explicit `-P`, proving
   provider-authorized destinations either complete through staged movement or
   fail before yt-dlp begins with an actionable error.
+
+### P2 — BUG-TERMINAL-04 — Do not report partially published Terminal cache output as success
+
+**State:** Open
+
+**Failure path:** the production Terminal UI inserts a `TerminalItem` and
+`TerminalViewModel.startTerminalDownloadWorker()` schedules
+`TerminalDownloadWorker`. With the normal cache-staging mode enabled and no
+explicit direct-output path, `TerminalCommandPlanFactory` gives yt-dlp the
+app-owned `TERMINAL/<taskId>` cache directory and the worker later publishes that
+directory to `command_path` with `FileUtil.moveFile(..., keepCache = false)`.
+
+`FileUtil.moveFile()` has an explicit partial-failure signal outside the
+already-recorded destructive SAF fallback. During its ordinary per-entry walk,
+a move/copy exception sets `hasMoveFailure = true`, records
+`lastMoveFailureDetails`, and preserves the source directory. If at least one
+other entry was published successfully, however, the returned `fileList` is
+non-empty, so `moveFile()` does not throw; it returns the successfully published
+subset while the failed source entries remain in cache. `DownloadWorker` later
+consults `FileUtil.consumeLastMoveFailureDetails()` when it finds stranded temp
+media, demonstrating that this state is intended to distinguish incomplete
+publication from complete success.
+
+`TerminalDownloadWorker` discards both pieces of that result. It ignores the
+`List<String>` returned by `moveFile()` and never consumes the recorded move
+failure details. It therefore continues through log/notification cleanup,
+deletes the `TerminalItem`, and returns `Result.success()`. A Terminal command
+that produces multiple eligible files can consequently publish file A, fail to
+publish file B because of an ordinary filesystem/provider error, preserve B only
+in the hidden cache, and still be durably completed as success with no terminal
+row left to represent or retry the missing output.
+
+**Why this is a defect:** `FileUtil` has already authoritatively determined that
+publication was incomplete, but the Terminal caller collapses that typed state
+to “did not throw.” The user can be told that a multi-output command completed
+while requested output is missing from the destination and only a stranded cache
+copy remains. This is distinct from `BUG-MOVE-01`, where the SAF folder fallback
+can fail to mark the partial move and destructively delete uncopied sources;
+from `BUG-TERMINAL-01`, where fully committed output is later misclassified as
+failure by bookkeeping; and from `BUG-TERMINAL-03`, which loses destination
+authority before execution.
+
+Required result:
+
+- make `FileUtil.moveFile()` expose a typed complete/partial/failed publication
+  outcome and require Terminal cache publication to consume it rather than
+  inferring success from a non-empty returned path list;
+- return Terminal success and delete its durable task row only after every
+  eligible staged output has been proven published; preserve a recoverable
+  terminal state and the failed cache entries when publication is partial;
+- distinguish already-published outputs from still-staged outputs on retry so
+  recovery does not duplicate the successful subset while attempting to finish
+  the failed subset;
+- preserve `CancellationException` and full post-commit semantics from the
+  existing Terminal contracts while surfacing pre-commit publication failure
+  honestly;
+- add deterministic multi-output regressions for first-file-success/second-file-
+  failure on direct-filesystem and provider-backed publication, all-success,
+  zero-output failure, retry of a preserved partial publication, and the
+  post-output bookkeeping failures owned by `BUG-TERMINAL-01` as a non-
+  regression control.
 
 ### P2 — BUG-FORMAT-01 — Do not commit or report partial bulk format refresh as success
 
