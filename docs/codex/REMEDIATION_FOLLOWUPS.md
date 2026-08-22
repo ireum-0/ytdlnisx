@@ -189,29 +189,41 @@ mismatch-specific regression coverage.
 `0251d144a0b38af463049e6d507c64ddfa82ae51` replaced the shared child
 `coroutineScope` with `runDownloadItemsIndependently(...)` so a non-cancellation
 failure in one item no longer immediately cancels its siblings.  The helper,
-however, treats **every** child `CancellationException` as worker-global
-cancellation by calling `scopeJob.cancel(cancelled)`.
+however, treated every child `CancellationException` as worker-global
+cancellation.
 
-Production item-local pause/cancel paths do not imply worker-global cancellation.
-`pauseDownload(id)` persists only that row as `Paused` and destroys only that
-item's process; yt-dlp execution can then convert the row-local `Paused` or
-`Cancelled` state into a `CancellationException`.  With concurrent downloads,
-that exception now cancels the supervisor scope and unrelated sibling children.
-Those siblings can exit through cancellation while their rows remain
-`Active`/`PostProcessing`, and `cleanupStoppedWorker()` is not guaranteed because
-an item-local cancellation does not itself prove `DownloadWorker.isStopped`.
+`3046ef449e2880ad80a8ddc4dfbcc28a0749e1a1` partially corrected that behavior by
+introducing an execution-token keyed `DownloadCancellationRegistry`.  Direct
+per-item Pause/Cancel, including rapid Pause -> Resume where the durable row has
+already changed again before the old child sees cancellation, can now retain its
+item-local origin without cancelling unrelated siblings.
 
-This is broader than History replacement: pausing or cancelling an ordinary
-concurrent download can affect unrelated ordinary work.
+A production gap remains at the authorized review state
+`f1a9dbc1dc73c4c176c3ed9830b31fbb896a324b`.  Low-quality operation cancellation
+and terminal coordinator failure call `LowQualityRedownloadRepository` paths that
+write linked active Downloads directly to `Cancelled` through
+`DownloadDao.cancelLinkedDownloads(...)`.  Those transitions do not record the
+linked rows' `(downloadId, executionId)` in `DownloadCancellationRegistry` before
+the manager/worker destroys yt-dlp and post-processing.  The resulting child
+`CancellationException` is therefore not recognized as item-local by
+`DownloadWorker`, so it is reclassified as worker-global cancellation and can
+cancel unrelated sibling downloads in the same DownloadWorker batch.
 
-**Required eventual result:** distinguish item-local cancellation from
-worker/parent-global cancellation using authoritative state/ownership rather
-than exception type alone.  An item-local `Paused`/`Cancelled` transition must
-stop only that item and allow siblings to continue.  A genuine WorkManager or
-parent cancellation must still cancel the whole batch.  Add production-wiring
-coverage with `concurrent_downloads >= 2` for single-item pause, single-item
-cancel, worker-global cancel, and an unrelated sibling that must not be stranded
-as `Active`/`PostProcessing`.
+This is broader than History replacement: cancelling one low-quality operation
+may legitimately stop its own linked Downloads, but it must not stop unrelated
+ordinary or unrelated replacement downloads that merely share the same worker.
+
+**Required eventual result:** every production path that intentionally stops only
+a Download item or a bounded linked set must persist/record a stable
+execution-attempt cancellation cause before or atomically with the row-local
+state transition and before process destruction.  Direct Pause/Cancel,
+low-quality operation cancellation, low-quality coordinator-failure cancellation,
+and any equivalent linked/bulk local cancellation must all remain item-local from
+the DownloadWorker batch's perspective.  Genuine WorkManager/parent cancellation
+must still cancel the whole batch.  Add production-wiring coverage with
+`concurrent_downloads >= 2` proving low-quality linked cancellation and
+coordinator failure do not cancel or strand an unrelated sibling, while global
+worker cancellation still does.
 
 ## REMEDIATION-FOLLOWUP-DOWNLOAD-STATE-CAS-01 — Require expected-state ownership before manual requeue/resume
 
@@ -241,7 +253,7 @@ snapshot and `resetScheduleTimeForItems(...)`.
 
 `PauseDownloadNotificationReceiver` exposes an additional concrete path: its
 `finally` block always creates a Resume notification even when the authoritative
-`dao.update(Paused)` throws.  In that failure case the process-destruction calls
+pause persistence throws.  In that failure case the process-destruction calls
 are skipped, so the original download can still be running while the UI advertises
 Resume; a later raw resume can then rewrite that live row to `Queued` if the DB
 has recovered.
@@ -263,59 +275,26 @@ no live process can be paired with a falsely requeued row or duplicate worker.
 **Ownership:** BUG-BACKUP-01 Finding A mismatch durability / queue-state concurrency  
 **Current remediation impact:** Blocking Finding A
 
-The current fix reconstructs a persisted SourceMismatch/TypeMismatch from
-`Download.lastIssueCode` and correctly blocks ordinary retry/reconfigure paths.
-That barrier is not yet monotonic against all concurrent state transitions or
-process death.
+The original cross-attempt fix reconstructed a persisted SourceMismatch/TypeMismatch
+from `Download.lastIssueCode` and blocked ordinary retry/reconfigure paths, but
+that carrier was not monotonic against all concurrent state transitions or
+process death.  Review identified recovery-skipped-after-pause, stale full-row
+writer, stale multi-worker claim, and process-death-before-Download-write windows.
 
-Three concrete windows remain:
+`3046ef449e2880ad80a8ddc4dfbcc28a0749e1a1` substantially closes the direct
+forms of those windows with a dedicated `history_replacement_barriers` table,
+transactional mismatch-barrier creation, execution-owned worker claims, guarded
+full-row writes, and barrier-aware exceptional/startup recovery.  The remaining
+Finding A blockers are tracked separately below where the active attempt fails
+to adopt a barrier created mid-attempt, where the pre-child low-quality operation
+identity is not durable, and where execution-attempt ownership does not yet guard
+all privileged/terminal side effects.
 
-1. **Recovery skipped after a concurrent state change.**  If the first terminal
-   mismatch `dao.update(Error + mismatch)` fails, the outer recovery writes the
-   mismatch only while the latest row is `Active` or `PostProcessing`.  If a
-   concurrent pause changes the row to `Paused` first, `recoveryResult` remains
-   null.  `unrecoverableHistoryReplacementPersistenceFailure(...)` treats null
-   as no unrecoverable mismatch persistence failure, so the worker can finish
-   without ever durably recording the authoritative mismatch.  A later resume
-   can then continue the privileged marker without the barrier.
-
-2. **A persisted barrier can be overwritten by a stale full-row writer.**
-   `PauseDownloadNotificationReceiver` reads a `DownloadItem`, changes only its
-   in-memory status to `Paused`, and later performs full-row `dao.update(item)`.
-   If the worker persists a mismatch Error between that read and write, the stale
-   pause object can overwrite the newer mismatch issue fields.  The worker claim
-   path has the same structural risk: multiple independently enqueued
-   `DownloadWorker`s observe Room queue snapshots, and selection marks a snapshot
-   `Active` with full-row `dao.updateMultiple(...)` rather than a status/ownership
-   CAS.  A delayed stale queued snapshot can therefore overwrite a newer Error +
-   mismatch record after another worker has terminalized the same ID.
-
-3. **The first authoritative mismatch is not crash-durable until a separate
-   Download write succeeds.**  History authorization/replacement returns
-   SourceMismatch/TypeMismatch in one Room transaction, while the Download Error
-   carrier is written afterward.  Process death in that gap leaves the durable
-   row without the mismatch barrier.  Subsequent recovery/pause/resume/requeue
-   can therefore revisit the same privileged marker as if no authoritative
-   mismatch had been established.
-
-These are Finding A issues because the same History replacement operation can
-lose a previously authoritative refusal and later be reauthorized from mutable
-or newly observed state.  The problem is not merely queue liveness or UI
-consistency.
-
-**Required eventual result:** make the mismatch barrier monotonic for the
-lifetime of the privileged History-replacement operation.  Stale/full-row queue
-writers must not be able to clear it; worker claim should use an expected-state
-ownership transition that preserves newer issue/marker fields; terminal recovery
-must not treat a skipped write as successful preservation when an authoritative
-mismatch exists; and the design must define a crash-durable carrier or immutable
-operation identity so process death between mismatch observation and terminal
-queue persistence cannot reopen destructive authority.  Preserve `Paused` or
-`Cancelled` user intent without erasing the mismatch semantic barrier.  Add
-fault/race coverage for first-write failure + concurrent pause, stale pause
-full-row write after mismatch persistence, stale multi-worker queue claim after
-mismatch persistence, and process death/restart before the first mismatch carrier
-write.
+**Required eventual result:** retain the monotonic barrier for the full lifetime
+of the privileged operation and keep all stale/full-row/claim/recovery paths
+fail-closed.  Verification must include process-death/restart, first-write
+failure plus concurrent Pause/Cancel, stale worker claim, zero-row cleanup, and
+legacy/migration behavior; table-existence-only migration coverage is not enough.
 
 ## BUG-BACKUP-01-FOLLOWUP-05 — Preserve hard-sub authorization failures as authoritative History semantics
 
@@ -325,40 +304,40 @@ write.
 **Ownership:** BUG-BACKUP-01 Finding A / hard-sub previous-media authorization propagation  
 **Current remediation impact:** Blocking Finding A
 
-`DownloadWorker.resolvePreviousHistoryMediaPaths(...)` now invokes the same
+`DownloadWorker.resolvePreviousHistoryMediaPaths(...)` invokes the same
 source/type/current-target authorization required by Finding A before exposing
-previous History media.  However, the helper returns the authorized snapshot only
-for `Authorized` and collapses `TargetMissing`, `SourceMismatch`, and
-`TypeMismatch` alike to `emptyList()`.
+previous History media.  At the current authorized state the helper now passes
+replacement Download/operation identity, so SourceMismatch/TypeMismatch can
+create the crash-durable barrier even when first observed mid-attempt.  However,
+the helper still returns the authorized snapshot only for `Authorized` and
+collapses `TargetMissing`, `SourceMismatch`, and `TypeMismatch` alike to
+`emptyList()`.
 
-That loses the first authoritative semantic decision.  In the pre-move and
-post-move hard-sub fallback paths, an authorization mismatch can therefore be
-followed by a generic "no media" / hard-sub `IOException` before final History
-replacement is reached.  Because no `historyReplacementFailureIssue` is
-established, the generic failure can be persisted instead of the exact
-SourceMismatch/TypeMismatch, and retry/reconfigure logic may later treat the same
-privileged marker as an ordinary failure.  If execution does continue far enough
-to authorize again, a changed target can also replace the first refusal with a
-later `Authorized` result.  `TargetMissing` is similarly prevented from becoming
-the required `TARGET_DELETED` semantic at this first authoritative observation.
+The new durable barrier therefore does not automatically update the already
+running child's `historyReplacementFailureIssue`, which was initialized only at
+child start.  A mid-attempt SourceMismatch/TypeMismatch can create the barrier,
+return `emptyList()`, and then be followed by a generic hard-sub failure.  Generic
+Error/UNKNOWN writes can be rejected by the new barrier guard while outer
+recovery still reasons as though no authoritative mismatch was established,
+allowing terminal/liveness inconsistency.  `TargetMissing` remains even more
+directly lossy because it has no mismatch barrier and can still be reduced to a
+generic hard-sub/no-media failure instead of the required `TARGET_DELETED`
+semantic.
 
 This is distinct from `BUG-OUTPUT-01-FOLLOWUP-01`: that follow-up owns the
-**Authorized -> later destructive mutation** TOCTOU.  This entry owns loss of a
-**non-authorized result itself** before any previous-media authority is granted.
-The pre-F1 implementation read the History row directly by numeric ID; Finding A
-introduced typed source/type authorization here, so preserving those typed
-non-authorized results is part of the current remediation contract.
+**Authorized -> later destructive mutation** TOCTOU.  This entry owns propagation
+of a **non-authorized result itself** into the active attempt's terminal state
+machine.
 
 **Required eventual result:** return or propagate a typed previous-media
-authorization result instead of reducing every refusal to an empty path list.
-The first SourceMismatch/TypeMismatch must immediately establish the same
-monotonic authoritative mismatch barrier used by final replacement, and later
-hard-sub errors, output recovery, or reauthorization must not downgrade or
-replace it.  TargetMissing must remain distinguishable and enter the defined
-`TARGET_DELETED` semantics.  Add focused pre-move and post-move hard-sub tests
-where source/type changes before previous-media fallback, including a generic
-hard-sub failure before final History replacement and a later target change that
-must not reauthorize the already-refused privileged operation.
+authorization result instead of reducing refusals to an empty path list.  The
+first SourceMismatch/TypeMismatch must immediately establish and be adopted as
+the active attempt's monotonic authoritative issue even when the barrier appears
+mid-attempt; later hard-sub errors, output recovery, or reauthorization must not
+downgrade or replace it.  TargetMissing must remain distinguishable and enter the
+defined `TARGET_DELETED` semantics.  Add focused pre-move and post-move hard-sub
+tests including barrier-created-after-child-start, generic failure after refusal,
+and target-missing-before-final-replacement cases.
 
 ## BUG-BACKUP-01-FOLLOWUP-06 — Bind low-quality selection to immutable History source/type identity
 
@@ -406,6 +385,95 @@ download.  Add focused scan -> selection -> History URL/type change -> prepare
 coverage, plus process-death/restart coverage proving that a selected operation
 cannot rebind to a different source while preserving the same numeric History ID.
 
+## BUG-BACKUP-01-FOLLOWUP-07 — Require execution-attempt ownership for privileged mutation and terminal completion
+
+**State:** Discovered  
+**Severity:** P2 candidate  
+**Discovered during:** BUG-BACKUP-01 Finding A re-review at `f1a9dbc1dc73c4c176c3ed9830b31fbb896a324b`  
+**Ownership:** BUG-BACKUP-01 Finding A / execution-attempt ownership  
+**Current remediation impact:** Blocking Finding A
+
+`3046ef449e2880ad80a8ddc4dfbcc28a0749e1a1` adds an `executionId` token and uses
+it for worker claims, metadata writes, failure persistence, and exceptional
+requeue.  Privileged History mutation and successful terminal repository actions,
+however, are still authorized without that execution token.
+
+A concrete Pause -> rapid Resume race remains.  Old attempt E1 can finish yt-dlp
+or reach late post-processing before the Pause process destruction takes effect.
+Pause records E1's item-local cancellation and changes the row to `Paused`; Resume
+then returns the same Download row to `Queued`, and a new worker claims it as E2
+with a new `executionId`.  If E1 never receives a `CancellationException`, its
+`shouldStopForUserRequest()` only sees the row's new `Active` status and does not
+verify that the current `executionId` is still E1.  E1 can therefore continue
+into `replaceHistoryPreservingAssignmentsAuthorizedBlocking(...)`, whose
+Download-backed authorization receives Download ID and operation ID but no
+execution token.
+
+The same missing ownership proof exists after the History phase.  The normal
+success/target-deleted path calls `DownloadRepository.completeAndDelete(id)` or
+`completeHistoryTargetDeletedAndDelete(id)`.  Those APIs can terminalize a linked
+low-quality child, delete the History mismatch barrier, and delete the Download
+row solely by numeric Download ID.  A stale E1 can therefore mutate History and
+then delete E2's live queue row while E2 owns/runs the newer attempt.  Other
+terminal side effects that use only ID/current status, such as membership parking,
+must be audited for the same stale-attempt hazard.
+
+**Required eventual result:** execution-attempt ownership must guard the actual
+privileged commit and every terminal side effect that can mutate/delete state for
+the running Download.  For Download-backed History replacement, verify the
+expected `executionId` in the same Room transaction that validates and mutates
+the History target.  Success delete, target-deleted delete, linked-ledger terminal
+transition, membership parking, barrier deletion, and equivalent terminal APIs
+must either prove the expected execution token or prove that no newer attempt can
+own the row.  An old attempt that loses ownership must stop without mutating
+History, deleting the newer Download row, or terminalizing state owned by the
+newer attempt.  Add a deterministic E1 Pause -> Resume -> E2 claim race after
+E1's transfer completes but before History commit, and prove E1 cannot mutate
+History or terminalize/delete E2.
+
+## REMEDIATION-FOLLOWUP-WORKER-OWNERSHIP-01 — Do not retain dead static ownership after cleanup persistence failure
+
+**State:** Discovered  
+**Severity:** P2 candidate  
+**Discovered during:** DownloadWorker ownership re-review at `f1a9dbc1dc73c4c176c3ed9830b31fbb896a324b`  
+**Ownership:** Cross-cutting DownloadWorker liveness / ownership reconciliation  
+**Current remediation impact:** Current-change regression; blocks CLEAN while present
+
+`DownloadWorker.ownedDownloadIds` is a process-static ID set used to exclude
+apparently live rows from stale-worker cleanup.  In the current exceptional/global
+cleanup, rows are removed from that static set only after the cleanup path proves
+them `releasedIds`.  If the DB requeue/cleanup write itself throws, the worker
+still exits and its per-worker ownership maps are cleared, but the affected ID can
+remain in `ownedDownloadIds`.
+
+That stale static marker no longer represents a live worker.  A later
+`cleanupStoppedWorker(includeStaleRows = true)` filters `Active`/`PostProcessing`
+rows whose IDs remain in `ownedDownloadIds`, so the dead row can be hidden from
+same-process stale-row recovery.  For an ordinary download with no History
+mismatch barrier, `recoverDurableMismatchRowsAtStartup()` also does not apply.
+The ghost `Active` row can then continue to consume a concurrency slot and block
+queued work until process restart even though its original worker and native
+processes are gone.
+
+This is a regression from the earlier cleanup behavior, which removed the whole
+active ID set from the static ownership set after the worker's cleanup attempt,
+even when durable requeue failed.  The new execution-aware design correctly
+needs to avoid releasing a newer attempt's ownership, but an unrecoverable DB
+cleanup failure must not leave a dead old attempt represented as a live owner
+forever.
+
+**Required eventual result:** process-static ownership must model a live exact
+execution attempt, not merely a Download ID whose cleanup persistence failed.
+When a worker/attempt exits, its live-owner marker must be released even if the
+DB requeue write failed, while preserving any distinct newer attempt's ownership.
+Persist or reconstruct enough execution-owner state that a later worker in the
+same process can identify and reconcile `Active`/`PostProcessing` rows whose
+owner no longer exists.  Add a deterministic test that injects an ordinary
+cleanup requeue DB failure, lets the worker exit, then starts another worker in
+the same process and proves the stale row is detected/recovered rather than
+permanently consuming a concurrency slot.  Also prove cleanup from E1 cannot
+release or requeue a live E2 token for the same Download ID.
+
 ## Review checklist retained from Finding A misses
 
 The following checks should be applied to future remediation reviews even when a
@@ -441,3 +509,10 @@ problem is ultimately assigned outside the current defect:
     type identity that established that authority.  Re-loading a mutable row by
     numeric ID and validating only its new current fields is not proof that the
     original operation still targets the same object.
+14. **Execution-attempt ownership:** once a Download can be reclaimed with a new
+    execution token, every old child must prove it still owns that exact token at
+    privileged History mutation and terminal repository boundaries, not only at
+    queue claim or failure persistence.
+15. **Live-owner lifecycle:** a cleanup persistence failure may leave a durable
+    row unresolved, but it must not leave an exited attempt represented forever
+    as a live process-static owner that suppresses later stale-row recovery.
