@@ -68,6 +68,31 @@ class HistoryReplacementRefusalPersistenceException(
     persistenceFailure,
 )
 
+/**
+ * Keeps the first History refusal typed while its durable carrier is being
+ * inserted and verified.  The caller must not turn a failure from either
+ * operation into a generic History write issue.
+ */
+internal suspend fun persistHistoryReplacementRefusalOrThrow(
+    authorization: HistoryReplacementAuthorization,
+    issue: DownloadIssue,
+    persist: suspend () -> Unit,
+    verify: suspend () -> HistoryReplacementAuthorization,
+): HistoryReplacementAuthorization {
+    try {
+        persist()
+        return verify()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (persistenceFailure: Exception) {
+        throw HistoryReplacementRefusalPersistenceException(
+            authorization = authorization,
+            issue = issue,
+            persistenceFailure = persistenceFailure,
+        )
+    }
+}
+
 sealed interface HistoryReplacementOutcome {
     data class Updated(val previousTarget: HistoryItem) : HistoryReplacementOutcome
     data object TargetMissing : HistoryReplacementOutcome
@@ -661,32 +686,30 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             is HistoryReplacementAuthorization.Authorized ->
                 error("Authorized History result is not a refusal")
         }
-        return try {
-            val barrierDao = db.historyReplacementBarrierDao
-            barrierDao.insertIfAbsent(
-                HistoryReplacementBarrier(
-                    downloadId = replacementDownloadId,
-                    operationId = replacementOperationId,
-                    historyId = historyId,
-                    expectedSourceUrl = expectedSourceUrl,
-                    expectedType = expectedType.name,
-                    issueCode = issue.code.name,
-                    issueStage = issue.stage.name,
-                    createdAt = System.currentTimeMillis(),
+        val barrierDao = db.historyReplacementBarrierDao
+        return persistHistoryReplacementRefusalOrThrow(
+            authorization = authorization,
+            issue = issue,
+            persist = {
+                barrierDao.insertIfAbsent(
+                    HistoryReplacementBarrier(
+                        downloadId = replacementDownloadId,
+                        operationId = replacementOperationId,
+                        historyId = historyId,
+                        expectedSourceUrl = expectedSourceUrl,
+                        expectedType = expectedType.name,
+                        issueCode = issue.code.name,
+                        issueStage = issue.stage.name,
+                        createdAt = System.currentTimeMillis(),
+                    )
                 )
-            )
-            val persisted = barrierDao.getByDownloadId(replacementDownloadId)
-                ?: error("History replacement refusal barrier was not durably recorded")
-            authorizationForPersistedRefusal(persisted.issueCode)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (persistenceFailure: Exception) {
-            throw HistoryReplacementRefusalPersistenceException(
-                authorization = authorization,
-                issue = issue,
-                persistenceFailure = persistenceFailure,
-            )
-        }
+            },
+            verify = {
+                val persisted = barrierDao.getByDownloadId(replacementDownloadId)
+                    ?: error("History replacement refusal barrier was not durably recorded")
+                authorizationForPersistedRefusal(persisted.issueCode)
+            },
+        )
     }
 
     private suspend fun durableRefusalOutcome(
