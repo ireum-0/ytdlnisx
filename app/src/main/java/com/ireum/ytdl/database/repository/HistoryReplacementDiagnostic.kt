@@ -5,6 +5,7 @@ import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueSeverity
 import com.ireum.ytdl.util.download.DownloadIssueSource
 import com.ireum.ytdl.util.download.DownloadIssueStage
+import com.ireum.ytdl.util.download.DownloadOutcome
 import com.ireum.ytdl.util.download.DownloadSuggestedAction
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 
@@ -121,4 +122,11 @@ object HistoryReplacementDiagnostic {
         details = "Low-quality History replacement authority is missing, terminal, or incoherent",
         source = DownloadIssueSource.EXPLICIT_STATE,
     )
+
+    fun qualityAuthorityLossOutcome(cancellationOrigin: Boolean): DownloadOutcome =
+        if (cancellationOrigin) {
+            DownloadOutcome.canceled()
+        } else {
+            DownloadOutcome.failed(qualityAuthorityLostIssue())
+        }
 }

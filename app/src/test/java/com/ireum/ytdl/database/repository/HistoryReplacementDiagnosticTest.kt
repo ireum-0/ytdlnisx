@@ -3,6 +3,7 @@ package com.ireum.ytdl.database.repository
 import com.ireum.ytdl.R
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
+import com.ireum.ytdl.util.download.DownloadOutcomeStatus
 import com.ireum.ytdl.util.download.supportsSameSettingsRetry
 import com.ireum.ytdl.util.download.summaryResourceId
 import org.junit.Assert.assertEquals
@@ -90,6 +91,28 @@ class HistoryReplacementDiagnosticTest {
 
         assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED, issue.code)
         assertEquals(DownloadIssueStage.HISTORY, issue.stage)
+    }
+
+    @Test
+    fun cancellationOriginQualityAuthorityLossRemainsCancellation() {
+        assertEquals(
+            DownloadOutcomeStatus.CANCELED,
+            HistoryReplacementDiagnostic.qualityAuthorityLossOutcome(
+                cancellationOrigin = true,
+            ).status,
+        )
+        assertEquals(
+            DownloadOutcomeStatus.FINAL_FAILURE,
+            HistoryReplacementDiagnostic.qualityAuthorityLossOutcome(
+                cancellationOrigin = false,
+            ).status,
+        )
+        assertEquals(
+            DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED,
+            HistoryReplacementDiagnostic.qualityAuthorityLossOutcome(false)
+                .issues.single()
+                .code,
+        )
     }
 
     @Test
