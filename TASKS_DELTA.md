@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **4**
-- Effective active defects: **78**
+- Delta active defects: **5**
+- Effective active defects: **79**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -23,6 +23,30 @@ Production truth always comes from the exact reviewed checkpoint SHA. This file 
 Android's platform contract makes this a false capability result rather than an unavailable feature: `AlarmManager.canScheduleExactAlarms()` was added in API 31, and the exact-alarm special-access requirement begins with Android 12 / API 31 for apps targeting that level. The supported API 24–30 band therefore must not be represented as incapable merely because the API-31 capability query does not exist.
 
 **Why this is a defect:** a supported OS band can enable the scheduler in settings but then have ordinary queueing outside the window reject the same scheduler configuration and silently turn it off. The failure is deterministic from the SDK-version branch and blocks a user-requested scheduling workflow even though the platform can schedule the exact alarms the implementation uses. This is distinct from `BUG-SCHEDULER-01` (daily recurrence/midnight semantics), `BUG-SCHEDULER-03` (successor alarms for individually scheduled AlarmManager work), and `BUG-SCHEDULER-04` (daily shutdown cancelling future WorkManager carriers).
+
+### BUG-UPDATER-02 — Serialize yt-dlp runtime updates and bind completion to the requested source
+
+**State:** Open  
+**Reviewed checkpoint:** `dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** `MainActivity` can start an automatic yt-dlp update in an independent `SupervisorJob` during app startup, while the Updating settings screen can start another update from the version/update controls or immediately after changing the selected yt-dlp source. Source selection first writes the new `ytdlp_source` preference and then calls `UpdateUtil.updateYoutubeDL(source)`. `UpdateUtil` contains an apparent process-global serialization guard, but the `if (updatingYTDL) { YTDLPUpdateResponse(PROCESSING) }` branch discards the response instead of returning it; every caller therefore continues, sets `updatingYTDL = true`, and mutates the same app-owned yt-dlp runtime. The flag is also never reset, so it does not represent actual ownership or completion.
+
+A concrete ordering is startup update A reading/selecting `stable`, followed by the user changing the source to `nightly` and launching update B. The preference now durably describes `nightly`, but A and B are both authorized to replace/update the same yt-dlp runtime. If B completes first and A completes later, the final runtime can be the older request's `stable` artifact while the persisted selected source remains `nightly`. Both callers can independently report successful completion or refresh the displayed version; neither completion is conditioned on still owning the current source generation. Reversing completion order produces a different runtime from the same user-visible sequence. Rapid repeated manual updates have the same missing-serialization property, and custom `--update-to` requests share the same runtime mutation domain.
+
+**Why this is a defect:** the selected update source is user-owned persistent configuration, while the installed yt-dlp executable/runtime is its materialized execution state. The implementation permits an obsolete request to commit after a newer source selection and silently make those two states disagree. This is a real ordering-dependent correctness/reliability failure, not defensive hardening: subsequent downloads execute the final installed runtime, while future UI/auto-update logic treats the persisted source as authoritative. There is no source-generation carrier or startup reconciliation that proves the installed runtime corresponds to the current preference. This is distinct from `BUG-UPDATER-01`, which owns custom-source error fallthrough and false success within one update attempt; `BUG-UPDATER-02` concerns concurrent ownership and stale completion across otherwise successful attempts.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
+
+Required result:
+
+- serialize every production yt-dlp runtime mutation under one exact process-wide ownership primitive, covering startup auto-update, settings/manual update, source-change update, and any worker entrypoint that is actually wired;
+- bind each update to the source/configuration generation it was authorized for and prevent an older request from committing or reporting current success after a newer source selection supersedes it;
+- make the updating/ownership state lifecycle real: acquisition must return/queue explicitly when already owned, and release must occur in `finally` for success, failure, and cancellation rather than leaving a sticky Boolean with no semantic effect;
+- after completion, ensure persisted selected source and installed runtime provenance/version describe the same committed request, or record a durable incomplete/mismatch state that a later retry/restart can converge without silently claiming success;
+- preserve `BUG-UPDATER-01` failure semantics: serialization must not turn custom updater `ERROR` into success or allow a stale successful attempt to mask a newer failed/current attempt;
+- verify the cross-attempt matrix for repeated same-source update, source reconfiguration while an update is running, startup auto-update racing manual update, cancellation/recreation of the settings screen, and process restart. Download retry/requeue paths are not semantic re-entry paths for this updater state and should be marked not applicable rather than assumed safe;
+- add deterministic production-path concurrency tests that latch update A after source capture, persist/select source B and run update B, then release A in both completion orders. Assert one exact owner mutates the runtime at a time, stale A cannot overwrite B's committed source/runtime state or report current success, and failure/cancellation releases ownership. Include an executed integration test against the real `UpdateUtil`/runtime updater wiring; helper-only Boolean tests are insufficient.
 
 Required result:
 
