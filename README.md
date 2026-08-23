@@ -21,7 +21,7 @@ The effective active-defect registry is therefore:
 
 `TASKS.md` baseline + `TASKS_DELTA.md` post-split findings.
 
-At the current ledger state, `TASKS.md` is synchronized from `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15` and contains 74 active defects. `TASKS_DELTA.md` contains one additional active defect, for an effective total of 75.
+At the current ledger state, `TASKS.md` is synchronized from `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15` and contains 74 active defects. `TASKS_DELTA.md` contains 12 additional active defects, for an effective total of 86.
 
 ## Files
 
@@ -32,6 +32,7 @@ At the current ledger state, `TASKS.md` is synchronized from `checkpoint/pre-bas
 - `SOURCE_ARTIFACTS.md` — exact names and SHA-256 identities of the governing Master Plan and original Review Checklist v4 supplied to the remediation project.
 - `evidence/FINDING_A_REMAINING.md` — preserved Finding A review evidence from `review/finding-a-consolidation`; it remains historical/frozen evidence and is not silently reinterpreted here.
 - `evidence/CHECKPOINT_REVIEW_2026-08-23_DFA40697.md` — review evidence for the pinned checkpoint run that established `BUG-SCHEDULER-05` and revalidated selected historical Finding A blockers.
+- `evidence/FINDING_A_REREVIEW_2026-08-24_AD1A8F02.md` — independent full-scope Finding A re-review at `checkpoint/pre-baseline-review@ad1a8f026a7a05f3e1489775a74d8106dbfa510e`; verdict `NOT CLEAN`, with residual A2, A8, and A9/A12 blocker groups recorded without creating new defect IDs.
 
 The original Review Checklist v4 remains the governing source artifact identified in `SOURCE_ARTIFACTS.md`. `REVIEW_CHECKLIST_V4_OPERATIONAL.md` is an operational mirror for automated execution and must not be silently weakened or treated as permission to relax the original checklist. Any semantic checklist revision requires separate review and an explicit decision.
 
