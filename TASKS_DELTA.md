@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **6**
-- Effective active defects: **80**
+- Delta active defects: **7**
+- Effective active defects: **81**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -109,7 +109,7 @@ Required result:
 
 **Failure path:** `MainActivity` can start an automatic yt-dlp update in an independent `SupervisorJob` during app startup, while the Updating settings screen can start another update from the version/update controls or immediately after changing the selected yt-dlp source. Source selection first writes the new `ytdlp_source` preference and then calls `UpdateUtil.updateYoutubeDL(source)`. `UpdateUtil` contains an apparent process-global serialization guard, but the `if (updatingYTDL) { YTDLPUpdateResponse(PROCESSING) }` branch discards the response instead of returning it; every caller therefore continues, sets `updatingYTDL = true`, and mutates the same app-owned yt-dlp runtime. The flag is also never reset, so it does not represent actual ownership or completion.
 
-A concrete ordering is startup update A reading/selecting `stable`, followed by the user changing the source to `nightly` and launching update B. The preference now describes `nightly`, but A and B are both authorized to replace/update the same yt-dlp runtime. If B completes first and A completes later, the final runtime can be the older request's `stable` artifact while the persisted selected source remains `nightly`. Both callers can independently report successful completion or refresh the displayed version; neither completion is conditioned on still owning the current source generation. Reversing completion order produces a different runtime from the same user-visible sequence. Rapid repeated manual updates have the same missing-serialization property, and custom `--update-to` requests share the same runtime mutation domain.
+A concrete ordering is startup update A reading/selecting `stable`, followed by the user changing the source to `nightly` and launching update B. The preference now describes `nightly`, but A and B are both authorized to replace/update the same app-owned yt-dlp runtime. If B completes first and A completes later, the final runtime can be the older request's `stable` artifact while the persisted selected source remains `nightly`. Both callers can independently report successful completion or refresh the displayed version; neither completion is conditioned on still owning the current source generation. Reversing completion order produces a different runtime from the same user-visible sequence. Rapid repeated manual updates have the same missing-serialization property, and custom `--update-to` requests share the same runtime mutation domain.
 
 **Why this is a defect:** the selected update source is user-owned persistent configuration, while the installed yt-dlp executable/runtime is its materialized execution state. The implementation permits an obsolete request to commit after a newer source selection and silently make those two states disagree. This is a real ordering-dependent correctness/reliability failure, not defensive hardening: subsequent downloads execute the final installed runtime, while future UI/auto-update logic treats the persisted source as authoritative. There is no source-generation carrier or startup reconciliation that proves the installed runtime corresponds to the current preference. This is distinct from `BUG-UPDATER-01`, which owns custom-source error fallthrough and false success within one update attempt; `BUG-UPDATER-02` concerns concurrent ownership and stale completion across otherwise successful attempts.
 
@@ -153,3 +153,42 @@ Focused verification requirements:
 - race a concurrent History metadata edit and a History replacement/reconnect against a latched migration and prove migration cannot revert fields or paths it does not own;
 - cover rerun after every partial state, destination-name collision, multiple History rows referencing the same source path, and a normal complete migration;
 - verify through the real Folder-settings -> migration -> filesystem -> Room wiring. Helper-only move tests are insufficient.
+
+### BUG-RUNTIME-01 — Stage and verify bundled FFmpeg payload updates before replacing the live runtime
+
+**State:** Open  
+**Reviewed checkpoint:** `dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** on startup, and again from production FFmpeg-resolution paths, `App.ensureRuntimeToolsInstalled()` enters `installBundledFfmpegPayload()`. When the installed payload does not exactly match the current expected revision, the installer deletes the live `noBackupFilesDir/youtubedl-android/packages/ffmpeg` tree first, recreates that same live directory, and extracts the replacement ZIP directly into it. A real upgrade path exists: the bundled-runtime implementation was introduced with revision `arm64-termux-ffmpeg-8.0.1-openssl3-r1`, while the reviewed checkpoint expects `arm64-wrapper-libffmpeg-0.18.1-r12`. Thus an otherwise working older payload can legitimately enter this replacement branch after an application update.
+
+There is no staging directory, atomic publish/rename, rollback copy, or durable install journal before the old runtime is removed. Any filesystem/extraction exception after `deleteRecursively()` therefore destroys the previously working payload and leaves either an empty or partially populated live runtime directory. The top-level `runCatching` logs that failure and returns normally. Required dependency copying is weaker still: `copyRequiredBundledRuntimeDependencies()` catches each missing/copy failure internally, so installation can proceed to write the new `.payload_revision` and log success even when a required dependency was not materialized.
+
+The runtime readers do not repair this publication gap. `YoutubeDLCompat.resolveValidFfmpegLocation()` treats the FFmpeg payload as acceptable when the native FFmpeg/ffprobe executables exist and the payload `usr/lib` path is merely a directory; it does not verify the revision or required shared libraries. `DownloadWorker.resolveFfmpegRuntime()` likewise invokes `ensureRuntimeToolsInstalled()` but then includes the extracted library directory whenever it exists and can return the native FFmpeg executable. A failed or partially successful replacement can therefore remove a previously usable runtime, then either cause subsequent FFmpeg-required downloads/post-processing to fail or expose an incomplete library set as the current runtime until a later reinstall happens to succeed.
+
+**Why this is a defect:** installing an application-bundled runtime is a publication operation over shared execution state. A transient I/O/storage/extraction failure during a normal app-version transition must not irreversibly replace a known-good runtime with a partial one while the installer reports no authoritative failure to its callers. The defect is production-reachable on an ABI that has all required packaged artifacts, so it is distinct from `BUG-ABI-01`, which owns variants where the required runtime is absent from the package altogether. Retry/restart can attempt installation again, but neither path can restore the deleted previously working revision, and no durable state distinguishes a verified current payload from a partial live tree.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
+
+Required result:
+
+- extract and materialize the replacement payload in an attempt-scoped staging directory without mutating the currently verified runtime;
+- verify the revision plus every required runtime library/dependency and executable linkage needed by production callers before publication;
+- atomically publish the fully verified staged runtime, or use an explicit rollback protocol that preserves the old verified payload until the new one is authoritative;
+- make installer failure an explicit result consumed consistently by yt-dlp and hard-sub runtime resolution; a partial directory must never satisfy runtime-availability checks;
+- persist enough install generation/provenance to make process-death recovery deterministic and clean only staging artifacts whose ownership is proven;
+- keep `BUG-ABI-01` ownership separate: unsupported/missing packaged ABI artifacts remain an availability defect, while this item governs failure-safe replacement of an otherwise available runtime.
+
+Cross-attempt / recovery requirements:
+
+- same-settings retry, manual/raw requeue, reconfigure, and notification retry/resume must either use the last verified runtime or re-enter one serialized verified installation attempt; they must not reinterpret a partial live tree as valid;
+- process restart/reconciliation must identify and discard/finish an owned staging attempt without losing the last verified runtime;
+- app upgrade across two bundled runtime revisions must preserve old-runtime usability until the new revision is fully verified and published;
+- restore is not a semantic re-entry path for this app-bundled runtime and should remain not applicable rather than fabricating runtime provenance from backup data.
+
+Focused verification requirements:
+
+- fault-inject failure immediately after old-revision detection, after staging begins, during ZIP extraction, during each required dependency copy, before revision publication, and at final publish/rename; prove the old verified runtime remains usable or the new runtime is completely verified, never a partial live tree;
+- inject process death at the same publication boundaries and prove restart converges without treating an incomplete directory as current;
+- add a production-path regression that starts from a valid older payload revision, triggers the real `ensureRuntimeToolsInstalled()` upgrade, then executes an FFmpeg-required yt-dlp request and hard-sub runtime resolution;
+- test resolver rejection of missing required libraries even when `usr/lib` exists and native `libffmpeg.so`/`libffprobe.so` are executable. Helper-only tests are insufficient.
