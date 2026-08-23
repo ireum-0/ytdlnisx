@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **7**
-- Effective active defects: **81**
+- Delta active defects: **8**
+- Effective active defects: **82**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -192,3 +192,39 @@ Focused verification requirements:
 - inject process death at the same publication boundaries and prove restart converges without treating an incomplete directory as current;
 - add a production-path regression that starts from a valid older payload revision, triggers the real `ensureRuntimeToolsInstalled()` upgrade, then executes an FFmpeg-required yt-dlp request and hard-sub runtime resolution;
 - test resolver rejection of missing required libraries even when `usr/lib` exists and native `libffmpeg.so`/`libffprobe.so` are executable. Helper-only tests are insufficient.
+
+### BUG-TERMINAL-06 — Protect live Terminal cache from manual cache cleanup
+
+**State:** Open  
+**Reviewed checkpoint:** `ad1a8f026a7a05f3e1489775a74d8106dbfa510e`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** Folder settings exposes a user-facing Clear Cache action. After category selection and confirmation, `deleteCacheCategories()` calls `hasActiveDownloads()` once; that helper snapshots ordinary `Active`/`PostProcessing` Download count plus `terminalDao.getActiveTerminalsCount()`. If both are zero, the coroutine then switches to IO and calls `AppCacheManager.delete(categories)` with no shared execution lease, transaction, or second authority check. `AppCacheManager` treats `TERMINAL_CACHE` as the whole `<download-cache>/TERMINAL` tree and recursively enumerates/deletes every entry under it.
+
+A Terminal task can become authoritative after that zero-active snapshot. The Terminal Run path persists a new `TerminalItem`, enqueues `TerminalDownloadWorker`, and the worker's normal staged-output plan writes yt-dlp output under `<download-cache>/TERMINAL/<taskId>`. If that row/worker starts after `hasActiveDownloads()` returns false but before or during `AppCacheManager.delete(TERMINAL_CACHE)`, the maintenance path can delete files and directories that the live yt-dlp execution owns. The cleaner does not re-read Terminal identity per directory, acquire a Terminal execution lease, cancel the task, or distinguish pre-existing leftovers from a newly created task directory. The worker can then fail extraction/publication because its output disappeared; its exception path deletes the Terminal row and staged directory, so restart has no durable carrier that can restore the destroyed in-flight attempt.
+
+**Why this is a defect:** a maintenance action that is permitted only while Terminal work is idle relies on a stale aggregate count rather than an ownership barrier at the destructive filesystem boundary. A normal supported Terminal execution and Clear Cache action can therefore race so that maintenance destroys files owned by a newer task. This is distinct from `BUG-CLEANUP-02`, which owns the analogous automatic-leftover-cleanup race against ordinary Download temp directories, and from `BUG-TERMINAL-04`, which concerns a Terminal worker itself misclassifying partial publication after `FileUtil.moveFile()`. Here an independent user-facing maintenance path destroys Terminal execution state without owning or revoking that task.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The same code is present at the prior reviewed checkpoint, but its Terminal-specific ownership invariant was not represented in `TASKS.md` or the existing delta.
+
+Required result:
+
+- make `TERMINAL_CACHE` cleanup prove per-task non-ownership at the destructive boundary, or serialize cache deletion with Terminal task creation/execution under a shared authority primitive so a new task cannot acquire a directory while cleanup can delete it;
+- do not treat one earlier aggregate active-count snapshot as authority to recursively remove later-created task directories;
+- preserve task identity through cleanup: if a directory belongs to a persisted/runnable/running Terminal task, skip it unless the exact task is durably cancelled/terminalized before filesystem deletion;
+- make cleanup and Terminal startup/retry/restart converge without deleting a live attempt or leaving a persisted task whose only staged output was removed;
+- keep ordinary Download cleanup ownership separate from this Terminal-specific task/cache namespace while applying the same ownership-at-mutation invariant.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: the exact Terminal task/directory ownership at deletion time, not the earlier aggregate count;
+- first destructive call: the first `File.delete()` reached by `AppCacheManager.delete(TERMINAL_CACHE)`; inject a task start immediately before and during enumeration/deletion and prove the live directory is preserved;
+- durable task state/filesystem effect: a running/runnable `TerminalItem` must retain its staged files and execution carrier; cleanup must not force the worker into failure or cause task-row removal through the worker's exception path;
+- same-command retry, manual rerun, task cancellation, process restart/reconciliation, and already-running WorkManager execution must each preserve exact task identity and must not reinterpret a cleanup-damaged attempt as successful or safely abandoned;
+- ordinary Download same-settings retry/reconfigure/notification retry are not semantic re-entry paths for Terminal cache ownership and should be marked not applicable rather than assumed safe.
+
+Focused verification requirements:
+
+- add a deterministic production-path race that pauses Clear Cache after its final `hasActiveDownloads()` false result, starts a cache-staged Terminal task, creates/writes `<cache>/TERMINAL/<id>`, then resumes `AppCacheManager.delete(TERMINAL_CACHE)` and proves the task directory is not deleted;
+- cover a task that becomes runnable but has not created its directory yet, a task already writing output, a task publishing from cache, cancellation during cleanup, restart after the maintenance/worker race, and true stale Terminal directories that should still be removable;
+- exercise the actual Folder-settings -> `AppCacheManager` -> `TerminalDownloadWorker` wiring. Helper-only path-policy tests are insufficient.
