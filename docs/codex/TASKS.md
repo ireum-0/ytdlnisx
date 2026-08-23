@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **73 active correctness defects** in this checkpoint. The previous
+There are **74 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 73-defect registry is intentionally retained here. The separate
+The broader 74-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 73-defect count unless they are explicitly promoted
+below do **not** change the 74-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-73-defect registry below.
+74-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 73 active defects
+### F1 remediation-discovered follow-up not counted in the 74 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1905,6 +1905,67 @@ Required result:
   enabled, no intervening user action, cancellation/deletion of the earliest
   group, rescheduling, process/device restart, and the WorkManager-delayed mode
   as a non-regression control.
+
+### P2 — BUG-SCHEDULER-04 — Preserve future WorkManager schedules across daily scheduler shutdown
+
+**State:** Open
+
+**Failure path:** the production Download settings expose the daily
+`use_scheduler` window and the independent `use_alarm_for_scheduling` switch.
+They can therefore be used together with `use_scheduler = true` and
+`use_alarm_for_scheduling = false`. When the user schedules an individual
+Download for a future `downloadStartTime`, `DownloadRepository.startDownloadWorker()`
+keeps the row durably `Scheduled` and, in WorkManager mode, creates a delayed
+one-time `DownloadWorker` for each future start-time group. Every such request is
+tagged `download`.
+
+At the daily window's end alarm, `CancelScheduleAlarmReceiver` starts
+`CancelScheduledDownloadWorker`. Before it inspects current database ownership,
+that worker calls `WorkManager.cancelAllWorkByTag("download")`. The cancellation
+therefore includes not only the currently running daily-window carrier but every
+future delayed individual-schedule request created above. The remainder of the
+worker only reloads `Active`/`PostProcessing` rows and requeues those current
+executions; untouched future `Scheduled` rows receive no replacement carrier.
+
+A later daily start does not repair them. `ScheduleAlarmReceiver` merely starts
+an immediate generic `DownloadWorker`, and each `DownloadWorker` captures one
+eligibility cutoff at roughly its own start (`now + 6s`) through
+`getQueuedScheduledDownloadsUntil(...)`. A row scheduled for later than that
+cutoff is absent from the observed queue; if nothing else is eligible, the
+worker cancels itself rather than waiting until the future time. Thus, for
+example, an individual 10:00 scheduled item whose delayed WorkManager request
+was created the previous day can have that carrier cancelled by the 05:00 daily
+window end and remain `Scheduled` at 10:00 with no worker to claim it. No startup
+or scheduler-end reconciliation recreates the cancelled delayed work.
+
+**Why this is a defect:** the daily scheduler's stop action uses a global tag as
+execution authority across two independent scheduling domains. It can erase the
+only durable execution carrier for a valid future individual schedule without
+changing or terminalizing that Download's persisted intent and without arranging
+recovery. A normal supported settings combination can therefore silently miss a
+user-selected download time while the UI continues to show the row as Scheduled.
+This is distinct from `BUG-SCHEDULER-01`, which owns recurrence/midnight errors in
+the daily window itself, and from `BUG-SCHEDULER-03`, which owns missing successor
+alarms when individual scheduling explicitly uses AlarmManager.
+
+Required result:
+
+- give daily-window Download work and individually delayed WorkManager schedules
+  distinct work identities/tags, and make the end-boundary cancel only the work
+  it actually owns;
+- if an end-boundary policy intentionally invalidates a future individual
+  carrier, atomically preserve/recreate that carrier from the still-Scheduled
+  database intent instead of leaving the row orphaned;
+- reconcile every future `Scheduled` row to the correct WorkManager/AlarmManager
+  carrier after scheduler shutdown and process/device restart without creating
+  duplicate executions;
+- keep the existing owner-aware requeue contract for current
+  `Active`/`PostProcessing` work separate from future-schedule carrier ownership;
+- add deterministic coexistence regressions with `use_scheduler = true` and
+  `use_alarm_for_scheduling = false`, including a future item beyond the end
+  boundary, multiple future start groups, an active item requeued at shutdown,
+  the next daily start before the item's due time, restart recovery, and
+  AlarmManager individual scheduling as a non-regression control.
 
 ### P2 — BUG-HARDSUB-01 — Preserve ambiguous subtitle lookup failures instead of excluding scan candidates
 
