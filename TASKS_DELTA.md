@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **9**
-- Effective active defects: **83**
+- Delta active defects: **10**
+- Effective active defects: **84**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -264,3 +264,38 @@ Focused verification requirements:
 - latch `updateCookiesFile()` after Room persistence and prove `RESULT_OK`, `use_cookies = true`, and `startSearch()` cannot occur until projection completion is authoritative;
 - verify activity recreation and process restart after every incomplete state, proving failed capture cannot survive as an apparently enabled credential configuration;
 - exercise the real ActivityResult caller and generated cookie-file consumer. Helper-only cookie parsing tests are insufficient.
+
+### BUG-RESUME-01 — Do not require overlay-window authority for notification Retry/Resume actions
+
+**State:** Open  
+**Reviewed checkpoint:** `ad1a8f026a7a05f3e1489775a74d8106dbfa510e`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** both notification re-entry paths use a normal `PendingIntent.getActivity()` targeting `ResumeActivity`: paused-download notifications created by `NotificationUtil.createResumeDownload()` carry the Download ID plus expected `executionId`, while retryable error notifications carry the Download ID plus retry operation/attempt capability. `ResumeActivity.onCreate()` changes its Activity window type before consuming either capability: API 26+ uses `TYPE_APPLICATION_OVERLAY`, and API 24–25 uses `TYPE_SYSTEM_ALERT`. The manifest does not declare `android.permission.SYSTEM_ALERT_WINDOW`, and this flow never requests or verifies overlay special access. Android requires `SYSTEM_ALERT_WINDOW` for `TYPE_APPLICATION_OVERLAY`; on target API 23+ overlay authority also requires explicit user approval, and pre-26 system-window types likewise require special system-window authority. An ordinary supported install therefore cannot rely on that authority. Window attachment can be rejected before `handleIntents()` reaches `retryFailedDownload()` or `resumePausedDownloadAndWait()`.
+
+**Why this is a defect:** Retry and Resume are advertised production notification actions, but their Activity self-imposes an unrelated privileged window type that the application neither declares nor acquires. The exact retry/resume capability is correctly transported to the Activity yet can never reach its authoritative state transition under the normal permission model. Tapping the action again or restarting the app does not create overlay authority, so the notification path remains broken until the user takes a different in-app recovery route. This is distinct from existing pause/resume ownership defects that concern stale or misleading resume capability after state races; this item concerns valid notification re-entry being blocked before semantic authorization is consumed.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
+
+Required result:
+
+- keep notification Retry/Resume on an ordinary application Activity/window path unless a genuine overlay use case is separately designed, declared, requested, and authorized;
+- do not make retry/resume correctness depend on `SYSTEM_ALERT_WINDOW` or other unrelated special access;
+- preserve the existing exact `executionId` and retry operation/attempt checks when the Activity reaches the state-changing call;
+- if Activity/window setup itself fails, do not consume or cancel the user's recovery affordance as though the retry/resume transition occurred;
+- apply one consistent supported-version contract across API 24–25 and API 26+ rather than selecting two privileged system-window types.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision/carrier: the notification's expected execution identity or retry operation/attempt capability; current code transports it but encounters the platform window-authority gate first;
+- first persistence call: `resumePausedDownloadAndWait()` or `retryFailedDownload()`; in the defect path it is not reached, so no first-write recovery can repair this launch failure;
+- durable Download/linked-ledger state and filesystem effect remain unchanged by the failed notification attempt; no replacement WorkManager carrier is created by this path and no new Download outcome is committed;
+- repeated tapping of the same notification and process restart repeat the same window-authority failure. Manual in-app retry/reconfigure may provide an independent recovery route but does not make the advertised notification action correct; restore is not a semantic repair for this admission failure;
+- no concurrency or sibling-lock ordering is needed to trigger the defect. Exact retry/resume identity may still be valid and immutable; it is simply never consumed.
+
+Focused verification requirements:
+
+- add production-path Activity/PendingIntent coverage on supported API bands, including API 24/25 and API 26+, with no overlay permission granted; tap both a paused-download Resume notification and a retryable Error notification and prove `ResumeActivity` reaches the exact capability-checked state transition without a window-security failure;
+- assert the activity remains a normal application window and that the manifest does not need `SYSTEM_ALERT_WINDOW` for this workflow;
+- cover stale execution/retry capabilities as negative controls so removing the privileged window type does not weaken the existing expected-identity checks;
+- execute the real `NotificationUtil -> PendingIntent -> ResumeActivity -> DownloadViewModel` wiring. Helper-only intent-construction tests are insufficient.
