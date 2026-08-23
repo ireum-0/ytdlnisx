@@ -60,6 +60,22 @@ class LowQualityRedownloadManager private constructor(context: Context) {
             try {
                 repository.requestCancellation(operationId)
                 completeCancellation(operationId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                // The phase-one transaction may have committed even though a
+                // later publication/phase-two step failed.  Schedule a
+                // durable-state-driven retry; the convergence owner itself
+                // exits if the revocation did not commit.
+                LowQualityRedownloadLedger.scheduleCancellationConvergence(
+                    appContext,
+                    operationId,
+                )
+                android.util.Log.e(
+                    "LowQualityRedownload",
+                    "Low-quality cancellation completion deferred operation=$operationId",
+                    error,
+                )
             } finally {
                 onComplete?.invoke()
             }
@@ -93,14 +109,20 @@ class LowQualityRedownloadManager private constructor(context: Context) {
                     publication.downloadId,
                     publication.executionId,
                 ) {
-                    withDownloadWorkerExecutionLock {
-                        DownloadWorker.cancelProcessesForExecution(
-                            publication.downloadId,
-                            publication.executionId,
-                        )
-                    }
+                    DownloadWorker.cancelProcessesForExecution(
+                        publication.downloadId,
+                        publication.executionId,
+                    )
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            LowQualityRedownloadLedger.scheduleCancellationConvergence(
+                appContext,
+                operationId,
+            )
+            throw error
         } finally {
             repository.progress(operationId)?.let { notification.update(it) }
         }
@@ -199,6 +221,7 @@ internal suspend fun dispatchLowQualityRedownloadRecovery(
 
 object LowQualityRedownloadLedger {
     private val convergenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val cancellationJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
     suspend fun transition(
         context: Context,
@@ -228,20 +251,60 @@ object LowQualityRedownloadLedger {
             var retryDelayMs = 100L
             while (true) {
                 val repository = LowQualityRedownloadRepository(DBManager.getInstance(appContext))
+                val linked = try {
+                    repository.hasLinkedDownload(downloadId)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    android.util.Log.w(
+                        "LowQualityRedownload",
+                        "Could not inspect terminal convergence debt download=$downloadId",
+                        error,
+                    )
+                    null
+                }
+                if (linked == false) {
+                    // The linked row was removed; there is no remaining debt
+                    // for this Download to converge.
+                    return@launch
+                }
                 val operationId = try {
                     repository.reconcileDownload(downloadId)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (_: Exception) {
+                } catch (error: Exception) {
+                    android.util.Log.w(
+                        "LowQualityRedownload",
+                        "Terminal convergence retry failed download=$downloadId",
+                        error,
+                    )
                     null
                 }
-                if (operationId != null) {
-                    val child = repository.getItems(operationId)
+                if (operationId == null) {
+                    // Preserve the debt on a transient read/transaction
+                    // failure; the next iteration retries it.
+                    delay(retryDelayMs)
+                    retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                    continue
+                }
+                val child = try {
+                    repository.getItems(operationId)
                         .firstOrNull { it.downloadId == downloadId }
-                    if (child == null || child.stateValue.isTerminal) {
-                        refresh(appContext, setOf(operationId))
-                        return@launch
-                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    android.util.Log.w(
+                        "LowQualityRedownload",
+                        "Could not inspect terminal convergence child download=$downloadId",
+                        error,
+                    )
+                    delay(retryDelayMs)
+                    retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                    continue
+                }
+                if (child == null || child.stateValue.isTerminal) {
+                    refresh(appContext, setOf(operationId))
+                    return@launch
                 }
                 // The durable Download Error/refusal is the convergence debt:
                 // keep deriving the linked terminal state until the Room write
@@ -250,6 +313,90 @@ object LowQualityRedownloadLedger {
                 // ledger failure.
                 delay(retryDelayMs)
                 retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+            }
+        }
+    }
+
+    /**
+     * Phase-one cancellation is durable even when native cancellation or the
+     * phase-two Room transaction fails.  Keep retrying the exact operation in
+     * this process; startup recovery invokes the same protocol after process
+     * death.
+     */
+    fun scheduleCancellationConvergence(context: Context, operationId: String) {
+        if (operationId.isBlank()) return
+        val appContext = context.applicationContext
+        cancellationJobs.computeIfAbsent(operationId) {
+            convergenceScope.launch {
+                var retryDelayMs = 100L
+                try {
+                    while (true) {
+                        val repository = LowQualityRedownloadRepository(
+                            DBManager.getInstance(appContext)
+                        )
+                        val operation = try {
+                            repository.getOperation(operationId)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            android.util.Log.w(
+                                "LowQualityRedownload",
+                                "Could not inspect cancellation convergence operation=$operationId",
+                                error,
+                            )
+                            delay(retryDelayMs)
+                            retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                            continue
+                        } ?: return@launch
+                        if (operation.stateValue.isTerminal || !operation.cancelRequested) {
+                            return@launch
+                        }
+                        try {
+                            val result = repository.completePersistedCancellationWithPublications(
+                                operationId
+                            )
+                            DownloadCancellationRegistry.publish(result.publications)
+                            result.publications.forEach { publication ->
+                                withDownloadWorkerExecutionSideEffectLease(
+                                    publication.downloadId,
+                                    publication.executionId,
+                                ) {
+                                    DownloadWorker.cancelProcessesForExecution(
+                                        publication.downloadId,
+                                        publication.executionId,
+                                    )
+                                }
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            android.util.Log.w(
+                                "LowQualityRedownload",
+                                "Low-quality cancellation convergence retry failed operation=$operationId",
+                                error,
+                            )
+                        }
+                        val latest = try {
+                            repository.getOperation(operationId)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            android.util.Log.w(
+                                "LowQualityRedownload",
+                                "Could not re-read cancellation convergence operation=$operationId",
+                                error,
+                            )
+                            delay(retryDelayMs)
+                            retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                            continue
+                        }
+                        if (latest == null || latest.stateValue.isTerminal) return@launch
+                        delay(retryDelayMs)
+                        retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                    }
+                } finally {
+                    cancellationJobs.remove(operationId)
+                }
             }
         }
     }

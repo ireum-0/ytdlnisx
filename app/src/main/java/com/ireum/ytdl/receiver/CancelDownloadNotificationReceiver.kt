@@ -26,40 +26,37 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
                     try {
                         val expectedExecutionId = intent.getStringExtra("executionId").orEmpty()
                         if (expectedExecutionId.isBlank()) return@launch
-                        val cancel = suspend {
-                            withDownloadWorkerExecutionLock {
+                        withDownloadWorkerExecutionSideEffectLease(id.toLong(), expectedExecutionId) {
+                            val affectedOperationIds = withDownloadWorkerExecutionLock {
                                 val item = dbManager.downloadDao.getNullableDownloadById(id.toLong())
-                            if (
-                                item?.executionId != expectedExecutionId
-                            ) {
-                                return@withDownloadWorkerExecutionLock
-                            }
-                            val affectedOperationIds = DownloadRepository(dbManager).cancelByUser(
-                                id.toLong(),
-                                expectedExecutionId,
-                            )
-                            val committed = dbManager.downloadDao.getNullableDownloadById(id.toLong())?.let {
+                                if (item?.executionId != expectedExecutionId) {
+                                    return@withDownloadWorkerExecutionLock null
+                                }
+                                val affected = DownloadRepository(dbManager).cancelByUser(
+                                    id.toLong(),
+                                    expectedExecutionId,
+                                )
+                                val committed = dbManager.downloadDao
+                                    .getNullableDownloadById(id.toLong())
+                                    ?.let {
                                         it.status == DownloadRepository.Status.Cancelled.name &&
-                                    it.executionId == expectedExecutionId
-                            } == true
-                            if (!committed) {
-                                return@withDownloadWorkerExecutionLock
+                                            it.executionId == expectedExecutionId
+                                    } == true
+                                if (!committed) null else affected
                             }
-                            if (expectedExecutionId.isNotBlank()) {
+                            if (affectedOperationIds != null) {
+                                // Durable cancellation committed before any
+                                // process-local/native side effect.  The
+                                // per-Download lease prevents a newer attempt
+                                // from starting while this exact process is
+                                // being stopped.
                                 DownloadWorker.cancelProcessesForExecution(
                                     id.toLong(),
                                     expectedExecutionId,
                                 )
+                                LowQualityRedownloadLedger.refresh(c, affectedOperationIds)
+                                notificationUtil.cancelRunningDownloadNotification(id)
                             }
-                            LowQualityRedownloadLedger.refresh(c, affectedOperationIds)
-                            notificationUtil.cancelRunningDownloadNotification(id)
-                            runCatching {
-                                dbManager.terminalDao.delete(id.toLong())
-                            }
-                            }
-                        }
-                        withDownloadWorkerExecutionSideEffectLease(id.toLong(), expectedExecutionId) {
-                            cancel()
                         }
                     } finally {
                         result.finish()

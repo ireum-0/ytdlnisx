@@ -100,6 +100,37 @@ class DownloadWorkerOwnershipRecoveryTest {
     }
 
     @Test
+    fun oneAbandonedRecoveryFailureDoesNotPreventUnrelatedRowsFromRecovering() = runBlocking {
+        val firstFailure = IOException("E1 requeue unavailable")
+        val rows = listOf(
+            AbandonedDownloadExecution(914L, "E1", "Active"),
+            AbandonedDownloadExecution(915L, "E2", "PostProcessing"),
+        )
+        var secondRecovered = false
+        var thrown: Exception? = null
+
+        try {
+            recoverAbandonedDownloadExecutions(
+                rows = rows,
+                isOwnedBy = { _, _ -> false },
+                requeue = { id, _ ->
+                    if (id == 914L) throw firstFailure
+                    secondRecovered = true
+                    1
+                },
+                readCurrent = { downloadId ->
+                    AbandonedDownloadExecution(downloadId, "", "Queued")
+                },
+            )
+        } catch (error: Exception) {
+            thrown = error
+        }
+
+        assertSame(firstFailure, thrown)
+        assertTrue(secondRecovered)
+    }
+
+    @Test
     fun abandonedExecutionCasDoesNotTouchNewerExecution() = runBlocking {
         val stale = AbandonedDownloadExecution(905L, "E1", "PostProcessing")
         val newer = AbandonedDownloadExecution(905L, "E2", "Active")

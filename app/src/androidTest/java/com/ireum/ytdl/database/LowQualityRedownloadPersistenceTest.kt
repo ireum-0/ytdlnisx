@@ -163,6 +163,38 @@ class LowQualityRedownloadPersistenceTest {
     }
 
     @Test
+    fun noCandidateFinalizationCannotOverwriteDurableCancellation() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 74, DownloadRepository.Status.Queued)
+
+        repository.requestCancellation(operation.operationId)
+        repository.finishNoCandidates(operation.operationId)
+
+        val currentOperation = repository.getOperation(operation.operationId)!!
+        val child = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadOperationState.CANCELLED, currentOperation.stateValue)
+        assertEquals(
+            LowQualityRedownloadRepository.REASON_USER_CANCELLED,
+            currentOperation.terminalReason,
+        )
+        assertEquals(LowQualityRedownloadItemState.CANCELLED, child.stateValue)
+        assertEquals(LowQualityRedownloadRepository.REASON_USER_CANCELLED, child.reasonCode)
+        assertEquals(DownloadRepository.Status.Queued.name, database.downloadDao.getDownloadById(linkedId).status)
+    }
+
+    @Test
+    fun noCandidateFinalizationWinsBeforeLaterCancellation() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        repository.finishNoCandidates(operation.operationId)
+
+        repository.requestCancellation(operation.operationId)
+
+        val currentOperation = repository.getOperation(operation.operationId)!!
+        assertEquals(LowQualityRedownloadOperationState.COMPLETED, currentOperation.stateValue)
+        assertEquals(LowQualityRedownloadRepository.REASON_NO_CANDIDATES, currentOperation.terminalReason)
+    }
+
+    @Test
     fun terminalChildStateCannotBeOverwrittenByLateWorkerCallback() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
         repository.checkpointScan(

@@ -106,7 +106,8 @@ class DownloadRepository(private val database: DBManager) {
 
     data class UndoableCancellation(
         val pendingToken: String? = null,
-        val affectedOperationIds: Set<String> = emptySet()
+        val affectedOperationIds: Set<String> = emptySet(),
+        val changed: Boolean = false,
     )
 
     data class DownloadUndoToken(val value: String)
@@ -726,6 +727,58 @@ class DownloadRepository(private val database: DBManager) {
         convergeHistoryReplacementRefusalInCurrentTransaction(id, expectedExecutionId, forceError)
     }
 
+    /**
+     * Rebuilds the durable refusal carrier after a worker observed the
+     * refusal but lost the original barrier insert/read-back window.  This is
+     * intentionally execution-scoped and first-wins: a stale worker cannot
+     * attach a new target or overwrite a different refusal, while a Paused or
+     * Cancelled row can retain its user-visible status independently of the
+     * privileged-operation barrier.
+     */
+    internal suspend fun persistHistoryReplacementRefusalCarrier(
+        id: Long,
+        expectedExecutionId: String,
+        issueCode: String,
+        issueStage: String,
+    ): Boolean = database.withTransaction {
+        val current = downloadDao.getNullableDownloadById(id)
+            ?: return@withTransaction false
+        if (
+            expectedExecutionId.isNotBlank() &&
+                current.executionId != expectedExecutionId
+        ) {
+            return@withTransaction false
+        }
+        val marker = HistoryRedownloadMarker.parse(current.playlistURL)
+            ?: return@withTransaction false
+        val existing = database.historyReplacementBarrierDao.getByDownloadId(id)
+        if (existing == null) {
+            database.historyReplacementBarrierDao.insertIfAbsent(
+                HistoryReplacementBarrier(
+                    downloadId = id,
+                    operationId = current.operationId,
+                    historyId = marker.historyId,
+                    expectedSourceUrl = current.url,
+                    expectedType = current.type.name,
+                    issueCode = issueCode,
+                    issueStage = issueStage,
+                    createdAt = System.currentTimeMillis(),
+                )
+            )
+        }
+        val persisted = database.historyReplacementBarrierDao.getByDownloadId(id)
+        persisted?.issueCode == issueCode && persisted.issueStage == issueStage
+    }
+
+    /**
+     * True once the authoritative History row already points at this
+     * replacement Download.  Such a row carries finalization debt, not fresh
+     * replacement authority, and must not be requeued from UI paths.
+     */
+    suspend fun isCommittedHistoryReplacement(id: Long): Boolean = database.withTransaction {
+        downloadDao.getNullableDownloadById(id)?.let(::isCommittedHistoryReplacementLocked) == true
+    }
+
     /** Must be called while the caller already owns the Room transaction. */
     internal suspend fun convergeHistoryReplacementRefusalInCurrentTransaction(
         id: Long,
@@ -746,6 +799,12 @@ class DownloadRepository(private val database: DBManager) {
                 ?: return@withTransaction false
             val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
             if (expected != null && current.executionId != expected) {
+                return@withTransaction false
+            }
+            if (isCommittedHistoryReplacementLocked(current)) {
+                // The History replacement is already the durable primary
+                // result. A late generic pause/cancel must not rewrite it
+                // into a pre-commit state while finalization is recoverable.
                 return@withTransaction false
             }
             if (
@@ -800,13 +859,21 @@ class DownloadRepository(private val database: DBManager) {
         status: Status,
     ): List<DownloadCancellationRegistry.Publication> {
         if (status != Status.Paused && status != Status.Cancelled) {
-            downloadDao.setStatusMultiple(ids, status.toString())
+            database.withTransaction {
+                ids.distinct().forEach { id ->
+                    val current = downloadDao.getNullableDownloadById(id) ?: return@forEach
+                    if (!isCommittedHistoryReplacementLocked(current)) {
+                        downloadDao.setStatus(id, status.toString())
+                    }
+                }
+            }
             return emptyList()
         }
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         database.withTransaction {
             ids.distinct().forEach { id ->
                 val current = downloadDao.getNullableDownloadById(id) ?: return@forEach
+                if (isCommittedHistoryReplacementLocked(current)) return@forEach
                 if (current.executionId.isBlank()) {
                     downloadDao.setStatus(id, status.toString())
                     if (persistedHistoryRefusalLocked(id) != null) {
@@ -847,6 +914,14 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun saveForLater(item: DownloadItem): SavedDownloadResult = database.withTransaction {
+        if (item.id > 0L && downloadDao.getNullableDownloadById(item.id)?.let {
+                isCommittedHistoryReplacementLocked(it)
+            } == true) {
+            return@withTransaction SavedDownloadResult(
+                downloadId = item.id,
+                affectedOperationIds = emptySet(),
+            )
+        }
         if (item.id > 0L && persistedHistoryRefusalLocked(item.id) != null) {
             return@withTransaction SavedDownloadResult(
                 downloadId = item.id,
@@ -881,6 +956,7 @@ class DownloadRepository(private val database: DBManager) {
 
     suspend fun moveToSaved(id: Long): Set<String> = database.withTransaction {
         val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction emptySet()
+        if (isCommittedHistoryReplacementLocked(item)) return@withTransaction emptySet()
         if (persistedHistoryRefusalLocked(id) != null) {
             return@withTransaction convergeHistoryReplacementRefusalLocked(
                 id = id,
@@ -1079,6 +1155,9 @@ class DownloadRepository(private val database: DBManager) {
         val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction emptySet()
         val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
         if (expected != null && item.executionId != expected) {
+            return@withTransaction emptySet()
+        }
+        if (isCommittedHistoryReplacementLocked(item)) {
             return@withTransaction emptySet()
         }
         val changed = if (item.executionId.isBlank()) {
@@ -1308,6 +1387,9 @@ class DownloadRepository(private val database: DBManager) {
             if (expected != null && item.executionId != expected) {
                 return@withTransaction UndoableCancellation()
             }
+            if (isCommittedHistoryReplacementLocked(item)) {
+                return@withTransaction UndoableCancellation()
+            }
             val refusal = persistedHistoryRefusalLocked(id)
             if (refusal != null) {
                 val changed = if (item.executionId.isBlank()) {
@@ -1331,7 +1413,8 @@ class DownloadRepository(private val database: DBManager) {
                         expectedExecutionId = downloadDao.getNullableDownloadById(id)
                             ?.executionId.orEmpty(),
                         forceError = false,
-                    ).affectedOperationIds
+                    ).affectedOperationIds,
+                    changed = changed,
                 )
             }
             val ledgerDao = database.lowQualityRedownloadDao
@@ -1355,7 +1438,10 @@ class DownloadRepository(private val database: DBManager) {
                 ) {
                     "Undoable cancellation lost ledger ownership"
                 }
-                return@withTransaction UndoableCancellation(pendingToken = token)
+                return@withTransaction UndoableCancellation(
+                    pendingToken = token,
+                    changed = true,
+                )
             }
 
             val changed = if (item.executionId.isBlank()) {
@@ -1378,7 +1464,8 @@ class DownloadRepository(private val database: DBManager) {
                     downloadIds = listOf(id),
                     reason = REASON_USER_CANCELLED,
                     now = System.currentTimeMillis()
-                )
+                ),
+                changed = changed,
             )
         }
         DownloadCancellationRegistry.publish(publications)
@@ -1583,6 +1670,7 @@ class DownloadRepository(private val database: DBManager) {
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         database.withTransaction {
             downloadDao.getActiveAndQueuedDownloadsList().forEach { item ->
+                if (isCommittedHistoryReplacementLocked(item)) return@forEach
                 val changed = if (item.executionId.isBlank()) {
                     downloadDao.cancelByUser(item.id) == 1
                 } else {

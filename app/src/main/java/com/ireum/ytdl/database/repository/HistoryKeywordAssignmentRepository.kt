@@ -629,6 +629,20 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             db.historyReplacementBarrierDao.getByDownloadId(replacementDownloadId)?.let { barrier ->
                 return authorizationForPersistedRefusal(barrier.issueCode)
             }
+            // The Download diagnostic projection is the crash-safe fallback
+            // for the narrow window in which the first barrier insert or its
+            // read-back failed.  It is consulted before the live History row
+            // so a process restart cannot reinterpret the same privileged
+            // marker as a fresh authorized replacement.
+            replacementDownload
+                ?.lastIssueCode
+                ?.takeIf { it.isNotBlank() }
+                ?.let { issueCode ->
+                    HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(issueCode)
+                        ?.let { issue ->
+                            return authorizationForPersistedRefusal(issue.code.name)
+                        }
+                }
             val marker = HistoryRedownloadMarker.parse(
                 replacementDownload?.playlistURL
             )

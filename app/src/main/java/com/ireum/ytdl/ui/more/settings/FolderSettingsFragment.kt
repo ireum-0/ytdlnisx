@@ -43,6 +43,7 @@ import com.ireum.ytdl.util.storage.AppCacheCategory
 import com.ireum.ytdl.util.storage.AppCacheCategorySnapshot
 import com.ireum.ytdl.util.storage.AppCacheManager
 import com.ireum.ytdl.util.storage.AppCacheScan
+import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.work.MoveCacheFilesWorker
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
@@ -614,11 +615,12 @@ class FolderSettingsFragment : BaseSettingsFragment() {
     private suspend fun migrateDefaultVideoFolderInternal(
         onProgress: suspend (done: Int, total: Int) -> Unit
     ): VideoFolderMigrationResult = withContext(Dispatchers.IO) {
+        HistoryReferenceMutationCoordinator.withLock {
         val db = DBManager.getInstance(requireContext())
         val historyDao = db.historyDao
         val sourceRoot = File(FileUtil.getDefaultVideoPath())
         if (!sourceRoot.exists() || !sourceRoot.isDirectory) {
-            return@withContext VideoFolderMigrationResult(0, 0, 0)
+            return@withLock VideoFolderMigrationResult(0, 0, 0)
         }
 
         val destinationRoot = preferences.getString("video_path", FileUtil.getDefaultVideoPath())
@@ -626,7 +628,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
         val sourceNormalized = sourceRoot.absolutePath.replace('\\', '/')
         val destinationNormalized = destinationRoot.replace('\\', '/')
         if (destinationNormalized.equals(sourceNormalized, ignoreCase = true)) {
-            return@withContext VideoFolderMigrationResult(0, 0, 0)
+            return@withLock VideoFolderMigrationResult(0, 0, 0)
         }
 
         val historyItems = historyDao.getAll().filter { it.type == DownloadType.video }
@@ -679,12 +681,13 @@ class FolderSettingsFragment : BaseSettingsFragment() {
                 }
             }
             if (changed && updatedPaths != item.downloadPath) {
-                historyDao.update(item.copy(downloadPath = updatedPaths))
+                historyDao.updateDownloadPathById(item.id, updatedPaths)
                 updatedCards += 1
             }
         }
 
         VideoFolderMigrationResult(movedFiles, updatedCards, failedFiles)
+        }
     }
 
     private fun moveFileToDestination(sourceFile: File, destinationRoot: String): String? {

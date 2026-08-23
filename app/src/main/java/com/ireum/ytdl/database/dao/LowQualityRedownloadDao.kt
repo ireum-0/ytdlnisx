@@ -45,6 +45,17 @@ interface LowQualityRedownloadDao {
     suspend fun getItemByDownloadId(downloadId: Long): LowQualityRedownloadItem?
 
     @Query(
+        "SELECT EXISTS(" +
+            "SELECT 1 FROM low_quality_redownload_items lqi " +
+            "LEFT JOIN low_quality_redownload_operations lqo " +
+            "ON lqo.operationId = lqi.operationId " +
+            "WHERE lqi.downloadId = :downloadId " +
+            "AND (lqi.itemState = 'CANCELLATION_REQUESTED' OR lqo.cancelRequested = 1)" +
+            ")"
+    )
+    fun hasCancellationRequestedByDownload(downloadId: Long): Boolean
+
+    @Query(
         "SELECT * FROM low_quality_redownload_items WHERE downloadId IN (:downloadIds) " +
             "AND itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED')"
     )
@@ -153,6 +164,29 @@ interface LowQualityRedownloadDao {
         state: String,
         reason: String,
         completedAt: Long
+    ): Int
+
+    @Query(
+        "UPDATE low_quality_redownload_operations SET state = :state, phase = 'FINALIZING', " +
+            "terminalReason = :reason, completedAt = :completedAt, updatedAt = :completedAt " +
+            "WHERE operationId = :operationId AND state = 'RUNNING' AND cancelRequested = 0"
+    )
+    suspend fun finishOperationIfCancellationNotRequested(
+        operationId: String,
+        state: String,
+        reason: String,
+        completedAt: Long,
+    ): Int
+
+    @Query(
+        "UPDATE low_quality_redownload_operations SET state = 'CANCELLED', phase = 'FINALIZING', " +
+            "terminalReason = :reason, completedAt = :completedAt, updatedAt = :completedAt " +
+            "WHERE operationId = :operationId AND state = 'RUNNING' AND cancelRequested = 1"
+    )
+    suspend fun finishCancelledOperation(
+        operationId: String,
+        reason: String,
+        completedAt: Long,
     ): Int
 
     @Query(

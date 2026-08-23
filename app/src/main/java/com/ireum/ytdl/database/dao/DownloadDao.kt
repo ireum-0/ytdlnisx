@@ -21,16 +21,32 @@ import kotlinx.coroutines.flow.Flow
 
 private const val HISTORY_TARGET_DELETED_ISSUE = "HISTORY_TARGET_DELETED"
 
+private const val LOW_QUALITY_TERMINAL_DEBT_GUARD =
+    "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items debt " +
+        "WHERE debt.downloadId = downloads.id " +
+        "AND debt.itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+        "AND COALESCE(downloads.lastIssueCode, '') != '')"
+
 private const val LOW_QUALITY_REPLACEMENT_RUNNABLE_PREDICATE =
     "NOT (COALESCE(playlistURL, '') LIKE 'history-redownload:%:quality:%' " +
         "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items q " +
         "WHERE q.downloadId = downloads.id)) " +
+        // A replacement whose History row already points at this Download is
+        // past the semantic commit boundary.  It must be finalized, never
+        // admitted as a new destructive attempt.
+        "AND NOT (COALESCE(playlistURL, '') LIKE 'history-redownload:%' " +
+            "AND EXISTS (SELECT 1 FROM history committedHistory " +
+            "WHERE committedHistory.downloadId = downloads.id)) " +
         "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
         "LEFT JOIN low_quality_redownload_operations lqo " +
         "ON lqo.operationId = lqi.operationId " +
         "WHERE lqi.downloadId = downloads.id " +
-        "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
-        "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1))"
+            "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1)) " +
+        // A durable Download issue plus a nonterminal linked child is an
+        // unresolved terminal-convergence fact.  It is not safe to turn that
+        // row back into runnable work before the child has consumed the fact.
+        LOW_QUALITY_TERMINAL_DEBT_GUARD
 
 private const val LOW_QUALITY_REPLACEMENT_RUNNABLE_GUARD =
     "AND $LOW_QUALITY_REPLACEMENT_RUNNABLE_PREDICATE"
@@ -43,6 +59,17 @@ private fun preservesTargetDeletedIssue(
         incoming.lastIssueCode == HISTORY_TARGET_DELETED_ISSUE &&
             incoming.lastIssueStage == current.lastIssueStage
         )
+
+private suspend fun DownloadDao.preservesTerminalConvergenceDebt(
+    current: DownloadItem?,
+    incoming: DownloadItem,
+): Boolean {
+    if (current == null || current.lastIssueCode.isNullOrBlank()) return true
+    if (!hasLowQualityTerminalConvergenceDebt(current.id)) return true
+    return current.status == incoming.status &&
+        current.lastIssueCode == incoming.lastIssueCode &&
+        current.lastIssueStage == incoming.lastIssueStage
+}
 
 @Dao
 interface DownloadDao {
@@ -388,6 +415,7 @@ interface DownloadDao {
             "WHERE lqi.downloadId = downloads.id " +
             "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
             "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1))"
+            + LOW_QUALITY_TERMINAL_DEBT_GUARD
     )
     suspend fun claimDownloadForWorker(
         id: Long,
@@ -515,11 +543,13 @@ interface DownloadDao {
      */
     @Transaction
     suspend fun update(item: DownloadItem): Long {
+        val current = item.id.takeIf { it > 0L }?.let(::getNullableDownloadById)
         if (
             item.id > 0L &&
-                (
-                    getHistoryReplacementBarrier(item.id) != null ||
-                        !preservesTargetDeletedIssue(getNullableDownloadById(item.id), item)
+            (
+                getHistoryReplacementBarrier(item.id) != null ||
+                        !preservesTargetDeletedIssue(current, item) ||
+                        !preservesTerminalConvergenceDebt(current, item)
                     )
         ) {
             return item.id
@@ -533,6 +563,7 @@ interface DownloadDao {
         val current = getNullableDownloadById(item.id)
         if (current?.executionId != expectedExecutionId) return false
         if (!preservesTargetDeletedIssue(current, item)) return false
+        if (!preservesTerminalConvergenceDebt(current, item)) return false
         val barrier = getHistoryReplacementBarrier(item.id)
         if (
             barrier != null &&
@@ -562,6 +593,7 @@ interface DownloadDao {
         }
         if (hasLowQualityCancellationRequested(item.id)) return false
         if (!preservesTargetDeletedIssue(current, item)) return false
+        if (!preservesTerminalConvergenceDebt(current, item)) return false
         val barrier = getHistoryReplacementBarrier(item.id)
         if (
             barrier != null &&
@@ -619,12 +651,19 @@ interface DownloadDao {
             "AND NOT (COALESCE(d.playlistURL, '') LIKE 'history-redownload:%:quality:%' " +
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items q " +
             "WHERE q.downloadId = d.id)) " +
+            "AND NOT (COALESCE(d.playlistURL, '') LIKE 'history-redownload:%' " +
+            "AND EXISTS (SELECT 1 FROM history committedHistory " +
+            "WHERE committedHistory.downloadId = d.id)) " +
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
             "LEFT JOIN low_quality_redownload_operations lqo " +
             "ON lqo.operationId = lqi.operationId " +
             "WHERE lqi.downloadId = d.id " +
             "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
-            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1))"
+            "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1)) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items debt " +
+            "WHERE debt.downloadId = d.id " +
+            "AND debt.itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "AND COALESCE(d.lastIssueCode, '') != '')"
     )
     suspend fun isRunnableLowQualityReplacement(id: Long): Boolean
 
@@ -638,6 +677,17 @@ interface DownloadDao {
             ")"
     )
     suspend fun hasLowQualityCancellationRequested(id: Long): Boolean
+
+    @Query(
+        "SELECT EXISTS (" +
+            "SELECT 1 FROM low_quality_redownload_items debt " +
+            "WHERE debt.downloadId = :id " +
+            "AND debt.itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "AND EXISTS (SELECT 1 FROM downloads d " +
+                "WHERE d.id = debt.downloadId AND COALESCE(d.lastIssueCode, '') != '')" +
+            ")"
+    )
+    suspend fun hasLowQualityTerminalConvergenceDebt(id: Long): Boolean
 
     @Transaction
     suspend fun updateAll(list: List<DownloadItem>) : List<DownloadItem> {
@@ -784,7 +834,13 @@ interface DownloadDao {
     suspend fun updateWithoutUpsert(item: DownloadItem) {
         if (
             item.id > 0L &&
-                getHistoryReplacementBarrier(item.id) != null
+                (
+                    getHistoryReplacementBarrier(item.id) != null ||
+                        !preservesTerminalConvergenceDebt(
+                            getNullableDownloadById(item.id),
+                            item,
+                        )
+                    )
         ) {
             return
         }

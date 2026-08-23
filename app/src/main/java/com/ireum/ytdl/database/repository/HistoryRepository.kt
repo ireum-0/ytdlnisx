@@ -387,6 +387,11 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
         historyDao.update(item)
     }
 
+    fun updateDownloadPath(id: Long, downloadPath: List<String>): Boolean =
+        HistoryReferenceMutationCoordinator.withLockBlocking {
+            historyDao.updateDownloadPathById(id, downloadPath) > 0
+        }
+
     fun updateMediaPublishedAtIfMissing(
         id: Long,
         normalizedUrl: String,

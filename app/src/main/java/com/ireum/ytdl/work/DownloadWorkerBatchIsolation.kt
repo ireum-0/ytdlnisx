@@ -42,7 +42,14 @@ internal suspend fun <T> runDownloadItemsIndependently(
                     runItem(item)
                 } catch (cancelled: CancellationException) {
                     val itemLocal = if (scopeJob?.isActive == true) {
-                        runCatching { isItemLocalCancellation(item) }.getOrDefault(false) &&
+                        val localCancellation = try {
+                            isItemLocalCancellation(item)
+                        } catch (classificationCancellation: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            false
+                        }
+                        localCancellation &&
                             scopeJob?.isActive == true
                     } else {
                         false

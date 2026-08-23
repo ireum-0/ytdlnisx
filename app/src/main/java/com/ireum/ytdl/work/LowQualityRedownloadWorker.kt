@@ -69,6 +69,13 @@ class LowQualityRedownloadWorker(
             val latest = repository.getOperation(operationId)
             if (latest?.cancelRequested == true) {
                 repository.finalizeIfReady(operationId)
+                // Phase one is already durable. Keep a live convergence
+                // owner for phase two even when this coordinator attempt is
+                // the thing that received cancellation.
+                LowQualityRedownloadLedger.scheduleCancellationConvergence(
+                    context,
+                    operationId,
+                )
                 repository.progress(operationId)?.let { notification.update(it) }
                 Result.success()
             } else {
@@ -86,12 +93,10 @@ class LowQualityRedownloadWorker(
                         publication.downloadId,
                         publication.executionId,
                     ) {
-                        withDownloadWorkerExecutionLock {
-                            DownloadWorker.cancelProcessesForExecution(
-                                publication.downloadId,
-                                publication.executionId,
-                            )
-                        }
+                        DownloadWorker.cancelProcessesForExecution(
+                            publication.downloadId,
+                            publication.executionId,
+                        )
                     }
                 }
                 repository.progress(operationId)?.let { notification.update(it) }

@@ -80,6 +80,7 @@ import com.ireum.ytdl.ui.downloads.ThumbnailMetadataSaveController
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.Extensions.loadThumbnail
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.util.player.PlaybackQueuePreparedData
 import com.ireum.ytdl.util.player.PlaybackQueueState
 import com.squareup.picasso.Picasso
@@ -1602,10 +1603,17 @@ class VideoPlayerActivity : AppCompatActivity() {
         }.getOrDefault(false)
         if (!wrote) return source
 
-        val updated = item.copy(thumb = outFile.absolutePath)
         runCatching {
-            DBManager.getInstance(this@VideoPlayerActivity).historyDao.update(updated)
-            playbackQueueState.updateItem(updated)
+            val database = DBManager.getInstance(this@VideoPlayerActivity)
+            val updated = HistoryReferenceMutationCoordinator.withLockBlocking {
+                val current = database.historyDao.getNullableItem(item.id)
+                    ?: return@withLockBlocking null
+                if (database.historyDao.updateThumbById(item.id, outFile.absolutePath) != 1) {
+                    return@withLockBlocking null
+                }
+                current.copy(thumb = outFile.absolutePath)
+            }
+            updated?.let(playbackQueueState::updateItem)
         }
         return outFile.toURI().toString()
     }

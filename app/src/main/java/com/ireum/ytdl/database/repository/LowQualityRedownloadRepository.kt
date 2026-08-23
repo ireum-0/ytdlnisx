@@ -14,6 +14,7 @@ import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import com.ireum.ytdl.work.DownloadCancellationRegistry
+import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLeases
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
@@ -38,6 +39,9 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
 
     suspend fun getItems(operationId: String): List<LowQualityRedownloadItem> =
         dao.getItems(operationId)
+
+    suspend fun hasLinkedDownload(downloadId: Long): Boolean =
+        dao.getItemByDownloadId(downloadId) != null
 
     suspend fun createOrReconnect(now: Long = System.currentTimeMillis()): LowQualityRedownloadOperation =
         database.withTransaction {
@@ -124,12 +128,23 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         operationId: String,
         historyId: Long,
         downloadItem: DownloadItem
-    ): Long? = database.withTransaction {
+    ): Long? = withDownloadWorkerExecutionLock {
+        database.withTransaction {
         val current = dao.getItem(operationId, historyId)
             ?: error("Missing low-quality ledger item")
         current.downloadId?.let { return@withTransaction it }
         check(current.stateValue == LowQualityRedownloadItemState.CHECKING) {
             "Low-quality item is not ready for queue linkage"
+        }
+        if (dao.getOperation(operationId)?.cancelRequested == true) {
+            dao.setItemState(
+                operationId,
+                historyId,
+                LowQualityRedownloadItemState.CANCELLED.name,
+                REASON_USER_CANCELLED,
+                System.currentTimeMillis(),
+            )
+            return@withTransaction null
         }
         if (current.intendedSourceUrl.isNotBlank() || current.intendedType.isNotBlank()) {
             val history = database.historyDao.getNullableItem(historyId)
@@ -221,6 +236,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
             dao.linkQueuedDownload(operationId, historyId, id, System.currentTimeMillis()) == 1
         ) { "Low-quality queue linkage lost ownership" }
         id
+        }
     }
 
     suspend fun markDownloadState(
@@ -259,8 +275,28 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         item.operationId
     }
 
-    suspend fun finishNoCandidates(operationId: String) {
-        val operation = dao.getOperation(operationId) ?: return
+    suspend fun finishNoCandidates(operationId: String) = database.withTransaction {
+        val operation = dao.getOperation(operationId) ?: return@withTransaction
+        if (operation.stateValue.isTerminal) return@withTransaction
+        val now = System.currentTimeMillis()
+        if (operation.cancelRequested) {
+            // Cancellation is a durable winner once phase one committed.  Do
+            // not let the scan's no-candidate result overwrite it.
+            dao.terminalizeNonterminalItems(
+                operationId,
+                LowQualityRedownloadItemState.CANCELLED.name,
+                REASON_USER_CANCELLED,
+                now,
+            )
+            check(
+                dao.finishCancelledOperation(
+                    operationId,
+                    REASON_USER_CANCELLED,
+                    now,
+                ) == 1
+            ) { "Low-quality cancellation lost the no-candidate terminal race" }
+            return@withTransaction
+        }
         val allInspectionsFailed =
             operation.scanProcessed > 0 && operation.scanFailures >= operation.scanProcessed
         val state = if (allInspectionsFailed) {
@@ -273,16 +309,29 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
             operation.scanFailures > 0 -> REASON_NO_CANDIDATES_WITH_FAILURES
             else -> REASON_NO_CANDIDATES
         }
-        dao.finishOperation(
-            operationId,
-            state.name,
-            reason,
-            System.currentTimeMillis()
-        )
+        check(
+            dao.finishOperationIfCancellationNotRequested(
+                operationId,
+                state.name,
+                reason,
+                now,
+            ) == 1
+        ) { "Low-quality no-candidate terminalization lost operation ownership" }
     }
 
-    suspend fun requestCancellation(operationId: String): List<Long> =
-        dao.requestCancellationAndMarkItems(operationId, System.currentTimeMillis())
+    suspend fun requestCancellation(operationId: String): List<Long> {
+        // Phase one is the revocation boundary.  Acquire each currently active
+        // child's resource lease before taking the global claim lock so an
+        // in-flight destructive side effect finishes before cancellation can
+        // become durable.  The short global transaction then prevents a new
+        // claim from entering after the revocation wins.
+        return withCurrentLinkedExecutionLeases(operationId) {
+            dao.requestCancellationAndMarkItems(
+                operationId,
+                System.currentTimeMillis(),
+            )
+        }
+    }
 
     suspend fun isCancellationRequestedForDownload(downloadId: Long): Boolean =
         database.withTransaction {
@@ -306,16 +355,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     internal suspend fun completePersistedCancellationWithPublications(
         operationId: String,
     ): CancellationCommitResult {
-        val candidateIds = dao.getNonterminalDownloadIds(operationId)
-        val expectedExecutionIds = candidateIds.mapNotNull { id ->
-            database.downloadDao.getNullableDownloadById(id)
-                ?.executionId
-                ?.takeIf { it.isNotBlank() }
-                ?.let { id to it }
-        }.toMap()
-        return withDownloadWorkerExecutionSideEffectLeases(
-            expectedExecutionIds.map { it.key to it.value },
-        ) {
+        return withCurrentLinkedExecutionLeases(operationId) {
             val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
             val linkedDownloadIds = database.withTransaction {
                 val operation = dao.getOperation(operationId)
@@ -329,7 +369,6 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                     cancelLinkedDownloadsAndCollectOwnership(
                         linkedDownloadIds,
                         publications,
-                        expectedExecutionIds,
                     )
                 }
                 dao.terminalizeNonterminalItems(
@@ -374,16 +413,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         operationId: String,
         reason: String = REASON_COORDINATOR_FAILURE,
     ): CancellationCommitResult {
-        val candidateIds = dao.getNonterminalDownloadIds(operationId)
-        val expectedExecutionIds = candidateIds.mapNotNull { id ->
-            database.downloadDao.getNullableDownloadById(id)
-                ?.executionId
-                ?.takeIf { it.isNotBlank() }
-                ?.let { id to it }
-        }.toMap()
-        return withDownloadWorkerExecutionSideEffectLeases(
-            expectedExecutionIds.map { it.key to it.value },
-        ) {
+        return withCurrentLinkedExecutionLeases(operationId) {
             val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
             val linkedDownloadIds = database.withTransaction {
                 val operation = dao.getOperation(operationId)
@@ -407,7 +437,6 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                     cancelLinkedDownloadsAndCollectOwnership(
                         linkedDownloadIds,
                         publications,
-                        expectedExecutionIds,
                     )
                 }
                 dao.terminalizeNonterminalItems(
@@ -440,6 +469,52 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     }
 
     /**
+     * Acquires currently active linked Download resource leases before the
+     * short global ownership transaction.  The snapshot is revalidated after
+     * the leases are held, so a claim that wins in the gap is either included
+     * in the next attempt or cannot race the terminal transition.  The global
+     * lock is never held while waiting for a side-effect lease.
+     */
+    private suspend fun <T : Any> withCurrentLinkedExecutionLeases(
+        operationId: String,
+        action: suspend () -> T,
+    ): T {
+        while (true) {
+            val executions = withDownloadWorkerExecutionLock {
+                currentLinkedExecutionTokens(operationId)
+            }
+            val result = withDownloadWorkerExecutionSideEffectLeases(executions) {
+                val stillCurrent = withDownloadWorkerExecutionLock {
+                    currentLinkedExecutionTokens(operationId) == executions
+                }
+                if (!stillCurrent) {
+                    null
+                } else {
+                    withDownloadWorkerExecutionLock { action() }
+                }
+            }
+            if (result != null) return result
+        }
+    }
+
+    private suspend fun currentLinkedExecutionTokens(
+        operationId: String,
+    ): List<Pair<Long, String>> {
+        val linkedDownloadIds = dao.getNonterminalDownloadIds(operationId)
+        return database.downloadDao
+            .getDownloadsByIdsSuspend(linkedDownloadIds)
+            .filter {
+                it.executionId.isNotBlank() &&
+                    it.status in setOf(
+                        DownloadRepository.Status.Active.name,
+                        DownloadRepository.Status.PostProcessing.name,
+                    )
+            }
+            .map { it.id to it.executionId }
+            .sortedBy { it.first }
+    }
+
+    /**
      * Bounded low-quality cancellation is item-local to each active child.  The
      * execution token is captured from the same Room transaction that changes
      * the row to Cancelled, before callers destroy the native process.
@@ -447,17 +522,9 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     private suspend fun cancelLinkedDownloadsAndCollectOwnership(
         ids: List<Long>,
         publications: MutableList<DownloadCancellationRegistry.Publication>,
-        expectedExecutionIds: Map<Long, String> = emptyMap(),
     ) {
         ids.forEach { id ->
             val item = database.downloadDao.getNullableDownloadById(id) ?: return@forEach
-            val expectedExecutionId = expectedExecutionIds[id]
-            if (
-                item.executionId.isNotBlank() &&
-                expectedExecutionId != item.executionId
-            ) {
-                return@forEach
-            }
             val changed = if (item.executionId.isBlank()) {
                 database.downloadDao.cancelByUser(item.id)
             } else {
@@ -589,6 +656,18 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         val now = System.currentTimeMillis()
         if (operation.cancelRequested || item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
             dao.markCancelledByDownloadId(downloadId, REASON_USER_CANCELLED, now)
+        } else if (
+            !download?.lastIssueCode.isNullOrBlank() &&
+                !item.stateValue.isTerminal
+        ) {
+            // The Download's durable terminal issue is the convergence fact;
+            // do not infer a fresh operation from a later mutable queue state.
+            dao.setItemStateByDownloadId(
+                downloadId,
+                LowQualityRedownloadItemState.FAILED.name,
+                download?.lastIssueCode.orEmpty(),
+                now,
+            )
         } else if (operation.stateValue.isTerminal && item.stateValue.isTerminal) {
             return@withTransaction item.operationId
         } else {

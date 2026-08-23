@@ -1890,43 +1890,48 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     suspend fun updateWithKeywordNotice(item: HistoryItem): MetadataUpdateResult = withContext(Dispatchers.IO) {
-        val result = database.withTransaction {
-            val currentItem = database.historyDao.getItem(item.id)
-            val updatedItem = currentItem.copy(
-                url = item.url,
-                title = item.title,
-                author = item.author,
-                artist = item.artist,
-                duration = item.duration,
-                durationSeconds = item.durationSeconds,
-                thumb = item.thumb,
-                website = item.website,
-                customThumb = item.customThumb,
-                mediaPublishedAt = item.mediaPublishedAt
-                    .takeIf(MediaPublishedDate::isPresent)
-                    ?: currentItem.mediaPublishedAt.takeIf {
-                        MediaPublishedDateSource.matches(currentItem.url, item.url)
-                    }
-                    ?: MediaPublishedDate.MISSING
-            )
-            repository.update(updatedItem)
-            val protectedCount = if (currentItem.keywords != item.keywords) {
-                keywordAssignments.updateManualFromMaterializedEditor(
-                    item.id,
-                    AutomaticKeywordNormalizer.parseKeywords(item.keywords)
+        val result = HistoryReferenceMutationCoordinator.withLock {
+            database.withTransaction {
+                val currentItem = database.historyDao.getItem(item.id)
+                val updatedItem = currentItem.copy(
+                    url = item.url,
+                    title = item.title,
+                    author = item.author,
+                    artist = item.artist,
+                    duration = item.duration,
+                    durationSeconds = item.durationSeconds,
+                    thumb = item.thumb,
+                    website = item.website,
+                    customThumb = item.customThumb,
+                    mediaPublishedAt = item.mediaPublishedAt
+                        .takeIf(MediaPublishedDate::isPresent)
+                        ?: currentItem.mediaPublishedAt.takeIf {
+                            MediaPublishedDateSource.matches(currentItem.url, item.url)
+                        }
+                        ?: MediaPublishedDate.MISSING
                 )
-            } else {
-                0
+                // The reference coordinator is held before Room.  Updating
+                // the raw row here avoids the reverse Room -> coordinator
+                // acquisition performed by the compatibility wrapper.
+                database.historyDao.updateRaw(updatedItem)
+                val protectedCount = if (currentItem.keywords != item.keywords) {
+                    keywordAssignments.updateManualFromMaterializedEditor(
+                        item.id,
+                        AutomaticKeywordNormalizer.parseKeywords(item.keywords)
+                    )
+                } else {
+                    0
+                }
+                automaticKeywordRuleEngine.reconcileHistoryUrlChange(
+                    item.id,
+                    currentItem.url,
+                    item.url
+                )
+                MetadataUpdateResult(
+                    item = database.historyDao.getItem(item.id),
+                    protectedAutomaticKeywordCount = protectedCount
+                )
             }
-            automaticKeywordRuleEngine.reconcileHistoryUrlChange(
-                item.id,
-                currentItem.url,
-                item.url
-            )
-            MetadataUpdateResult(
-                item = database.historyDao.getItem(item.id),
-                protectedAutomaticKeywordCount = protectedCount
-            )
         }
         invalidateCachedIds(triggerRefresh = true)
         result
@@ -2160,7 +2165,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         if (filteredPaths.isEmpty() || filteredPaths == item.downloadPath) return item
         val updated = item.copy(downloadPath = filteredPaths)
         viewModelScope.launch(Dispatchers.IO) {
-            repository.update(updated)
+            repository.updateDownloadPath(updated.id, updated.downloadPath)
         }
         return updated
     }

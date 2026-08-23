@@ -105,6 +105,7 @@ import com.ireum.ytdl.util.storage.HistoryDeletionSummary
 import com.ireum.ytdl.util.storage.HistoryDeletionDialogState
 import com.ireum.ytdl.util.storage.HistoryDeletionValidation
 import com.ireum.ytdl.util.storage.HistoryDeletionTargetParser
+import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.util.LocalAddCandidateDto
 import com.ireum.ytdl.util.LocalAddMatchDto
 import androidx.work.OneTimeWorkRequestBuilder
@@ -3207,7 +3208,17 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             localTreeUri = treeMeta.first,
             localTreePath = treeMeta.second
         )
-        db.historyDao.update(updatedItem)
+        HistoryReferenceMutationCoordinator.withLockBlocking {
+            db.historyDao.updateReconnectedMedia(
+                id = updatedItem.id,
+                url = updatedItem.url,
+                downloadPath = updatedItem.downloadPath,
+                filesize = updatedItem.filesize,
+                format = updatedItem.format,
+                localTreeUri = updatedItem.localTreeUri,
+                localTreePath = updatedItem.localTreePath,
+            )
+        }
         candidates.removeAll { it.id == selected.id }
         return true
     }
@@ -6772,8 +6783,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     !MediaPublishedDate.isPresent(currentExistingItem.mediaPublishedAt) &&
                     MediaPublishedDate.isPresent(newItem.mediaPublishedAt)
                 ) {
-                    db.historyDao.update(
-                        currentExistingItem.copy(mediaPublishedAt = newItem.mediaPublishedAt)
+                    db.historyDao.updateMediaPublishedAtIfMissing(
+                        id = currentExistingItem.id,
+                        normalizedUrl = currentExistingItem.url.trim(),
+                        mediaPublishedAt = newItem.mediaPublishedAt,
                     )
                 }
                 com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
@@ -6860,15 +6873,16 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             container = ext,
             filesize = size
         )
-        db.historyDao.update(
-            item.copy(
+        HistoryReferenceMutationCoordinator.withLockBlocking {
+            db.historyDao.updateReconnectedFile(
+                id = item.id,
                 downloadPath = listOf(uri.toString()),
                 filesize = size,
                 format = updatedFormat,
                 localTreeUri = "",
-                localTreePath = ""
+                localTreePath = "",
             )
-        )
+        }
     }
 
     override fun onCardClick(itemID: Long) {

@@ -12,6 +12,7 @@ import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.KnownMediaPublishedDate
+import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
@@ -155,8 +156,17 @@ interface HistoryDao {
         HistoryReferenceMutationCoordinator.withLockBlocking {
             // Preserve the old @Update no-op behavior when a row was deleted between
             // being loaded and written by a background/UI task.
-            val materialized = getMaterializedKeywordsOrNull(item.id) ?: return@withLockBlocking
-            updateRaw(item.copy(keywords = materialized))
+            val current = getNullableItem(item.id) ?: return@withLockBlocking
+            updateRaw(
+                item.copy(
+                    keywords = current.keywords,
+                    // Replacement/reference commits own these fields.  A
+                    // stale metadata snapshot may not overwrite them.
+                    downloadId = current.downloadId,
+                    downloadPath = current.downloadPath,
+                    type = current.type,
+                )
+            )
         }
     }
 
@@ -178,6 +188,41 @@ interface HistoryDao {
         normalizedUrl: String,
         mediaPublishedAt: Long
     ): Int
+
+    @Query("UPDATE history SET downloadPath = :downloadPath WHERE id = :id")
+    fun updateDownloadPathById(id: Long, downloadPath: List<String>): Int
+
+    @Query(
+        "UPDATE history SET url = :url, downloadPath = :downloadPath, filesize = :filesize, " +
+            "format = :format, localTreeUri = :localTreeUri, localTreePath = :localTreePath " +
+            "WHERE id = :id"
+    )
+    fun updateReconnectedMedia(
+        id: Long,
+        url: String,
+        downloadPath: List<String>,
+        filesize: Long,
+        format: Format,
+        localTreeUri: String,
+        localTreePath: String,
+    ): Int
+
+    @Query(
+        "UPDATE history SET downloadPath = :downloadPath, filesize = :filesize, " +
+            "format = :format, localTreeUri = :localTreeUri, localTreePath = :localTreePath " +
+            "WHERE id = :id"
+    )
+    fun updateReconnectedFile(
+        id: Long,
+        downloadPath: List<String>,
+        filesize: Long,
+        format: Format,
+        localTreeUri: String,
+        localTreePath: String,
+    ): Int
+
+    @Query("UPDATE history SET thumb = :thumb WHERE id = :id")
+    fun updateThumbById(id: Long, thumb: String): Int
 
     @Query("UPDATE history SET keywords = :keywords WHERE id = :id")
     suspend fun updateKeywordsMaterialized(id: Long, keywords: String)

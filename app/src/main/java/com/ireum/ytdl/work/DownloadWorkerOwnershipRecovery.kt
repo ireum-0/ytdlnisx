@@ -32,28 +32,39 @@ internal suspend fun recoverAbandonedDownloadExecutions(
     readCurrent: suspend (Long) -> AbandonedDownloadExecution?,
 ) {
     val runningStatuses = setOf("Active", "PostProcessing")
+    var firstFailure: Exception? = null
     rows.forEach { row ->
-        if (isOwnedBy(row.downloadId, row.executionId)) return@forEach
+        try {
+            if (isOwnedBy(row.downloadId, row.executionId)) return@forEach
 
-        val affected = requeue(row.downloadId, row.executionId)
-        if (affected > 0) return@forEach
+            val affected = requeue(row.downloadId, row.executionId)
+            if (affected > 0) return@forEach
 
-        val current = readCurrent(row.downloadId)
-        if (
-            current == null ||
-            current.executionId != row.executionId ||
-            current.status !in runningStatuses ||
-            isOwnedBy(current.downloadId, current.executionId)
-        ) {
-            return@forEach
+            val current = readCurrent(row.downloadId)
+            if (
+                current == null ||
+                current.executionId != row.executionId ||
+                current.status !in runningStatuses ||
+                isOwnedBy(current.downloadId, current.executionId)
+            ) {
+                return@forEach
+            }
+
+            error(
+                "Abandoned download execution remained running after startup recovery " +
+                    "id=${row.downloadId} executionId=${row.executionId}"
+            )
+        } catch (cancelled: CancellationException) {
+            firstFailure = firstFailure.addOrSuppress(cancelled)
+        } catch (failure: Exception) {
+            firstFailure = firstFailure.addOrSuppress(failure)
         }
-
-        error(
-            "Abandoned download execution remained running after startup recovery " +
-                "id=${row.downloadId} executionId=${row.executionId}"
-        )
     }
+    firstFailure?.let { throw it }
 }
+
+internal fun Exception?.addOrSuppress(failure: Exception): Exception =
+    this?.also { if (it !== failure) it.addSuppressed(failure) } ?: failure
 
 /**
  * Process-local liveness registry keyed by the exact Download execution token.
@@ -100,7 +111,9 @@ internal object DownloadWorkerProcessOwners {
 }
 
 /**
- * Serializes long-lived destructive work for one exact Download execution.
+ * Serializes long-lived destructive work for one Download resource.  A
+ * nonblank executionId identifies the exact attempt; the blank form is used
+ * only by legacy-row cleanup before a new execution token is published.
  *
  * The worker holds this lease around move/burn/temp mutation, while pause and
  * cancel paths acquire the same lease before committing a durable stop.  A
@@ -119,7 +132,6 @@ internal object DownloadWorkerExecutionSideEffectLeases {
         executionId: String,
         block: suspend () -> T,
     ): T {
-        require(executionId.isNotBlank()) { "Execution lease requires an execution token" }
         val mutex = leases.computeIfAbsent(downloadId) { Mutex() }
         mutex.lock()
         return try {

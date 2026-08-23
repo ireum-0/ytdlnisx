@@ -32,23 +32,28 @@ class PauseDownloadNotificationReceiver : BroadcastReceiver() {
                 try {
                     if (expectedExecutionId.isNotBlank()) {
                         withDownloadWorkerExecutionSideEffectLease(id.toLong(), expectedExecutionId) {
-                            withDownloadWorkerExecutionLock {
+                            val didPause = withDownloadWorkerExecutionLock {
                                 val item = dbManager.downloadDao.getDownloadById(id.toLong())
                                 if (item.executionId != expectedExecutionId) {
-                                    return@withDownloadWorkerExecutionLock
+                                    return@withDownloadWorkerExecutionLock false
                                 }
-                                paused = DownloadRepository(dbManager).setDownloadStatus(
+                                DownloadRepository(dbManager).setDownloadStatus(
                                     item.id,
                                     DownloadRepository.Status.Paused,
                                     expectedExecutionId,
                                 )
-                                if (paused) {
-                                    notificationUtil.cancelRunningDownloadNotification(id)
-                                    DownloadWorker.cancelProcessesForExecution(
-                                        item.id,
-                                        expectedExecutionId,
-                                    )
-                                }
+                            }
+                            paused = didPause
+                            if (didPause) {
+                                // The durable pause won before the native
+                                // process cancellation.  The per-Download
+                                // lease prevents a newer attempt from starting
+                                // until this exact E1 is quiesced.
+                                DownloadWorker.cancelProcessesForExecution(
+                                    id.toLong(),
+                                    expectedExecutionId,
+                                )
+                                notificationUtil.cancelRunningDownloadNotification(id)
                             }
                         }
                     }
