@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **5**
-- Effective active defects: **79**
+- Delta active defects: **6**
+- Effective active defects: **80**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -124,3 +124,32 @@ Required result:
 - preserve `BUG-UPDATER-01` failure semantics: serialization must not turn custom updater `ERROR` into success or allow a stale successful attempt to mask a newer failed/current attempt;
 - verify the cross-attempt matrix for repeated same-source update, source reconfiguration while an update is running, startup auto-update racing manual update, cancellation/recreation of the settings screen, and process restart. Download retry/requeue paths are not semantic re-entry paths for this updater state and should be marked not applicable rather than assumed safe;
 - add deterministic production-path concurrency tests that latch update A after source capture, persist/select source B and run update B, then release A in both completion orders. Assert one exact owner mutates the runtime at a time, stale A cannot overwrite B's committed source/runtime state or report current success, and failure/cancellation releases ownership. Include an executed integration test against the real `UpdateUtil`/runtime updater wiring; helper-only Boolean tests are insufficient.
+
+### BUG-MIGRATION-01 — Publish default-video-folder moves only with durable History reference updates
+
+**State:** Open  
+**Reviewed checkpoint:** `dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the Folder settings action for migrating the default video folder first loads all video `HistoryItem` rows into memory. For each path that still exists directly under the old default video directory, `migrateDefaultVideoFolderInternal()` calls `moveFileToDestination()`. Both supported move branches can make the new destination authoritative before Room is updated: the raw-file branch can rename the file or copy it and then delete the source, while the SAF branch creates/copies the destination and then deletes the source. Only after that destructive filesystem step returns does migration call `historyDao.update(item.copy(downloadPath = updatedPaths))`.
+
+If the process dies or that first History persistence call throws after the file move, the durable History row still names the old path even though the old file has already been removed. No migration journal, old->new mapping, retry carrier, or startup reconciliation is persisted before source deletion. A later rerun loads the stale History row, observes that the old file no longer exists, and skips it, so it cannot deterministically reconstruct the newly chosen raw filename or SAF document URI. The same write also uses the pre-migration full `HistoryItem` snapshot; `HistoryDao.update()` ultimately performs an `@Update` of the whole row (apart from preserving materialized keywords), so a concurrent legitimate History mutation between the initial snapshot and migration commit can be overwritten when migration intends to change only `downloadPath`.
+
+**Why this is a defect:** a user-requested storage migration can durably break the History-to-media reference across an ordinary process-death or Room-write failure window after the application has already removed the authoritative old file. The media may still exist at the destination, but the application has lost its durable identity/location and normal retry cannot converge. Independently, the stale full-row commit can erase newer History state. This is a persistence/publication-order correctness defect, not defensive hardening, and it is distinct from `BUG-MOVE-01` (partial folder-copy cleanup), `BUG-HISTORY-02` (retained-reference deletion TOCTOU), and cache migration defects.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
+
+Required result:
+
+- give each per-file migration a durable intent/mapping or equivalent recoverable carrier before the old file can be removed, and define restart reconciliation for `old missing/new present`, `old present/new present`, and incomplete-copy states;
+- publish the new History `downloadPath` only under an expected old-path/row identity predicate and update only migration-owned fields so a stale migration snapshot cannot overwrite concurrent History metadata or replacement state;
+- do not irreversibly delete the old file until either the new reference is durably committed or a compensating rollback can restore the old reference/file mapping;
+- make raw-file rename, copy fallback, and SAF document migration follow the same commit/recovery contract and clean up duplicate destinations only when ownership is proven;
+- on persistence failure, surface a failed/incomplete migration rather than reporting success or leaving an unrecoverable stale reference.
+
+Focused verification requirements:
+
+- fault-inject process death and a throwing first `historyDao.update()` immediately after successful raw rename, raw copy+source-delete, and SAF copy+source-delete; prove restart/rerun recovers an exact usable History reference;
+- race a concurrent History metadata edit and a History replacement/reconnect against a latched migration and prove migration cannot revert fields or paths it does not own;
+- cover rerun after every partial state, destination-name collision, multiple History rows referencing the same source path, and a normal complete migration;
+- verify through the real Folder-settings -> migration -> filesystem -> Room wiring. Helper-only move tests are insufficient.
