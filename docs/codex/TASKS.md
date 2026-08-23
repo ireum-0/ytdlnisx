@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **69 active correctness defects** in this checkpoint. The previous
+There are **74 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 69-defect registry is intentionally retained here. The separate
+The broader 74-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 69-defect count unless they are explicitly promoted
+below do **not** change the 74-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-69-defect registry below.
+74-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 69 active defects
+### F1 remediation-discovered follow-up not counted in the 74 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1511,6 +1511,119 @@ Required result:
   provider-authorized destinations either complete through staged movement or
   fail before yt-dlp begins with an actionable error.
 
+### P2 — BUG-TERMINAL-04 — Do not report partially published Terminal cache output as success
+
+**State:** Open
+
+**Failure path:** the production Terminal UI inserts a `TerminalItem` and
+`TerminalViewModel.startTerminalDownloadWorker()` schedules
+`TerminalDownloadWorker`. With the normal cache-staging mode enabled and no
+explicit direct-output path, `TerminalCommandPlanFactory` gives yt-dlp the
+app-owned `TERMINAL/<taskId>` cache directory and the worker later publishes that
+directory to `command_path` with `FileUtil.moveFile(..., keepCache = false)`.
+
+`FileUtil.moveFile()` has an explicit partial-failure signal outside the
+already-recorded destructive SAF fallback. During its ordinary per-entry walk,
+a move/copy exception sets `hasMoveFailure = true`, records
+`lastMoveFailureDetails`, and preserves the source directory. If at least one
+other entry was published successfully, however, the returned `fileList` is
+non-empty, so `moveFile()` does not throw; it returns the successfully published
+subset while the failed source entries remain in cache. `DownloadWorker` later
+consults `FileUtil.consumeLastMoveFailureDetails()` when it finds stranded temp
+media, demonstrating that this state is intended to distinguish incomplete
+publication from complete success.
+
+`TerminalDownloadWorker` discards both pieces of that result. It ignores the
+`List<String>` returned by `moveFile()` and never consumes the recorded move
+failure details. It therefore continues through log/notification cleanup,
+deletes the `TerminalItem`, and returns `Result.success()`. A Terminal command
+that produces multiple eligible files can consequently publish file A, fail to
+publish file B because of an ordinary filesystem/provider error, preserve B only
+in the hidden cache, and still be durably completed as success with no terminal
+row left to represent or retry the missing output.
+
+**Why this is a defect:** `FileUtil` has already authoritatively determined that
+publication was incomplete, but the Terminal caller collapses that typed state
+to “did not throw.” The user can be told that a multi-output command completed
+while requested output is missing from the destination and only a stranded cache
+copy remains. This is distinct from `BUG-MOVE-01`, where the SAF folder fallback
+can fail to mark the partial move and destructively delete uncopied sources;
+from `BUG-TERMINAL-01`, where fully committed output is later misclassified as
+failure by bookkeeping; and from `BUG-TERMINAL-03`, which loses destination
+authority before execution.
+
+Required result:
+
+- make `FileUtil.moveFile()` expose a typed complete/partial/failed publication
+  outcome and require Terminal cache publication to consume it rather than
+  inferring success from a non-empty returned path list;
+- return Terminal success and delete its durable task row only after every
+  eligible staged output has been proven published; preserve a recoverable
+  terminal state and the failed cache entries when publication is partial;
+- distinguish already-published outputs from still-staged outputs on retry so
+  recovery does not duplicate the successful subset while attempting to finish
+  the failed subset;
+- preserve `CancellationException` and full post-commit semantics from the
+  existing Terminal contracts while surfacing pre-commit publication failure
+  honestly;
+- add deterministic multi-output regressions for first-file-success/second-file-
+  failure on direct-filesystem and provider-backed publication, all-success,
+  zero-output failure, retry of a preserved partial publication, and the
+  post-output bookkeeping failures owned by `BUG-TERMINAL-01` as a non-
+  regression control.
+
+### P2 — BUG-TERMINAL-05 — Recover persisted Terminal tasks after worker enqueue loss
+
+**State:** Open
+
+**Failure path:** the production Terminal Run action normalizes the command and
+first awaits `TerminalViewModel.insert()`, which durably inserts a `TerminalItem`
+into `terminalDownloads` and returns its generated ID. Only after that Room
+commit does `TerminalFragment` call
+`TerminalViewModel.startTerminalDownloadWorker()`. That method does not perform
+an awaited handoff: it starts a separate `viewModelScope.launch(Dispatchers.IO)`,
+builds a one-time `TerminalDownloadWorker`, calls
+`beginUniqueWork(id.toString(), KEEP, request).enqueue()`, and discards the
+returned WorkManager `Operation`.
+
+There are therefore two concrete loss windows after the durable Terminal intent
+exists. The process/ViewModel can die after the `TerminalItem` insert but before
+the detached launch durably enqueues its request, or WorkManager can report an
+asynchronous enqueue failure through the discarded `Operation`. In both cases
+the row remains in `terminalDownloads`. `TerminalDao` treats every such row as
+active, `TerminalDownloadsListFragment` continues to display it, and opening the
+row only observes `getWorkInfosForUniqueWorkLiveData(id.toString())`; it does not
+re-enqueue missing work. Normal app startup likewise has no reconciliation that
+enumerates persisted Terminal rows and proves that each one has a matching
+nonterminal WorkManager carrier.
+
+**Why this is a defect:** the Terminal row is the durable record of a user
+request, while WorkManager is its execution carrier. The implementation can
+commit the former, lose the latter, and leave a task permanently presented as
+active even though no worker will ever execute the command. The user must
+manually cancel/delete and recreate the command to recover. This is distinct
+from `BUG-QUEUE-03`, which owns the analogous handoff for ordinary Download
+rows, and from the existing Terminal output/identity/authority defects because
+this failure occurs before Terminal execution begins.
+
+Required result:
+
+- make Terminal dispatch recoverable from the durable `terminalDownloads` state,
+  using an awaited enqueue result plus startup reconciliation, a durable outbox,
+  or an equivalent contract that guarantees one matching carrier for every
+  runnable persisted Terminal task;
+- do not detach the scheduling handoff behind a second `viewModelScope.launch`
+  whose cancellation can outlive the Room insert without a recoverable state;
+- observe WorkManager enqueue completion/failure when reporting the Run action as
+  accepted, while preserving the already-committed Terminal row as retryable if
+  scheduling could not be established;
+- bind recovery to the existing Terminal task identity so it cannot create two
+  workers when a valid carrier already exists;
+- add deterministic process-death tests after the Terminal insert and before
+  WorkManager persistence, asynchronous enqueue-failure coverage, cold-start
+  recovery of an orphan row, already-enqueued non-regression coverage, and an
+  exactly-one-execution regression.
+
 ### P2 — BUG-FORMAT-01 — Do not commit or report partial bulk format refresh as success
 
 **State:** Open
@@ -1792,6 +1905,67 @@ Required result:
   enabled, no intervening user action, cancellation/deletion of the earliest
   group, rescheduling, process/device restart, and the WorkManager-delayed mode
   as a non-regression control.
+
+### P2 — BUG-SCHEDULER-04 — Preserve future WorkManager schedules across daily scheduler shutdown
+
+**State:** Open
+
+**Failure path:** the production Download settings expose the daily
+`use_scheduler` window and the independent `use_alarm_for_scheduling` switch.
+They can therefore be used together with `use_scheduler = true` and
+`use_alarm_for_scheduling = false`. When the user schedules an individual
+Download for a future `downloadStartTime`, `DownloadRepository.startDownloadWorker()`
+keeps the row durably `Scheduled` and, in WorkManager mode, creates a delayed
+one-time `DownloadWorker` for each future start-time group. Every such request is
+tagged `download`.
+
+At the daily window's end alarm, `CancelScheduleAlarmReceiver` starts
+`CancelScheduledDownloadWorker`. Before it inspects current database ownership,
+that worker calls `WorkManager.cancelAllWorkByTag("download")`. The cancellation
+therefore includes not only the currently running daily-window carrier but every
+future delayed individual-schedule request created above. The remainder of the
+worker only reloads `Active`/`PostProcessing` rows and requeues those current
+executions; untouched future `Scheduled` rows receive no replacement carrier.
+
+A later daily start does not repair them. `ScheduleAlarmReceiver` merely starts
+an immediate generic `DownloadWorker`, and each `DownloadWorker` captures one
+eligibility cutoff at roughly its own start (`now + 6s`) through
+`getQueuedScheduledDownloadsUntil(...)`. A row scheduled for later than that
+cutoff is absent from the observed queue; if nothing else is eligible, the
+worker cancels itself rather than waiting until the future time. Thus, for
+example, an individual 10:00 scheduled item whose delayed WorkManager request
+was created the previous day can have that carrier cancelled by the 05:00 daily
+window end and remain `Scheduled` at 10:00 with no worker to claim it. No startup
+or scheduler-end reconciliation recreates the cancelled delayed work.
+
+**Why this is a defect:** the daily scheduler's stop action uses a global tag as
+execution authority across two independent scheduling domains. It can erase the
+only durable execution carrier for a valid future individual schedule without
+changing or terminalizing that Download's persisted intent and without arranging
+recovery. A normal supported settings combination can therefore silently miss a
+user-selected download time while the UI continues to show the row as Scheduled.
+This is distinct from `BUG-SCHEDULER-01`, which owns recurrence/midnight errors in
+the daily window itself, and from `BUG-SCHEDULER-03`, which owns missing successor
+alarms when individual scheduling explicitly uses AlarmManager.
+
+Required result:
+
+- give daily-window Download work and individually delayed WorkManager schedules
+  distinct work identities/tags, and make the end-boundary cancel only the work
+  it actually owns;
+- if an end-boundary policy intentionally invalidates a future individual
+  carrier, atomically preserve/recreate that carrier from the still-Scheduled
+  database intent instead of leaving the row orphaned;
+- reconcile every future `Scheduled` row to the correct WorkManager/AlarmManager
+  carrier after scheduler shutdown and process/device restart without creating
+  duplicate executions;
+- keep the existing owner-aware requeue contract for current
+  `Active`/`PostProcessing` work separate from future-schedule carrier ownership;
+- add deterministic coexistence regressions with `use_scheduler = true` and
+  `use_alarm_for_scheduling = false`, including a future item beyond the end
+  boundary, multiple future start groups, an active item requeued at shutdown,
+  the next daily start before the item's due time, restart recovery, and
+  AlarmManager individual scheduling as a non-regression control.
 
 ### P2 — BUG-HARDSUB-01 — Preserve ambiguous subtitle lookup failures instead of excluding scan candidates
 
@@ -2518,6 +2692,67 @@ Required result:
   recovery, normal successful enqueue, already-owned work, retry, resume,
   hard-sub insertion, delayed scheduling, and exactly-one-execution regressions.
 
+### P2 — BUG-QUEUE-04 — Do not delete a Download after a stale Queued selection has been claimed
+
+**State:** Open
+
+**Failure path:** the production Queued Downloads multi-select Delete action
+captures selected Download IDs, calls `DownloadViewModel.cancelDownloadOnly(id)`
+for each selected ID, and then calls `deleteAllWithID(selectedIds)`. The selected
+rows are not reserved while the contextual action is open. `DownloadWorker` can
+independently claim one of those still-Queued rows before the delete action
+reaches the database, changing it to `Active` and installing a fresh
+`executionId`.
+
+The bulk action does not treat that newer claim as revoking its stale Queued
+authority. Because it calls `cancelDownloadOnly()` without an expected execution
+ID, `cancelDownloadOnlyLocked()` does not cancel an owned yt-dlp or
+post-processing execution; the expected-ID branch is the only branch that calls
+`DownloadWorker.cancelProcessesForExecution()`. The call only cancels
+notifications. `deleteAllWithID()` then calls
+`DownloadRepository.deleteAllWithIDs(selectedIds)`, which reloads rows by ID with
+no expected-status or execution predicate and passes them to
+`deleteKnownUserRemoval()`. If the selected row is now `Active`, the repository
+transaction nevertheless terminalizes its linked low-quality child as
+`REASON_USER_REMOVED`, removes any History-replacement barrier, and deletes the
+Download row. After the transaction, `deleteCache()` recursively removes
+`<cache>/<downloadId>` even though the already-claimed worker can still be using
+that directory.
+
+**Why this is a defect:** a stale selection that was authorized only while a
+request was queued can erase a newer authoritative running owner without first
+durably cancelling and synchronizing with that owner. The live process can
+continue after its Download row and temp files have been deleted, while a linked
+low-quality operation can simultaneously claim user-removal termination. This
+can cause active extraction/post-processing failure, loss of recoverable temp
+output, orphaned/direct destination output, and durable state that no longer
+represents the execution still in flight. It is distinct from `BUG-QUEUE-02`,
+where stale Queued UI rewrites a claimed row to `Saved`, and from
+`BUG-CANCEL-01`, where explicit cancellation kills a process before its terminal
+state persists; here the bulk deletion skips owned cancellation and deletes the
+claimed row itself.
+
+Required result:
+
+- make Queued-list deletion an expected-state/ownership transition that can
+  delete directly only while each selected row is still
+  `Queued`/`WaitingForMembership` and unowned;
+- if a selected row has become `Active`/`PostProcessing`, either reject that
+  stale selection as already running or route it through the same execution-
+  token cancellation protocol as normal owned cancellation, with durable
+  cancellation/ledger state established before process or temp cleanup;
+- bind bulk selection, linked-low-quality terminalization, History-replacement
+  barrier disposition, Download-row deletion, and cache cleanup to one current
+  ownership decision so no stale ID list can delete a newer execution;
+- do not recursively delete a per-download cache directory until the exact
+  execution owner has been stopped/released and filesystem ownership is no
+  longer live;
+- add deterministic multi-select races where a Queued row is claimed immediately
+  before `cancelDownloadOnly()` and immediately before `deleteAllWithIDs()`,
+  covering ordinary and low-quality-linked downloads, `PostProcessing`, still-
+  Queued and membership-waiting controls, and proving no live process survives
+  row/cache deletion and no claimed row is silently erased.
+
 ### P2 — BUG-GROUP-01 — Make keyword and Youtuber group deletion atomic
 
 **State:** Open
@@ -3087,6 +3322,59 @@ Required result:
 - add API 24/25 regressions for denied/revoked storage permission, destination
   creation failure, `renameTo(false)`, first-file-success/second-file-failure,
   all-success, and API 26+ throwing `Files.move` as a non-regression control.
+
+### P3 — BUG-LOG-01 — Preserve Download-log associations across log deletion Undo
+
+**State:** Open
+
+**Failure path:** the production Download Logs screen exposes swipe-to-delete
+with an Undo Snackbar. The swipe handler first loads the selected `LogItem`, then
+calls `LogViewModel.delete(deletedItem)`. That method launches its own
+`viewModelScope` IO coroutine and returns immediately; inside that detached
+operation it deletes the Log row and only afterward calls
+`DownloadRepository.removeLogID()`, whose DAO sink executes
+`UPDATE downloads SET logID = null WHERE logID = :logID` as a separate write.
+The Snackbar Undo does not reverse that relationship mutation. It only launches
+another coroutine that calls `LogViewModel.insert(deletedItem)`.
+
+Once the ordinary delete coroutine finishes, pressing Undo can therefore
+reinsert the same Log row while every Download that previously referenced it
+remains permanently detached. This relationship is user-visible:
+`ErroredDownloadsFragment` exposes its failure-log action only when
+`DownloadItem.logID` is non-null, so the restored log no longer restores the
+failed Download's diagnostic link. There is also a concrete ordering race before
+the delete finishes. `LogDao.insert()` uses `OnConflictStrategy.IGNORE`; if a
+fast Undo insert reaches Room while the original Log row still exists, the
+restore is ignored, and the later asynchronous delete can then remove that row,
+so an explicit Undo can still end with the log absent. Single-log and Delete All
+cleanup likewise split Log deletion from Download-reference clearing across
+independent Room statements, allowing process death or persistence failure to
+leave a Download pointing at a missing log.
+
+**Why this is a defect:** the user-facing Undo does not reverse the logical
+mutation it advertises and can durably lose the provenance relationship between
+a failed Download and its diagnostic log. Depending on coroutine ordering it can
+also fail to restore the Log itself. The impact is limited to diagnostic/log
+state rather than media or History data, so it is P3, but it is a concrete
+production correctness and relationship-integrity failure rather than defensive
+hardening.
+
+Required result:
+
+- make Log-row deletion and disposition of every referencing `Download.logID`
+  one transactional repository operation, including Delete All;
+- make swipe deletion capture a durable undo snapshot containing the Log and the
+  exact affected Download references, then restore both sides atomically, or
+  defer irreversible reference cleanup until the Undo window is committed;
+- serialize immediate Undo against the delete operation so a same-ID
+  `OnConflictStrategy.IGNORE` insert cannot be reported as restoration before a
+  later delete removes the row;
+- do not expose successful Undo until the Log and every still-valid captured
+  Download reference are durably restored;
+- add deterministic normal delete→Undo, immediate Undo-before-delete,
+  multiple-Downloads-to-one-log, Delete All, first-write/second-write failure,
+  and process-death regressions proving no dangling reference, lost association,
+  or disappeared-after-Undo log remains.
 
 ## Current status
 
