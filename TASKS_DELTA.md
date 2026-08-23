@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **10**
-- Effective active defects: **84**
+- Delta active defects: **11**
+- Effective active defects: **85**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -299,3 +299,40 @@ Focused verification requirements:
 - assert the activity remains a normal application window and that the manifest does not need `SYSTEM_ALERT_WINDOW` for this workflow;
 - cover stale execution/retry capabilities as negative controls so removing the privileged window type does not weaken the existing expected-identity checks;
 - execute the real `NotificationUtil -> PendingIntent -> ResumeActivity -> DownloadViewModel` wiring. Helper-only intent-construction tests are insufficient.
+
+### BUG-LOCALADD-04 — Isolate Local Add entry failures and retain a recoverable batch carrier
+
+**State:** Open  
+**Reviewed checkpoint:** `ad1a8f026a7a05f3e1489775a74d8106dbfa510e`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** History Local Add expands the user's selected files/directories into a list of `LocalAddEntryDto`, stores that list under a session ID, and enqueues one `LocalAddWorker`. The worker processes `dedupedEntries.forEach` with a `try/finally` that advances progress but has no per-entry non-cancellation catch. Several entry-local operations can throw, including provider metadata access and Room reads/writes. If entry B throws, the exception escapes `doWork()` rather than being represented as B's outcome or `Result.retry()`.
+
+The batch is not atomic or durably checkpointed per entry. An earlier exact-match entry A may already have been inserted into History, while an earlier unresolved candidate is held only in the in-memory `pending` list until the entire loop completes. When B aborts the loop, that pending output is never published and all later independent entries C...N are never processed. `clearEntries()` is reached only after a successful full loop, so the original input JSON can remain in SharedPreferences, but the failed WorkManager attempt creates no successor and the History UI only treats `RUNNING`/`ENQUEUED` work as active; it has no failed-session re-enqueue/reconcile path. `LocalAddStorage` also has no durable index/open-session carrier for orphaned input sessions. The practical terminal state is therefore a partially applied Local Add request with some History writes committed, some unresolved results lost from the continuation flow, and unrelated selected siblings stranded until the user manually selects them again.
+
+**Why this is a defect:** the selected entries are independent user-authorized additions, but one entry's transient/provider/database failure aborts the whole durable intent after arbitrary earlier side effects have committed and without a durable remainder owner. This is not merely an all-or-nothing batch policy: the implementation already commits individual History rows as it goes, so exceptional termination can expose partial success while silently abandoning later work. The defect is distinct from `BUG-LOCALADD-01` (bare filename identity), `BUG-LOCALADD-02` (input session durability before worker enqueue), and `BUG-LOCALADD-03` (normal worker completion before unresolved-output persistence is durable); none owns sibling failure isolation after the worker has begun processing a persisted batch.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
+
+Required result:
+
+- give each Local Add entry an explicit success/unresolved/failure outcome boundary so a non-cancellation failure for one entry cannot abort unrelated siblings; user/worker cancellation must remain distinguishable and may still stop the whole session;
+- durably checkpoint enough session progress and unresolved output before or with per-entry side effects so process death or exceptional exit can recover the exact remaining entries without relying on an unindexed SharedPreferences key;
+- preserve already committed History additions idempotently on retry/restart and never duplicate them while resuming the same session;
+- surface a complete/partial/failed session result or continuation that tells the UI which entries need attention instead of making a failed WorkRequest disappearance look like completion;
+- provide startup/re-entry reconciliation for a persisted Local Add session whose WorkManager carrier terminated before the batch reached a durable terminal state.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative carrier: the persisted session ID plus exact selected entry identities; per-entry completion/failure must become durable before the session can advance past that entry;
+- first durable side effect can be a History insert for an earlier entry; inject a later sibling failure and prove the prior commit remains represented while unresolved and unprocessed siblings retain a durable recovery owner;
+- Download state, linked Download ledgers, and filesystem publication are not applicable to this workflow; the relevant durable ledgers are Local Add session progress plus History rows;
+- an unhandled entry exception must not be the terminal owner of the entire session. WorkManager retry/replacement or an application reconciliation carrier must preserve exact remaining-work identity;
+- same-session retry, manual reselection, process restart/reconcile, cancellation, and provider-access recovery must be idempotent. Reconfigure, notification Download retry/resume, and backup restore are not semantic re-entry paths unless they explicitly consume the same Local Add session.
+
+Focused verification requirements:
+
+- exercise the real `HistoryFragment -> LocalAddStorage -> WorkManager -> LocalAddWorker -> Room` path with at least three entries where A becomes unresolved or is inserted, B throws from provider/Room access, and C is otherwise valid; prove B is isolated/reported, A remains correctly represented, and C is eventually processed;
+- fault-inject a History insert/read failure, provider metadata exception, process death between entries, and failure after one committed History row but before pending-output publication;
+- restart the app with a partially processed persisted session and prove exact remaining entries are recovered once without duplicate History rows or lost unresolved candidates;
+- verify explicit cancellation remains cancellation rather than being reinterpreted as an item failure. Helper-only parsing/storage tests are insufficient.
