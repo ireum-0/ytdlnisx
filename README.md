@@ -13,17 +13,25 @@ Every ledger decision must point to the exact checkpoint commit SHA it reviewed.
 
 Production correctness must always be verified against `checkpoint/pre-baseline-review@<SHA>` rather than against this branch's ancestry or tree. Scheduled review must never modify application source or documentation on the checkpoint branch.
 
-## Current ledger snapshot
+## Registry model
 
-This branch was initialized from checkpoint HEAD `1bd62b05abfbdd0f8217c57d7a43d05647ae3467`. `TASKS.md` is the exact blob from that checkpoint state and records 73 active correctness defects at initialization. After initialization, `TASKS.md` is maintained on this ledger branch as the review defect/status registry; it must not be copied back to the checkpoint branch merely to synchronize documentation.
+`TASKS.md` is the synchronized baseline registry copied byte-for-byte from a reviewed checkpoint state. After the ledger split, newly confirmed review findings are appended to `TASKS_DELTA.md` instead of rewriting the large baseline file on every review run.
+
+The effective active-defect registry is therefore:
+
+`TASKS.md` baseline + `TASKS_DELTA.md` post-split findings.
+
+At the current ledger state, `TASKS.md` is synchronized from `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15` and contains 74 active defects. `TASKS_DELTA.md` contains one additional active defect, for an effective total of 75.
 
 ## Files
 
-- `TASKS.md` — authoritative defect/status ledger used to deduplicate and record newly confirmed review findings.
+- `TASKS.md` — synchronized baseline defect/status registry from the pinned checkpoint.
+- `TASKS_DELTA.md` — append-only post-ledger-split active findings confirmed against exact checkpoint SHAs.
 - `REVIEW_LESSONS.md` — append-only meta-review log. Every newly confirmed defect records why earlier reviews missed it and proposes a generalizable Review Checklist improvement. Proposals do not automatically change the checklist.
 - `REVIEW_CHECKLIST_V4_OPERATIONAL.md` — operational mirror used by scheduled review to apply Review Checklist v4 directly from GitHub, including mandatory terminal/cross-attempt matrices, candidate-rejection discipline, evidence hierarchy, and CLEAN gate.
 - `SOURCE_ARTIFACTS.md` — exact names and SHA-256 identities of the governing Master Plan and original Review Checklist v4 supplied to the remediation project.
 - `evidence/FINDING_A_REMAINING.md` — preserved Finding A review evidence from `review/finding-a-consolidation`; it remains historical/frozen evidence and is not silently reinterpreted here.
+- `evidence/CHECKPOINT_REVIEW_2026-08-23_DFA40697.md` — review evidence for the pinned checkpoint run that established `BUG-SCHEDULER-05` and revalidated selected historical Finding A blockers.
 
 The original Review Checklist v4 remains the governing source artifact identified in `SOURCE_ARTIFACTS.md`. `REVIEW_CHECKLIST_V4_OPERATIONAL.md` is an operational mirror for automated execution and must not be silently weakened or treated as permission to relax the original checklist. Any semantic checklist revision requires separate review and an explicit decision.
 
