@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **8**
-- Effective active defects: **82**
+- Delta active defects: **9**
+- Effective active defects: **83**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -109,7 +109,7 @@ Required result:
 
 **Failure path:** `MainActivity` can start an automatic yt-dlp update in an independent `SupervisorJob` during app startup, while the Updating settings screen can start another update from the version/update controls or immediately after changing the selected yt-dlp source. Source selection first writes the new `ytdlp_source` preference and then calls `UpdateUtil.updateYoutubeDL(source)`. `UpdateUtil` contains an apparent process-global serialization guard, but the `if (updatingYTDL) { YTDLPUpdateResponse(PROCESSING) }` branch discards the response instead of returning it; every caller therefore continues, sets `updatingYTDL = true`, and mutates the same app-owned yt-dlp runtime. The flag is also never reset, so it does not represent actual ownership or completion.
 
-A concrete ordering is startup update A reading/selecting `stable`, followed by the user changing the source to `nightly` and launching update B. The preference now describes `nightly`, but A and B are both authorized to replace/update the same yt-dlp runtime. If B completes first and A completes later, the final runtime can be the older request's `stable` artifact while the persisted selected source remains `nightly`. Both callers can independently report successful completion or refresh the displayed version; neither completion is conditioned on still owning the current source generation. Reversing completion order produces a different runtime from the same user-visible sequence. Rapid repeated manual updates have the same missing-serialization property, and custom `--update-to` requests share the same runtime mutation domain.
+A concrete ordering is startup update A reading/selecting `stable`, followed by the user changing the source to `nightly` and launching update B. The preference now describes `nightly`, but A and B are both authorized to replace/update the same app-owned yt-dlp runtime. If B completes first and A completes later, the final runtime can be the older request's `stable` artifact while the persisted selected source remains `nightly`. Both callers can independently report successful completion or refresh the displayed version; neither completion is conditioned on still owning the current source generation. Reversing completion order produces a different runtime from the same user-visible sequence. Rapid repeated manual updates have the same missing-serialization property, and custom `--update-to` requests share the same runtime mutation domain.
 
 **Why this is a defect:** the selected update source is user-owned persistent configuration, while the installed yt-dlp executable/runtime is its materialized execution state. The implementation permits an obsolete request to commit after a newer source selection and silently make those two states disagree. This is a real ordering-dependent correctness/reliability failure, not defensive hardening: subsequent downloads execute the final installed runtime, while future UI/auto-update logic treats the persisted source as authoritative. There is no source-generation carrier or startup reconciliation that proves the installed runtime corresponds to the current preference. This is distinct from `BUG-UPDATER-01`, which owns custom-source error fallthrough and false success within one update attempt; `BUG-UPDATER-02` concerns concurrent ownership and stale completion across otherwise successful attempts.
 
@@ -228,3 +228,39 @@ Focused verification requirements:
 - add a deterministic production-path race that pauses Clear Cache after its final `hasActiveDownloads()` false result, starts a cache-staged Terminal task, creates/writes `<cache>/TERMINAL/<id>`, then resumes `AppCacheManager.delete(TERMINAL_CACHE)` and proves the task directory is not deleted;
 - cover a task that becomes runnable but has not created its directory yet, a task already writing output, a task publishing from cache, cancellation during cleanup, restart after the maintenance/worker race, and true stale Terminal directories that should still be removable;
 - exercise the actual Folder-settings -> `AppCacheManager` -> `TerminalDownloadWorker` wiring. Helper-only path-policy tests are insufficient.
+
+### BUG-COOKIE-03 — Do not report WebView cookie capture as success before credentials are durably usable
+
+**State:** Open  
+**Reviewed checkpoint:** `ad1a8f026a7a05f3e1489775a74d8106dbfa510e`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** when a Home extraction/search failure offers cookie acquisition, `HomeFragment` launches `WebViewActivity` and treats `Activity.RESULT_OK` as proof that credentials are ready: it persistently sets `use_cookies = true` and immediately calls `startSearch()`. The Generate action in `WebViewActivity`, however, calls `cookiesViewModel.getCookiesFromDB(url).getOrNull()?.let { ... }` and then unconditionally returns `RESULT_OK` and finishes. If WebView's cookie database is missing, has no cookies, cannot be opened/read, or another extraction exception occurs, the failed `Result` is collapsed to `null`, the persistence block is skipped, and the caller still receives success.
+
+The success path has a second publication gap. `CookieViewModel.insert()` is awaited, but `updateCookiesFile()` is not an awaited projection operation; it starts a separate `viewModelScope.launch(Dispatchers.IO)` and returns immediately. The `runCatching` in `WebViewActivity` therefore cannot observe runtime cookie-file write failures or completion, and finishing the activity can clear the activity-scoped ViewModel while that projection is still pending. Even an `insert()` exception is caught only to show a Toast and then falls through to the same unconditional `RESULT_OK`. Consequently the Home retry can begin with no credential row, a stale/missing `cookies.txt`, or a projection that is racing the retry, while persistent configuration already claims cookies are enabled.
+
+**Why this is a defect:** the Activity result is a semantic commit barrier for an authentication recovery workflow, but it is emitted before the three required states—authoritative cookie extraction, Room persistence, and runtime cookie-file materialization—are proven usable. A normal extraction/read/write failure or lifecycle race can therefore be reinterpreted as credential acquisition success, persist a false enabled state, and immediately repeat the failed request without the credentials the UI says were captured. This is distinct from `BUG-COOKIE-01`, which owns revocation/projection correctness after persistent cookie state changes, and `BUG-COOKIE-02`, which owns clipboard export result reporting; neither owns the WebView acquisition handoff and caller-side retry contract.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
+
+Required result:
+
+- return `RESULT_OK` only after cookie extraction succeeds, the intended Room cookie record is durably inserted/updated, and the exact runtime cookie projection required by the caller is proven complete and usable;
+- make cookie-file projection an awaitable typed operation whose write/callback failures and cancellation reach the acquisition caller rather than being detached behind `viewModelScope.launch`;
+- on extraction, Room persistence, or projection failure, preserve a retryable/error state in the WebView flow and do not let Home persist `use_cookies = true` or automatically restart the search as though credentials were ready;
+- bind the success handoff to the same requested URL/cookie generation so a stale projection cannot authorize a newer acquisition/retry;
+- on restart or later retry, fail closed when configuration says cookies are enabled but no usable persisted/projected credential state exists, rather than treating the preference alone as proof of credential readiness.
+
+Cross-attempt / result-handoff requirements:
+
+- immediate Home retry after capture must observe the exact completed cookie generation before extraction begins;
+- repeated acquisition, manual search retry, activity recreation/cancellation, and process restart must preserve failure vs success rather than converting an incomplete attempt into an enabled-cookie state;
+- Cookies-screen editing/re-acquisition may repair a failed attempt, but must do so through a new explicit successful projection rather than inheriting the earlier `RESULT_OK`;
+- Download same-settings retry, raw requeue, reconfigure, notification retry/resume, and restore are not semantic re-entry paths for this Activity-result acquisition contract unless they independently consume the same cookie-ready state; mark them not applicable rather than assuming safety.
+
+Focused verification requirements:
+
+- add production-path Home -> `WebViewActivity` -> `CookieViewModel` -> runtime-cookie-file tests for no cookies, missing/unreadable WebView SQLite cookie DB, Room insert failure, runtime projection write failure, lifecycle cancellation after Room insert, and complete success;
+- latch `updateCookiesFile()` after Room persistence and prove `RESULT_OK`, `use_cookies = true`, and `startSearch()` cannot occur until projection completion is authoritative;
+- verify activity recreation and process restart after every incomplete state, proving failed capture cannot survive as an apparently enabled credential configuration;
+- exercise the real ActivityResult caller and generated cookie-file consumer. Helper-only cookie parsing tests are insufficient.
