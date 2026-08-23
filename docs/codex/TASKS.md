@@ -9,7 +9,7 @@ The active correctness defects below were revalidated against
 on 2026-08-20. This defect list intentionally excludes repository settings,
 quality-gate/process configuration, and documentation-only drift.
 
-There are **72 active correctness defects** in this checkpoint. The previous
+There are **73 active correctness defects** in this checkpoint. The previous
 `BUG-BACKUP-09` entry was removed during revalidation because the user-facing
 restore parser explicitly resets `CookieItem`, `CommandTemplate`, and
 `TemplateShortcut` primary keys to `0L` before calling `restoreData()`. The
@@ -19,10 +19,10 @@ Defense-in-depth normalization at the `restoreData()` boundary may still be a
 hardening improvement, but it is not an active correctness defect at this
 checkpoint.
 
-The broader 72-defect registry is intentionally retained here. The separate
+The broader 73-defect registry is intentionally retained here. The separate
 correctness-remediation Master Plan governs the F1→F22 execution order and may
 use a narrower baseline inventory. Remediation-discovered follow-ups recorded
-below do **not** change the 72-defect count unless they are explicitly promoted
+below do **not** change the 73-defect count unless they are explicitly promoted
 into this active registry.
 
 ## Defect priority
@@ -53,7 +53,7 @@ priority, and complexity.
 ## Current correctness-remediation overlay
 
 This overlay records the latest reviewed F1 state without replacing the broader
-72-defect registry below.
+73-defect registry below.
 
 - Current remediation item: **F1 — `BUG-BACKUP-01`**.
 - Authorized review HEAD for the current Finding A review:
@@ -85,7 +85,7 @@ This overlay records the latest reviewed F1 state without replacing the broader
   notification/logging failure, recovery-write failure, process-death window, and
   final worker/result consistency must all be reviewed before P0/P1/P2 CLEAN.
 
-### F1 remediation-discovered follow-up not counted in the 72 active defects
+### F1 remediation-discovered follow-up not counted in the 73 active defects
 
 #### REMEDIATION-FOLLOWUP-DOWNLOAD-TERMINAL-RECOVERY-01
 
@@ -1571,6 +1571,58 @@ Required result:
   zero-output failure, retry of a preserved partial publication, and the
   post-output bookkeeping failures owned by `BUG-TERMINAL-01` as a non-
   regression control.
+
+### P2 — BUG-TERMINAL-05 — Recover persisted Terminal tasks after worker enqueue loss
+
+**State:** Open
+
+**Failure path:** the production Terminal Run action normalizes the command and
+first awaits `TerminalViewModel.insert()`, which durably inserts a `TerminalItem`
+into `terminalDownloads` and returns its generated ID. Only after that Room
+commit does `TerminalFragment` call
+`TerminalViewModel.startTerminalDownloadWorker()`. That method does not perform
+an awaited handoff: it starts a separate `viewModelScope.launch(Dispatchers.IO)`,
+builds a one-time `TerminalDownloadWorker`, calls
+`beginUniqueWork(id.toString(), KEEP, request).enqueue()`, and discards the
+returned WorkManager `Operation`.
+
+There are therefore two concrete loss windows after the durable Terminal intent
+exists. The process/ViewModel can die after the `TerminalItem` insert but before
+the detached launch durably enqueues its request, or WorkManager can report an
+asynchronous enqueue failure through the discarded `Operation`. In both cases
+the row remains in `terminalDownloads`. `TerminalDao` treats every such row as
+active, `TerminalDownloadsListFragment` continues to display it, and opening the
+row only observes `getWorkInfosForUniqueWorkLiveData(id.toString())`; it does not
+re-enqueue missing work. Normal app startup likewise has no reconciliation that
+enumerates persisted Terminal rows and proves that each one has a matching
+nonterminal WorkManager carrier.
+
+**Why this is a defect:** the Terminal row is the durable record of a user
+request, while WorkManager is its execution carrier. The implementation can
+commit the former, lose the latter, and leave a task permanently presented as
+active even though no worker will ever execute the command. The user must
+manually cancel/delete and recreate the command to recover. This is distinct
+from `BUG-QUEUE-03`, which owns the analogous handoff for ordinary Download
+rows, and from the existing Terminal output/identity/authority defects because
+this failure occurs before Terminal execution begins.
+
+Required result:
+
+- make Terminal dispatch recoverable from the durable `terminalDownloads` state,
+  using an awaited enqueue result plus startup reconciliation, a durable outbox,
+  or an equivalent contract that guarantees one matching carrier for every
+  runnable persisted Terminal task;
+- do not detach the scheduling handoff behind a second `viewModelScope.launch`
+  whose cancellation can outlive the Room insert without a recoverable state;
+- observe WorkManager enqueue completion/failure when reporting the Run action as
+  accepted, while preserving the already-committed Terminal row as retryable if
+  scheduling could not be established;
+- bind recovery to the existing Terminal task identity so it cannot create two
+  workers when a valid carrier already exists;
+- add deterministic process-death tests after the Terminal insert and before
+  WorkManager persistence, asynchronous enqueue-failure coverage, cold-start
+  recovery of an orphan row, already-enqueued non-regression coverage, and an
+  exactly-one-execution regression.
 
 ### P2 — BUG-FORMAT-01 — Do not commit or report partial bulk format refresh as success
 
