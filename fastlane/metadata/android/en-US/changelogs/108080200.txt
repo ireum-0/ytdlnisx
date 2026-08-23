@@ -1,7 +1,0 @@
-# What's Changed
-
-- Rebuilt the app ffmpeg runtime around the working wrapper-native `libffmpeg.so` / `libffprobe.so` path
-- Restored yt-dlp internal audio/video merging and stabilized hard-sub processing on the same runtime
-- Improved video player, PiP, background playback, and queue behavior
-- Expanded history, local grouping, search, and filtering workflows
-- Improved folder handling, writable-stage fallback, and worker stability
