@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **11**
-- Effective active defects: **85**
+- Delta active defects: **12**
+- Effective active defects: **86**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -336,3 +336,42 @@ Focused verification requirements:
 - fault-inject a History insert/read failure, provider metadata exception, process death between entries, and failure after one committed History row but before pending-output publication;
 - restart the app with a partially processed persisted session and prove exact remaining entries are recovered once without duplicate History rows or lost unresolved candidates;
 - verify explicit cancellation remains cancellation rather than being reinterpreted as an item failure. Helper-only parsing/storage tests are insufficient.
+
+## P3
+
+### BUG-TEMPLATE-02 — Validate Command Template URL regexes before they can abort download configuration
+
+**State:** Open  
+**Reviewed checkpoint:** `ad1a8f026a7a05f3e1489775a74d8106dbfa510e`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the Command Template creation/edit sheet accepts arbitrary URL-regex text, converts every chip to a string, and persists the resulting `CommandTemplate.urlRegex` without compiling or validating it. Clipboard import likewise deserializes templates and inserts them directly. A normal user can therefore persist an invalid Kotlin regex such as `[` and that malformed matcher survives process restart in Room.
+
+The same persisted field has inconsistent production consumers. Data-fetching templates use `safeRegexMatches(...)`, and ordinary audio/video extra-command selection wraps `Regex(pattern).containsMatchIn(url)` in `runCatching` and treats invalid syntax as non-matching. But `DownloadViewModel.getFormat()` selects a preferred Command template with a raw `Regex(u).containsMatchIn(url)`, and `createDownloadItemFromHistory()` applies audio/video extra commands with the same raw compilation. The Command download card calls `createDownloadItemFromResult(..., DownloadType.command)` before its later UI `try/catch`, so one malformed preferred template can throw `PatternSyntaxException` before the `DownloadItem` exists and prevent that card from initializing. The compatible History re-download path in `VideoPlayerActivity` calls `createDownloadItemFromHistory()` inside `runCatching`; malformed regex therefore turns that user-requested re-download into a failed action instead of merely skipping the invalid template.
+
+**Why this is a defect:** URL regex is user-controlled persistent configuration, not an internal invariant. The UI and import path accept malformed syntax, and sibling consumers already demonstrate the intended safe behavior by treating invalid matchers as non-matches. A single durable malformed matcher can nevertheless abort otherwise valid download-configuration requests every time they traverse the unsafe consumers, including after restart, until the user discovers and edits/deletes the template. This is a correctness/reliability failure rather than defensive hardening. It is distinct from `BUG-TEMPLATE-01`, which owns asynchronous clipboard-export success reporting and does not cover matcher validation or download configuration.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
+
+Required result:
+
+- validate every URL regex before a Command Template can be inserted or updated through the UI or import path, with an actionable per-pattern error that leaves the prior durable template unchanged on edit failure;
+- centralize matcher evaluation so every production consumer has the same typed invalid-pattern semantics; malformed persisted legacy/imported data must be rejected or treated as a non-match without aborting an independent download request;
+- keep a malformed preferred template from preventing fallback to another applicable preferred/default Command template, and keep malformed audio/video template filters from aborting History re-download construction;
+- preserve exact template identity on repair/reconfiguration and do not silently reinterpret invalid syntax as a successful match;
+- on restart, existing malformed rows must remain recoverable/editable and must not poison unrelated command/download configuration before the user repairs them.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative observation: template URL-regex syntax is first authoritative when the template is accepted for persistence, and must be revalidated at consumption for legacy/imported rows;
+- first persistence call is the template `insert`/`update`; invalid new input must not commit, while an invalid edit must not partially replace a previously valid row. No Download row, linked download ledger, filesystem output, or `DownloadOutcome` exists in the primary failure because raw regex compilation throws during configuration before queue persistence;
+- helper throwable window: `Regex(u)` can throw `PatternSyntaxException`; the exception must be converted into template-invalid/non-match semantics before it reaches Command-card or History-re-download outer control flow;
+- same-settings retry, manual/raw requeue, notification retry/resume, and restore are not primary re-entry paths when no Download row was created. Reopening Command configuration, History re-download, template edit/import, and process restart are the relevant cross-attempt paths; each must either reject/skip the same invalid matcher deterministically or succeed after explicit repair rather than repeatedly aborting;
+- there is no required lock-order or sibling-concurrency interleaving to trigger the defect; the persisted malformed value alone is sufficient.
+
+Focused verification requirements:
+
+- add production-path tests that create and edit a preferred Command Template with malformed regex through the actual sheet, and import one through the clipboard path; assert invalid syntax cannot become newly authoritative without an explicit error;
+- seed a legacy malformed persisted template and exercise the real Home/Share/Command-card `createDownloadItemFromResult(..., command)` path, proving the bad matcher is skipped/reported and a valid fallback template still initializes the request;
+- exercise `VideoPlayerActivity -> createDownloadItemFromHistory()` with malformed audio/video extra-command regex and prove compatible re-download construction continues without that template;
+- include valid regex, empty regex, multiple regexes with one malformed member, process restart, and edit-to-repair cases. Helper-only regex tests are insufficient; verification must cover Room persistence plus the actual consumer wiring.
