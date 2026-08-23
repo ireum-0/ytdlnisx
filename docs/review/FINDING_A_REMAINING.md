@@ -12,203 +12,174 @@
 
 ## Review rule
 
-Only production-reachable, independently verified Finding A defects on the frozen review target belong in the confirmed blocker list. Old findings are not carried forward mechanically: every item is re-evaluated against the new implementation. Closely related residuals are consolidated rather than double-counted.
+Only production-reachable, independently verified Finding A defects on the frozen review target belong here. Old findings are re-evaluated against the new implementation rather than carried forward mechanically. Closely related residuals are consolidated.
 
 ## Confirmed remaining blockers
 
-### A1. P2 — `LOWQUALITY-NO-CANDIDATE-CANCEL-RACE-01` — STILL OPEN
+### A1. P2 — `LOWQUALITY-NO-CANDIDATE-CANCEL-RACE-01`
 
-`LowQualityRedownloadWorker.scan()` can reach the no-candidate terminal boundary after its last cancellation check. `finishNoCandidates()` does not reject `cancelRequested=true`, and `LowQualityRedownloadDao.finishOperation()` still requires only `state='RUNNING'`.
+`LowQualityRedownloadWorker.scan()` can reach `finishNoCandidates()` after its last cancellation check. `finishNoCandidates()` does not reject `cancelRequested=true`, and `LowQualityRedownloadDao.finishOperation()` only requires `state='RUNNING'`.
 
-Reachable ordering:
+Race: `last ensureRunning passes -> requestCancellation commits cancelRequested=true -> finishNoCandidates -> COMPLETED/FAILED -> cancellation phase 2 sees terminal parent and cannot finish cancellation`.
 
-`last ensureRunning passes -> requestCancellation commits cancelRequested=true -> finishNoCandidates -> finishOperation COMPLETED/FAILED -> cancellation phase 2 observes a terminal parent and cannot finish cancellation`.
+Required: once cancellation commits first, no ordinary terminalizer may close the operation as non-cancellation terminal. Enforce the winner transactionally/at the DAO terminal CAS.
 
-Required invariant: once `cancelRequested=true` commits first, no non-cancellation operation terminalizer may subsequently close that RUNNING operation as COMPLETED/FAILED/PARTIAL_FAILURE. The winning condition must be enforced transactionally/at the DAO terminal CAS, not only by another worker-side precheck.
+### A2. P2 — `WORKER-CLEANUP-SIBLING-FAULT-ISOLATION-01`
 
-### A2. P2 — `WORKER-CLEANUP-SIBLING-FAULT-ISOLATION-01` — STILL OPEN
+`DownloadWorker.cleanupStoppedWorker()` still performs durable cleanup for all active IDs inside one outer `try`/`forEach`. If A throws, B/C later siblings are skipped. External process cleanup may already have run, yet the bookkeeping pass releases every exact execution in the worker snapshot, including siblings not proved durably non-running.
 
-`DownloadWorker.cleanupStoppedWorker()` still performs durable requeue/refusal convergence for all active IDs inside one outer `try`/`forEach`. If A throws, later siblings B/C are never durably processed.
+This can leave B as `Active/PostProcessing EB`, native process gone, process-local owner released.
 
-The earlier process-cleanup loop may already have destroyed B/C external execution. The later bookkeeping loop nevertheless removes/releases every exact execution present in the worker snapshot, not only rows proven durably non-running.
+Startup `recoverAbandonedDownloadExecutions()` has the same batch-abort shape: one unrecoverable abandoned row prevents later unrelated rows from being recovered.
 
-An unrelated B can therefore be left as:
+Required: isolate cleanup/recovery faults per Download and release an exact owner only after that row is durably non-running, superseded, or represented by explicit durable recovery debt.
 
-`Download B = Active/PostProcessing EB`, native process gone, process-local execution owner released.
+### A3. P2 — `CROSS-DOMAIN-DOWNLOAD-CANCEL-TERMINAL-ROW-01`
 
-The production log itself reports that ownership may be released without a durable non-running guarantee.
+`CancelDownloadNotificationReceiver` now validates exact Download execution authority, but after successful Download cancellation it still calls `terminalDao.delete(downloadId)`.
 
-`recoverAbandonedDownloadExecutions()` has the same batch failure shape during startup: one unrecoverable abandoned row throws and aborts later unrelated recoverable rows.
+Download IDs and Terminal IDs are independent domains. Cancelling Download N can delete unrelated Terminal row N. Terminal process identity is now separately namespaced, so the unrelated Terminal process may remain running after its DB row disappears.
 
-Required invariant: cleanup/recovery faults are isolated per Download. An exact execution owner is released only after that exact row is durably non-running, superseded by a newer owner, or represented by explicit durable recovery debt.
+Required: a Download-domain cancellation capability may mutate only Download-domain state/resources. Terminal row deletion belongs only to the Terminal-domain cancellation path.
 
-### A3. P2 — `CROSS-DOMAIN-DOWNLOAD-CANCEL-TERMINAL-ROW-01` — NEW RESIDUAL
+### A4. P2 — `WORKER-OWNERSHIP-HISTORY-CLEANUP-LEASE-01`
 
-Process and notification domains were largely separated, and Terminal now has its own cancellation receiver. However `CancelDownloadNotificationReceiver`, after an exact successful Download cancellation, still executes `terminalDao.delete(downloadId)`.
+`HistoryReferenceMutationCoordinator` substantially fixes retained-reference serialization, but `DownloadWorker.deleteValidatedReplacementPaths()` only performs one exact Download execution point-check before retained-reference validation and physical filesystem deletion. It does not hold the per-Download execution side-effect lease across the whole destructive interval.
 
-`DownloadItem.id` and `TerminalItem.id` are independent identity domains. Cancelling Download N can therefore delete an unrelated Terminal row N even though the Download capability contains no Terminal authority. Because Terminal process identity is now namespaced separately, this can leave the Terminal process running after its durable Terminal row was deleted.
+Race: `E1 check passes -> Pause/Cancel E1 -> Resume/E2 claims -> stale E1 continues rejected/replaced-media deletion`.
 
-Required invariant: a Download-domain cancellation capability may mutate only Download-domain state/resources. Terminal cancellation and Terminal row deletion must remain exclusively in the Terminal-domain path.
+Required: exact execution ownership must cover the entire destructive cleanup interval. Compose the History reference lock and Download execution lease with one canonical lock order.
 
-### A4. P2 — `WORKER-OWNERSHIP-HISTORY-CLEANUP-LEASE-01` — STILL OPEN
+### A5. P2 — `WORKER-EXECUTION-LOCK-LEASE-ORDER-DEADLOCK-01`
 
-The new `HistoryReferenceMutationCoordinator` substantially closes the retained-History-reference TOCTOU by serializing important History reference writers with the physical deletion boundary.
+Canonical worker long-side-effect code acquires `side-effect lease -> global execution lock`. Several cancellation paths reverse this to `global execution lock -> side-effect lease`, including `pauseAllDownloads()`, `cancelAllDownloadsImpl()`, and `CancelScheduledDownloadWorker`.
 
-A separate execution-ownership gap remains in `DownloadWorker.deleteValidatedReplacementPaths()`.
+This creates a real AB/BA deadlock: worker E1 holds its lease and waits for the global lock while bulk/scheduled cancellation holds the global lock and waits for E1's lease. The global lock then blocks unrelated claims/cancellations/recovery too.
 
-The helper holds the History reference coordinator, checks the current Download execution token/status once, then snapshots retained references and performs physical deletion. It does **not** hold the per-Download `DownloadWorkerExecutionSideEffectLease` across that destructive filesystem interval.
+Required: one canonical acquisition order everywhere. Never hold the global execution lock while waiting for a side-effect lease. Multi-item lease acquisition must be deterministic.
 
-Reachable ordering:
+### A6. P2 — `LOWQUALITY-CANCELLATION-PHASE2-CONVERGENCE-DEBT-01`
 
-`E1 exact execution point-check passes -> Pause/Cancel E1 commits -> Resume/requeue -> E2 claims same Download/resources -> stale E1 continues History/rejected-output filesystem deletion`.
+`LowQualityRedownloadManager.cancel()` durably commits phase 1, then runs phase 2 in the same coroutine. If `completePersistedCancellationWithPublications()` fails transiently, the coroutine ends; no same-process retry/debt owns the already-durable `cancelRequested / CANCELLATION_REQUESTED` state.
 
-Callers include both normal replaced-media cleanup and rejected quality-replacement output cleanup. The latter can delete files while a newer attempt is reusing the same output namespace.
+Startup/reconnect can repair it later, but same-process completion currently depends on an unrelated reconnect/restart.
 
-Required invariant: exact execution ownership must remain valid for the whole destructive deletion interval, not only at one pre-delete read. The final solution must compose the History reference lock and Download execution lease with one consistent lock order.
+Required: durable cancellation phase 1 itself must create idempotent convergence responsibility until phase 2 reaches durable cancellation terminal state.
 
-### A5. P2 — `WORKER-EXECUTION-LOCK-LEASE-ORDER-DEADLOCK-01` — NEW
+### A7. P2 — `LOWQUALITY-TERMINAL-DEBT-RETRY-RACE-01`
 
-The new side-effect lease is useful, but lock acquisition order is inconsistent.
+The new live terminal-convergence loop derives child terminal state from the **current mutable Download status**.
 
-Canonical worker long-side-effect code uses:
+Race:
+1. worker durably writes `Download=Error`;
+2. linked `FAILED` transition throws, leaving child ACTIVE/QUEUED/WAITING;
+3. asynchronous convergence is scheduled;
+4. Retry/Reconfigure runs first;
+5. because the child and parent are still nonterminal/coherent, `hasTerminalHistoryReplacementLedger()` does not block the retry;
+6. Error snapshot CAS moves the Download to Queued/Processing;
+7. convergence rereads the new state and can no longer derive the original Error -> FAILED observation.
 
-`per-Download side-effect lease -> global Download execution lock -> exact revalidation -> release global lock -> long side effect under lease`.
+For retryable issues such as network failures, SAME_SETTINGS retry is allowed; reconfigure may also be allowed.
 
-Several cancellation paths instead use:
+Required: make the convergence debt itself durable/authoritative, or block every state-changing retry/reconfigure path until that exact debt has converged. Do not derive an authoritative terminal decision solely from a mutable status that UI transitions may replace.
 
-`global Download execution lock -> per-Download side-effect lease`,
+### A8. P2 — `HISTORY-STALE-FULLROW-WRITER-REPLACEMENT-01`
 
-including `pauseAllDownloads()`, `cancelAllDownloadsImpl()`, and `CancelScheduledDownloadWorker`.
+`HistoryDao.update()` now participates in `HistoryReferenceMutationCoordinator`, which serializes it with replacement/deletion. However serialization alone does not prevent a stale full-row write **after** a replacement commits.
 
-This creates a real AB/BA deadlock window:
+Concrete production path: VideoPlayer holds an old `HistoryItem`; a regular/quality replacement commits new `downloadPath`, `downloadId` and replacement metadata; custom-thumbnail persistence later runs `item.copy(thumb=...)` and `historyDao.update(updated)`. The DAO rereads/preserves only materialized `keywords`, then writes all other stale fields.
 
-`T1 acquires lease -> T2 acquires global lock and waits for lease -> T1 attempts global lock and waits for T2`.
+The stale UI write can restore the old `downloadPath`, old `downloadId`, URL/metadata, etc. Reverting `downloadId` also destroys the durable semantic-commit detector (`History.downloadId == replacement Download.id`) and can make an already committed replacement appear uncommitted/replayable.
 
-Because the second lock is suspending, the interleaving does not require either side to hold a lock for the full yt-dlp lifetime. Once the global execution lock is deadlocked, unrelated claim/cancel/recovery paths can also stall.
+Required: metadata/thumbnail UI writes must update only intended columns or merge against the current History row. A stale pre-replacement `HistoryItem` must never overwrite replacement-owned path/download identity or semantic-commit state.
 
-Required invariant: use one canonical acquisition order everywhere. Do not hold the global execution lock while waiting for one or more side-effect leases. Multi-item operations must acquire resource leases deterministically and keep global-lock sections brief.
+### A9. P2 — `HISTORY-POSTCOMMIT-FINALIZATION-DEBT-01`
 
-### A6. P2 — `LOWQUALITY-CANCELLATION-PHASE2-CONVERGENCE-DEBT-01` — STILL OPEN
+Core post-History-commit replay semantics are much better: the committed History row identifies the replacement, quality child success is recorded in the same semantic transaction, and startup recovery finalizes committed work instead of replaying it.
 
-`LowQualityRedownloadManager.cancel()` durably commits phase 1 via `requestCancellation(operationId)`, then calls `completeCancellation(operationId)` in the same manager coroutine.
+A residual remains when final Download cleanup itself fails. If `completeAndDelete()` repeatedly fails after semantic commit, worker failure enters `cleanupStoppedWorker()`. That cleanup treats an issue-free committed replacement like ordinary Active work and calls exact `requeueActiveDownload()`, which can set it to Queued without checking low-quality terminal/runnable authority.
 
-If `completePersistedCancellationWithPublications()` or its surrounding phase-2 path fails transiently, the coroutine ends. The `finally` block only refreshes notification/callback state; no same-process retry/debt is registered for the already-durable `cancelRequested / CANCELLATION_REQUESTED` state.
+For a quality replacement, the child is already `SUCCEEDED` from the semantic commit. Normal queue selectors/claim correctly reject terminal low-quality children, so the resulting `Download=Queued + child=SUCCEEDED` carrier is non-runnable and can remain indefinitely. It cannot self-enter the next worker to execute the committed-finalization fast path.
 
-Startup/reconnect recovery can later notice `cancelRequested`, but that means same-process completion still depends on an unrelated reconnect or process restart.
+For a regular replacement the row may eventually be picked by a later unrelated worker, but there is still no explicit same-process terminal-convergence responsibility after finalization failure.
 
-The new `LowQualityRedownloadLedger.scheduleConvergence(downloadId)` solves a different debt: Download terminal write committed while linked child terminalization failed. It does not own operation-level cancellation phase 2.
-
-Required invariant: durable cancellation phase 1 itself creates idempotent convergence responsibility until phase 2 reaches durable cancellation terminal state, in the same live process and across reconstruction.
-
-### A7. P2 — `LOWQUALITY-TERMINAL-DEBT-RETRY-RACE-01` — NEW
-
-The new live convergence loop derives a failed linked child from the **current mutable Download status**.
-
-Reachable ordering:
-
-1. primary worker failure durably writes `Download = Error`;
-2. the independent linked-ledger `FAILED` transition throws, leaving child ACTIVE/QUEUED/WAITING;
-3. `scheduleConvergence(downloadId)` starts asynchronously;
-4. before convergence succeeds, the real Retry/Reconfigure path observes the Error row;
-5. because the quality child and parent are still nonterminal/coherent, the History-replacement terminal-ledger guard does not block the retry;
-6. snapshot CAS moves the same Download from Error to Queued/Processing;
-7. `reconcileDownload()` can no longer derive the original failure from current status, because the linked-download policy maps Error -> FAILED but Queued/Processing -> no terminal state.
-
-For a retryable primary issue such as `NETWORK_TIMEOUT`, SAME_SETTINGS retry is explicitly allowed; Reconfigure is also independently available when policy permits.
-
-The original authoritative terminal observation can therefore be lost before its debt converges, and privileged work can become runnable again with a nonterminal child.
-
-Required invariant: the terminal convergence fact must be durable or all state-changing retry/reconfigure paths must be blocked until that exact debt converges. Recovery cannot depend solely on a mutable Download status that the UI is allowed to change.
+Required: a committed History replacement must have guaranteed idempotent finalization debt. Stopped-worker cleanup must recognize the committed semantic fact and finalize/retry finalization rather than converting it to an ordinary queue carrier. Never create a non-runnable Queued quality ghost after semantic commit.
 
 ## Source-level findings re-evaluated as closed or substantially closed
 
-The following previous blockers are not currently in the remaining list unless later review finds a new concrete residual.
-
 ### Low-quality runnable cancellation authority — source-level closed
 
-The canonical runnable predicate and duplicated queue selectors now reject both child `CANCELLATION_REQUESTED` and parent `cancelRequested=1`.
+Queue/select/claim predicates now reject child `CANCELLATION_REQUESTED` and parent `cancelRequested=1`.
 
 ### Cancellation-pending child terminal race — source-level closed
 
-Generic linked state writes now use explicit source-state allowlists, while cancellation convergence has an explicit `markCancelledByDownloadId` path. Repository logic treats parent `cancelRequested` / child `CANCELLATION_REQUESTED` as cancellation instead of generic failure.
+Generic linked writes use explicit source-state allowlists; cancellation-pending/parent-cancelled state converges to CANCELLED rather than FAILED.
 
 ### Bulk Error deletion — source-level closed
 
-`deleteErrored()` now uses the safe linked-child user-removal path and returns affected operation IDs for refresh. Saved/Processing direct deletion remains under reachability review but is not currently a confirmed blocker.
+`deleteErrored()` now uses the safe linked-child user-removal path and returns affected operation IDs for refresh.
 
 ### Undo terminal/cancelling parent restore — source-level closed
 
-Undo now checks parent nonterminal plus `cancelRequested=false` and exact pending-token ownership before inserting/rebinding runnable state. Revoked/terminal authority returns no restored runnable Download.
+Restore checks parent live authority, `cancelRequested=false`, and exact pending-token ownership before recreating runnable state.
 
 ### Undo live-token owner lifetime — source-level substantially closed
 
-Pending snapshots are now process-level and owner-tagged; `DownloadViewModel.onCleared()` abandons its owned snapshots, unregisters their live tokens, and best-effort commits them so reconciliation can recover a failed commit. Execution evidence is still missing.
+Pending snapshots are process-level and owner-tagged; ViewModel destruction abandons owned snapshots, unregisters live tokens, and best-effort commits so later reconciliation can recover.
 
 ### Notification builder/action attempt isolation — source-level substantially closed
 
-Notification builders are per-call. Running Pause/Cancel/Resume PendingIntent identity includes entity/action/id/execution information. Blank Download notification Cancel authority fails closed. Stale Pause creates Resume only after the exact pause transition succeeds. Error Retry/Reconfigure carries operation/attempt capability identity.
-
-A distinct cross-domain DB mutation residual remains as A3.
+Builders are per-call, Download running action identity includes execution identity, blank Download Cancel fails closed, stale Pause issues Resume only after exact transition success, and retry/reconfigure carries operation/attempt identity. A3 is a separate DB-domain residual.
 
 ### Retry stale-transition authority — source-level substantially closed
 
-Retry validates operation/attempt and uses snapshot-based queue CAS. Broad requeue excludes Active/PostProcessing rows and quality runnable guards include cancellation authority. A separate convergence-debt retry race remains as A7.
+Retry validates operation/attempt and uses snapshot CAS. A7 is a separate convergence-debt race.
 
 ### yt-dlp retry/preparation stale side effects — source-level closed
 
-Retry cache deletion, retry notification/log/request preparation and related side effects are protected by exact execution checks/ownership wrappers.
+Retry cache deletion, notification/log/request preparation and process startup are exact-execution guarded.
 
 ### Native process start publication gap — source-level closed
 
-Download process identity is execution-scoped, and the per-Download execution side-effect lease covers final exact ownership validation through native process registration before cancellation can acquire the same lease.
+The per-Download side-effect lease covers final ownership validation through actual native process registration.
 
 ### Download/Terminal process identity — source-level substantially closed
 
-`YtdlpProcessIdentity` namespaces Download processes by Download ID + exact execution token and Terminal processes by Terminal domain. Terminal has a dedicated notification cancellation receiver. A separate DB-domain residual remains as A3.
+Download process IDs are execution-scoped and Terminal process IDs are Terminal-domain namespaced. A3 remains at the DB receiver layer.
 
 ### History retained-reference deletion TOCTOU — source-level substantially closed
 
-`HistoryReferenceMutationCoordinator` now serializes prepared History deletion and replacement cleanup with major History reference-changing writers. `HistoryDao.update()` itself acquires the coordinator before its full-row `updateRaw`, so `HistoryRepository.update()` is not a bypass.
+`HistoryReferenceMutationCoordinator` serializes prepared deletion/replacement cleanup with History insert/restore/replacement and `HistoryDao.update()` full-row writes. Direct raw reference writers inspected so far are used under the coordinator. Continue raw-writer inventory before final closure. A4 is a distinct Download execution-lease issue.
 
-No current retained-reference writer bypass is confirmed. Continue inventorying direct raw reference writers before final closure. A4 is a distinct Download execution-lease problem, not a retained-reference DB serialization failure.
+### History semantic commit / destructive replay — source-level substantially closed
 
-### History semantic commit / replay — source-level substantially closed
-
-History replacement records the durable committed relationship in the History transaction; quality replacement also records linked success. Startup abandoned-execution recovery detects a committed replacement and finalizes it instead of requeueing it. Worker post-commit exceptions are routed to warning/finalization rather than generic History failure. Finalization-debt edges remain under review.
-
-### Long destructive side-effect handoff — source-level substantially improved
-
-A per-Download execution side-effect lease now guards major HardSub/move/start paths and Pause/Cancel acquire the same lease. A4 tracks the confirmed History/rejected-output deletion path that still uses only a point-in-time execution check.
+Regular and quality replacement commit detection is durable in the History row, quality linked success is committed with replacement, ancillary post-commit failures become warnings, and startup abandoned recovery finalizes committed replacements rather than replaying them. A8 and A9 are external overwrite/finalization residuals.
 
 ### Cancellation registry rollback publication — source-level substantially closed
 
-Repository cancellation APIs collect exact publication records inside Room transactions and publish only after the transaction completes. Low-quality phase-2 cancellation does the same. Operation-level phase-2 retry responsibility remains separately tracked in A6.
+Repository cancellation paths collect publications inside Room transactions and publish only after successful commit. A6 is operation-level phase-2 responsibility, not the old registry rollback defect.
 
-## Candidates under active review
+## Remaining candidates under review
 
-### C1. History post-commit finalization debt
+### C1. Forced-stop process-before-DB ordering
 
-The committed History fact prevents destructive replay, including startup recovery. Verify whether repeated `completeAndDelete()` failure in a live worker can still be turned by stopped-worker cleanup into an ordinary Queued carrier with no guaranteed same-process finalization responsibility. If so, promote as a convergence blocker rather than a replay blocker.
+`CancelScheduledDownloadWorker` can destroy an exact process before durable requeue/convergence. Determine whether a subsequent DB failure is fully recovered by DownloadWorker cleanup or produces a distinct single-item stranded state. Fold into A2 if it is only another cleanup-convergence instance.
 
-### C2. Forced-stop process-before-DB ordering
+### C2. Remaining History raw reference writers
 
-`CancelScheduledDownloadWorker` still destroys the exact process before refusal convergence/requeue. Determine whether a subsequent DB failure leaves one exact Active execution with a dead process and no durable recovery debt. Fold into A2 if it is only another cleanup-convergence instance; create a separate blocker only if the single-item lifecycle has an independent failure mode.
+Finish inventory of direct `HistoryDao.insertRaw/insertAndGetIdRaw/updateRaw` callsites and any writer capable of changing `downloadPath/localTreeUri/localTreePath`. Fold any bypass into retained-reference correctness rather than creating duplicates.
 
-### C3. Remaining History reference writers
+### C3. Cross-domain Android notification integer collision
 
-Inventory all direct `HistoryDao.insertRaw/insertAndGetIdRaw/updateRaw` callsites and any writer capable of changing `downloadPath/localTreeUri/localTreePath`. Fold any real bypass into the retained-reference category rather than creating duplicates.
+Download running notification IDs and Terminal foreground notification IDs occupy arithmetic ranges that can overlap for sufficiently large IDs. Actions are now domain-scoped; current proven impact is notification overwrite/removal. Promote only if a Finding A terminal/authority consequence is demonstrated.
 
-### C4. Regular History post-commit finalization
+### C4. Cross-domain WorkerProgress/EventBus identity
 
-Verify the durable-commit detector and live/startup recovery for ordinary History redownloads as well as low-quality replacements, especially failure of `completeAndDelete()` after semantic commit.
+Download and Terminal progress still use the same numeric `WorkerProgress.downloadItemID` namespace. Same-number rows can display each other's progress/output. Current proven impact is UI attribution only; keep non-blocking unless stronger Finding A impact is found.
 
-### C5. Cross-domain running notification integer collision
+### C5. Backup/restore revalidation
 
-Running Download notification ID is `90000 + downloadId` while Terminal uses `99000 + terminalId`. These ranges are not mathematically disjoint for arbitrary auto-increment IDs. Actions are domain-scoped, so confirmed impact is currently notification overwrite/removal rather than wrong-domain DB mutation. Promote only if Finding A terminal/authority impact is proved.
-
-### C6. Cross-domain WorkerProgress/EventBus identity
-
-Download and Terminal still publish `DownloadWorker.WorkerProgress` keyed by a bare numeric row ID and both UIs consume numeric tags. Same-number rows can display each other's progress/output. Current verified impact is UI attribution corruption; keep non-blocking unless stronger Finding A impact is established.
+Re-run the Finding A backup/restore fail-closed audit after the broad 9ef changes. No schema/backup-format change was reported, but final review still needs to prove refusal barriers, quality authority revocation and restored queue admission remain coherent.
 
 ## Verification evidence gap
 
@@ -221,23 +192,22 @@ Reported on `805722d7`:
 - `:app:compileDebugAndroidTestKotlin` — ATTEMPTED, NOT COMPLETED
 - instrumentation — NOT EXECUTED
 
-GitHub has no registered commit status/check evidence for the formal review HEAD.
+No GitHub check evidence is registered for the formal review HEAD.
 
-Therefore even a later source-level clean pass cannot be called fully verified CLEAN without resolving the production-wiring evidence gap required by Finding A.
+Therefore Finding A cannot be declared CLEAN from the current evidence even after source residuals are fixed.
 
 ## Review completion criteria
 
 Do not derive the implementation prompt until:
 
-1. the complete Finding A lifecycle has been re-reviewed on `805722d7` across admission -> claim -> execution -> destructive side effect -> semantic commit -> terminalization -> retry/requeue -> cancellation -> Undo -> stopped-worker cleanup -> process death/startup/restore -> notification;
-2. every old blocker has been explicitly reclassified against the new code;
-3. all History reference-changing writers have been inventoried against the physical deletion boundary;
-4. Download/Terminal process, notification, DB, and UI capability identity domains have been checked for concrete Finding A impact;
-5. a final independent source pass yields no additional P1/P2 Finding A defect beyond this ledger;
-6. remaining non-blocking candidates are documented and deliberately excluded.
+1. the full Finding A lifecycle has been re-reviewed on `805722d7`: admission -> claim -> execution -> external/destructive side effects -> semantic commit -> terminalization -> retry/requeue -> cancellation -> Undo -> stopped cleanup -> process death/startup/restore -> notification;
+2. every old blocker is explicitly reclassified against the new code;
+3. all History reference-changing raw/full-row writers are inventoried;
+4. Download/Terminal process, notification, DB, UI capability and synchronization domains are checked for concrete Finding A impact;
+5. backup/restore remains fail-closed;
+6. a final independent source pass yields no additional P1/P2 Finding A defect beyond this ledger;
+7. remaining non-blocking candidates are documented and deliberately excluded.
 
 ## Current status
 
 `NOT_READY_FOR_IMPLEMENTATION_PROMPT`
-
-Continue review against the frozen pushed HEAD and update this ledger before generating the consolidated remediation prompt.
