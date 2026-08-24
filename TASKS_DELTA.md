@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **26**
-- Effective active defects: **100**
+- Delta active defects: **27**
+- Effective active defects: **101**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -995,3 +995,57 @@ Focused verification requirements:
 - restart with a `terminal:<id>` RUNNING marker and prove startup adopts and converges that exact generation once; repeat with a later manual Terminal run and with a Download sibling to prove isolation and `BUG-NATIVE-02` non-regression;
 - exercise cancellation as a regression/control for `BUG-TERMINAL-07`, including `destroyProcessById()==false`, while keeping the primary normal-success invariant separate;
 - verification must use actual Room + WorkManager + Terminal worker + native barrier wiring. Existing Download native-quiescence tests do not establish Terminal completion/recovery semantics, so this review remains `SOURCE-LEVEL ONLY`.
+
+### BUG-NATIVE-03 — Do not delete a successful Download carrier while its yt-dlp descendant barrier remains unresolved
+
+**State:** Open  
+**Reviewed checkpoint:** `cc1ddaa80b15e0857a7271e28bb7d93ab4c3cf91`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** a normal queued Download is claimed under an exact `executionId` and reaches `DownloadWorker.executeYtdlpAttempt()`, which invokes `YoutubeDLCompat.execute()` with process identity `download:<id>:<executionId>`. The compatibility helper's supervisor waits for the yt-dlp root child and then tries to terminate the child's process group. If yt-dlp itself exits with code zero but one of its descendants cannot be proven gone after the TERM/KILL protocol, the supervisor deliberately leaves the durable native marker in `RUNNING`. `removeExactProcess()` correctly refuses to clear that marker or its tracked process entry, but `YoutubeDLCompat.execute()` still returns an ordinary successful `YoutubeDLResponse` to the Download worker.
+
+`executeYtdlpAttempt()` then observes its async execution as completed, so its `finally` branch does **not** call `cancelYtdlpProcess()`; the unresolved descendant state is not converted into a Download failure or recovery debt. The normal Download path can consequently validate/publish the downloaded paths, insert or replace the History row, emit a finished notification, compose a completed `DownloadOutcome`, and call `DownloadRepository.completeAndDelete(id, expectedExecutionId)`. That removes the durable Download row while the exact `download:<id>:<executionId>` marker can still be non-quiescent. The worker-level finalizer retains the process-local `DownloadWorkerProcessOwners` token when `hasNativeProcessRegistryEntry()` remains true, but that in-memory token is not a durable recovery carrier and disappears if the application process exits.
+
+Cold-start recovery does not adopt the resulting orphan marker. `DownloadExecutionRecovery.reconcile()` asks `YtdlpNativeProcessBarrier.downloadProcesses()` for durable `download:` markers, but converts each marker to a candidate only with `downloadDao.getNullableDownloadById(process.downloadId)` and discards it with `mapNotNull` when the Download row has already been deleted. The recovery function contains a `current == null` cleanup branch, but an item that is already absent before candidate construction can never reach that branch. After process death, the unresolved descendant/marker therefore has neither a Download row nor a process-local owner, even though the namespace is nominally included in Download recovery.
+
+**Why this is a defect:** the descendant barrier exists because successful termination of the root/supervisor is not proof that native descendants have stopped mutating resources. A normal successful Download nevertheless publishes durable History/output state and deletes its only durable execution carrier before the stronger quiescence condition is proven. A surviving descendant can continue acting on attempt-owned files after the app reports completion, and after restart the durable marker itself is orphaned because recovery requires the very Download row that terminal success removed. This is a correctness/reliability and recovery-ownership defect, not defensive hardening.
+
+This is distinct from `BUG-TERMINAL-08`, which owns the same strengthened success contract for the `terminal:` namespace and is missed because Terminal markers are excluded from Download recovery altogether. Here the marker uses the supported `download:` namespace, but recovery still loses it because candidate discovery incorrectly requires an existing Download row. It is also distinct from `BUG-NATIVE-01`, which requires a pre-PGID STARTING crash and causes permanent fencing, and `BUG-NATIVE-02`, which requires a recycled PGID and can kill a sibling. No crash before launch, identifier reuse, cancellation, or explicit failure is required for this path: root success plus unresolved descendant quiescence is sufficient.
+
+**Ownership / attribution:** remediation regression. The synchronized baseline did not contain the durable descendant barrier or Download marker reconciliation. The reviewed checkpoint introduced the stronger quiescence contract but allows normal Download completion and row deletion to bypass it, and its new recovery enumerator cannot own markers whose Download row was already removed.
+
+Required result:
+
+- make successful Download completion conditional on exact yt-dlp descendant quiescence for `download:<id>:<executionId>`; root exit code zero and a usable `YoutubeDLResponse` must not by themselves authorize History publication, finished notification, Download-row deletion, or a completed WorkManager result while the native sidecar remains unresolved;
+- expose the unresolved sidecar as a typed execute outcome or explicitly verify the exact native barrier before the first semantic publication/terminal write after yt-dlp returns;
+- retain a durable Download/recovery tombstone or another exact generation carrier until quiescence is proven, including when the primary Download row would otherwise be removed after success;
+- make startup recovery discover **all** unresolved `download:` markers independently of whether a live Download row still exists, then reconcile an orphan marker without inventing a newer Download identity and without weakening the PGID anti-reuse guarantees of `BUG-NATIVE-02`;
+- do not release, move, delete, or treat attempt-owned files as immutable final outputs while a descendant from that exact generation can still mutate them; if semantic publication has already occurred, preserve enough durable provenance to converge after quiescence rather than forgetting the execution;
+- preserve the normal success path when the marker is proven QUIESCENT, and preserve cancellation/retry ownership rules for still-live Download rows.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: Download success requires both the normal yt-dlp/media validation result and exact descendant quiescence for the same execution generation;
+- first authoritative observation after native return is currently a nominal successful `YoutubeDLResponse`; force `root exit = 0` while the durable marker remains `RUNNING` and verify that no later success publication treats the response as sufficient authority;
+- first persistence/publication calls after that observation can include History insertion/replacement and later `completeAndDelete()`. Inject first History-write failure as a control: the Download row remains available for ordinary failure/recovery semantics. The primary defect is the successful-write path followed by row deletion without a post-native quiescence barrier;
+- recovery carrier/recovery-write failure: before row deletion, the Download row/execution plus marker can identify the generation. After `completeAndDelete()`, only the marker can survive. Current startup enumeration drops it when the row is absent, so no recovery write can progress. A corrected design must retain or reconstruct an exact durable recovery owner without treating marker deletion failure as quiescence;
+- durable Download state in the primary defect is **absent** after completion; History and linked low-quality/other ledgers may already reflect success; filesystem output may already be user-visible while an exact descendant remains active; `DownloadOutcome` is completed and the enclosing `DownloadWorker` ultimately returns `Result.success()`;
+- stale Active/PostProcessing is not required. The semantic downgrade is the opposite: unresolved external execution is reinterpreted as fully completed and then made undiscoverable by deleting the carrier needed by recovery;
+- same-execution retry before terminal success can call `prepareProcessForExecution()` and attempt exact quiescence, so that path is not the primary failure. After normal completion, same-settings/manual/raw requeue or reconfigure normally creates/uses a new Download attempt rather than adopting the deleted generation; notification retry/resume has no failed/paused row to consume; restart drops the orphan marker because no row maps to it; restore is not a semantic repair path. A corrected cross-attempt contract must prevent a newer native generation from overlapping an unresolved successful predecessor and must converge the orphan exact marker first;
+- sibling isolation must include a later Download or Terminal generation started after the old row was removed. Recovery of the old marker may never signal or clear a sibling based only on a recycled locator, as required by `BUG-NATIVE-02`.
+
+Candidate-rejection proof:
+
+- do not reject this as `BUG-TERMINAL-08`: that defect's recovery gap is namespace exclusion for `terminal:` markers. This defect is Download-specific and persists despite the marker being in the nominally supported `download:` namespace because `DownloadExecutionRecovery` maps markers through an existing-row lookup before building candidates;
+- do not reject it because `removeExactProcess()` retains the in-memory process entry and marker. That retention is not observed by the normal success caller, does not stop History/row terminalization, and its process-local owner disappears on application death;
+- do not treat the `current == null` branch in `DownloadExecutionRecovery` as proof of orphan cleanup: the candidate list uses `mapNotNull(getNullableDownloadById)`, so a marker whose row was absent at enumeration time never enters the loop where that branch exists;
+- do not reject it as `BUG-NATIVE-01/02`: neither an unaddressable STARTING state nor identifier reuse is needed. A valid RUNNING marker for the exact original generation is enough;
+- do not treat successful History publication as a reason to release native authority. The barrier's purpose is specifically to prove descendants are done before the attempt's resources and durable ownership can be abandoned.
+
+Focused verification requirements:
+
+- exercise the real `DownloadWorker`/Room execution claim -> `YoutubeDLCompat.execute()` -> `YtdlpNativeProcessBarrier` -> normal History publication -> `DownloadRepository.completeAndDelete()` path with a root child that exits zero while an exact descendant/process group is forced to remain non-quiescent; assert no completed `DownloadOutcome`, finished notification, row deletion, or `Result.success()` occurs while the marker is RUNNING;
+- add a control with root success plus proven QUIESCENT and prove ordinary Download completion still publishes History and deletes the queue row exactly once;
+- force process death after root success and after History commit but before/after any corrected quiescence/recovery write; restart must discover the exact `download:` marker even if the primary Download row is absent and must converge it exactly once before newer native work can overlap;
+- explicitly seed an orphan `download:<id>:<executionId>` RUNNING marker with no Download row and invoke real startup `DownloadExecutionRecovery`; prove the marker is adopted rather than filtered out, while a recycled-PGID sibling remains untouched as a `BUG-NATIVE-02` regression;
+- cover first History-write failure, `completeAndDelete()` failure, marker-clear failure, cancellation after root exit, same-execution retry, later manual requeue, and process restart. Verification must cover actual Room + Worker + native barrier wiring; no such production-path `root success + unresolved sidecar + Download terminalization` test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
