@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **25**
-- Effective active defects: **99**
+- Delta active defects: **26**
+- Effective active defects: **100**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -936,3 +936,62 @@ Focused verification requirements:
 - inject process death after `cancelRequested` but before quiescence, after failed quiescence, and immediately before/after the eventual cancellation persistence; restart must recover the exact date operation/process once and prevent a new generation from overlapping unresolved authority;
 - inject first `requestCancellation` write failure and recovery/terminal write failure, plus repeated Cancel delivery, manual Start/Reconnect, and startup reconciliation; preserve exact identity and regressions for `BUG-DATE-01/02/03` and `BUG-NATIVE-01/02`;
 - verification must exercise actual Room + WorkManager + durable native-barrier wiring. The existing `HistoryDateFetchEnqueuePolicyTest` only asserts `ExistingWorkPolicy.KEEP` and provides no cancellation/quiescence evidence, so this review remains `SOURCE-LEVEL ONLY`.
+
+### BUG-TERMINAL-08 — Do not terminalize successful Terminal work while descendant native authority remains unresolved
+
+**State:** Open  
+**Reviewed checkpoint:** `cc1ddaa80b15e0857a7271e28bb7d93ab4c3cf91`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** a normal Terminal task persists its `TerminalItem`, is accepted by WorkManager, and reaches `TerminalDownloadWorker`. The worker invokes `YoutubeDLCompat.execute()` under process identity `terminal:<id>`. At the reviewed checkpoint that helper runs a Python supervisor whose real yt-dlp child is in a separate process group and whose durable marker is the only descendant-quiescence proof. After the yt-dlp child exits, the supervisor calls `stop_group()`. If descendants do not terminate within the TERM/KILL protocol, the supervisor deliberately leaves the marker in non-quiescent `RUNNING` state but still exits with the yt-dlp child's exit code.
+
+For a child exit code of zero, `YoutubeDLCompat.execute()` waits for the supervisor, calls `removeExactProcess(processId, process)`, and then returns a normal `YoutubeDLResponse`. `removeExactProcess()` is fail-closed internally: it refuses to remove the tracked process or clear the durable marker unless `YtdlpNativeProcessBarrier.isQuiescent()` is true. But that unresolved state is not reflected in the execute result. The Terminal caller therefore receives nominal success even though the exact native descendant barrier is still positive.
+
+`TerminalDownloadWorker` then continues through its normal success path. For cache-staged tasks it can call `FileUtil.moveFile(<cache>/TERMINAL/<id>, destination, false)` and publish output while a descendant from the same native generation remains unresolved; it updates logs, cancels the running notification, deletes the `TerminalItem` row, and returns `Result.success()`. The only durable task carrier is therefore removed while the native marker/process can remain live. This is not repaired on restart: `App.onCreate()` starts `DownloadExecutionRecovery`, but `YtdlpNativeProcessBarrier.downloadProcesses()` intentionally enumerates only `download:<id>:<executionId>` markers. A `terminal:<id>` marker is excluded, and there is no Terminal startup reconciliation that adopts it. The task can consequently be durably completed and forgotten while native execution authority still exists.
+
+The same strengthened contract is also ignored by Terminal cleanup/preflight callers. Before a new Terminal execute, and in stopped-worker cleanup, `TerminalDownloadWorker` calls `YoutubeDLCompat.destroyProcessById(processId)` but discards the Boolean whose documented contract says `false` means the caller must not release execution/resources. Those ignored results can compound the orphaning/re-entry behavior, but the primary confirmed path does not need cancellation or a pre-existing marker: a normal zero-exit Terminal execution plus failed descendant quiescence is sufficient.
+
+**Why this is a defect:** the descendant barrier was introduced specifically because root/supervisor exit is not proof that yt-dlp-launched ffmpeg/ffprobe/aria descendants are gone. A normal Terminal attempt nevertheless treats root success as semantic completion, publishes/cleans resources, removes its durable ledger row, and reports WorkManager success while that stronger proof is explicitly still unresolved. This can leave an external native actor with no matching durable Terminal owner, allow post-success resource effects, and make restart unable to reconcile the generation. It is a correctness/reliability defect, not defensive hardening.
+
+This is distinct from `BUG-TERMINAL-07`: no user Cancel, WorkManager-cancellation race, or stale post-revocation worker is required here. It is also distinct from `BUG-NATIVE-01`, whose failure is an unrecoverable pre-PGID STARTING marker, and `BUG-NATIVE-02`, which requires recycled PGID identity and can kill a sibling. `BUG-DATE-04` demonstrates the same strengthened-helper-contract propagation class for date-fetch cancellation, but this finding owns Terminal's **normal-success** path and Terminal marker recovery namespace. `BUG-TERMINAL-01` owns post-success bookkeeping that can reclassify committed output as failure; it does not own false success while privileged native authority remains unresolved.
+
+**Ownership / attribution:** remediation regression. The synchronized baseline checkpoint does not contain `YtdlpNativeProcessBarrier`; the reviewed checkpoint introduced durable descendant-quiescence semantics and a fail-closed helper contract, while unchanged Terminal callers were not adapted to make that barrier part of Terminal completion or recovery.
+
+Required result:
+
+- make Terminal semantic completion conditional on proven quiescence of the exact `terminal:<id>` native generation; a zero exit code from the root/supervisor is insufficient while its durable descendant barrier remains unresolved;
+- make `YoutubeDLCompat.execute()` expose a typed completion/quiescence result or require the caller to perform an exact post-execute barrier check before any output publication, terminal notification, task-row deletion, or `Result.success()`;
+- retain a durable nonterminal Terminal recovery owner/tombstone for an unresolved generation and make startup reconciliation enumerate/adopt Terminal native markers rather than limiting recovery to the Download namespace;
+- propagate `destroyProcessById() == false` from Terminal preflight, cancellation/stopped cleanup, and any other Terminal release path instead of deleting cache/task state or starting/reusing the same identity as though quiescence were proven;
+- bind Terminal native executions to an exact attempt/generation identity if a row ID can be reused or rerun, so recovery cannot confuse an old unresolved generation with a later manual run;
+- do not publish cache-staged output or free attempt-owned files while a descendant can still be using/mutating them; if output was already created, keep enough durable state to reconcile it after quiescence;
+- preserve the separate cancellation-revocation guarantees owned by `BUG-TERMINAL-07` and the exact external-identity guarantees owned by `BUG-NATIVE-01/02`.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: Terminal success requires both native command success and exact descendant quiescence for the same Terminal generation;
+- first relevant persistence/terminal mutation after the false-success observation is Terminal log/status persistence followed by `terminalDao.delete(itemId)`. Inject failure/process death before and after each; none may make an unresolved native barrier disappear from recovery ownership or be reinterpreted as completed;
+- native barrier fault: force a real RUNNING marker/process group to remain non-quiescent after the yt-dlp child/root returns exit code zero. Current code returns `YoutubeDLResponse` and can continue to publication; corrected code must remain nonterminal/recovery-owned;
+- recovery carrier/recovery-write failure: current durable native marker survives, but no Terminal ledger/reconciler owns it after row deletion. A corrected flow must retain exact Terminal generation plus native marker across restart, and failure to persist recovery progress must fail closed without deleting the owner;
+- durable Download state and Download-linked ledgers are not applicable. The Terminal row can currently be deleted; optional log state may survive; cache/destination files may already be moved while native authority remains;
+- final WorkManager result is currently `Result.success()` on the primary path. That is a semantic downgrade from unresolved external execution to completed Terminal task;
+- same-command manual rerun normally creates a new Terminal task identity and does not adopt the old marker; restart ignores the `terminal:` marker; a same-ID/reused identity can hit preflight `destroyProcessById()==false`, which is currently ignored before `prepare()` fails. Download same-settings retry/raw requeue/reconfigure/notification retry-resume and backup restore are not semantic repair paths and should be marked not applicable;
+- sibling/concurrency isolation must include an orphaned Terminal descendant coexisting with a later Terminal or Download native generation. Any cleanup/recovery must also satisfy the PGID anti-reuse guarantees owned by `BUG-NATIVE-02`.
+
+Candidate-rejection proof:
+
+- do not reject this as `BUG-TERMINAL-07`: that defect requires explicit cancellation/revocation and a worker that may publish after the durable task is deleted. This path reaches false terminal success with no cancellation at all;
+- do not reject it as `BUG-NATIVE-01`: a valid RUNNING marker with a PGID and a completed child is sufficient; no pre-launch STARTING crash is required;
+- do not reject it as `BUG-NATIVE-02`: no identifier reuse or wrong-sibling signal is required; the exact original descendant can simply fail to quiesce;
+- do not treat `removeExactProcess()` retaining the in-memory entry/marker as a repair barrier. The caller does not observe that retention, deletes the Terminal row, returns success, and application startup has no Terminal-marker adoption path;
+- do not treat successful root/supervisor exit as quiescence. The new helper implementation explicitly leaves `RUNNING` when descendant termination cannot be proven, and its public destroy contract documents `false` as fail-closed resource authority;
+- do not reject the path because no dedicated Terminal native test exists. Absence of test evidence keeps verification at `SOURCE-LEVEL ONLY`; it does not restore the missing production barrier.
+
+Focused verification requirements:
+
+- exercise the real Terminal UI/Room row -> WorkManager -> `TerminalDownloadWorker` -> `YoutubeDLCompat.execute()` -> durable native barrier -> cache/destination publication path with a child that exits zero while a descendant/process group is forced to remain non-quiescent; assert the task remains recovery-owned/nonterminal, no success notification/result is emitted, and no attempt-owned output is published/released prematurely;
+- include a normal zero-exit + QUIESCENT control, nonzero exit, STARTING state, RUNNING termination success/failure, process death after RUNNING publication, and process death after root success but before any Terminal recovery write;
+- fault-inject the first write that records unresolved Terminal recovery state and its later recovery/terminal write, proving write failure cannot delete the only Terminal carrier or permit a new generation to overlap;
+- restart with a `terminal:<id>` RUNNING marker and prove startup adopts and converges that exact generation once; repeat with a later manual Terminal run and with a Download sibling to prove isolation and `BUG-NATIVE-02` non-regression;
+- exercise cancellation as a regression/control for `BUG-TERMINAL-07`, including `destroyProcessById()==false`, while keeping the primary normal-success invariant separate;
+- verification must use actual Room + WorkManager + Terminal worker + native barrier wiring. Existing Download native-quiescence tests do not establish Terminal completion/recovery semantics, so this review remains `SOURCE-LEVEL ONLY`.
