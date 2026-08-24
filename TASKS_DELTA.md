@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **14**
-- Effective active defects: **88**
+- Delta active defects: **15**
+- Effective active defects: **89**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -375,6 +375,46 @@ Focused verification requirements:
 - fault-inject receiver `terminalDao.delete()` and the durable revocation write that replaces it, including process death before/after first persistence and recovery-write failure;
 - cover cancel before native start, during native execution, exactly after native completion, during publication, after publication but before terminal cleanup, repeated Cancel delivery, process restart, and a later manual rerun with the same command but a new task identity;
 - exercise the actual `NotificationUtil -> CancelTerminalNotificationReceiver -> WorkManager/native process -> TerminalDownloadWorker -> FileUtil -> terminalDao` wiring. Helper-only cancellation tests are insufficient.
+
+### BUG-DATE-03 — Preserve History date-fetch operation carrier across WorkManager enqueue failure
+
+**State:** Open  
+**Reviewed checkpoint:** `1387a8fbefcf6c9c6e9af6b02d1248ae764d5498`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** History's user-facing “fetch missing source dates” action calls `HistoryDateFetchViewModel.startOrReconnect()`, which delegates to `HistoryDateFetchManager.startOrReconnect()`. The manager first calls `HistoryDateFetchRepository.createOrReconnect()`. In one Room transaction that method creates a new `HistoryDateFetchOperation` in its nonterminal RUNNING state and inserts the exact PENDING `HistoryDateFetchItem` child snapshots. Only after that durable transaction commits does the manager build a one-time `HistoryDateFetchWorker` and call `WorkManager.enqueueUniqueWork(...)`. The returned WorkManager `Operation` is discarded and `enqueue()` returns `Unit`; the surrounding `SupervisorJob` launch has no typed scheduling result or durable retry handoff.
+
+If WorkManager reports asynchronous enqueue failure after the Room commit, the operation therefore remains durably RUNNING with PENDING children even though no worker carrier was accepted. No worker exists to produce a `Result`, advance the child ledger, or terminalize the parent. The active UI/notification state can remain present in the same process indefinitely. Manual invocation of the same History action can call `startOrReconnect()` again and reuse the operation ID, and cold-start `HistoryDateFetchManager.reconcile()` also enumerates nonterminal operations, but both are repair paths rather than a completed handoff: startup reconciliation calls the same `enqueue()` that discards the returned `Operation`, so another enqueue failure again leaves RUNNING state without a carrier. A process death between the Room commit and the enqueue call has the same initial state and depends on that restart reconciliation.
+
+**Why this is a defect:** RUNNING/PENDING is durable execution intent, not merely UI decoration. The implementation publishes that intent before proving that the external scheduler accepted its execution carrier and has no current-session convergence debt when scheduling fails. An ordinary WorkManager enqueue failure can therefore strand a user-requested operation in a durable nonterminal state that falsely implies active progress and requires an unrelated manual re-entry or later process restart to make another scheduling attempt. This is distinct from `BUG-DATE-01` (extractor failure reduced to `NO_DATE`) and `BUG-DATE-02` (parent completion despite FAILED children). It is also distinct from feature-specific carrier defects `BUG-QUEUE-03`, `BUG-KEYWORD-03`, and `BUG-OBSERVE-03`, whose durable authorities are respectively Download queue rows, automatic-keyword sync intent, and Observe Source recurring intent rather than the History date-fetch operation/child ledger.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. `HistoryDateFetchManager.kt` has the same production blob at the synchronized baseline checkpoint and at the reviewed checkpoint.
+
+Required result:
+
+- make scheduler acceptance part of the date-fetch scheduling commit: await/observe the returned WorkManager `Operation` or otherwise persist an explicit retry/failure debt that prevents a carrierless operation from being represented as ordinary RUNNING progress;
+- preserve the exact `operationId` and PENDING child identities across scheduling retry, and keep `ExistingWorkPolicy.KEEP` or an equivalent exact-carrier check so a retry cannot create duplicate concurrent workers when an earlier enqueue actually succeeded;
+- when enqueue fails in the current process, surface or durably record the failure and automatically converge through a bounded retry/reconciliation path rather than requiring a new user action or process restart;
+- make startup reconciliation observe its own enqueue outcome as well; repeated scheduler failure must not leave the operation indefinitely RUNNING without either a durable retry owner or explicit failed/retryable state;
+- race cancellation with initial/recovery enqueue and prove a cancelled operation cannot be resurrected by a late carrier acceptance or subsequent reconciliation;
+- preserve `BUG-DATE-01/02` result semantics once a worker does run; fixing carrier durability must not reinterpret lookup failure or failed children as successful date absence/completion.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision/carrier: the exact `HistoryDateFetchOperation.operationId` plus its snapshotted child IDs/source identities; the first authoritative durable write is the transaction that inserts the operation and children;
+- first-write failure before that transaction commits must leave no false RUNNING operation. The primary defect is the later cross-domain boundary where that first write succeeds but scheduler acceptance fails;
+- durable state after enqueue failure is currently parent RUNNING plus PENDING children, with no Download state, linked Download ledger, filesystem publication, `DownloadOutcome`, or Worker result because no Worker need exist;
+- recovery identity is stable: manual `startOrReconnect()` and startup `reconcile()` can reuse the same operation ID. That repair capability must become an automatic/durable convergence protocol and must itself propagate scheduler acceptance failure;
+- process death after Room commit but before enqueue, asynchronous first-enqueue failure, repeated recovery-enqueue failure, recovery success, cancellation racing enqueue, and duplicate manual start while a valid unique work already exists must all preserve one exact operation carrier and truthful operation state;
+- Download same-settings retry/raw requeue/reconfigure/notification retry-resume and backup restore are not semantic re-entry paths for this operation and should be marked not applicable rather than assumed safe.
+
+Focused verification requirements:
+
+- exercise the real `HistoryFragment -> HistoryDateFetchViewModel -> HistoryDateFetchManager -> HistoryDateFetchRepository/Room -> WorkManager -> HistoryDateFetchWorker` wiring with an enqueue `Operation` that fails asynchronously after the operation/children transaction commits; assert the parent cannot remain ordinary RUNNING with no retry/failure carrier;
+- inject process death immediately after operation creation but before WorkManager acceptance, then restart and prove the same exact operation is reconciled once; repeat with the first reconciliation enqueue failing and a later attempt succeeding;
+- race user cancellation against a delayed enqueue completion and against startup reconciliation, proving no cancelled operation is revived and no duplicate worker is created;
+- include normal successful enqueue, repeated manual Start/Reconnect while unique work exists, worker terminal success/failure, and regressions for `BUG-DATE-01/02` semantics;
+- the existing policy-only test that asserts `ExistingWorkPolicy.KEEP` is insufficient. Verification must cover actual Room + WorkManager acceptance/result wiring.
 
 ## P3
 
