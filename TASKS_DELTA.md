@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **15**
-- Effective active defects: **89**
+- Delta active defects: **16**
+- Effective active defects: **90**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -415,6 +415,44 @@ Focused verification requirements:
 - race user cancellation against a delayed enqueue completion and against startup reconciliation, proving no cancelled operation is revived and no duplicate worker is created;
 - include normal successful enqueue, repeated manual Start/Reconnect while unique work exists, worker terminal success/failure, and regressions for `BUG-DATE-01/02` semantics;
 - the existing policy-only test that asserts `ExistingWorkPolicy.KEEP` is insufficient. Verification must cover actual Room + WorkManager acceptance/result wiring.
+
+### BUG-COOKIE-04 — Convert Chromium cookie expiry to Netscape/Unix semantics before yt-dlp use
+
+**State:** Open  
+**Reviewed checkpoint:** `1387a8fbefcf6c9c6e9af6b02d1248ae764d5498`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the production Home cookie-recovery flow launches `WebViewActivity`; Generate calls `CookieViewModel.getCookiesFromDB()`, which opens WebView's Chromium `Cookies` SQLite database and reads the `expires_utc` INTEGER directly with `getLong()`. That raw value is copied into `WebViewActivity.CookieItem.expiry`, and `CookieItem.toNetscapeFormat()` writes it unchanged as the fifth field of each generated Netscape cookie line. The generated content is persisted in the app cookie row and projected to `cookies.txt`; when `use_cookies` is enabled, `YTDLPUtil` supplies that file to yt-dlp through `--cookies` for authenticated metadata requests, and the same runtime projection is shared by other cookie-enabled yt-dlp paths.
+
+The two formats do not use the same timestamp representation. Chromium's cookie store persists `expires_utc` through `sql::Statement::BindTime()`, which serializes `base::Time` as **microseconds since the Windows epoch (1601-01-01)**; `ColumnTime()` reverses the same representation. The Netscape cookie-file contract consumed by curl/yt-dlp uses the expiry field as **seconds since the Unix epoch (1970-01-01), or 0 for a session cookie**. The application performs neither the epoch subtraction nor the microseconds-to-seconds conversion. A normal persistent WebView cookie therefore becomes a syntactically valid but enormously future-dated Netscape cookie instead of retaining its actual expiry.
+
+No later boundary repairs the semantic conversion. `CookieViewModel.updateCookiesFile()` copies the already generated line content, yt-dlp accepts Netscape-format cookie files, and restart rebuilds the same malformed expiry from the app's persisted cookie content. Once the real browser expiry passes, the generated jar can continue treating the credential as unexpired and attach it to requests until another server-side mechanism rejects or rotates it, while a fresh WebView acquisition repeats the same conversion error for every persistent cookie.
+
+**Why this is a defect:** cookie expiration is part of authentication authority, not display metadata. The WebView cookie database and Netscape file both carry a numeric field named as an expiry, but raw numeric equality does not preserve its unit or epoch. The application can continue presenting/sending a cookie after the client-side expiration that the captured browser state established, producing stale-authentication failures and potentially retaining credential use beyond the intended browser lifetime. This is distinct from `BUG-COOKIE-01`, which owns ordering/generation between Room cookie state and the runtime file, `BUG-COOKIE-02`, which owns clipboard export result reporting, and `BUG-COOKIE-03`, which owns acquisition success before extraction/persistence/projection completes; none owns representation conversion of an otherwise successfully captured cookie.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The same `CookieViewModel`/`WebViewActivity.CookieItem` conversion path is present in the synchronized baseline checkpoint.
+
+Required result:
+
+- convert Chromium `expires_utc` from its documented Windows-epoch microsecond representation to Netscape/Unix seconds before serializing a persistent cookie, while preserving the correct session-cookie `0` semantics;
+- treat timestamp unit/epoch conversion as part of the capture contract and reject or diagnose values that cannot be converted safely instead of emitting a syntactically valid but semantically different cookie line;
+- preserve the converted expiry through Room persistence, runtime `cookies.txt` projection, export, restart reconstruction, and every yt-dlp consumer; do not let later projection/retry paths reintroduce the raw Chromium value;
+- keep `BUG-COOKIE-01/03` generation/publication fixes separate: a fully synchronized and durably published cookie file is still incorrect if its expiry semantics were converted wrongly;
+- define migration/reacquisition behavior for already stored WebView-generated cookie rows whose content contains raw Chromium expiry values, without rewriting manually imported Netscape cookie files that already use Unix seconds.
+
+Cross-attempt / recovery requirements:
+
+- immediate Home retry after successful capture, ordinary cookie-enabled metadata/download execution, Terminal cookie use where applicable, and process restart must all consume the same correctly converted expiration semantics;
+- repeated WebView acquisition must not reproduce the raw timestamp representation, while manual import of a valid Netscape cookie file must remain unchanged;
+- after the true captured expiry time passes, no retry/requeue/reconfigure path may regain authority from the stale generated line merely because its raw Chromium integer is numerically far in the future;
+- delete/disable/revocation and projection-rebuild behavior remain governed by `BUG-COOKIE-01`, but those paths must preserve the converted representation when the cookie is still enabled.
+
+Focused verification requirements:
+
+- add a production-path WebView SQLite -> `CookieViewModel.getCookiesFromDB()` -> `CookieItem.toNetscapeFormat()` -> Room -> `cookies.txt` -> yt-dlp test with a known persistent cookie whose Chromium `expires_utc` corresponds to a concrete Unix expiration; assert the generated fifth field equals Unix seconds, not the raw database integer;
+- include session expiry, already-expired, near-future, far-future within supported cookie limits, malformed/overflow values, and process-restart reconstruction;
+- verify a cookie is no longer eligible after its converted expiration, while a manually imported Netscape cookie with the same Unix expiry remains unchanged;
+- exercise the real generated cookie-file consumer rather than only a timestamp helper. No such direct production-wiring verification was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
 
 ## P3
 
