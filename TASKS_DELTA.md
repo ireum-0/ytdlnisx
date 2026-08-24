@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **19**
-- Effective active defects: **93**
+- Delta active defects: **20**
+- Effective active defects: **94**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -653,3 +653,49 @@ Focused verification requirements:
 - repeat through `PoTokenWebViewLoginActivity` with `noAuth=true` and prove token generation cannot observe/send the prior authenticated session before reset completion;
 - cover no prior cookies, prior host/session cookies, delayed callback, Activity recreation/cancellation during reset, repeated launches, reset failure/abandonment, redirects, and process restart;
 - after releasing the reset, exercise the real `WebView -> CookieViewModel.getCookiesFromDB() -> Room -> cookies.txt` path as a control and assert only credentials established after the completed reset can become current. No production-path WebView/network test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+### BUG-COOKIE-07 — Preserve partitioned-cookie identity when exporting WebView cookies to yt-dlp
+
+**State:** Open  
+**Reviewed checkpoint:** `e4a47f1cd4990a17a40258afb0f179e027868deb`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the production WebView credential flow enables normal and third-party cookies, and modern Android WebView supports cookies carrying the `Partitioned` attribute. Chromium's persistent cookie schema makes the top-level partition part of cookie identity: `top_frame_site_key` stores the scheme/site of the topmost frame and is deserialized into the cookie partition key; current uniqueness also distinguishes partition context from the ordinary host/name/path tuple. `CookieViewModel.getCookiesFromDB()`, however, queries the WebView `Cookies` SQLite table using a projection that contains only `host_key`, `expires_utc`, `path`, `name`, `value`, and `is_secure`. It neither reads nor filters any partition identity and queries the whole table without a partition-aware predicate.
+
+Each returned row is immediately converted to `WebViewActivity.CookieItem` and then to the seven-field Netscape representation. That carrier has domain/include-subdomains/path/secure/expiry/name/value but no top-level partition dimension. The semantic loss occurs before Room persistence: a WebView cookie that is valid only in top-level partition A becomes an ordinary shared Netscape cookie, and two Chromium rows that legitimately have the same host/name/path but different partition keys are flattened into indistinguishable destination identities. Because the SQLite query has no ordering or collision-resolution rule for that lost identity, whichever duplicate value the downstream Netscape/Python cookie jar retains can depend on row/load order rather than the WebView partition that actually authorized the request.
+
+The flattened content is then persisted in the app cookie row, projected to the shared runtime `cookies.txt`, and supplied to yt-dlp through `--cookies` whenever `use_cookies` is enabled. Netscape cookie files do not encode CHIPS/top-level partition keys, so no later projection, retry, or process restart can reconstruct the discarded authority. A partitioned credential can therefore be sent outside the top-level context that WebView would require, or a same-name cookie from another partition can replace/be selected instead of the credential belonging to the intended session.
+
+**Why this is a defect:** cookie partition is part of credential identity and authorization context, not optional display metadata. Android documents that `Partitioned` cookies are returned only for the top-level partition of the URL, and Chromium persists that partition in the cookie's unique identity. Silently dropping the dimension when adapting to a format that cannot represent it broadens authority and can conflate distinct credentials. This is separate from `BUG-COOKIE-04` (expiry representation), `BUG-COOKIE-05` (host-only/domain scope), and `BUG-COOKIE-06` (fresh-session reset ordering): even a correctly isolated, correctly timed, host-scope-preserving capture is still semantically wrong if partition identity is erased.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The reviewed conversion path predates the current checkpoint; the newly considered platform/storage dimension is what exposes the latent defect.
+
+Required result:
+
+- treat partition identity as part of the authoritative source cookie key during WebView capture and never silently serialize a partitioned Chromium row as an unpartitioned shared Netscape cookie;
+- because the Netscape format consumed by `--cookies` has no partition-key field, either exclude unsupported partitioned rows from the global jar with an explicit/actionable diagnostic, or introduce a request/context-aware materialization path that selects only an exact proven top-level partition without broadening it; do not invent a flattened equivalent;
+- prevent two cookies that differ only by Chromium partition identity from colliding into one effective Netscape cookie value, and preserve ordinary unpartitioned cookies unchanged;
+- keep manually imported Netscape cookies under their existing unpartitioned source semantics; do not fabricate partition provenance for them;
+- for already persisted WebView-generated rows whose partition provenance was discarded, require safe reacquisition or another explicit migration policy rather than pretending the missing partition can be reconstructed from the flattened line.
+
+Cross-attempt / candidate-rejection requirements:
+
+- immediate Home retry, ordinary cookie-enabled metadata/download execution, repeated WebView acquisition, and process restart must never turn a partition-specific WebView credential into process-wide unpartitioned authority; reacquisition must preserve or deliberately reject the same partition semantics each time;
+- a same-host/name/path pair from top-level partitions A and B must remain distinguishable at the source boundary and must not become completion-order/SQLite-order dependent in the runtime jar;
+- Download same-settings retry, raw/manual requeue, reconfigure, notification retry/resume, and restore do not repair erased partition provenance; if they consume the shared jar, they must not regain broader authority from a flattened generated row;
+- this candidate is not rejected because yt-dlp accepts Netscape cookies or because its own generic browser-cookie path may also flatten unsupported browser context. The adapter is responsible for not converting a source credential with narrower contextual authority into a broader/different identity. The target format's inability to encode a source identity dimension is a reason to reject/contextualize that row, not proof that the dimension is semantically irrelevant;
+- no race is required. A single partitioned cookie is already scope-broadened by conversion; multiple same-key rows in different partitions additionally create a concrete credential-collision/selection failure.
+
+Terminal fault / persistence notes:
+
+- authoritative observation is the Chromium/WebView cookie row including its partition key. The carrier-creation gap occurs when `CookieViewModel` projects that row into fields that omit partition identity;
+- the primary failure precedes the first app-owned persistence call. If the flattened content is then inserted/updated in Room and projected to `cookies.txt`, those writes durably preserve the wrong semantic identity across restart; failures of those writes remain separately owned by the existing cookie publication defects;
+- there is no required Download terminal state, linked Download ledger, filesystem media publication, `DownloadOutcome`, or WorkManager result in the primary path. The material side effect is which credential instance and scope the HTTP consumer can select/send;
+- first-write fault injection therefore cannot close this defect: even a perfectly successful durable write is wrong when the carrier has already discarded a source identity dimension.
+
+Focused verification requirements:
+
+- on a WebView version with partitioned cookies enabled, exercise the real WebView/Chromium `Cookies` store -> `CookieViewModel.getCookiesFromDB()` -> Room -> runtime `cookies.txt` -> yt-dlp cookie consumer with an unpartitioned control plus partitioned cookies;
+- seed or obtain two partitioned cookies with the same embedded host/name/path and different values under two distinct top-level sites, then prove capture/materialization never merges, arbitrarily selects, or sends one outside its authorized top-level partition;
+- cover a single partitioned cookie, mixed partitioned/unpartitioned rows, redirects/third-party cookie creation, repeated capture, process restart, and manual Netscape import as a non-partitioned control;
+- verify any chosen policy (skip with diagnostic or context-aware materialization) through real WebView/network consumer wiring. No production-path CHIPS/WebView integration test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
