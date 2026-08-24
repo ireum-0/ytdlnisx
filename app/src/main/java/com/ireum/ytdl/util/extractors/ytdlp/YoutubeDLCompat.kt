@@ -60,38 +60,60 @@ def write_marker(state, pgid=None):
     os.replace(temporary, marker)
 
 child = None
+child_pgid = None
 write_marker("STARTING")
 
-def stop_group():
-    if child is None:
-        return
+def group_exists(pgid):
     try:
-        os.killpg(child.pid, signal.SIGTERM)
+        os.killpg(pgid, 0)
+        return True
     except ProcessLookupError:
-        return
+        return False
+    except PermissionError:
+        return True
+
+def stop_group():
+    if child is None or child_pgid is None:
+        return True
     try:
-        child.wait(timeout=4)
-    except subprocess.TimeoutExpired:
+        os.killpg(child_pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    deadline = time.monotonic() + 4
+    while group_exists(child_pgid) and time.monotonic() < deadline:
         try:
-            os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
+            child.wait(timeout=0.05)
+        except subprocess.TimeoutExpired:
             pass
-        child.wait()
+    if not group_exists(child_pgid):
+        return True
+    try:
+        os.killpg(child_pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    try:
+        child.wait(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        pass
+    return not group_exists(child_pgid)
 
 def stop(signum, frame):
-    stop_group()
-    write_marker("QUIESCENT")
     raise SystemExit(128 + signum)
 
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 child = subprocess.Popen(command, start_new_session=True)
-write_marker("RUNNING", os.getpgid(child.pid))
+child_pgid = child.pid
+write_marker("RUNNING", child_pgid)
 try:
     exit_code = child.wait()
 finally:
-    stop_group()
-    write_marker("QUIESCENT")
+    if stop_group():
+        write_marker("QUIESCENT", child_pgid)
+    else:
+        # Leave a positive native barrier for a later exact process-group
+        # recovery pass; root-process exit is not a descendant proof.
+        write_marker("RUNNING", child_pgid)
 sys.exit(exit_code)
 """.trimIndent()
 
