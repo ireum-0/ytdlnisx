@@ -33,9 +33,10 @@ class DownloadWorkerOwnershipRecoveryTest {
     fun staleExecutionCannotCancelNewerWorkerOrProcessOwner() {
         val downloadId = 907L
         DownloadWorkerExecutionOwners.claim(downloadId, "E1")
-        DownloadWorkerProcessOwners.claim(downloadId, "E1")
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "E1"))
         DownloadWorkerExecutionOwners.claim(downloadId, "E2")
 
+        assertFalse(DownloadWorkerProcessOwners.claim(downloadId, "E2"))
         assertFalse(canCancelExecutionProcess(downloadId, "E1"))
         assertFalse(canCancelExecutionProcess(downloadId, "E2"))
 

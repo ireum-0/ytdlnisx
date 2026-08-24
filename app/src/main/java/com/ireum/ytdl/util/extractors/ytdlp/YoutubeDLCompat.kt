@@ -103,10 +103,6 @@ object YoutubeDLCompat {
         checkRequiredBinary(quickJsPath, "quickjs")
         checkRequiredBinary(ytdlpPath, "yt-dlp")
 
-        if (processId != null && idProcessMap.containsKey(processId)) {
-            throw YoutubeDLException("Process ID already exists")
-        }
-
         val args = sanitizeArguments(
             context,
             request.buildCommand(),
@@ -137,7 +133,22 @@ object YoutubeDLCompat {
         }
 
         if (processId != null) {
-            idProcessMap[processId] = process
+            val duplicate = synchronized(idProcessMap) {
+                if (idProcessMap.containsKey(processId)) {
+                    true
+                } else {
+                    idProcessMap[processId] = process
+                    false
+                }
+            }
+            if (duplicate) {
+                // Do not overwrite a live process registered by another
+                // exact execution.  The newly-started process is not
+                // published as an owner, so terminate it before reporting
+                // the identity collision.
+                ProcessQuiescence.requestTermination(process)
+                throw YoutubeDLException("Process ID already exists")
+            }
         }
         onProcessRegistered?.invoke()
 
@@ -162,16 +173,16 @@ object YoutubeDLCompat {
         val out = outBuffer.toString()
         val err = errBuffer.toString()
         if (exitCode > 0) {
-            if (processId != null && !idProcessMap.containsKey(processId)) {
+            if (processId != null && !isExactProcessRegistered(processId, process)) {
                 throw CanceledException()
             }
             if (!ignoreErrors(request, out)) {
-                idProcessMap.remove(processId)
+                processId?.let { removeExactProcess(it, process) }
                 val errorOutput = err.ifBlank { out }.ifBlank { "yt-dlp exited with code $exitCode" }
                 throw YoutubeDLException(errorOutput)
             }
         }
-        idProcessMap.remove(processId)
+        processId?.let { removeExactProcess(it, process) }
 
         return YoutubeDLResponse(command, exitCode, System.currentTimeMillis() - startTime, out, err)
     }
@@ -215,6 +226,29 @@ object YoutubeDLCompat {
         return quiesced
     }
 
+    /** Returns whether this exact execution still has a registered yt-dlp process. */
+    internal fun hasProcessById(processId: String): Boolean =
+        synchronized(idProcessMap) { idProcessMap.containsKey(processId) }
+
+    /** Returns whether any download-scoped yt-dlp process remains for this row. */
+    internal fun hasAnyDownloadProcess(downloadId: Long): Boolean {
+        val prefix = "download:$downloadId:"
+        return synchronized(idProcessMap) {
+            idProcessMap.keys.any { it.startsWith(prefix) }
+        }
+    }
+
+    /** Returns whether another execution, not the expected one, remains registered. */
+    internal fun hasOtherDownloadProcess(
+        downloadId: Long,
+        expectedProcessId: String,
+    ): Boolean {
+        val prefix = "download:$downloadId:"
+        return synchronized(idProcessMap) {
+            idProcessMap.keys.any { it.startsWith(prefix) && it != expectedProcessId }
+        }
+    }
+
     /** Test seam that registers a fake in the same production process map. */
     internal fun registerProcessForTesting(processId: String, process: Process) {
         synchronized(idProcessMap) {
@@ -225,6 +259,17 @@ object YoutubeDLCompat {
     internal fun clearProcessForTesting(processId: String) {
         synchronized(idProcessMap) {
             idProcessMap.remove(processId)
+        }
+    }
+
+    private fun isExactProcessRegistered(processId: String, process: Process): Boolean =
+        synchronized(idProcessMap) { idProcessMap[processId] === process }
+
+    private fun removeExactProcess(processId: String, process: Process) {
+        synchronized(idProcessMap) {
+            if (idProcessMap[processId] === process) {
+                idProcessMap.remove(processId)
+            }
         }
     }
 

@@ -148,19 +148,43 @@ internal object DownloadExecutionRecovery {
                         // E1 must never reclassify E2.  Leave the journal for
                         // the next lifecycle pass to observe E2.
                     } else {
+                        val pendingForCurrent = pending?.takeIf {
+                            it.executionId == current.executionId
+                        }
+                        val journalBelongsToAnotherExecution =
+                            pending != null && pendingForCurrent == null
                         val owned = current.executionId.isNotBlank() &&
                             DownloadWorkerExecutionOwners.isOwnedBy(
                                 current.id,
                                 current.executionId,
                             )
-                        if (!owned) {
-                            if (
-                                pending?.nativeQuiescencePending == true ||
-                                    DownloadWorkerProcessOwners.isOwnedBy(
+                        val anotherExecutionOwnsTheRow =
+                            DownloadWorkerExecutionOwners.ownerOf(current.id)?.let {
+                                it != current.executionId
+                            } == true
+                        val anotherExecutionHasNativeProcess =
+                            DownloadWorker.hasConflictingNativeProcess(
+                                current.id,
+                                current.executionId,
+                            )
+                        if (
+                            !owned &&
+                                !journalBelongsToAnotherExecution &&
+                                !anotherExecutionOwnsTheRow &&
+                                !anotherExecutionHasNativeProcess
+                        ) {
+                            // The execution-owner map is not a native
+                            // quiescence proof.  A Process can remain in the
+                            // same application after its coroutine owner has
+                            // disappeared, so inspect every exact registry
+                            // before making the row reusable.
+                            val nativeQuiescenceRequired =
+                                pendingForCurrent?.nativeQuiescencePending == true ||
+                                    DownloadWorker.hasRegisteredNativeProcess(
                                         current.id,
                                         current.executionId,
                                     )
-                            ) {
+                            if (nativeQuiescenceRequired) {
                                 check(
                                     DownloadWorker.cancelProcessesForExecution(
                                         current.id,
@@ -170,7 +194,7 @@ internal object DownloadExecutionRecovery {
                                     "Native process owner changed while recovering download ${current.id}"
                                 }
                                 if (
-                                    pending?.nativeQuiescencePending == true &&
+                                    pendingForCurrent?.nativeQuiescencePending == true &&
                                     !markNativeQuiescent(
                                         context,
                                         current.id,
@@ -210,7 +234,7 @@ internal object DownloadExecutionRecovery {
                                         repository = repository,
                                         downloadId = latest.id,
                                         executionId = latest.executionId,
-                                        authoritativeIssue = pending?.authoritativeIssue,
+                                        authoritativeIssue = pendingForCurrent?.authoritativeIssue,
                                     )
                                 ) {
                                     DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
@@ -236,12 +260,12 @@ internal object DownloadExecutionRecovery {
                                         clearJournal = true
                                     }
                                 }
-                            } else if (pending?.authoritativeIssue != null) {
+                            } else if (pendingForCurrent?.authoritativeIssue != null) {
                                 // A non-running row may already have been
                                 // converged by a previous pass.  Do not clear
                                 // an issue journal until its exact carrier is
                                 // visible in Room.
-                                val issue = pending.authoritativeIssue
+                                val issue = requireNotNull(pendingForCurrent.authoritativeIssue)
                                 val barrier = dbManager.historyReplacementBarrierDao
                                     .getByDownloadId(latest.id)
                                 check(

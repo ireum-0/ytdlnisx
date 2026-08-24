@@ -208,6 +208,45 @@ class DownloadWorkerCleanupProductionWiringTest {
     }
 
     @Test
+    fun startupRecoveryInspectsExactProcessRegistryAfterExecutionOwnerDisappears() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = "E1"))
+        val processId = YtdlpProcessIdentity.download(downloadId, "E1")
+        val process = ControlledProcess()
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertTrue(DownloadExecutionRecovery.recordPending(appContext, item))
+        // The durable journal says the prior cancellation barrier was
+        // acknowledged, but an exact same-process native registry entry still
+        // proves that the OS process has not quiesced.  No worker execution
+        // owner is published in this scenario.
+        assertTrue(DownloadExecutionRecovery.markNativeQuiescent(appContext, downloadId, "E1"))
+
+        try {
+            val recovery = async(Dispatchers.IO) {
+                DownloadExecutionRecovery.reconcile(appContext, db)
+            }
+            process.destroyRequested.await()
+            yield()
+            assertFalse(recovery.isCompleted)
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+
+            process.acknowledgeTermination()
+            recovery.await()
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            process.acknowledgeTermination()
+            YoutubeDLCompat.clearProcessForTesting(processId)
+        }
+    }
+
+    @Test
     fun durableNativeRecoveryCarrierSurvivesTheProcessRegistryBeingGone() = runBlocking {
         val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
         val downloadId = db.downloadDao.insertRaw(download().copy(executionId = "dead-E1"))

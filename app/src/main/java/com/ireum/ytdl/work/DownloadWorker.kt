@@ -747,7 +747,10 @@ class DownloadWorker(
                     downloadId = candidate.id,
                     executionId = "",
                 ) {
-                    if (!DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id)) {
+                    if (
+                        !DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id) ||
+                            hasAnyRegisteredNativeProcess(candidate.id)
+                    ) {
                         // A prior execution still owns an unresolved native
                         // process.  Do not publish a new execution token even
                         // if an external path prematurely made the row look
@@ -3084,6 +3087,14 @@ class DownloadWorker(
                             ) {
                                 expectedExecutionId?.let {
                                     DownloadWorkerExecutionOwners.release(downloadItem.id, it)
+                                    if (
+                                        !hasNativeProcessRegistryEntry(
+                                            downloadItem.id,
+                                            it,
+                                        )
+                                    ) {
+                                        DownloadWorkerProcessOwners.release(downloadItem.id, it)
+                                    }
                                 }
                                 if (workerEntryMatches) {
                                     workerCleanupDownloadIds.remove(downloadItem.id)
@@ -3106,6 +3117,14 @@ class DownloadWorker(
                             }
                             expectedExecutionId?.let {
                                 DownloadWorkerExecutionOwners.release(downloadItem.id, it)
+                                if (
+                                    !hasNativeProcessRegistryEntry(
+                                        downloadItem.id,
+                                        it,
+                                    )
+                                ) {
+                                    DownloadWorkerProcessOwners.release(downloadItem.id, it)
+                                }
                                 if (workerEntryMatches) {
                                     workerExecutionIds.remove(downloadItem.id, it)
                                 }
@@ -3614,6 +3633,15 @@ class DownloadWorker(
                     withDownloadWorkerExecutionLock {
                         assertExecutionOwnedBeforeAttemptLocked(input.downloadItem)
                         check(
+                            !hasConflictingNativeProcess(
+                                input.downloadItem.id,
+                                input.downloadItem.executionId,
+                            )
+                        ) {
+                            "Native process for another execution remains registered for download " +
+                                input.downloadItem.id
+                        }
+                        check(
                             DownloadWorkerProcessOwners.claim(
                                 input.downloadItem.id,
                                 input.downloadItem.executionId,
@@ -3656,12 +3684,13 @@ class DownloadWorker(
                             }
                             execution.cancel()
                         }
-                        withDownloadWorkerExecutionLock {
-                            DownloadWorkerProcessOwners.release(
-                                input.downloadItem.id,
-                                input.downloadItem.executionId,
-                            )
-                        }
+                        // Keep the exact native owner through same-execution
+                        // retries and the later hard-sub phase.  Releasing it
+                        // here would let a queued E2 claim the Download while
+                        // an execution-scoped post-processing process can
+                        // still be registered.  The worker-level finalizer
+                        // releases it only after the whole execution has
+                        // converged and no native process remains.
                     }
                 }
             }
@@ -4325,7 +4354,15 @@ class DownloadWorker(
         private val hardSubDisabledFfmpegSources: MutableSet<String> = ConcurrentHashMap.newKeySet()
         private val hardSubFilterSupportCache: MutableMap<String, Set<String>> = ConcurrentHashMap()
         private val hardSubPostProcessMutex = Mutex()
-        private val runningFfmpegProcesses: MutableMap<FfmpegProcessKey, MutableSet<Process>> = ConcurrentHashMap()
+        /**
+         * Every hard-sub/post-processing Process is retained here until its
+         * own OS termination has been acknowledged.  The execution token is
+         * part of the key; a stale cleanup can therefore address only its
+         * exact process set and cannot clear a newer execution's registry.
+         */
+        private val runningNativePostProcessingProcesses:
+            MutableMap<FfmpegProcessKey, MutableSet<Process>> = ConcurrentHashMap()
+        private val activeNativeProcessKey = ThreadLocal<FfmpegProcessKey?>()
         private val loadInfoJsonOptionRegex = Regex("""--load-info-json\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
         private const val FAILURE_YTDLP_TAIL_LINES = 160
         private const val FAILURE_FILE_LIST_LIMIT = 80
@@ -4341,6 +4378,145 @@ class DownloadWorker(
         }
 
         /**
+         * True when any exact native process registry still identifies this
+         * Download execution as a writer.  The execution-owner map is only
+         * one of the barriers: it is deliberately not treated as a complete
+         * liveness proof because a Process can outlive a coroutine owner.
+         */
+        internal fun hasRegisteredNativeProcess(
+            downloadId: Long,
+            expectedExecutionId: String,
+        ): Boolean {
+            if (expectedExecutionId.isBlank()) return false
+            val processId = YtdlpProcessIdentity.download(downloadId, expectedExecutionId)
+            return DownloadWorkerProcessOwners.isOwnedBy(downloadId, expectedExecutionId) ||
+                YoutubeDLCompat.hasProcessById(processId) ||
+                runningNativePostProcessingProcesses[
+                    FfmpegProcessKey(downloadId, expectedExecutionId)
+                ]?.isNotEmpty() == true
+        }
+
+        /** Registry-only form used when deciding whether the owner token can
+         * be released after the complete worker execution has converged. */
+        internal fun hasNativeProcessRegistryEntry(
+            downloadId: Long,
+            expectedExecutionId: String,
+        ): Boolean {
+            if (expectedExecutionId.isBlank()) return false
+            val processId = YtdlpProcessIdentity.download(downloadId, expectedExecutionId)
+            return YoutubeDLCompat.hasProcessById(processId) ||
+                runningNativePostProcessingProcesses[
+                    FfmpegProcessKey(downloadId, expectedExecutionId)
+                ]?.isNotEmpty() == true
+        }
+
+        /**
+         * Used before publishing a new execution token.  A row is not
+         * reusable while a process for any older execution is still visible
+         * in any same-process registry, even if its worker owner disappeared.
+         */
+        internal fun hasAnyRegisteredNativeProcess(downloadId: Long): Boolean {
+            return DownloadWorkerProcessOwners.ownerOf(downloadId) != null ||
+                YoutubeDLCompat.hasAnyDownloadProcess(downloadId) ||
+                runningNativePostProcessingProcesses.keys.any { key ->
+                    key.downloadItemId == downloadId &&
+                        runningNativePostProcessingProcesses[key]?.isNotEmpty() == true
+                }
+        }
+
+        /**
+         * A recovery snapshot must not mutate E1 when another exact native
+         * execution is still registered for the same numeric Download ID.
+         */
+        internal fun hasConflictingNativeProcess(
+            downloadId: Long,
+            expectedExecutionId: String,
+        ): Boolean {
+            if (expectedExecutionId.isBlank()) {
+                return hasAnyRegisteredNativeProcess(downloadId)
+            }
+            val processOwner = DownloadWorkerProcessOwners.ownerOf(downloadId)
+            if (processOwner != null && processOwner != expectedExecutionId) return true
+
+            val expectedProcessId = YtdlpProcessIdentity.download(downloadId, expectedExecutionId)
+            if (YoutubeDLCompat.hasOtherDownloadProcess(downloadId, expectedProcessId)) return true
+
+            return runningNativePostProcessingProcesses.keys.any { key ->
+                key.downloadItemId == downloadId &&
+                    key.executionId != expectedExecutionId &&
+                    runningNativePostProcessingProcesses[key]?.isNotEmpty() == true
+            }
+        }
+
+        private fun registerNativePostProcessingProcess(
+            key: FfmpegProcessKey,
+            process: Process,
+        ) {
+            runningNativePostProcessingProcesses
+                .computeIfAbsent(key) { ConcurrentHashMap.newKeySet() }
+                .add(process)
+        }
+
+        private fun removeNativePostProcessingProcess(
+            key: FfmpegProcessKey,
+            process: Process,
+        ) {
+            val processSet = runningNativePostProcessingProcesses[key] ?: return
+            processSet.remove(process)
+            if (processSet.isEmpty()) {
+                runningNativePostProcessingProcesses.remove(key, processSet)
+            }
+        }
+
+        private fun nativeProcessKeyForCurrentThread(): FfmpegProcessKey? =
+            activeNativeProcessKey.get()
+
+        /**
+         * A few hard-sub probes and merge helpers do not carry the progress
+         * object through their call graph.  Keep their process registration
+         * execution-scoped for the duration of the production burn-in call.
+         */
+        private fun <T> withNativeProcessScope(
+            key: FfmpegProcessKey?,
+            block: () -> T,
+        ): T {
+            val previous = activeNativeProcessKey.get()
+            if (key == null) return block()
+            activeNativeProcessKey.set(key)
+            return try {
+                block()
+            } finally {
+                if (previous == null) {
+                    activeNativeProcessKey.remove()
+                } else {
+                    activeNativeProcessKey.set(previous)
+                }
+            }
+        }
+
+        internal fun registerPostProcessingProcessForTesting(
+            downloadId: Long,
+            executionId: String,
+            process: Process,
+        ) {
+            registerNativePostProcessingProcess(
+                FfmpegProcessKey(downloadId, executionId),
+                process,
+            )
+        }
+
+        internal fun clearPostProcessingProcessForTesting(
+            downloadId: Long,
+            executionId: String,
+            process: Process,
+        ) {
+            removeNativePostProcessingProcess(
+                FfmpegProcessKey(downloadId, executionId),
+                process,
+            )
+        }
+
+        /**
          * Called only while the caller holds the exact per-Download side-effect
          * lease and has re-read the matching execution row.  A process owner
          * for a different execution is never addressed by numeric Download ID.
@@ -4349,7 +4525,13 @@ class DownloadWorker(
             downloadId: Long,
             expectedExecutionId: String,
         ): Boolean {
-            if (expectedExecutionId.isBlank()) return true
+            if (expectedExecutionId.isBlank()) {
+                // Legacy rows have no execution identity with which an
+                // unknown native process can be safely addressed.  Treat a
+                // visible process registry entry as a fail-closed barrier;
+                // never cancel by numeric Download ID alone.
+                return !hasAnyRegisteredNativeProcess(downloadId)
+            }
             if (!canCancelExecutionProcess(downloadId, expectedExecutionId)) return false
             val ytdlpQuiesced = cancelYtdlpProcess(downloadId, expectedExecutionId)
             val postProcessingQuiesced = cancelPostProcessingById(
@@ -4367,15 +4549,19 @@ class DownloadWorker(
 
         /**
          * Starts a new attempt while holding the exact current Download
-         * ownership gate.  A process left by a dead/stale older execution may
-         * be replaced; a process owned by the currently published execution
-         * is never mistaken for that stale process.
+         * ownership gate.  Only the exact current execution's prior process
+         * may be quiesced for a retry; a process belonging to another token
+         * is a fail-closed reuse barrier.
          */
         internal fun prepareProcessForExecution(
             downloadId: Long,
             expectedExecutionId: String,
         ) {
             if (expectedExecutionId.isBlank()) return
+            check(!hasConflictingNativeProcess(downloadId, expectedExecutionId)) {
+                "Native process for another execution remains registered before retry for download " +
+                    downloadId
+            }
             check(cancelYtdlpProcess(downloadId, expectedExecutionId)) {
                 "Native yt-dlp process did not quiesce before retry for download $downloadId"
             }
@@ -4387,8 +4573,10 @@ class DownloadWorker(
         fun cancelPostProcessingById(downloadId: Long, expectedExecutionId: String): Boolean {
             val key = FfmpegProcessKey(downloadId, expectedExecutionId)
             var quiesced = true
-            runningFfmpegProcesses[key]?.toList().orEmpty().forEach { process ->
-                if (!ProcessQuiescence.requestTermination(process)) {
+            runningNativePostProcessingProcesses[key]?.toList().orEmpty().forEach { process ->
+                if (ProcessQuiescence.requestTermination(process)) {
+                    removeNativePostProcessingProcess(key, process)
+                } else {
                     quiesced = false
                 }
             }
@@ -4740,6 +4928,31 @@ class DownloadWorker(
     }
 
     private fun burnSubtitlesInPlace(
+        paths: List<String>,
+        removeSubsAfterBurnIn: Boolean,
+        downloadItemId: Long? = null,
+        downloadExecutionId: String? = null,
+        downloadLogId: Long? = null,
+        selectedSubtitleLanguages: String = ""
+    ): Boolean {
+        val processKey = if (downloadItemId != null && !downloadExecutionId.isNullOrBlank()) {
+            FfmpegProcessKey(downloadItemId, downloadExecutionId)
+        } else {
+            null
+        }
+        return withNativeProcessScope(processKey) {
+            burnSubtitlesInPlaceScoped(
+                paths = paths,
+                removeSubsAfterBurnIn = removeSubsAfterBurnIn,
+                downloadItemId = downloadItemId,
+                downloadExecutionId = downloadExecutionId,
+                downloadLogId = downloadLogId,
+                selectedSubtitleLanguages = selectedSubtitleLanguages,
+            )
+        }
+    }
+
+    private fun burnSubtitlesInPlaceScoped(
         paths: List<String>,
         removeSubsAfterBurnIn: Boolean,
         downloadItemId: Long? = null,
@@ -5642,11 +5855,8 @@ class DownloadWorker(
             val process = buildFfmpegProcess(runtime, args).start()
             val processKey = progressTarget?.let {
                 FfmpegProcessKey(it.downloadItemId, it.executionId)
-            }
-            val processSet = processKey?.let { key ->
-                runningFfmpegProcesses.computeIfAbsent(key) { ConcurrentHashMap.newKeySet() }
-            }
-            processSet?.add(process)
+            } ?: nativeProcessKeyForCurrentThread()
+            processKey?.let { key -> registerNativePostProcessingProcess(key, process) }
             val outputBuilder = StringBuilder()
             val startedAt = System.currentTimeMillis()
             var lastLiveLogAt = 0L
@@ -5692,9 +5902,15 @@ class DownloadWorker(
                 Log.i(TAG, "HardSub ffmpeg end source=${runtime.source} code=$exitCode elapsedMs=$elapsed")
                 FfmpegExecResult(exitCode = exitCode, output = outputBuilder.toString())
             } finally {
-                processSet?.remove(process)
-                processKey?.let { key ->
-                    if (processSet?.isEmpty() == true) runningFfmpegProcesses.remove(key)
+                // A normal waitFor() completion is already quiescent.  The
+                // explicit call also covers coroutine/reader interruption;
+                // an unproven process stays in the exact registry for later
+                // recovery instead of becoming an orphan writer.
+                val processQuiesced = ProcessQuiescence.requestTermination(process)
+                if (processQuiesced) {
+                    processKey?.let { key ->
+                        removeNativePostProcessingProcess(key, process)
+                    }
                 }
             }
         }.getOrElse { error ->
@@ -5946,14 +6162,26 @@ class DownloadWorker(
             return null
         }
 
-        val converterOutput = process.inputStream.bufferedReader().use { it.readText() }
-        val exitCode = process.waitFor()
-        if (exitCode != 0 || !output.exists() || output.length() == 0L) {
-            if (output.exists()) output.delete()
-            Log.w(TAG, "$failLogPrefix (code=$exitCode): ${converterOutput.takeLast(800)}")
-            return null
+        val processKey = nativeProcessKeyForCurrentThread()
+        processKey?.let { key -> registerNativePostProcessingProcess(key, process) }
+        return try {
+            val converterOutput = process.inputStream.bufferedReader().use { it.readText() }
+            val exitCode = process.waitFor()
+            if (exitCode != 0 || !output.exists() || output.length() == 0L) {
+                if (output.exists()) output.delete()
+                Log.w(TAG, "$failLogPrefix (code=$exitCode): ${converterOutput.takeLast(800)}")
+                return null
+            }
+            output
+        } finally {
+            // Keep a converter process registered if interruption prevented a
+            // positive termination acknowledgement.
+            if (ProcessQuiescence.requestTermination(process)) {
+                processKey?.let { key ->
+                    removeNativePostProcessingProcess(key, process)
+                }
+            }
         }
-        return output
     }
 
     private fun createNormalizedRichSubtitleForConverter(subtitle: File): File? {

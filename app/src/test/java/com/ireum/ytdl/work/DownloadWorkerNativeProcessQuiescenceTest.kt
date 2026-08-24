@@ -97,6 +97,132 @@ class DownloadWorkerNativeProcessQuiescenceTest {
     }
 
     @Test
+    fun sameExecutionRetryWaitsForThePreviousYtdlpProcessToQuiesce() = runBlocking {
+        val downloadId = 1206L
+        val executionId = "E1"
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val process = ControlledProcess()
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, executionId))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+
+        try {
+            val retry = async(Dispatchers.IO) {
+                withDownloadWorkerExecutionSideEffectLease(downloadId, executionId) {
+                    DownloadWorker.prepareProcessForExecution(downloadId, executionId)
+                }
+            }
+            process.destroyRequested.await()
+            yield()
+
+            assertFalse(retry.isCompleted)
+            assertTrue(DownloadWorkerProcessOwners.isOwnedBy(downloadId, executionId))
+            // Reusing the same token is allowed only as the same owner; it
+            // does not replace or hide the still-live native process.
+            assertTrue(DownloadWorkerProcessOwners.claim(downloadId, executionId))
+
+            process.acknowledgeTermination()
+            retry.await()
+            assertFalse(YoutubeDLCompat.hasProcessById(processId))
+            assertTrue(DownloadWorkerProcessOwners.isOwnedBy(downloadId, executionId))
+        } finally {
+            process.acknowledgeTermination()
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(downloadId, executionId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
+    fun delayedFfmpegTerminationBlocksNewExecutionUntilTheExactProcessQuiesces() = runBlocking {
+        val downloadId = 1207L
+        val e1 = "E1"
+        val e2 = "E2"
+        val process = ControlledProcess()
+        DownloadWorkerExecutionOwners.claim(downloadId, e1)
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, e1))
+        DownloadWorker.registerPostProcessingProcessForTesting(downloadId, e1, process)
+
+        try {
+            val cancellation = async(Dispatchers.IO) {
+                withDownloadWorkerExecutionSideEffectLease(downloadId, e1) {
+                    assertTrue(DownloadWorker.cancelProcessesForExecution(downloadId, e1))
+                }
+            }
+            process.destroyRequested.await()
+            yield()
+
+            assertFalse(cancellation.isCompleted)
+            assertFalse(DownloadWorkerProcessOwners.claim(downloadId, e2))
+            assertTrue(DownloadWorker.hasAnyRegisteredNativeProcess(downloadId))
+
+            process.acknowledgeTermination()
+            cancellation.await()
+            assertFalse(DownloadWorker.hasAnyRegisteredNativeProcess(downloadId))
+            assertTrue(DownloadWorkerProcessOwners.claim(downloadId, e2))
+        } finally {
+            process.acknowledgeTermination()
+            DownloadWorker.clearPostProcessingProcessForTesting(downloadId, e1, process)
+            DownloadWorkerProcessOwners.release(downloadId, e1)
+            DownloadWorkerProcessOwners.release(downloadId, e2)
+            DownloadWorkerExecutionOwners.release(downloadId, e1)
+            DownloadWorkerExecutionOwners.release(downloadId, e2)
+        }
+    }
+
+    @Test
+    fun unprovenFfmpegTerminationRetainsFailClosedReuseBarrier() = runBlocking {
+        val downloadId = 1208L
+        val e1 = "E1"
+        val e2 = "E2"
+        val process = UnquiescentProcess()
+        DownloadWorkerExecutionOwners.claim(downloadId, e1)
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, e1))
+        DownloadWorker.registerPostProcessingProcessForTesting(downloadId, e1, process)
+
+        try {
+            var failedClosed = false
+            try {
+                withDownloadWorkerExecutionSideEffectLease(downloadId, e1) {
+                    DownloadWorker.prepareProcessForExecution(downloadId, e1)
+                }
+            } catch (_: IllegalStateException) {
+                failedClosed = true
+            }
+
+            assertTrue(failedClosed)
+            assertTrue(DownloadWorker.hasAnyRegisteredNativeProcess(downloadId))
+            assertFalse(DownloadWorkerProcessOwners.claim(downloadId, e2))
+            assertTrue(DownloadWorkerProcessOwners.isOwnedBy(downloadId, e1))
+        } finally {
+            DownloadWorker.clearPostProcessingProcessForTesting(downloadId, e1, process)
+            DownloadWorkerProcessOwners.release(downloadId, e1)
+            DownloadWorkerExecutionOwners.release(downloadId, e1)
+        }
+    }
+
+    @Test
+    fun newerExecutionCannotClaimWhenAnOlderPostProcessingRegistryHasNoOwner() {
+        val downloadId = 1209L
+        val e1 = "E1"
+        val e2 = "E2"
+        val process = ControlledProcess()
+        DownloadWorker.registerPostProcessingProcessForTesting(downloadId, e1, process)
+
+        try {
+            // Model the owner coroutine disappearing while the same-process
+            // FFmpeg registry still proves that E1 can write the resource.
+            assertFalse(DownloadWorkerProcessOwners.claim(downloadId, e2))
+            assertTrue(DownloadWorker.hasAnyRegisteredNativeProcess(downloadId))
+        } finally {
+            process.acknowledgeTermination()
+            DownloadWorker.clearPostProcessingProcessForTesting(downloadId, e1, process)
+            DownloadWorkerProcessOwners.release(downloadId, e1)
+            DownloadWorkerProcessOwners.release(downloadId, e2)
+        }
+    }
+
+    @Test
     fun staleE1CannotDestroyOrClearAnE2ProcessRegistryEntry() = runBlocking {
         val downloadId = 1203L
         val e1 = "E1"

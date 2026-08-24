@@ -90,17 +90,23 @@ internal object DownloadWorkerExecutionOwners {
 }
 
 /**
- * The native yt-dlp process is addressed by numeric Download ID.  Keep its
- * exact execution token in process memory so a stale attempt cannot destroy a
- * newer attempt's process after the database row has been reused.
+ * Native Download work is addressed by numeric Download ID.  Keep the exact
+ * execution token in process memory so a stale attempt cannot destroy a
+ * newer attempt's process after the database row has been reused.  The owner
+ * is retained across same-execution retries and hard-sub work until every
+ * registered native process has quiesced.
  */
 internal object DownloadWorkerProcessOwners {
     private val owners: MutableMap<Long, String> = ConcurrentHashMap()
 
     fun claim(downloadId: Long, executionId: String): Boolean {
         if (executionId.isBlank()) return true
-        val existing = owners.putIfAbsent(downloadId, executionId)
-        return existing == null || existing == executionId
+        val existing = owners[downloadId]
+        if (existing == null && DownloadWorker.hasConflictingNativeProcess(downloadId, executionId)) {
+            return false
+        }
+        val published = owners.putIfAbsent(downloadId, executionId)
+        return published == null || published == executionId
     }
 
     fun isOwnedBy(downloadId: Long, executionId: String): Boolean =
