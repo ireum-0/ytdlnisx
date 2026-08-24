@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **13**
-- Effective active defects: **87**
+- Delta active defects: **14**
+- Effective active defects: **88**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -414,3 +414,41 @@ Focused verification requirements:
 - seed a legacy malformed persisted template and exercise the real Home/Share/Command-card `createDownloadItemFromResult(..., command)` path, proving the bad matcher is skipped/reported and a valid fallback template still initializes the request;
 - exercise `VideoPlayerActivity -> createDownloadItemFromHistory()` with malformed audio/video extra-command regex and prove compatible re-download construction continues without that template;
 - include valid regex, empty regex, multiple regexes with one malformed member, process restart, and edit-to-repair cases. Helper-only regex tests are insufficient; verification must cover Room persistence plus the actual consumer wiring.
+
+### BUG-BACKUP-10 — Propagate SharedPreferences commit failure from app-data restore
+
+**State:** Open  
+**Reviewed checkpoint:** `ad1a8f026a7a05f3e1489775a74d8106dbfa510e`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the app-data restore UI can invoke `SettingsViewModel.restoreData()` for a settings-only merge restore or for a broader restore containing settings. `restoreData()` applies the selected serialized preferences with AndroidX `SharedPreferences.edit(commit = true)`. That extension invokes `Editor.commit()` synchronously but returns `Unit`, discarding the Boolean that is the platform's durable-write success result. `restoreData()` wraps the whole operation in `runCatching` and finally returns only `result.isSuccess`, so a `commit()` that returns `false` without throwing is indistinguishable from a successful preference persistence. The same ignored Boolean pattern is used for restored visible-keyword/youtuber preference sets later in the method.
+
+A settings-only merge restore can therefore return `true` even though the requested preferences were not durably written. Because SharedPreferences first updates the process-local map and then attempts disk persistence, the restored values can appear effective in the current process and disappear after process restart, while the UI has already reported restore success. In a broader merge restore, Room categories may commit while the settings portion silently fails, yielding a mixed durable state despite a successful overall result. For reset restore, the same mechanism compounds the separately owned destructive-partial-restore problem in `BUG-BACKUP-03`; this item owns the ignored persistence-result/false-success path, especially where no destructive reset is involved.
+
+**Why this is a defect:** the restore contract is durable state reconstruction, and `Editor.commit()` explicitly supplies the success/failure result for that persistence boundary. Discarding that result converts a real storage write failure into success and provides no durable recovery carrier or restart indication that settings were not restored. This is distinct from `BUG-BACKUP-08`, which covers supported preference value types that are never restored at all, and from `BUG-BACKUP-03`, which covers non-atomic destructive reset restore across categories.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
+
+Required result:
+
+- use a persistence API/result that propagates `Editor.commit() == false` as restore failure for every preference group whose durable reconstruction is part of the selected backup;
+- do not return restore success until all selected SharedPreferences writes required by that restore are durably acknowledged, and identify which preference stage failed rather than collapsing it into success;
+- for multi-category merge/reset restore, integrate preference persistence with the broader restore commit/recovery plan so Room categories and settings cannot be presented as one successful restore when one durable domain failed;
+- preserve `BUG-BACKUP-08` type semantics and `BUG-BACKUP-03` reset atomicity ownership rather than treating a successful Boolean commit as proof those separate invariants are closed;
+- make retry/re-entry idempotent: repeating the same restore after a failed preference commit must either durably apply the same selected settings once or report failure again, while process restart must never be the first point at which a previously reported success is revealed to have lost the restored preferences.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision: the selected backup settings and restore mode accepted by the restore flow;
+- first persistence call for a settings-only restore: `SharedPreferences.Editor.commit()` reached through AndroidX `edit(commit = true)`; inject a `false` return with no exception and require the restore result to be failure;
+- recovery carrier: current code has none because the false result is discarded; a corrected flow must retain enough restore/session context for explicit retry or otherwise fail without claiming durable completion;
+- durable Download/History/linked-ledger and filesystem effects are not applicable to settings-only merge restore. In a mixed restore, independently committed Room categories must not hide preference persistence failure, and reset-specific destructive rollback remains owned by `BUG-BACKUP-03`;
+- final outcome: `restoreData()` must not return `true` when any required preference commit returns false. There is no WorkManager result in the settings-only path;
+- relevant cross-attempt paths are same-backup retry, merge-vs-reset re-entry, process restart, and restore of a broader category selection. Download same-settings retry, raw requeue, reconfigure, notification retry/resume, and ordinary startup reconciliation are not semantic repair paths for this restore session and should be marked not applicable.
+
+Focused verification requirements:
+
+- exercise the actual restore UI/parser -> `SettingsViewModel.restoreData()` -> default SharedPreferences wiring with a test double/storage fault that makes `Editor.commit()` return false without throwing; assert settings-only merge restore reports failure;
+- repeat with one successful and one failed restored preference group, and with a mixed settings + Room-category restore, proving the outer `runCatching` cannot reinterpret false durable persistence as success;
+- verify current-process reads versus process-restart reads so a failed disk commit cannot masquerade as successful restore merely because the in-memory SharedPreferences map changed;
+- include normal successful commit, repeated retry after failure, reset mode as a regression against `BUG-BACKUP-03`, and `Long`/`Float` handling as a regression against `BUG-BACKUP-08`. Helper-only serialization tests are insufficient.
