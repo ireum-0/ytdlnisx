@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **23**
-- Effective active defects: **97**
+- Delta active defects: **24**
+- Effective active defects: **98**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -838,3 +838,50 @@ Focused verification requirements:
 - add a separate failpoint after supervisor creation but before `RUNNING/pgid` publication and prove recovery never clears or reuses the resource while the exact supervisor/process group may still be alive;
 - cover `ProcessBuilder.start()` IOException as a control, marker-write failure, STARTING-to-RUNNING transition failure, process death immediately before/after process-group identity publication, recovery persistence failure, true RUNNING group termination success/failure, and sibling recovery isolation;
 - verify same-settings retry/requeue/reconfigure/notification and restart behavior against the durable barrier rather than only helper-local marker parsing. Existing helper/in-memory process tests are insufficient; no such production-path process-death wiring test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+### BUG-NATIVE-02 — Do not treat a recycled numeric process-group ID as exact native execution identity
+
+**State:** Open  
+**Reviewed checkpoint:** `cc1ddaa80b15e0857a7271e28bb7d93ab4c3cf91`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the yt-dlp supervisor launches the real child with `start_new_session=True`, sets `child_pgid = child.pid`, and durably publishes `RUNNING` plus that numeric `pgid` in the marker for `download:<id>:<executionId>`. If the application/supervisor dies after that publication and the original process group subsequently disappears before it can publish `QUIESCENT`, the stale RUNNING marker can outlive the kernel process-group identity it was meant to describe. Linux PIDs/process-group IDs are reusable numeric identifiers. A later app-owned native child can therefore receive the same leader PID and, because it also starts a new session, the same numeric process-group ID.
+
+Startup configures the marker namespace synchronously but launches `DownloadExecutionRecovery.reconcile()` asynchronously. There is no process-wide recovery gate that prevents a different Download/Terminal native execution from starting before an older stale marker is reconciled. If newer sibling B acquires recycled group ID P while stale marker A still records `pgid=P`, A's recovery reaches `YtdlpNativeProcessBarrier.recover()`. That helper does not validate process start time, session-generation nonce, command/process identity, or another immutable anti-reuse attribute; it immediately calls `Os.kill(-P, SIGTERM)`, polls the same numeric group, and can escalate to `SIGKILL`. Because B runs under the same application UID, the signal can succeed against B's live group. Once B is gone, A's recovery can delete A's marker and return success, falsely treating termination of a different execution as proof that A's old native authority was quiesced.
+
+The per-Download execution/side-effect leases do not close this path. They protect A's Room mutation from a newer execution of A's Download ID, but B has a different Download/Terminal identity and therefore does not share A's lease. The durable `processId` string stored beside `pgid` also cannot validate the current kernel group because `recover()` addresses the group solely by the recycled number. A stale recovery can therefore terminate an unrelated sibling request and then erase the only marker that explains why the signal occurred.
+
+**Why this is a defect:** exact native-process recovery is privileged destructive authority. A durable marker may outlive the lifetime of a recyclable kernel identifier, so numeric PGID equality alone is not proof that the currently addressable process group belongs to the execution that created the marker. The concrete failure is cross-sibling termination: an old Download's recovery can kill a newer independent Download/Terminal native process, causing the newer operation to fail/cancel or lose partial native output. This is distinct from `BUG-NATIVE-01`, whose confirmed path is a STARTING marker that has no PGID and permanently fences the same stale Download. Here the marker is RUNNING and has a PGID, but its identity proof can become false and actively destroy another execution.
+
+**Ownership / attribution:** remediation regression. The durable PGID marker/recovery protocol and startup `DownloadExecutionRecovery` were introduced after the synchronized baseline as part of native-process/exceptional-exit remediation.
+
+Required result:
+
+- make durable RUNNING process-group identity robust against kernel identifier reuse across app/process death; never send a recovery signal solely because the current numeric PGID equals the recorded number;
+- persist and validate an anti-reuse identity or equivalent exact recovery handshake sufficient to distinguish the original process group/generation from a later group that inherited the same numeric ID, and define safe behavior when the original group is proven gone but that number is occupied by a different execution;
+- preserve support for surviving descendants after the Java/app supervisor dies: a correct anti-reuse check must still be able to terminate the exact old group when it genuinely survives, rather than clearing every stale-looking marker optimistically;
+- serialize startup/native-launch ordering where necessary so unreconciled stale barriers cannot race new native generations, while retaining exact per-Download/Terminal sibling isolation;
+- clear the stale marker only after absence/termination of the exact recorded generation is proven. Discovery of a different current group with the same number must never authorize signalling that group.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative carrier: A's durable RUNNING marker (`processId`, `pgid`) plus its Download execution ID; the first persistence relevant to this defect is the supervisor's atomic RUNNING-marker replacement after the child group exists;
+- inject app/supervisor death after RUNNING publication, let A's group exit without QUIESCENT publication, then create sibling B whose new-session leader reuses A's numeric group ID before startup recovery processes A;
+- durable A state may remain Active/PostProcessing or in the exceptional-recovery journal, while B is independently Active/running under its own execution identity. A's recovery must not mutate B's external process authority even though no shared Room row or per-Download lease exists;
+- current recovery can return success after killing B and deleting A's marker, so the outer result can falsely appear converged. B can surface a native cancellation/error or incomplete output even though its own identity was valid and never revoked;
+- same-settings retry/manual requeue/reconfigure/notification retry of A does not justify signalling B; retries or new attempts of B must remain isolated. Restart/reconcile must remain safe across repeated stale markers and PID/PGID reuse. Restore is not a semantic recovery path for native OS identity;
+- sibling matrix must cover Download-vs-Download and Download-vs-Terminal/native compatibility callers that share the same app UID/process namespace.
+
+Candidate-rejection proof:
+
+- do not reject this as low probability: identifier reuse is a normal kernel property, and v4 requires reachable destructive identity failures to be judged by correctness rather than likelihood;
+- do not reject it as `BUG-NATIVE-01`: that defect's concrete failure is non-convergence of a pre-identity STARTING state. This candidate reaches a different terminal effect from a nominally addressable RUNNING state—false-positive ownership and termination of an unrelated sibling;
+- a successful `kill(-pgid, 0)`/`SIGTERM` is not identity proof; it proves only that a currently signalable group has that numeric ID. The marker has no immutable comparison against that current group;
+- per-Download leases do not prove OS-group identity across different Download/Terminal owners, and the asynchronous startup recovery does not prove stale markers finish before new native groups can be created.
+
+Focused verification requirements:
+
+- add a production-path recovery test that creates a durable RUNNING marker for A, simulates A's original group disappearance, reuses the recorded PGID for a live sibling B under the same UID, and invokes the real `DownloadExecutionRecovery -> cancelProcessesForExecution -> YoutubeDLCompat -> YtdlpNativeProcessBarrier.recover()` path; assert B receives no signal and A converges only through exact-generation proof;
+- add a control where A's original exact group genuinely survives app-process death and prove recovery still terminates that group and only that group;
+- cover SIGTERM success/timeout/SIGKILL escalation, group-leader exit with surviving descendants, marker deletion/write failure, app restart before/after B launch, multiple stale markers, Download-vs-Download and Download-vs-Terminal collisions, and later numeric reuse after a previously completed recovery;
+- verification must exercise real OS process identity/reuse semantics or an equivalent instrumented native harness wired through the production recovery path. No such production-path execution was performed in this review, so verification remains `SOURCE-LEVEL ONLY`.
