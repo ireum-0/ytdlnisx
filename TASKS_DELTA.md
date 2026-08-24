@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **18**
-- Effective active defects: **92**
+- Delta active defects: **19**
+- Effective active defects: **93**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -611,3 +611,45 @@ Focused verification requirements:
 - execute both completion orders, plus target deletion, unchanged-source localization, customThumb-over-thumb precedence changes, Room update failure, and stale-attempt cache cleanup;
 - restart after the replacement-before-localizer ordering and prove the authoritative B source remains recoverable/current rather than a stale local A path;
 - exercise actual `VideoPlayerActivity -> loadPlaybackThumbnail/ensureLocalThumbForPlayback -> HistoryDao` wiring and a real competing History writer. No such production-path race test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+### BUG-COOKIE-06 — Await WebView cookie clearance before starting a fresh authentication session
+
+**State:** Open  
+**Reviewed checkpoint:** `e4a47f1cd4990a17a40258afb0f179e027868deb`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** Home authentication recovery can launch `WebViewActivity` for a fresh credential acquisition. On first creation the activity obtains the process-global `CookieManager`, calls `removeAllCookies(null)`, immediately calls `flush()`, and then creates the WebView; `AndroidView.update` can call `loadUrl(url)` immediately. Android documents `removeAllCookies(ValueCallback)` as asynchronous and states that the callback is invoked once removal is complete. Passing `null` explicitly discards that completion barrier. `flush()` has a different contract—persisting cookies currently accessible through `getCookie()`—and does not establish that an outstanding asynchronous removal finished before the first network request.
+
+A previous WebView session can therefore still be present when the fresh login URL begins loading. The old credential may affect redirects/login state or be sent by that initial request before deletion completes. The later Generate action calls `CookieViewModel.getCookiesFromDB()`, which flushes and opens the Chromium `Cookies` SQLite database, queries all cookie rows, and serializes them into the app-owned Room cookie record/runtime jar. If the stale session influenced the page or survived until capture, that old authority can be durably promoted as the supposedly new acquisition. `PoTokenWebViewLoginActivity` has the same ordering for its explicit `noAuth` mode: it calls `removeAllCookies(null)` plus `flush()` and immediately loads the WebView, so a user-requested unauthenticated token-generation flow can begin under residual authenticated cookie state.
+
+**Why this is a defect:** clearing prior cookies is the isolation/revocation boundary that distinguishes a fresh/no-auth WebView session from the previous browser credential state. The implementation starts the authority-bearing network operation before that asynchronous reset is proven complete. The result can be incorrect authentication identity or persistence of credentials from the wrong session, not merely a privacy hardening concern. This is distinct from `BUG-COOKIE-01` (Room/runtime projection ordering and revocation), `BUG-COOKIE-03` (reporting capture success before extraction/persistence/projection completes), `BUG-COOKIE-04` (expiry representation), and `BUG-COOKIE-05` (domain scope): even a perfectly awaited and semantically correct later projection is wrong if the WebView session itself began with stale credentials.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The same `removeAllCookies(null)`-then-load ordering is present in the baseline WebView paths and predates the reviewed checkpoint.
+
+Required result:
+
+- treat cookie-clear completion as an authorization barrier for every flow that promises a fresh or unauthenticated WebView session; do not load the target URL until `removeAllCookies` completion for that exact reset attempt is observed;
+- define explicit behavior when cookie clearing cannot complete or the Activity is cancelled/recreated while reset is in flight: do not silently proceed with the old session, and do not reuse a stale completion from a superseded Activity/session generation;
+- apply the same barrier to `WebViewActivity` first-load isolation and `PoTokenWebViewLoginActivity` `noAuth` mode, while preserving intentional authenticated flows that are supposed to retain current WebView state;
+- do not treat `CookieManager.flush()` as a substitute for asynchronous removal completion; use the API's completion signal or an equivalent proven barrier before first request;
+- after successful isolation, preserve the existing cookie acquisition/projection fixes independently: a clean session still must satisfy `BUG-COOKIE-03/04/05` semantics before its captured credentials become durable or consumable.
+
+Cross-attempt / candidate-rejection requirements:
+
+- immediate first load, redirects, Generate/capture, Activity recreation, repeated acquisition, process restart, and PoToken `noAuth` re-entry must all remain bound to the exact completed reset generation before any authority-bearing request starts;
+- same-settings Download retry, raw/manual requeue, reconfigure, notification retry/resume, and restore are not semantic recovery paths for an incomplete WebView reset and should be marked not applicable unless they explicitly launch a new isolated acquisition;
+- this candidate is not rejected because `flush()` follows `removeAllCookies`: Android's documented completion contract for removal is the asynchronous callback, while `flush()` only guarantees persistence of currently accessible cookies. Nor is a later successful capture a repair barrier, because the first WebView request and resulting session state may already have been authorized by stale cookies;
+- no lock inversion is required. The ordering defect is `async reset requested -> first WebView load/request -> reset completion`, and correctness requires completion to move before first use.
+
+Terminal fault / persistence notes:
+
+- authoritative decision is the fresh/no-auth session reset request; its completion is the first required semantic barrier. There is no Download row, linked Download ledger, `DownloadOutcome`, or WorkManager result in the primary failure path;
+- before successful capture the material side effect is WebView/network authentication state. If Generate later persists cookies, the first durable app-owned write is the Room cookie insert/update, followed by runtime `cookies.txt` projection; those writes can make wrong-session credentials survive restart;
+- cancellation or process death before reset completion must not be interpreted as a successfully isolated session. A later explicit acquisition may repair the state only by issuing and completing a new reset before first use.
+
+Focused verification requirements:
+
+- add a production-path test with a pre-seeded WebView cookie for the target host, latch `removeAllCookies` completion, launch real `WebViewActivity`, and prove the initial WebView request cannot begin or carry the old cookie until the reset callback fires;
+- repeat through `PoTokenWebViewLoginActivity` with `noAuth=true` and prove token generation cannot observe/send the prior authenticated session before reset completion;
+- cover no prior cookies, prior host/session cookies, delayed callback, Activity recreation/cancellation during reset, repeated launches, reset failure/abandonment, redirects, and process restart;
+- after releasing the reset, exercise the real `WebView -> CookieViewModel.getCookiesFromDB() -> Room -> cookies.txt` path as a control and assert only credentials established after the completed reset can become current. No production-path WebView/network test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
