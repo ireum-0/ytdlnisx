@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **12**
-- Effective active defects: **86**
+- Delta active defects: **13**
+- Effective active defects: **87**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -336,6 +336,45 @@ Focused verification requirements:
 - fault-inject a History insert/read failure, provider metadata exception, process death between entries, and failure after one committed History row but before pending-output publication;
 - restart the app with a partially processed persisted session and prove exact remaining entries are recovered once without duplicate History rows or lost unresolved candidates;
 - verify explicit cancellation remains cancellation rather than being reinterpreted as an item failure. Helper-only parsing/storage tests are insufficient.
+
+### BUG-TERMINAL-07 — Revoke Terminal publication authority before deleting a cancelled task
+
+**State:** Open  
+**Reviewed checkpoint:** `ad1a8f026a7a05f3e1489775a74d8106dbfa510e`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** a running cache-staged Terminal task exposes a notification Cancel action wired to `CancelTerminalNotificationReceiver`. The receiver derives the exact Terminal process identity and calls both yt-dlp destroy helpers, but then calls `WorkManager.cancelUniqueWork(terminalId.toString())` without awaiting the returned cancellation `Operation`. It immediately cancels the notification and deletes the `TerminalItem` row. `TerminalDownloadWorker`, meanwhile, does not use that row as a generation/revocation check after startup: once `YoutubeDLCompat.execute()` returns, it can enter `FileUtil.moveFile(<cache>/TERMINAL/<id>, destination, keepCache=false)` and publish staged output without proving that the Terminal task still exists or remains authorized.
+
+A concrete race exists at the native-execution/publication boundary. If yt-dlp has already returned (or returns before WorkManager cancellation is delivered) when the user taps Cancel, the receiver can durably delete the only task row while the worker still advances into the cache-to-destination move. WorkManager cancellation is transport cleanup, not a synchronous semantic barrier, and there is no shared Terminal execution lease between receiver deletion and worker publication. The stale worker can therefore create/move destination files after the user-requested cancellation has been committed as task removal. Cancellation arriving during a non-atomic multi-file move can also leave a partial destination while the Terminal row is already gone. The worker's normal and cancellation paths later delete the row again and may return success, but neither can reconstruct or durably represent an output that was published or partially published after cancellation.
+
+**Why this is a defect:** notification Cancel is an explicit revocation of the Terminal attempt, yet the implementation destroys its durable carrier before proving that every actor holding publication authority has stopped. A normal scheduling race can make a cancelled task publish output after revocation, or leave partial filesystem effects with no persistent task identity from which restart/retry can reconcile them. This is distinct from `BUG-TERMINAL-02` (cross-domain ID/process identity), `BUG-TERMINAL-04` (the worker misclassifying its own partial publication as success), `BUG-TERMINAL-05` (persisted task with lost enqueue carrier), and `BUG-TERMINAL-06` (manual cache cleanup deleting files owned by a live task). The same receiver/worker ordering is present at the prior synchronized checkpoint, so this is a pre-existing baseline defect discovered post ledger split rather than a remediation regression.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
+
+Required result:
+
+- represent Terminal cancellation as an exact durable revocation generation/state, or hold a shared per-task execution/publication lease, before the task is considered cancelled and before its durable carrier is removed;
+- make the worker prove current task identity/revocation authority immediately before cache publication and any other post-execution side effect that can create user-visible output;
+- treat `cancelUniqueWork()` as asynchronous transport cleanup unless its completion is explicitly awaited; do not infer semantic revocation merely from issuing the request;
+- do not delete the final durable Terminal carrier until stale publication authority is impossible or until a durable cancelled/tombstone state can reconcile any already-started publication on restart;
+- if cancellation races a multi-file move, define complete rollback/retention or an explicit recoverable partial-cancellation result rather than silently abandoning destination effects.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: the exact user cancellation for one Terminal task; current code has no durable expected-generation predicate and expresses the decision primarily by deleting the row;
+- first persistence mutation: `terminalDao.delete(terminalId)` in the notification receiver. Inject success, failure, and process death immediately before/after that deletion while WorkManager cancellation is delayed;
+- recovery carrier/recovery write: after successful deletion there is none; a correct design must retain an exact cancelled generation/tombstone or keep the row until publication authority is fenced, and recovery-write failure must not restore publication authority;
+- durable Download state and linked Download ledgers are not applicable. The relevant durable state is the Terminal task/cancellation carrier; the relevant filesystem effect is staged and destination output;
+- final worker/WorkManager outcome must not reinterpret a revoked task as normal success merely because native execution returned first. A cancelled task must converge consistently even when WorkManager reports cancellation after the worker has crossed the native boundary;
+- same-command manual rerun must create a new identity/attempt and must not inherit or overwrite the cancelled attempt's publication authority; process restart/reconciliation must detect any cancelled-but-partially-published attempt while exact identity still exists. Ordinary Download same-settings retry, raw requeue, reconfigure, notification retry/resume, and restore are not semantic re-entry paths and should be marked not applicable.
+
+Focused verification requirements:
+
+- add a deterministic production-path race that latches `TerminalDownloadWorker` immediately after `YoutubeDLCompat.execute()` returns but before `FileUtil.moveFile()`, invokes the real notification Cancel receiver, delays WorkManager cancellation delivery, then releases the worker and proves no destination publication occurs after revocation;
+- repeat with cancellation delivered during a multi-file move and verify the destination/cache/task state converges to the explicit cancellation contract without an untracked partial publication;
+- fault-inject receiver `terminalDao.delete()` and the durable revocation write that replaces it, including process death before/after first persistence and recovery-write failure;
+- cover cancel before native start, during native execution, exactly after native completion, during publication, after publication but before terminal cleanup, repeated Cancel delivery, process restart, and a later manual rerun with the same command but a new task identity;
+- exercise the actual `NotificationUtil -> CancelTerminalNotificationReceiver -> WorkManager/native process -> TerminalDownloadWorker -> FileUtil -> terminalDao` wiring. Helper-only cancellation tests are insufficient.
 
 ## P3
 
