@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **24**
-- Effective active defects: **98**
+- Delta active defects: **25**
+- Effective active defects: **99**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -885,3 +885,54 @@ Focused verification requirements:
 - add a control where A's original exact group genuinely survives app-process death and prove recovery still terminates that group and only that group;
 - cover SIGTERM success/timeout/SIGKILL escalation, group-leader exit with surviving descendants, marker deletion/write failure, app restart before/after B launch, multiple stale markers, Download-vs-Download and Download-vs-Terminal collisions, and later numeric reuse after a previously completed recovery;
 - verification must exercise real OS process identity/reuse semantics or an equivalent instrumented native harness wired through the production recovery path. No such production-path execution was performed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+### BUG-DATE-04 — Do not terminalize History date-fetch cancellation before native extractor quiescence is proven
+
+**State:** Open  
+**Reviewed checkpoint:** `cc1ddaa80b15e0857a7271e28bb7d93ab4c3cf91`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the user-facing History date-fetch cancellation reaches `HistoryDateFetchManager.cancel()`, which first durably writes `cancelRequested`, requests WorkManager cancellation, and calls `stopExtractor(operationId)`. That helper invokes both yt-dlp destroy paths inside `runCatching`, but discards the Boolean returned by the current `YoutubeDLCompat.destroyProcessById()`. At the reviewed checkpoint that Boolean is a quiescence contract: `false` means exact native termination has not been proven and the durable native marker remains unresolved. The manager nevertheless calls `repository.finishCancellation(operationId)`, terminalizing the operation and all pending child items as `CANCELLED`, and can emit the terminal notification.
+
+The WorkManager-owned cancellation path has an even earlier semantic inversion. `HistoryDateFetchWorker` catches `CancellationException`; when the durable operation says `cancelRequested`, it calls `finishCancellation()` and returns `Result.success()`. Only in `finally` does it call the same `stopExtractor()` helper, again swallowing exceptions and ignoring the quiescence Boolean. A RUNNING yt-dlp descendant group whose TERM/KILL recovery fails can therefore remain alive while the Room operation ledger is already durably terminal and the worker reports successful cancellation.
+
+There is no later owner that repairs this state. `HistoryDateFetchManager.reconcile()` enumerates only nonterminal date-fetch operations, so a terminal `CANCELLED` operation is excluded after restart. `DownloadExecutionRecovery` only enumerates durable native markers whose process IDs use the `download:<id>:<executionId>` namespace; History date-fetch uses `history_date_fetch_process_<operationId>`. Thus an unresolved date-fetch native marker/process is not adopted by the Download recovery protocol. A later manual date-fetch start can create a new operation/process identity while the old native descendant remains unresolved, allowing two generations of the same feature to overlap after the earlier generation has been presented as cancelled.
+
+**Why this is a defect:** cancellation is a terminal semantic commitment that revokes an operation's authority. The reviewed native helper explicitly requires callers not to release execution/resources when quiescence returns false, yet both Date Fetch cancellation paths collapse that non-success into normal terminal completion. This can leave an external process and durable native marker with no matching nonterminal operation/recovery owner, while UI/WorkManager state says cancellation completed. The defect is distinct from `BUG-DATE-03`, which owns loss of the scheduler carrier before a worker starts, and from `BUG-NATIVE-01/02`, which own respectively an unrecoverable STARTING marker and recycled-PGID identity during Download startup recovery. This path requires an ordinary Date Fetch cancellation plus a real native-quiescence failure after the process exists.
+
+**Ownership / attribution:** remediation regression. `HistoryDateFetchManager` and `HistoryDateFetchWorker` predate the synchronized baseline and already ignored the old best-effort process-destroy return, but the reviewed checkpoint replaced that helper contract with durable descendant-quiescence semantics where `false` explicitly means privileged native authority remains unresolved. The Date Fetch cancellation callers were not adapted to that stronger contract and can now bypass the remediation's fail-closed barrier.
+
+Required result:
+
+- make successful date-fetch cancellation conditional on proven quiescence of the exact `history_date_fetch_process_<operationId>` native execution; propagate a `false` quiescence result instead of swallowing it;
+- do not transition the operation/child ledger to terminal `CANCELLED`, emit a terminal cancellation notification, or return a successful worker outcome while exact native authority remains unresolved;
+- retain a durable nonterminal cancellation/recovery carrier for the exact operation until quiescence is proven, including after process death, and make startup reconciliation own unresolved History date-fetch native markers rather than limiting recovery to Download marker namespaces;
+- define recovery-write failure semantics so a failed attempt to record quiescence/cancellation cannot orphan the external process or falsely make the operation reusable;
+- preserve exact operation/process identity across repeated cancellation, restart, and later Start/Reconnect; a new generation must not launch while an older cancelled generation still has unresolved native authority unless exact isolation is otherwise proven;
+- continue to treat WorkManager cancellation as transport cleanup rather than proof of native process termination, and preserve `BUG-DATE-01/02/03` result/carrier semantics independently.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: durable `requestCancellation(operationId)` for the exact date-fetch operation; first persistence failure must leave the prior nonterminal operation intact and must not emit terminal cancellation;
+- native barrier: after cancellation is requested, inject `YoutubeDLCompat.destroyProcessById(processId) == false` for a real RUNNING marker/process. Current code then calls `finishCancellation()` anyway; corrected code must retain a recovery-owned nonterminal cancellation state until the exact process is proven gone;
+- recovery carrier / recovery-write failure: current terminalization removes the operation from date-fetch startup reconciliation while the non-download native marker remains. A corrected flow must keep operation identity plus native barrier discoverable across process death, and failure to persist recovery progress must remain fail-closed without losing the owner;
+- durable state in the defect path: parent operation and pending child items become `CANCELLED`; no Download row or Download-linked ledger applies; the external yt-dlp process/group and its marker can remain live/unresolved; no media filesystem publication is required for reproduction;
+- final outcome: the manager returns from cancellation normally and the Worker cancellation branch can return `Result.success()` even though native quiescence failed. That is a semantic downgrade from unresolved cancellation to successful terminal cancellation;
+- same-operation cancellation retry currently finds a terminal operation and cannot restore ownership; manual Start/Reconnect can create a new operation generation; restart skips the terminal old operation; Download retry/requeue/reconfigure/notification retry-resume and restore are not semantic repair paths. Every relevant re-entry must preserve one exact owner for the unresolved native generation and prevent unsafe overlap;
+- sibling/concurrency isolation: a newly started date-fetch generation or another native user must not inherit, clear, or be killed through the old generation's marker; quiescence recovery must remain exact and must also respect the identifier-reuse requirements owned by `BUG-NATIVE-02`.
+
+Candidate-rejection proof:
+
+- do not reject this as `BUG-DATE-03`: that item ends before a worker carrier is accepted and leaves a nonterminal RUNNING/PENDING ledger; this defect starts from an accepted/running operation and produces the opposite false terminal state while external authority may remain;
+- do not reject it as `BUG-NATIVE-01`: no STARTING-without-PGID crash is required. A normal RUNNING process whose termination cannot be acknowledged is sufficient;
+- do not reject it as `BUG-NATIVE-02`: this defect does not require identifier reuse or signalling the wrong sibling; it exists even when the native marker refers to the correct exact group but termination fails;
+- do not treat the worker `finally` block as a repair barrier: terminal Room state and possible terminal notification are committed before that attempt, the helper result is still discarded, and failure leaves no date-fetch startup recovery owner;
+- do not treat the legacy `YoutubeDL.getInstance().destroyProcessById()` call as proof of quiescence; the current compatibility layer's descendant barrier exists precisely because destroying the Java/supervisor process is not proof that its descendant process group is gone.
+
+Focused verification requirements:
+
+- exercise the real History cancel UI/ViewModel -> `HistoryDateFetchManager` -> Room operation/items -> WorkManager -> `HistoryDateFetchWorker` -> `YoutubeDLCompat` durable marker path with a RUNNING native process whose termination proof is forced to fail; assert operation/items remain recovery-owned and nonterminal, no terminal cancellation notification is emitted, and no successful WorkManager terminal result is produced;
+- repeat through the worker `CancellationException` branch and through direct manager cancellation, covering cancellation before native launch, during STARTING, RUNNING with successful quiescence, RUNNING with failed quiescence, and cancellation just after native exit;
+- inject process death after `cancelRequested` but before quiescence, after failed quiescence, and immediately before/after the eventual cancellation persistence; restart must recover the exact date operation/process once and prevent a new generation from overlapping unresolved authority;
+- inject first `requestCancellation` write failure and recovery/terminal write failure, plus repeated Cancel delivery, manual Start/Reconnect, and startup reconciliation; preserve exact identity and regressions for `BUG-DATE-01/02/03` and `BUG-NATIVE-01/02`;
+- verification must exercise actual Room + WorkManager + durable native-barrier wiring. The existing `HistoryDateFetchEnqueuePolicyTest` only asserts `ExistingWorkPolicy.KEEP` and provides no cancellation/quiescence evidence, so this review remains `SOURCE-LEVEL ONLY`.
