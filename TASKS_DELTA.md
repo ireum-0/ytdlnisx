@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **21**
-- Effective active defects: **95**
+- Delta active defects: **22**
+- Effective active defects: **96**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -739,3 +739,51 @@ Focused verification requirements:
 - exercise an explicit empty WorkInfo result as a control and prove it is handled without `first()`/index exceptions;
 - cover normal successful enqueue and completion, worker failure as a regression for `BUG-CACHE-03`, lifecycle recreation while enqueue is pending, a prior completed work item sharing the legacy tag, process restart, and a later explicit retry with a distinct exact WorkRequest identity;
 - verification must cover the actual Fragment + WorkManager wiring. No executed production-path test was run in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-COOKIE-08 — Resolve overlapping enabled cookie identities without stale-precedence reversal
+
+**State:** Open  
+**Reviewed checkpoint:** `a68ee59c97619f469915895490bea8bc0956c22b`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the production Cookies screen permits multiple persisted cookie records to remain enabled at once. Clipboard import is a concrete ordinary path: every import creates a new enabled `CookieItem` with a timestamped description, so importing a refreshed Netscape jar does not replace an older enabled import. WebView capture can likewise coexist with older enabled cookie records. `CookieDao.getAllEnabledCookies()` orders these records by `id DESC`, placing the newest record first. `CookieViewModel.updateCookiesFile()` then concatenates each enabled record's raw Netscape content into one shared `cookies.txt`; its `cookieTXT.contains(line)` check removes only byte-identical lines, so two lines for the same cookie identity with different values both survive.
+
+That file order reverses the intended credential freshness at the actual consumer. Netscape/Mozilla cookie jars key an ordinary cookie by domain, path, and name; loading a later line with the same key replaces the earlier cookie value. Thus if older row A contains `.example.com / sid=OLD` and a later explicit refresh/import creates newer row B with `.example.com / sid=NEW`, Room returns B then A, the generated file contains NEW before OLD, and the downstream jar ends with `sid=OLD`. The app then hands that exact file to yt-dlp through `--cookies`. A successful user refresh can therefore leave authenticated metadata/download requests using the stale credential rather than the newly acquired one.
+
+The state is durable and self-reproducing. Both Room rows remain enabled across restart, and every later projection repeats the same descending-row/last-line-wins inversion. Same-settings download retry, raw/manual requeue, reconfigure, notification retry/resume, ordinary metadata retry, and process restart can all consume the same stale effective cookie while `use_cookies` remains enabled. Explicitly disabling/deleting the old record can repair the jar, but that manual cleanup is not an automatic semantic barrier for the supported multi-enabled-row state.
+
+**Why this is a defect:** the application intentionally merges multiple enabled credential sources into one keyed runtime jar, but it has no semantic conflict-resolution rule for overlapping cookie identities. Its accidental combination of newest-first Room ordering and downstream last-write-wins parsing deterministically gives older credentials authority over a newer explicit acquisition. This can break authentication after a user refresh and can preserve revoked/rotated session values until the older row is manually disabled. It is distinct from `BUG-COOKIE-01`, which owns whether Room mutations are faithfully/durably projected at all; even a perfectly synchronized projection is wrong here. It is also distinct from `BUG-COOKIE-07`, whose collision comes from erasing Chromium partition identity; this failure occurs with ordinary unpartitioned Netscape cookies that already have the same target identity.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The same `CookieDao` newest-first ordering and `CookieViewModel.updateCookiesFile()` concatenation behavior are present at the synchronized baseline checkpoint.
+
+Required result:
+
+- parse enabled cookie-record content into semantic Netscape cookie identities before materializing the shared runtime jar rather than resolving conflicts by raw record/line order;
+- define an explicit conflict policy for identical effective cookie keys. A newer explicit acquisition/import must either supersede the stale value or surface an actionable conflict; an older enabled record must never silently override the newer credential solely because it is written later in the generated file;
+- preserve distinct cookies that share a name but differ in domain or path, and preserve host-only/domain, expiry, secure, and partition-handling semantics governed by the other cookie defects rather than using coarse text matching as identity;
+- make delete/disable, repeated import/capture, and process restart rebuild the same deterministic resolved jar from current enabled authority;
+- if source-record recency is not sufficient to establish intent for every overlap, store an explicit generation/precedence or require user conflict resolution rather than depending on DAO iteration order and consumer overwrite direction.
+
+Cross-attempt / terminal matrix requirements:
+
+- authoritative observation is the set of enabled persisted cookie records plus the exact semantic cookie key/value each contributes. The carrier-creation gap is the raw concatenation into a single runtime keyspace without conflict resolution;
+- the first filesystem persistence call is the write of generated `cookies.txt`. A fully successful write is already semantically wrong in the overlap case; write failure/revocation ordering remains owned by `BUG-COOKIE-01/03` and is not required to trigger this defect;
+- there is no Download terminal-state or linked-ledger mutation required for the primary failure. The material effect is the effective credential selected by the yt-dlp HTTP cookie consumer, which can yield authentication failure or use a stale session value;
+- relevant re-entry paths are immediate Home retry after acquisition, repeated WebView capture/import, cookie enable/disable/delete, ordinary cookie-enabled metadata/download attempts, same-settings retry, raw/manual requeue, reconfigure, notification retry/resume, and process restart. None may recover by merely regenerating the same reversed jar. Backup restore must preserve any explicit conflict/precedence semantics if enabled cookie records are restored;
+- no concurrency interleaving is required. A stable pair of enabled rows is sufficient, although concurrent projection races remain separately owned by existing cookie publication findings.
+
+Candidate-rejection proof:
+
+- this candidate is not rejected because the user left an older cookie record enabled: the production UI explicitly supports multiple enabled records and repeated imports/captures, and `updateCookiesFile()` deliberately merges them into one jar. Once the application combines those sources, overlapping effective keys need defined semantics;
+- it is not rejected as `BUG-COOKIE-01`: that defect concerns projection/revocation ordering between Room and the runtime file, while this one persists even when Room reads and filesystem publication both succeed exactly as designed;
+- it is not rejected as `BUG-COOKIE-07`: no partitioned-cookie or hidden Chromium identity dimension is needed. Two ordinary valid Netscape rows with exactly the same domain/path/name and different values reproduce the failure;
+- direct consumer evidence confirms the overwrite direction: a Mozilla/Netscape cookie jar loaded with NEW first and OLD second for the same domain/path/name retains OLD. Production-path app/yt-dlp integration was not executed, so verification remains `SOURCE-LEVEL ONLY` rather than PASS.
+
+Focused verification requirements:
+
+- exercise the real Cookies UI/import or WebView acquisition -> Room -> `CookieDao.getAllEnabledCookies()` -> `CookieViewModel.updateCookiesFile()` -> yt-dlp `--cookies` consumer path with an older enabled row containing `sid=OLD` and a later explicit refresh row containing the same cookie identity as `sid=NEW`; assert the effective request uses NEW or reports an explicit conflict, never OLD;
+- cover same name with different paths/domains (must coexist), identical duplicate lines, secure/session/persistent variants, host-only vs domain controls, generated plus manually imported records, disabled older/newer rows, deletion, repeated projection, and process restart;
+- reverse source creation order and include three successive credential rotations to prove precedence is intentional rather than an artifact of DAO/file iteration;
+- run the real generated cookie file through the same cookie-loading path yt-dlp uses and then issue an authenticated request or equivalent integration assertion. Helper-only text-order tests are insufficient for PASS.
