@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **16**
-- Effective active defects: **90**
+- Delta active defects: **17**
+- Effective active defects: **91**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -530,3 +530,47 @@ Focused verification requirements:
 - repeat with one successful and one failed restored preference group, and with a mixed settings + Room-category restore, proving the outer `runCatching` cannot reinterpret false durable persistence as success;
 - verify current-process reads versus process-restart reads so a failed disk commit cannot masquerade as successful restore merely because the in-memory SharedPreferences map changed;
 - include normal successful commit, repeated retry after failure, reset mode as a regression against `BUG-BACKUP-03`, and `Long`/`Float` handling as a regression against `BUG-BACKUP-08`. Helper-only serialization tests are insufficient.
+
+## P2 — continued
+
+### BUG-COOKIE-05 — Preserve host-only cookie scope when converting Chromium cookies to Netscape
+
+**State:** Open  
+**Reviewed checkpoint:** `b60ef3deae3d8eec0505a01b955af05abb75e949`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the production Cookies screen and Home authentication-recovery flow can launch `WebViewActivity` for an arbitrary HTTP(S) login/source URL. Generate calls `CookieViewModel.getCookiesFromDB()`, which opens WebView's Chromium `Cookies` SQLite database and reads each `host_key`. Chromium represents a host-only cookie with a domain string that does **not** begin with `.` and a domain cookie with one that does. The converter does not preserve that distinction: for every `host_key` without a leading dot it prepends one (`.$hostKey`), then constructs `WebViewActivity.CookieItem` without specifying `includeSubdomains`, whose default is `true`. `CookieItem.toNetscapeFormat()` writes that Boolean as the second Netscape field. The result is that every captured host-only cookie is serialized as a leading-dot domain plus `TRUE`, i.e. a cookie eligible for subdomains.
+
+The generated lines are persisted in Room and copied into the shared runtime `cookies.txt`. When `use_cookies` is enabled, `YTDLPUtil.applyDefaultOptionsForFetchingData()` attaches that jar through `--cookies`; the cookie jar is not scoped to only the URL that originally created the row. A host-only credential captured for `example.com` can therefore become eligible for a later request to `sub.example.com`, including extractor redirects/subrequests or a later user request on that subdomain, even though the browser cookie authority required an exact host match. No later projection or restart path restores the lost host-only bit because the broadened Netscape line is the durable app-owned representation.
+
+**Why this is a defect:** host-only versus domain scope is part of credential authority. Chromium explicitly distinguishes a host-only cookie from one that may be sent to subdomains, and the Netscape jar has an explicit include-subdomains field for the same semantic distinction. Broadening that scope changes which network origins can receive authentication state, can produce incorrect authentication behavior, and can disclose a credential to a subdomain that the captured browser cookie would not authorize. This is separate from `BUG-COOKIE-01` (Room/runtime projection ordering), `BUG-COOKIE-03` (capture success publication), and `BUG-COOKIE-04` (expiry epoch/unit conversion): even a fully synchronized, correctly timed cookie is still semantically wrong if its domain authority is widened.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The same host normalization and `includeSubdomains = true` default are present in the synchronized baseline conversion path.
+
+Required result:
+
+- preserve Chromium host-only/domain-cookie identity when converting each row: a host-only `host_key` must remain exact-host in the Netscape representation with `includeSubdomains = FALSE`, while a domain cookie must preserve its domain/subdomain authority rather than being inferred from a rewritten display string;
+- carry that scope explicitly through the app model, Room content, runtime `cookies.txt`, export, restart reconstruction, and every yt-dlp/Terminal cookie consumer;
+- do not rewrite already-valid manually imported Netscape cookies under Chromium conversion rules; generated WebView rows and imported Netscape rows must retain their respective source semantics;
+- define migration/reacquisition behavior for already stored WebView-generated lines whose host-only cookies were broadened, without silently broadening them again during projection or retry;
+- keep the `BUG-COOKIE-01/03/04` fixes orthogonal: synchronization, successful publication, and expiry conversion do not close domain-scope correctness.
+
+Cross-attempt / recovery requirements:
+
+- immediate Home retry, ordinary metadata/download execution, Terminal cookie use where applicable, repeated WebView acquisition, and process restart must all preserve the same exact host-only/domain authority;
+- a later request for a subdomain must not gain a host-only credential merely because the cookie survived in the shared jar, while a genuine Chromium domain cookie must continue to work on authorized subdomains;
+- delete/disable/revocation remains governed by `BUG-COOKIE-01`, but every projection produced while the row is enabled must preserve its correct scope;
+- manual import/export round trips must not reinterpret `FALSE` as `TRUE` or inject a leading dot that changes host authority.
+
+Terminal fault / candidate-rejection notes:
+
+- there is no Download terminal-state write required to trigger this defect; the authoritative decision is the cookie's domain scope at the Chromium-to-Netscape representation boundary, and the material side effect is which HTTP origins become eligible to receive the credential;
+- first persistence failure, linked Download ledger, filesystem output publication, `DownloadOutcome`, and WorkManager terminal result are not applicable to the primary scope-widening path. The generated Room/file representation is itself the durable semantic carrier;
+- this candidate is not rejected merely because modern `Set-Cookie` syntax ignores historical leading-dot spelling: the consumer here is a Netscape cookie jar with an explicit include-subdomains Boolean, and the code writes `TRUE` for host-only Chromium rows. Nor does an immediate retry to the same host close the invariant, because the shared jar remains enabled for later extractor/subdomain requests without a scope-repair barrier.
+
+Focused verification requirements:
+
+- add a production-path WebView SQLite -> `CookieViewModel.getCookiesFromDB()` -> `CookieItem.toNetscapeFormat()` -> Room -> `cookies.txt` -> yt-dlp cookie-consumer test with two concrete Chromium rows: host-only `example.com` and domain `.example.com`; assert the host-only row is serialized/consumed as exact-host only and the domain row remains subdomain-eligible;
+- include requests to `example.com`, `sub.example.com`, sibling unrelated domains, secure/path combinations, session and persistent cookies, process restart, and multiple enabled cookie rows;
+- verify manual Netscape import containing both `FALSE` and `TRUE` scope values is preserved unchanged by later projection/export;
+- exercise the real generated cookie-file consumer. No production-path execution or network-cookie wiring test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
