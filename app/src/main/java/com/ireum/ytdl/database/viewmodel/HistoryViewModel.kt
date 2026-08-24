@@ -216,6 +216,23 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         val item: HistoryItem,
         val protectedAutomaticKeywordCount: Int
     )
+
+    /**
+     * Explicit field ownership for VideoPlayerActivity's metadata dialog.
+     * A null [url] means the dialog did not edit the URL; it is not a stale
+     * replacement of the current URL.  VideoPlayer does not own duration,
+     * durationSeconds, thumb, website, format, filesize, or paths.
+     */
+    data class VideoPlayerMetadataEdit(
+        val id: Long,
+        val title: String,
+        val author: String,
+        val artist: String,
+        val url: String?,
+        val keywords: String,
+        val customThumb: String,
+    )
+
     private data class HistoryScope(
         val filters: HistoryFilters,
         val excludedChildKeywords: Set<String>,
@@ -1890,6 +1907,64 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             AutomaticKeywordNormalizer.parseKeywords(keywords)
         )
         invalidateCachedIds(triggerRefresh = true)
+    }
+
+    /**
+     * Persists only the fields explicitly owned by VideoPlayerActivity.  The
+     * current row is read under the History reference coordinator so a stale
+     * dialog snapshot cannot supply any unowned replacement fields.
+     */
+    suspend fun updateVideoPlayerMetadata(
+        edit: VideoPlayerMetadataEdit
+    ): MetadataUpdateResult? = withContext(Dispatchers.IO) {
+        val result = HistoryReferenceMutationCoordinator.withLock {
+            database.withTransaction {
+                val currentItem = database.historyDao.getNullableItem(edit.id)
+                    ?: return@withTransaction null
+                val requestedUrl = edit.url
+                val nextUrl = requestedUrl ?: currentItem.url
+                val nextMediaPublishedAt = if (requestedUrl == null) {
+                    currentItem.mediaPublishedAt
+                } else {
+                    currentItem.mediaPublishedAt.takeIf {
+                        MediaPublishedDate.isPresent(it) &&
+                            MediaPublishedDateSource.matches(currentItem.url, nextUrl)
+                    } ?: MediaPublishedDate.MISSING
+                }
+                if (
+                    database.historyDao.updateVideoPlayerMetadata(
+                        id = edit.id,
+                        url = nextUrl,
+                        title = edit.title,
+                        author = edit.author,
+                        artist = edit.artist,
+                        customThumb = edit.customThumb,
+                        mediaPublishedAt = nextMediaPublishedAt,
+                    ) != 1
+                ) {
+                    return@withTransaction null
+                }
+                val protectedCount = keywordAssignments.updateManualFromMaterializedEditor(
+                    edit.id,
+                    AutomaticKeywordNormalizer.parseKeywords(edit.keywords)
+                )
+                if (requestedUrl != null && requestedUrl != currentItem.url) {
+                    automaticKeywordRuleEngine.reconcileHistoryUrlChange(
+                        edit.id,
+                        currentItem.url,
+                        requestedUrl
+                    )
+                }
+                MetadataUpdateResult(
+                    item = database.historyDao.getItem(edit.id),
+                    protectedAutomaticKeywordCount = protectedCount
+                )
+            }
+        }
+        if (result != null) {
+            invalidateCachedIds(triggerRefresh = true)
+        }
+        result
     }
 
     /**

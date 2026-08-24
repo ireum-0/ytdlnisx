@@ -21,8 +21,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Exercises the same scalar intent APIs used by HistoryFragment's bulk
- * artist/keyword actions against the application's Room database.
+ * Exercises the same explicit intent APIs used by HistoryFragment's bulk
+ * actions and VideoPlayerActivity against the application's Room database.
  */
 @RunWith(AndroidJUnit4::class)
 class HistoryIntentProductionWiringTest {
@@ -127,6 +127,82 @@ class HistoryIntentProductionWiringTest {
         assertReplacementMetadata(current)
     }
 
+    @Test
+    fun staleVideoPlayerEditPreservesReplacementOwnedMetadataAndSourceDate() = runBlocking {
+        val historyId = insertWithManualKeywords()
+        val staleSnapshot = db.historyDao.getItem(historyId)
+        persistReplacementMetadata(staleSnapshot)
+
+        val result = historyViewModel.updateVideoPlayerMetadata(
+            HistoryViewModel.VideoPlayerMetadataEdit(
+                id = historyId,
+                title = "player title",
+                author = "player author",
+                artist = "player artist",
+                // The dialog did not edit URL, so the stale URL is not an
+                // instruction to replace the current replacement URL.
+                url = null,
+                keywords = "K1, K2",
+                customThumb = "player-custom-thumb",
+            )
+        )
+
+        assertNotNull(result)
+        val current = db.historyDao.getItem(historyId)
+        assertEquals("player title", current.title)
+        assertEquals("player author", current.author)
+        assertEquals("player artist", current.artist)
+        assertEquals("K1, K2", current.keywords)
+        assertEquals("player-custom-thumb", current.customThumb)
+        assertReplacementOwnedMetadata(current)
+    }
+
+    @Test
+    fun explicitVideoPlayerUrlIntentUsesSourceDateSemantics() = runBlocking {
+        val historyId = insertWithManualKeywords()
+        val current = db.historyDao.getItem(historyId)
+        db.historyDao.updateRaw(current.copy(mediaPublishedAt = 9_876_543L))
+
+        val result = historyViewModel.updateVideoPlayerMetadata(
+            HistoryViewModel.VideoPlayerMetadataEdit(
+                id = historyId,
+                title = current.title,
+                author = current.author,
+                artist = current.artist,
+                url = "https://other.example/video",
+                keywords = current.keywords,
+                customThumb = current.customThumb,
+            )
+        )
+
+        assertNotNull(result)
+        val updated = db.historyDao.getItem(historyId)
+        assertEquals("https://other.example/video", updated.url)
+        assertEquals(0L, updated.mediaPublishedAt)
+    }
+
+    @Test
+    fun deletedTargetIsNoOpForVideoPlayerIntent() = runBlocking {
+        val historyId = insertWithManualKeywords()
+        db.historyDao.deleteById(historyId)
+
+        val result = historyViewModel.updateVideoPlayerMetadata(
+            HistoryViewModel.VideoPlayerMetadataEdit(
+                id = historyId,
+                title = "stale title",
+                author = "stale author",
+                artist = "stale artist",
+                url = "https://stale.example/video",
+                keywords = "resurrected",
+                customThumb = "stale-thumb",
+            )
+        )
+
+        assertNull(result)
+        assertNull(db.historyDao.getNullableItem(historyId))
+        assertTrue(db.automaticKeywordRuleDao.getAssignmentsRaw(historyId).isEmpty())
+    }
+
     private suspend fun insertWithManualKeywords(): Long {
         val id = db.historyDao.insertAndGetIdRaw(history(keywords = "K1"))
         insertedHistoryIds += id
@@ -148,6 +224,7 @@ class HistoryIntentProductionWiringTest {
                 downloadPath = listOf("/replacement/file.webm"),
                 format = stale.format.copy(container = "webm", filesize = 999_000),
                 filesize = 999_000,
+                mediaPublishedAt = 9_876_543L,
             )
         )
     }
@@ -169,6 +246,11 @@ class HistoryIntentProductionWiringTest {
         assertEquals("https://example.com/replacement", item.url)
         assertEquals("replacement title", item.title)
         assertEquals("replacement author", item.author)
+        assertReplacementOwnedMetadata(item)
+    }
+
+    private fun assertReplacementOwnedMetadata(item: HistoryItem) {
+        assertEquals("https://example.com/replacement", item.url)
         assertEquals("99:00", item.duration)
         assertEquals(5940, item.durationSeconds)
         assertEquals("replacement-thumb", item.thumb)
@@ -176,6 +258,7 @@ class HistoryIntentProductionWiringTest {
         assertEquals(listOf("/replacement/file.webm"), item.downloadPath)
         assertEquals("webm", item.format.container)
         assertEquals(999_000, item.filesize)
+        assertEquals(9_876_543L, item.mediaPublishedAt)
     }
 
     private fun history(keywords: String) = HistoryItem(

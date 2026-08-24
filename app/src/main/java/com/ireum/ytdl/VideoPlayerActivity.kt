@@ -1758,21 +1758,20 @@ class VideoPlayerActivity : AppCompatActivity() {
                 val artist = artistInput.text?.toString()?.trim().orEmpty()
                 val url = urlInput.text?.toString()?.trim().orEmpty()
                 val keywords = keywordsInput.text?.toString()?.trim().orEmpty()
-                val updated = item.copy(
+                val videoPlayerEdit = HistoryViewModel.VideoPlayerMetadataEdit(
+                    id = item.id,
                     title = title,
                     author = author,
                     artist = artist,
-                    url = url,
+                    url = url.takeIf { it != item.url },
                     keywords = keywords,
                     customThumb = thumbnailSaveController.editedThumbnail,
-                    mediaPublishedAt = item.mediaPublishedAt.takeIf {
-                        com.ireum.ytdl.util.MediaPublishedDateSource.matches(item.url, url)
-                    } ?: 0L
                 )
                 lifecycleScope.launch {
                     try {
                         val result = thumbnailSaveController.persist {
-                            historyViewModel.updateWithKeywordNotice(updated)
+                            historyViewModel.updateVideoPlayerMetadata(videoPlayerEdit)
+                                ?: error("History target deleted before VideoPlayer metadata save")
                         }
                         ThumbnailMetadataDialogStateRenderer.render(
                             dialog,

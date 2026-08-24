@@ -153,6 +153,21 @@ interface HistoryDao {
     @Query("UPDATE history SET artist = :artist WHERE id = :id")
     fun updateArtistById(id: Long, artist: String): Int
 
+    @Query(
+        "UPDATE history SET url = :url, title = :title, author = :author, " +
+            "artist = :artist, customThumb = :customThumb, mediaPublishedAt = :mediaPublishedAt " +
+            "WHERE id = :id"
+    )
+    fun updateVideoPlayerMetadata(
+        id: Long,
+        url: String,
+        title: String,
+        author: String,
+        artist: String,
+        customThumb: String,
+        mediaPublishedAt: Long,
+    ): Int
+
     @Query("UPDATE history SET playbackPositionMs = :positionMs WHERE id = :id")
     fun updatePlaybackPosition(id: Long, positionMs: Long)
 
