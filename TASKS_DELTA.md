@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **17**
-- Effective active defects: **91**
+- Delta active defects: **18**
+- Effective active defects: **92**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -574,3 +574,40 @@ Focused verification requirements:
 - include requests to `example.com`, `sub.example.com`, sibling unrelated domains, secure/path combinations, session and persistent cookies, process restart, and multiple enabled cookie rows;
 - verify manual Netscape import containing both `FALSE` and `TRUE` scope values is preserved unchanged by later projection/export;
 - exercise the real generated cookie-file consumer. No production-path execution or network-cookie wiring test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+### BUG-PLAYER-02 — Do not overwrite newer History thumbnail state with stale playback-cache localization
+
+**State:** Open  
+**Reviewed checkpoint:** `e4a47f1cd4990a17a40258afb0f179e027868deb`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** ordinary VideoPlayer artwork/session-metadata refresh reaches `loadPlaybackThumbnail(item)`. From its in-memory `HistoryItem` snapshot it chooses a remote `customThumb`/`thumb` source A, then `ensureLocalThumbForPlayback()` performs the network Picasso fetch, bitmap decode/scale, and app-owned `filesDir/thumb_cache/history_<id>_thumb.jpg` write before entering `HistoryReferenceMutationCoordinator`. While that external work is in flight, a concurrent authorized History replacement or another legitimate thumbnail writer can acquire the same coordinator and commit a newer thumbnail source B. The playback localizer later acquires the coordinator and does re-read `historyDao.getNullableItem(item.id)`, but it never compares that current row's `customThumb`/`thumb` or any source revision with A. It unconditionally calls `historyDao.updateThumbById(item.id, outFile.absolutePath)` and publishes `current.copy(thumb = outFile.absolutePath)` into the playback queue. The stale cache derived from A can therefore overwrite the newer durable B after B has already committed.
+
+The ordering is correctness-significant. If localization commits first and replacement commits second, the newer replacement wins. If replacement commits while the old remote fetch is running and localization commits second, the stale old artwork becomes the durable History thumbnail. The scalar DAO update avoids unrelated full-row overwrite, but scalar ownership alone does not make a value current when that value was derived from a revocable old source outside the synchronization boundary. The generated cache file is persistent app data, and after the stale write a restart reads that local path; because it is no longer remote, ordinary playback does not automatically refetch or recover B.
+
+**Why this is a defect:** background artwork localization is a cache/materialization side effect, not user authority to replace a newer History thumbnail. A normal playback refresh can silently erase a successfully committed replacement/editor thumbnail solely because an older network fetch finished later. This is persistent metadata corruption/lost-update behavior rather than an optimization issue. It is distinct from `BUG-PLAYER-01` (playback-position write ordering), `BUG-METADATA-01` (stale full-row DownloadItem metadata enrichment), and `BUG-BACKUP-02` (custom-thumbnail restore path collisions); none owns stale provenance publication by the VideoPlayer thumbnail localizer.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The same `loadPlaybackThumbnail()` / `ensureLocalThumbForPlayback()` source-capture and unconditional `updateThumbById()` sequence is present at the prior reviewed checkpoint `b60ef3deae3d8eec0505a01b955af05abb75e949`; the current checkpoint commit changes the explicit VideoPlayer metadata editor, not this localization sequence.
+
+Required result:
+
+- bind every playback-thumbnail localization attempt to the exact source identity/revision from which the bitmap was derived;
+- after external/network/file work, re-enter `HistoryReferenceMutationCoordinator` and update `thumb` only under an expected-current-source predicate proving the target still exists and the preferred thumbnail source has not been replaced or superseded by a newer `customThumb`/`thumb` state;
+- if source authority changed, discard the stale publication, keep the newer durable metadata, and clean up the attempt-owned cache artifact when it is no longer referenced;
+- retain field-owned/scalar mutation for the successful current-source case so localization never overwrites unrelated History metadata;
+- make repeated playback and process restart converge on the currently authoritative thumbnail rather than turning a stale cache path into permanent source identity.
+
+Concurrency / cross-attempt / fault requirements:
+
+- actual ordering is `VideoPlayer remote fetch -> cache-file write -> HistoryReferenceMutationCoordinator -> scalar Room update`, while authorized History replacement uses `HistoryReferenceMutationCoordinator -> Room transaction`; no AB/BA lock inversion is required, but a late derived-value commit can cross a newer serialized mutation;
+- first persistence call for localization is `historyDao.updateThumbById()`. A failed first write currently leaves the newer database value intact but can orphan the generated cache file; a successful stale write is the primary defect and has no recovery carrier identifying the source it displaced;
+- process restart after a stale successful write preserves the stale local path. Repeated playback then sees a local source and does not restore the superseded remote/replacement source. A later explicit replacement/editor action may repair the row but is not an automatic convergence guarantee;
+- same-settings Download retry, raw/manual requeue, reconfigure, notification retry/resume, and backup restore are not semantic recovery paths for this playback-cache attempt and should be marked not applicable. History replacement, explicit thumbnail edit, repeat playback, target deletion, and restart are the relevant re-entry paths;
+- Download terminal state, linked Download ledgers, `DownloadOutcome`, and WorkManager result are not part of the primary localization path. The durable terminal semantic effect is the History thumbnail field plus its cache file reference.
+
+Focused verification requirements:
+
+- add a deterministic production-path race that latches the remote thumbnail fetch after source A is captured, commits an authorized History replacement/editor change to source B through the real `HistoryReferenceMutationCoordinator`/Room path, releases the old fetch, and proves B remains durable and the stale A-derived cache cannot publish;
+- execute both completion orders, plus target deletion, unchanged-source localization, customThumb-over-thumb precedence changes, Room update failure, and stale-attempt cache cleanup;
+- restart after the replacement-before-localizer ordering and prove the authoritative B source remains recoverable/current rather than a stale local A path;
+- exercise actual `VideoPlayerActivity -> loadPlaybackThumbnail/ensureLocalThumbForPlayback -> HistoryDao` wiring and a real competing History writer. No such production-path race test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
