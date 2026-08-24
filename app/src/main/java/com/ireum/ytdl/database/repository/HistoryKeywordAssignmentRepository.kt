@@ -172,6 +172,12 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         requestedKeywords: Collection<String>
     ): Int {
         return db.withTransaction {
+            // A stale UI target must not create assignment state after the
+            // History row has been deleted.  Keep the existence check inside
+            // the same transaction as the assignment/materialization writes.
+            if (db.historyDao.getNullableItem(historyItemId) == null) {
+                return@withTransaction 0
+            }
             val requested = requestedKeywords
                 .map { it.trim().replace(Regex("\\s+"), " ") }
                 .filter(String::isNotBlank)

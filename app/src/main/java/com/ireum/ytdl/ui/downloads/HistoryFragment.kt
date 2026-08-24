@@ -4638,8 +4638,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     items.forEach { item ->
                         val existing = splitAuthorsLocal(normalizeAuthors(item.artist))
                         val merged = (existing + newArtists).distinct()
-                        val updated = item.copy(artist = merged.joinToString(", "))
-                        updateJobs.add(historyViewModel.update(updated))
+                        updateJobs.add(
+                            historyViewModel.updateArtist(
+                                id = item.id,
+                                artist = merged.joinToString(", ")
+                            )
+                        )
                     }
                     updateJobs.joinAll()
                     withContext(Dispatchers.Main) {
@@ -4770,8 +4774,12 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                         merged.add(keyword)
                                     }
                                 }
-                                val updated = item.copy(keywords = merged.joinToString(", "))
-                                updateJobs.add(historyViewModel.update(updated))
+                                updateJobs.add(
+                                    historyViewModel.updateKeywords(
+                                        id = item.id,
+                                        keywords = merged.joinToString(", ")
+                                    )
+                                )
                             }
                             updateJobs.joinAll()
                             withContext(Dispatchers.Main) {

@@ -1870,24 +1870,33 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         invalidateCachedIds(triggerRefresh = true)
     }
 
-    fun update(item: HistoryItem) = viewModelScope.launch(Dispatchers.IO) {
-        Log.d("HistoryPagingVM", "update id=${item.id} author='${item.author}' title='${item.title}'")
-        val currentItem = database.historyDao.getNullableItem(item.id) ?: return@launch
-        // This entry point is used by the bulk artist and keyword editors.
-        // The selected HistoryItem can be stale while a replacement commits;
-        // write only the field whose editor owns the mutation.
-        if (currentItem.artist != item.artist) {
-            repository.updateArtist(item.id, item.artist)
-        }
-        if (currentItem.keywords != item.keywords) {
-            keywordAssignments.updateManualFromMaterializedEditor(
-                item.id,
-                AutomaticKeywordNormalizer.parseKeywords(item.keywords)
-            )
-        }
+    /**
+     * Explicit artist-only intent used by the bulk artist editor.
+     * No other fields from a stale HistoryItem snapshot are consulted.
+     */
+    fun updateArtist(id: Long, artist: String) = viewModelScope.launch(Dispatchers.IO) {
+        repository.updateArtist(id, artist)
         invalidateCachedIds(triggerRefresh = true)
     }
 
+    /**
+     * Explicit keyword-only intent for the materialized keyword editor.
+     * The requested projection is reconciled through the authoritative
+     * assignment repository; no other HistoryItem fields are consulted.
+     */
+    fun updateKeywords(id: Long, keywords: String) = viewModelScope.launch(Dispatchers.IO) {
+        keywordAssignments.updateManualFromMaterializedEditor(
+            id,
+            AutomaticKeywordNormalizer.parseKeywords(keywords)
+        )
+        invalidateCachedIds(triggerRefresh = true)
+    }
+
+    /**
+     * Full metadata editor entry point used by HistoryFragment's explicit
+     * video-info dialog. Its field set is intentionally separate from the
+     * bulk artist/keyword intent APIs above.
+     */
     suspend fun updateWithKeywordNotice(item: HistoryItem): MetadataUpdateResult = withContext(Dispatchers.IO) {
         val result = HistoryReferenceMutationCoordinator.withLock {
             database.withTransaction {
@@ -1913,14 +1922,13 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 // the raw row here avoids the reverse Room -> coordinator
                 // acquisition performed by the compatibility wrapper.
                 database.historyDao.updateRaw(updatedItem)
-                val protectedCount = if (currentItem.keywords != item.keywords) {
-                    keywordAssignments.updateManualFromMaterializedEditor(
-                        item.id,
-                        AutomaticKeywordNormalizer.parseKeywords(item.keywords)
-                    )
-                } else {
-                    0
-                }
+                // The full video-info dialog explicitly owns the keyword
+                // field.  Submit its projection directly; do not infer
+                // keyword intent by comparing a stale HistoryItem snapshot.
+                val protectedCount = keywordAssignments.updateManualFromMaterializedEditor(
+                    item.id,
+                    AutomaticKeywordNormalizer.parseKeywords(item.keywords)
+                )
                 automaticKeywordRuleEngine.reconcileHistoryUrlChange(
                     item.id,
                     currentItem.url,
