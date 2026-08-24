@@ -7,6 +7,7 @@ import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementRefusal
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 
@@ -225,13 +226,38 @@ internal suspend fun cleanupStoppedDownloadExecution(
     executionId: String,
     authoritativeIssue: DownloadIssue? = null,
 ): DownloadRepository.RunningDownloadRequeueResult {
-    val result = repository.requeueRunningDownload(
-        id = downloadId,
-        expectedExecutionId = executionId,
-        authoritativeIssue = authoritativeIssue,
-    )
+    val refusal = authoritativeIssue?.let { HistoryReplacementRefusal.from(it) }
+    if (
+        authoritativeIssue != null &&
+            refusal == null &&
+            authoritativeIssue.code != DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED
+    ) {
+        error(
+            "Unsupported authoritative cleanup issue cannot enter Download requeue: " +
+                authoritativeIssue.code
+        )
+    }
+    val convergedQualityAuthorityLoss = authoritativeIssue?.code ==
+        DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED
+    val result = if (convergedQualityAuthorityLoss) {
+        repository.convergeQualityAuthorityLoss(
+            id = downloadId,
+            expectedExecutionId = executionId,
+        )
+    } else {
+        repository.requeueRunningDownload(
+            id = downloadId,
+            expectedExecutionId = executionId,
+            authoritativeRefusal = refusal,
+        )
+    }
     if (authoritativeIssue != null) {
-        check(result != DownloadRepository.RunningDownloadRequeueResult.REQUEUED) {
+        check(
+            result != DownloadRepository.RunningDownloadRequeueResult.REQUEUED &&
+                (!convergedQualityAuthorityLoss ||
+                    result == DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED ||
+                    result == DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT)
+        ) {
             "Authoritative History refusal was downgraded to ordinary requeue " +
                 "for download $downloadId"
         }

@@ -1204,6 +1204,7 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                     when (repository.requeueRunningDownload(current.id, current.executionId)) {
                         DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
                         DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
+                        DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED,
                         DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> Unit
                         DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
                             repository.completeAndDelete(

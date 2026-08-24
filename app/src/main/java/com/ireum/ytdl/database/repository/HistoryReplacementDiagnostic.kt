@@ -19,6 +19,33 @@ data class HistoryReplacementRefusalLedgerDisposition(
     val reasonCode: String,
 )
 
+/**
+ * The only issues that may cross the durable History-replacement refusal
+ * boundary.  Other worker-authoritative issues use their own terminal
+ * diagnostic carrier and must never be serialized as a History barrier.
+ */
+data class HistoryReplacementRefusal internal constructor(
+    val issue: DownloadIssue,
+) {
+    val code: DownloadIssueCode
+        get() = issue.code
+
+    val stage: DownloadIssueStage
+        get() = issue.stage
+
+    companion object {
+        fun from(issue: DownloadIssue): HistoryReplacementRefusal? = when (issue.code) {
+            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH,
+            DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH,
+            DownloadIssueCode.HISTORY_TARGET_DELETED ->
+                HistoryReplacementRefusal(issue).takeIf {
+                    issue.stage == DownloadIssueStage.HISTORY
+                }
+            else -> null
+        }
+    }
+}
+
 object HistoryReplacementDiagnostic {
     fun persistedHistoryReplacementIssue(issueCode: String): DownloadIssue? = when (issueCode) {
         DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->

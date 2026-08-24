@@ -1,6 +1,7 @@
 package com.ireum.ytdl.work
 
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.util.process.ProcessQuiescence
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -17,6 +18,36 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class DownloadWorkerNativeProcessQuiescenceTest {
+    @Test
+    fun api25UsesBoundedExitValuePollingWithoutApi26Methods() {
+        val process = LegacyCompatibleProcess(acknowledgeOnDestroy = true)
+
+        assertTrue(
+            ProcessQuiescence.requestTerminationForSdk(
+                process = process,
+                sdkInt = 25,
+                timeoutMillis = 200L,
+            )
+        )
+        assertTrue(process.destroyCalled)
+        assertFalse(process.destroyForciblyCalled)
+    }
+
+    @Test
+    fun api24TimeoutRemainsFailClosedWithoutForcibleTermination() {
+        val process = LegacyCompatibleProcess(acknowledgeOnDestroy = false)
+
+        assertFalse(
+            ProcessQuiescence.requestTerminationForSdk(
+                process = process,
+                sdkInt = 24,
+                timeoutMillis = 20L,
+            )
+        )
+        assertTrue(process.destroyCalled)
+        assertFalse(process.destroyForciblyCalled)
+    }
+
     @Test
     fun delayedNativeTerminationKeepsE2BehindTheProductionLease() = runBlocking {
         val downloadId = 1201L
@@ -331,5 +362,38 @@ class DownloadWorkerNativeProcessQuiescenceTest {
 
     private class UnquiescentProcess : ControlledProcess(acknowledgeOnForce = false) {
         override fun waitFor(timeout: Long, unit: TimeUnit): Boolean = false
+    }
+
+    private class LegacyCompatibleProcess(
+        private val acknowledgeOnDestroy: Boolean,
+    ) : Process() {
+        var alive = true
+        var destroyCalled = false
+        var destroyForciblyCalled = false
+
+        override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+
+        override fun getInputStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+
+        override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+
+        override fun waitFor(): Int = 0
+
+        override fun exitValue(): Int {
+            if (alive) throw IllegalThreadStateException("still running")
+            return 143
+        }
+
+        override fun destroy() {
+            destroyCalled = true
+            if (acknowledgeOnDestroy) alive = false
+        }
+
+        override fun destroyForcibly(): Process {
+            destroyForciblyCalled = true
+            throw AssertionError("API-26 force termination must not be called on API 24/25")
+        }
+
+        override fun isAlive(): Boolean = alive
     }
 }

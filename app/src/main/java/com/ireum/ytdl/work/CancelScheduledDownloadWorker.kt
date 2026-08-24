@@ -43,6 +43,7 @@ class CancelScheduledDownloadWorker(
                     when (repository.requeueRunningDownload(latest.id, latest.executionId)) {
                         DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
                         DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
+                        DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED,
                         DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> Unit
                         DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
                             // The History row is already authoritative.  Finish

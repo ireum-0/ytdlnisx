@@ -31,7 +31,6 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
-import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.DownloadCancellationRegistry
@@ -109,6 +108,7 @@ class DownloadRepository(private val database: DBManager) {
     enum class RunningDownloadRequeueResult {
         REQUEUED,
         REFUSAL_CONVERGED,
+        AUTHORITATIVE_ISSUE_CONVERGED,
         COMMITTED_HISTORY_FINALIZATION_DEBT,
         OWNERSHIP_LOST,
         NOT_RUNNING,
@@ -813,7 +813,7 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun requeueRunningDownload(
         id: Long,
         expectedExecutionId: String,
-        authoritativeIssue: DownloadIssue? = null,
+        authoritativeRefusal: HistoryReplacementRefusal? = null,
     ): RunningDownloadRequeueResult = database.withTransaction {
         val current = downloadDao.getNullableDownloadById(id)
             ?: return@withTransaction RunningDownloadRequeueResult.NOT_RUNNING
@@ -829,13 +829,19 @@ class DownloadRepository(private val database: DBManager) {
         if (isCommittedHistoryReplacementLocked(current)) {
             return@withTransaction RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT
         }
-        authoritativeIssue?.let { issue ->
+        if (current.lastIssueCode == DownloadIssueCode.HISTORY_REPLACEMENT_NOT_AUTHORIZED.name) {
+            return@withTransaction convergeQualityAuthorityLossLocked(
+                id = id,
+                expectedExecutionId = expectedExecutionId,
+            )
+        }
+        authoritativeRefusal?.let { refusal ->
             check(
                 persistHistoryReplacementRefusalCarrierLocked(
                     id = id,
                     expectedExecutionId = expectedExecutionId,
-                    issueCode = issue.code.name,
-                    issueStage = issue.stage.name,
+                    issueCode = refusal.code.name,
+                    issueStage = refusal.stage.name,
                 )
             ) {
                 "Authoritative History refusal carrier was not durable for download $id"
@@ -879,6 +885,50 @@ class DownloadRepository(private val database: DBManager) {
             } else {
                 RunningDownloadRequeueResult.NOT_RUNNING
             }
+        }
+    }
+
+    /**
+     * Converges the quality-authority loss issue through its ordinary terminal
+     * diagnostic fields.  It is deliberately not a History refusal carrier:
+     * HISTORY_REPLACEMENT_NOT_AUTHORIZED is not one of the privileged refusal
+     * triad and must never create a HistoryReplacementBarrier.
+     */
+    internal suspend fun convergeQualityAuthorityLoss(
+        id: Long,
+        expectedExecutionId: String,
+    ): RunningDownloadRequeueResult = database.withTransaction {
+        convergeQualityAuthorityLossLocked(id, expectedExecutionId)
+    }
+
+    private suspend fun convergeQualityAuthorityLossLocked(
+        id: Long,
+        expectedExecutionId: String,
+    ): RunningDownloadRequeueResult {
+        val current = downloadDao.getNullableDownloadById(id)
+            ?: return RunningDownloadRequeueResult.NOT_RUNNING
+        if (current.status !in setOf(Status.Active.name, Status.PostProcessing.name)) {
+            return RunningDownloadRequeueResult.NOT_RUNNING
+        }
+        if (
+            expectedExecutionId.isNotBlank() &&
+                current.executionId != expectedExecutionId
+        ) {
+            return RunningDownloadRequeueResult.OWNERSHIP_LOST
+        }
+        if (isCommittedHistoryReplacementLocked(current)) {
+            return RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT
+        }
+        val issue = HistoryReplacementDiagnostic.qualityAuthorityLostIssue()
+        val terminal = current.copy(
+            status = Status.Error.name,
+            lastIssueCode = issue.code.name,
+            lastIssueStage = issue.stage.name,
+        )
+        return if (downloadDao.updateIfExecutionOwnedAndRunning(terminal, expectedExecutionId)) {
+            RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED
+        } else {
+            RunningDownloadRequeueResult.OWNERSHIP_LOST
         }
     }
 

@@ -130,4 +130,25 @@ class HistoryReplacementDiagnosticTest {
         assertEquals(DownloadIssueStage.HISTORY, type?.stage)
         assertNull(HistoryReplacementDiagnostic.persistedMismatchIssue(DownloadIssueCode.UNKNOWN.name))
     }
+
+    @Test
+    fun refusalCarrierAcceptsOnlyTheHistoryReplacementTriad() {
+        val source = HistoryReplacementRefusal.from(
+            HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
+        )
+        val type = HistoryReplacementRefusal.from(
+            HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.TYPE)
+        )
+        val target = HistoryReplacementRefusal.from(
+            HistoryReplacementDiagnostic.targetDeletedIssue()
+        )
+        val qualityLoss = HistoryReplacementRefusal.from(
+            HistoryReplacementDiagnostic.qualityAuthorityLostIssue()
+        )
+
+        assertEquals(DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH, source?.code)
+        assertEquals(DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH, type?.code)
+        assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED, target?.code)
+        assertNull(qualityLoss)
+    }
 }

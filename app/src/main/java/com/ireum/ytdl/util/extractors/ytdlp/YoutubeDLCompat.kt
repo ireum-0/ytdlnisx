@@ -29,7 +29,74 @@ object YoutubeDLCompat {
     private const val QUICKJS_BIN_NAME = "libqjs.so"
     private const val YTDLP_BIN_NAME = "yt-dlp"
 
-    private val idProcessMap = Collections.synchronizedMap(HashMap<String, Process>())
+    private data class TrackedProcess(
+        val process: Process,
+        val descendantBarrier: File?,
+    )
+
+    /**
+     * The supervisor receives SIGTERM, terminates the exact child process
+     * group, waits for the yt-dlp child, and only then records QUIESCENT.  The
+     * Java root Process therefore has a durable descendant acknowledgement;
+     * a force-killed root leaves the marker for startup group recovery.
+     */
+    private val PROCESS_SUPERVISOR_SCRIPT = """
+import os
+import signal
+import subprocess
+import sys
+import time
+
+marker = sys.argv[1]
+command = sys.argv[2:]
+
+def write_marker(state, pgid=None):
+    values = [state, "processId=" + os.environ.get("YTDLNISX_PROCESS_ID", "")]
+    if pgid is not None:
+        values.append("pgid=" + str(pgid))
+    temporary = marker + ".tmp"
+    with open(temporary, "w") as stream:
+        stream.write("\n".join(values) + "\n")
+    os.replace(temporary, marker)
+
+child = None
+write_marker("STARTING")
+
+def stop_group():
+    if child is None:
+        return
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        child.wait(timeout=4)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+
+def stop(signum, frame):
+    stop_group()
+    write_marker("QUIESCENT")
+    raise SystemExit(128 + signum)
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+child = subprocess.Popen(command, start_new_session=True)
+write_marker("RUNNING", os.getpgid(child.pid))
+try:
+    exit_code = child.wait()
+finally:
+    stop_group()
+    write_marker("QUIESCENT")
+sys.exit(exit_code)
+""".trimIndent()
+
+    private val idProcessMap =
+        Collections.synchronizedMap(HashMap<String, TrackedProcess>())
     private val allowedConfigFilesByRequest =
         Collections.synchronizedMap(WeakHashMap<YoutubeDLRequest, MutableSet<File>>())
     private val initLock = Any()
@@ -113,7 +180,27 @@ object YoutubeDLCompat {
         command.add(ytdlpPath.absolutePath)
         command.addAll(args)
 
-        val processBuilder = ProcessBuilder(command).redirectErrorStream(redirectErrorStream)
+        if (
+            processId != null &&
+                synchronized(idProcessMap) { idProcessMap.containsKey(processId) }
+        ) {
+            throw YoutubeDLException("Process ID already exists")
+        }
+        val descendantBarrier = processId?.let {
+            YtdlpNativeProcessBarrier.prepare(context, it)
+        }
+        val processCommand = if (processId == null) {
+            command
+        } else {
+            mutableListOf<String>().apply {
+                add(pythonPath.absolutePath)
+                add("-c")
+                add(PROCESS_SUPERVISOR_SCRIPT)
+                add(descendantBarrier!!.absolutePath)
+                addAll(command.drop(1))
+            }
+        }
+        val processBuilder = ProcessBuilder(processCommand).redirectErrorStream(redirectErrorStream)
         processBuilder.environment().apply {
             this["LD_LIBRARY_PATH"] = envLibraryPath
             this["SSL_CERT_FILE"] = envSslCertFile
@@ -121,6 +208,7 @@ object YoutubeDLCompat {
             this["PYTHONHOME"] = envPythonHome
             this["HOME"] = envPythonHome
             this["TMPDIR"] = context.cacheDir.absolutePath
+            if (processId != null) this["YTDLNISX_PROCESS_ID"] = processId
         }
 
         val startTime = System.currentTimeMillis()
@@ -129,6 +217,7 @@ object YoutubeDLCompat {
         val process = try {
             processBuilder.start()
         } catch (e: IOException) {
+            descendantBarrier?.let { runCatching { YtdlpNativeProcessBarrier.clear(it) } }
             throw YoutubeDLException(e)
         }
 
@@ -137,7 +226,7 @@ object YoutubeDLCompat {
                 if (idProcessMap.containsKey(processId)) {
                     true
                 } else {
-                    idProcessMap[processId] = process
+                    idProcessMap[processId] = TrackedProcess(process, descendantBarrier)
                     false
                 }
             }
@@ -146,7 +235,13 @@ object YoutubeDLCompat {
                 // exact execution.  The newly-started process is not
                 // published as an owner, so terminate it before reporting
                 // the identity collision.
-                ProcessQuiescence.requestTermination(process)
+                ProcessQuiescence.requestTermination(
+                    process,
+                    terminationProof = {
+                        descendantBarrier == null ||
+                            YtdlpNativeProcessBarrier.isQuiescent(descendantBarrier)
+                    },
+                )
                 throw YoutubeDLException("Process ID already exists")
             }
         }
@@ -159,10 +254,11 @@ object YoutubeDLCompat {
             stdErrProcessor.join()
             process.waitFor()
         } catch (e: InterruptedException) {
-            val quiesced = ProcessQuiescence.requestTermination(process)
+            val quiesced = processId?.let { destroyTrackedProcess(it) }
+                ?: ProcessQuiescence.requestTermination(process)
             if (processId != null && quiesced) {
                 synchronized(idProcessMap) {
-                    if (idProcessMap[processId] === process) {
+                    if (idProcessMap[processId]?.process === process) {
                         idProcessMap.remove(processId)
                     }
                 }
@@ -213,29 +309,22 @@ object YoutubeDLCompat {
         destroyProcessByIdAndAwait(processId)
 
     internal fun destroyProcessByIdAndAwait(processId: String): Boolean {
-        val process = synchronized(idProcessMap) { idProcessMap[processId] }
-            ?: return true
-        val quiesced = ProcessQuiescence.requestTermination(process)
-        if (quiesced) {
-            synchronized(idProcessMap) {
-                if (idProcessMap[processId] === process) {
-                    idProcessMap.remove(processId)
-                }
-            }
-        }
-        return quiesced
+        return destroyTrackedProcess(processId)
     }
 
     /** Returns whether this exact execution still has a registered yt-dlp process. */
     internal fun hasProcessById(processId: String): Boolean =
-        synchronized(idProcessMap) { idProcessMap.containsKey(processId) }
+        synchronized(idProcessMap) { idProcessMap.containsKey(processId) } ||
+            YtdlpNativeProcessBarrier.hasUnresolved(processId)
 
     /** Returns whether any download-scoped yt-dlp process remains for this row. */
     internal fun hasAnyDownloadProcess(downloadId: Long): Boolean {
         val prefix = "download:$downloadId:"
-        return synchronized(idProcessMap) {
+        val inMemory = synchronized(idProcessMap) {
             idProcessMap.keys.any { it.startsWith(prefix) }
         }
+        return inMemory || YtdlpNativeProcessBarrier.configuredDownloadProcesses()
+            .any { it.downloadId == downloadId && YtdlpNativeProcessBarrier.hasUnresolved(it.processId) }
     }
 
     /** Returns whether another execution, not the expected one, remains registered. */
@@ -244,15 +333,21 @@ object YoutubeDLCompat {
         expectedProcessId: String,
     ): Boolean {
         val prefix = "download:$downloadId:"
-        return synchronized(idProcessMap) {
+        val inMemory = synchronized(idProcessMap) {
             idProcessMap.keys.any { it.startsWith(prefix) && it != expectedProcessId }
         }
+        return inMemory || YtdlpNativeProcessBarrier.configuredDownloadProcesses()
+            .any {
+                it.downloadId == downloadId &&
+                    it.processId != expectedProcessId &&
+                    YtdlpNativeProcessBarrier.hasUnresolved(it.processId)
+            }
     }
 
     /** Test seam that registers a fake in the same production process map. */
     internal fun registerProcessForTesting(processId: String, process: Process) {
         synchronized(idProcessMap) {
-            idProcessMap[processId] = process
+            idProcessMap[processId] = TrackedProcess(process, null)
         }
     }
 
@@ -263,14 +358,63 @@ object YoutubeDLCompat {
     }
 
     private fun isExactProcessRegistered(processId: String, process: Process): Boolean =
-        synchronized(idProcessMap) { idProcessMap[processId] === process }
+        synchronized(idProcessMap) { idProcessMap[processId]?.process === process }
 
     private fun removeExactProcess(processId: String, process: Process) {
         synchronized(idProcessMap) {
-            if (idProcessMap[processId] === process) {
+            val tracked = idProcessMap[processId]
+            if (
+                tracked?.process === process &&
+                    (tracked.descendantBarrier == null ||
+                        YtdlpNativeProcessBarrier.isQuiescent(tracked.descendantBarrier))
+            ) {
                 idProcessMap.remove(processId)
+                tracked.descendantBarrier?.let {
+                    runCatching { YtdlpNativeProcessBarrier.clear(it) }
+                }
             }
         }
+    }
+
+    private fun destroyTrackedProcess(processId: String): Boolean {
+        val tracked = synchronized(idProcessMap) { idProcessMap[processId] }
+        if (tracked == null) {
+            // Unit/test callers and non-download compatibility paths may
+            // cancel an already-absent process before application startup has
+            // configured the durable marker directory. There is no marker
+            // namespace to inspect in that state; production DownloadWorker
+            // and App startup configure it before any recoverable process can
+            // be published.
+            if (!YtdlpNativeProcessBarrier.isConfigured()) return true
+            val recovered = runCatching {
+                YtdlpNativeProcessBarrier.markerFor(processId)
+            }.mapCatching { YtdlpNativeProcessBarrier.recover(it) }
+                // An unaddressable marker is not proof that the native
+                // process is gone.  Keep the exact execution fail-closed.
+                .getOrElse { false }
+            return recovered
+        }
+        val acknowledged = ProcessQuiescence.requestTermination(
+            process = tracked.process,
+            terminationProof = {
+                tracked.descendantBarrier == null ||
+                    YtdlpNativeProcessBarrier.isQuiescent(tracked.descendantBarrier)
+            },
+        )
+        val recovered = if (acknowledged) {
+            true
+        } else {
+            tracked.descendantBarrier?.let(YtdlpNativeProcessBarrier::recover) ?: false
+        }
+        if (recovered) {
+            synchronized(idProcessMap) {
+                if (idProcessMap[processId]?.process === tracked.process) {
+                    idProcessMap.remove(processId)
+                }
+            }
+            tracked.descendantBarrier?.let { runCatching { YtdlpNativeProcessBarrier.clear(it) } }
+        }
+        return recovered
     }
 
     private fun sanitizeArguments(

@@ -1,5 +1,6 @@
 package com.ireum.ytdl.database.repository
 
+import android.content.Context
 import androidx.room.withTransaction
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.DownloadItem
@@ -14,6 +15,7 @@ import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import com.ireum.ytdl.work.DownloadCancellationRegistry
+import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLeases
 import kotlinx.coroutines.flow.Flow
@@ -346,16 +348,45 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         val publications: List<DownloadCancellationRegistry.Publication>,
     )
 
-    internal suspend fun completePersistedCancellation(operationId: String): List<Long> {
-        val result = completePersistedCancellationWithPublications(operationId)
+    internal suspend fun completePersistedCancellation(
+        operationId: String,
+        context: Context? = null,
+    ): List<Long> {
+        val result = completePersistedCancellationWithPublications(operationId, context)
         DownloadCancellationRegistry.publish(result.publications)
         return result.downloadIds
     }
 
     internal suspend fun completePersistedCancellationWithPublications(
         operationId: String,
+        context: Context? = null,
     ): CancellationCommitResult {
-        return withCurrentLinkedExecutionLeases(operationId) {
+        return withCurrentLinkedExecutionLeases(
+            operationId = operationId,
+            beforeAction = {
+                if (context != null) {
+                    val ids = dao.getNonterminalDownloadIds(operationId)
+                    database.downloadDao.getDownloadsByIdsSuspend(ids)
+                        .filter {
+                            it.executionId.isNotBlank() &&
+                                it.status in setOf(
+                                    DownloadRepository.Status.Active.name,
+                                    DownloadRepository.Status.PostProcessing.name,
+                                )
+                        }
+                        .forEach { item ->
+                            // This is the independent durable native-debt
+                            // carrier.  A failed commit is intentionally not
+                            // treated as success.  Do not terminalize the
+                            // operation until the carrier is durable; the
+                            // convergence owner will retry this phase.
+                            check(DownloadExecutionRecovery.recordPending(context, item)) {
+                                "Could not publish native cancellation recovery for ${item.id}"
+                            }
+                        }
+                }
+            },
+        ) {
             val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
             val linkedDownloadIds = database.withTransaction {
                 val operation = dao.getOperation(operationId)
@@ -402,9 +433,10 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
 
     suspend fun failCoordinator(
         operationId: String,
-        reason: String = REASON_COORDINATOR_FAILURE
+        reason: String = REASON_COORDINATOR_FAILURE,
+        context: Context? = null,
     ): List<Long> {
-        val result = failCoordinatorWithPublications(operationId, reason)
+        val result = failCoordinatorWithPublications(operationId, reason, context)
         DownloadCancellationRegistry.publish(result.publications)
         return result.downloadIds
     }
@@ -412,8 +444,29 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     internal suspend fun failCoordinatorWithPublications(
         operationId: String,
         reason: String = REASON_COORDINATOR_FAILURE,
+        context: Context? = null,
     ): CancellationCommitResult {
-        return withCurrentLinkedExecutionLeases(operationId) {
+        return withCurrentLinkedExecutionLeases(
+            operationId = operationId,
+            beforeAction = {
+                if (context != null) {
+                    val ids = dao.getNonterminalDownloadIds(operationId)
+                    database.downloadDao.getDownloadsByIdsSuspend(ids)
+                        .filter {
+                            it.executionId.isNotBlank() &&
+                                it.status in setOf(
+                                    DownloadRepository.Status.Active.name,
+                                    DownloadRepository.Status.PostProcessing.name,
+                                )
+                        }
+                        .forEach { item ->
+                            check(DownloadExecutionRecovery.recordPending(context, item)) {
+                                "Could not publish native cancellation recovery for ${item.id}"
+                            }
+                        }
+                }
+            },
+        ) {
             val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
             val linkedDownloadIds = database.withTransaction {
                 val operation = dao.getOperation(operationId)
@@ -477,6 +530,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
      */
     private suspend fun <T : Any> withCurrentLinkedExecutionLeases(
         operationId: String,
+        beforeAction: suspend () -> Unit = {},
         action: suspend () -> T,
     ): T {
         while (true) {
@@ -484,6 +538,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                 currentLinkedExecutionTokens(operationId)
             }
             val result = withDownloadWorkerExecutionSideEffectLeases(executions) {
+                beforeAction()
                 val stillCurrent = withDownloadWorkerExecutionLock {
                     currentLinkedExecutionTokens(operationId) == executions
                 }

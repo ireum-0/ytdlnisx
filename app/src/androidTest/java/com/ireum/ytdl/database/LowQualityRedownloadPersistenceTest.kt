@@ -26,9 +26,18 @@ import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.HistoryReplacementPersistenceResult
 import com.ireum.ytdl.work.DownloadCancellationRegistry
+import com.ireum.ytdl.work.DownloadExecutionRecovery
+import com.ireum.ytdl.work.DownloadWorker
+import com.ireum.ytdl.work.DownloadWorkerProcessOwners
+import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.work.dispatchLowQualityRedownloadRecovery
 import com.ireum.ytdl.work.persistHistoryReplacementTerminalState
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -38,6 +47,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class LowQualityRedownloadPersistenceTest {
@@ -56,6 +71,7 @@ class LowQualityRedownloadPersistenceTest {
 
     @After
     fun closeDatabase() {
+        DownloadExecutionRecovery.commitOverride = null
         if (::database.isInitialized) database.close()
     }
 
@@ -160,6 +176,140 @@ class LowQualityRedownloadPersistenceTest {
             LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
             repository.getItems(operation.operationId).single().stateValue
         )
+    }
+
+    @Test
+    fun terminalCancellationRetainsNativeDebtUntilStartupQuiescence() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(
+            operationId = operation.operationId,
+            historyId = 7,
+            status = DownloadRepository.Status.Active,
+            executionId = "E1",
+        )
+        repository.requestCancellation(operation.operationId)
+        val processId = YtdlpProcessIdentity.download(linkedId, "E1")
+        val process = ControlledNativeProcess(acknowledgeOnForce = false)
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+
+        try {
+            repository.completePersistedCancellationWithPublications(
+                operationId = operation.operationId,
+                context = context,
+            )
+            assertEquals(
+                LowQualityRedownloadOperationState.CANCELLED,
+                repository.getOperation(operation.operationId)?.stateValue,
+            )
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(linkedId))
+            assertFalse(DownloadWorkerProcessOwners.claim(linkedId, "E2"))
+
+            val recovery = async(Dispatchers.IO) {
+                DownloadExecutionRecovery.reconcile(context, database)
+            }
+            process.destroyRequested.await()
+            yield()
+            assertFalse(recovery.isCompleted)
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                database.downloadDao.getNullableDownloadById(linkedId)?.status,
+            )
+
+            process.acknowledgeTermination()
+            recovery.await()
+            assertFalse(YoutubeDLCompat.hasProcessById(processId))
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(linkedId))
+            assertTrue(DownloadWorkerProcessOwners.claim(linkedId, "E2"))
+        } finally {
+            process.acknowledgeTermination()
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(linkedId, "E1")
+            DownloadWorkerProcessOwners.release(linkedId, "E2")
+        }
+    }
+
+    @Test
+    fun terminalCancellationWaitsForRecoveryPublicationAfterFirstCommitFailure() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(
+            operationId = operation.operationId,
+            historyId = 8,
+            status = DownloadRepository.Status.Active,
+            executionId = "E1",
+        )
+        repository.requestCancellation(operation.operationId)
+        DownloadExecutionRecovery.commitOverride = { operationType, _ ->
+            operationType != DownloadExecutionRecovery.JournalCommitOperation.RECORD
+        }
+
+        var publicationFailed = false
+        try {
+            repository.completePersistedCancellationWithPublications(
+                operationId = operation.operationId,
+                context = context,
+            )
+        } catch (_: IllegalStateException) {
+            publicationFailed = true
+        }
+        assertTrue(publicationFailed)
+        assertEquals(
+            LowQualityRedownloadOperationState.RUNNING,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+        assertEquals(
+            DownloadRepository.Status.Active.name,
+            database.downloadDao.getNullableDownloadById(linkedId)?.status,
+        )
+        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(linkedId))
+
+        DownloadExecutionRecovery.commitOverride = null
+        repository.completePersistedCancellationWithPublications(
+            operationId = operation.operationId,
+            context = context,
+        )
+        DownloadExecutionRecovery.reconcile(context, database)
+
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(linkedId))
+    }
+
+    @Test
+    fun terminalCancellationNativeDebtReconcilesAfterProcessDeath() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(
+            operationId = operation.operationId,
+            historyId = 9,
+            status = DownloadRepository.Status.Active,
+            executionId = "E1",
+        )
+        repository.requestCancellation(operation.operationId)
+        repository.completePersistedCancellationWithPublications(
+            operationId = operation.operationId,
+            context = context,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+        assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(linkedId))
+
+        // Cold start has no process-local owner or registry. The durable
+        // terminal operation plus exact journal token still drives the native
+        // quiescence acknowledgement and debt cleanup.
+        DownloadWorkerProcessOwners.release(linkedId, "E1")
+        DownloadExecutionRecovery.reconcile(context, database)
+
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getNullableDownloadById(linkedId)?.status,
+        )
+        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(linkedId))
     }
 
     @Test
@@ -1774,4 +1924,47 @@ class LowQualityRedownloadPersistenceTest {
         playlistURL = HistoryRedownloadMarker.quality(historyId, 1080),
         operationId = "download-operation"
     )
+
+    private class ControlledNativeProcess(
+        private val acknowledgeOnForce: Boolean,
+    ) : Process() {
+        private val terminated = CountDownLatch(1)
+        private var alive = true
+        val destroyRequested = CompletableDeferred<Unit>()
+
+        override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+
+        override fun getInputStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+
+        override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+
+        override fun waitFor(): Int {
+            terminated.await()
+            return 143
+        }
+
+        override fun waitFor(timeout: Long, unit: TimeUnit): Boolean =
+            terminated.await(timeout, unit)
+
+        override fun exitValue(): Int {
+            if (alive) throw IllegalThreadStateException("still running")
+            return 143
+        }
+
+        override fun destroy() {
+            destroyRequested.complete(Unit)
+        }
+
+        override fun destroyForcibly(): Process {
+            if (acknowledgeOnForce) acknowledgeTermination()
+            return this
+        }
+
+        override fun isAlive(): Boolean = alive
+
+        fun acknowledgeTermination() {
+            alive = false
+            terminated.countDown()
+        }
+    }
 }

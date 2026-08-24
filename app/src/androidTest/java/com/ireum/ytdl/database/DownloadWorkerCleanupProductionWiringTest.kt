@@ -16,6 +16,7 @@ import com.ireum.ytdl.work.HistoryReplacementPersistenceResult
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorker
+import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
 import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.work.cleanupStoppedDownloadExecution
@@ -30,6 +31,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -56,7 +58,149 @@ class DownloadWorkerCleanupProductionWiringTest {
 
     @After
     fun closeDb() {
+        DownloadExecutionRecovery.commitOverride = null
         db.close()
+    }
+
+    @Test
+    fun failedRecoveryPublicationReleasesDeadWorkerTokenToDurableRowRecovery() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val firstId = db.downloadDao.insertRaw(download().copy(executionId = "E1"))
+        val siblingId = db.downloadDao.insertRaw(download().copy(executionId = "E2"))
+        DownloadWorkerExecutionOwners.claim(firstId, "E1")
+        DownloadWorkerExecutionOwners.claim(siblingId, "E2")
+        DownloadExecutionRecovery.commitOverride = { operation, _ ->
+            operation != DownloadExecutionRecovery.JournalCommitOperation.RECORD
+        }
+
+        try {
+            assertFalse(
+                DownloadExecutionRecovery.recordPending(
+                    appContext,
+                    requireNotNull(db.downloadDao.getNullableDownloadById(firstId)),
+                )
+            )
+            assertFalse(
+                DownloadExecutionRecovery.recordPending(
+                    appContext,
+                    requireNotNull(db.downloadDao.getNullableDownloadById(siblingId)),
+                )
+            )
+
+            // The worker has crossed its terminal cleanup boundary.  Its
+            // process-local execution tokens are not a substitute for the
+            // durable Active row after the carrier publication failed.
+            DownloadWorkerExecutionOwners.release(firstId, "E1")
+            DownloadWorkerExecutionOwners.release(siblingId, "E2")
+            DownloadExecutionRecovery.reconcile(appContext, db)
+
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(firstId)?.status,
+            )
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(siblingId)?.status,
+            )
+            assertFalse(DownloadWorkerExecutionOwners.isOwnedBy(firstId, "E1"))
+            assertFalse(DownloadWorkerExecutionOwners.isOwnedBy(siblingId, "E2"))
+        } finally {
+            DownloadWorkerExecutionOwners.release(firstId, "E1")
+            DownloadWorkerExecutionOwners.release(siblingId, "E2")
+        }
+    }
+
+    @Test
+    fun staleE1JournalDoesNotSuppressAbandonedE2RecoveryWhenClearFails() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = "E1"))
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertTrue(DownloadExecutionRecovery.recordPending(appContext, item))
+        DownloadExecutionRecovery.commitOverride = { operation, _ ->
+            operation != DownloadExecutionRecovery.JournalCommitOperation.CLEAR
+        }
+
+        DownloadExecutionRecovery.reconcile(appContext, db)
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+        assertTrue(DownloadExecutionRecovery.pendingDownloadIds(appContext).contains(downloadId))
+
+        val queued = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = downloadId,
+                expectedOperationId = queued.operationId,
+                expectedRetryAttempt = queued.retryAttempt,
+                executionId = "E2",
+            )
+        )
+        DownloadExecutionRecovery.reconcile(appContext, db)
+
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+        assertTrue(DownloadExecutionRecovery.pendingDownloadIds(appContext).contains(downloadId))
+
+        DownloadExecutionRecovery.commitOverride = null
+        DownloadExecutionRecovery.reconcile(appContext, db)
+        assertTrue(DownloadExecutionRecovery.pendingDownloadIds(appContext).isEmpty())
+    }
+
+    @Test
+    fun staleE1JournalCannotPreventE2CommittedHistoryFinalization() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val historyId = db.historyDao.insertAndGetIdRaw(history())
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                playlistURL = "history-redownload:$historyId",
+                executionId = "E1",
+            )
+        )
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertTrue(DownloadExecutionRecovery.recordPending(appContext, item))
+        DownloadExecutionRecovery.commitOverride = { operation, _ ->
+            operation != DownloadExecutionRecovery.JournalCommitOperation.CLEAR
+        }
+        DownloadExecutionRecovery.reconcile(appContext, db)
+
+        val queued = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertEquals(
+            1,
+            db.downloadDao.claimDownloadForWorker(
+                id = downloadId,
+                expectedOperationId = queued.operationId,
+                expectedRetryAttempt = queued.retryAttempt,
+                executionId = "E2",
+            )
+        )
+        db.historyDao.updateRaw(history().copy(id = historyId, downloadId = downloadId))
+
+        DownloadExecutionRecovery.reconcile(appContext, db)
+        assertNull(db.downloadDao.getNullableDownloadById(downloadId))
+
+        DownloadExecutionRecovery.commitOverride = null
+        DownloadExecutionRecovery.reconcile(appContext, db)
+        assertTrue(DownloadExecutionRecovery.pendingDownloadIds(appContext).isEmpty())
+    }
+
+    @Test
+    fun qualityAuthorityLossUsesTerminalCarrierNotHistoryRefusalBarrier() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val issue = HistoryReplacementDiagnostic.qualityAuthorityLostIssue()
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = "E1"))
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertTrue(DownloadExecutionRecovery.recordPending(appContext, item, issue))
+        DownloadExecutionRecovery.reconcile(appContext, db)
+
+        val current = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertEquals(DownloadRepository.Status.Error.name, current.status)
+        assertEquals(issue.code.name, current.lastIssueCode)
+        assertNull(db.historyReplacementBarrierDao.getByDownloadId(downloadId))
+        assertTrue(DownloadExecutionRecovery.pendingDownloadIds(appContext).isEmpty())
     }
 
     @Test

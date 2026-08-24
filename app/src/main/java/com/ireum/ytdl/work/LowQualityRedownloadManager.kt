@@ -102,17 +102,34 @@ class LowQualityRedownloadManager private constructor(context: Context) {
     private suspend fun completeCancellation(operationId: String) {
         try {
             workManager.cancelAllWorkByTag(LowQualityRedownloadWorker.operationTag(operationId))
-            val result = repository.completePersistedCancellationWithPublications(operationId)
+            val result = repository.completePersistedCancellationWithPublications(
+                operationId = operationId,
+                context = appContext,
+            )
             DownloadCancellationRegistry.publish(result.publications)
             result.publications.forEach { publication ->
                 withDownloadWorkerExecutionSideEffectLease(
                     publication.downloadId,
                     publication.executionId,
                 ) {
-                    DownloadWorker.cancelProcessesForExecution(
-                        publication.downloadId,
-                        publication.executionId,
-                    )
+                    check(
+                        DownloadWorker.cancelProcessesForExecution(
+                            publication.downloadId,
+                            publication.executionId,
+                        )
+                    ) {
+                        "Native cancellation was not acknowledged for ${publication.downloadId}"
+                    }
+                    check(
+                        DownloadExecutionRecovery.markNativeQuiescent(
+                            context = appContext,
+                            downloadId = publication.downloadId,
+                            executionId = publication.executionId,
+                        )
+                    ) {
+                        "Native cancellation recovery carrier was not acknowledged for " +
+                            publication.downloadId
+                    }
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -348,12 +365,43 @@ object LowQualityRedownloadLedger {
                             retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
                             continue
                         } ?: return@launch
-                        if (operation.stateValue.isTerminal || !operation.cancelRequested) {
+                        val linkedDownloadIds = repository.getItems(operationId)
+                            .mapNotNull { it.downloadId }
+                            .distinct()
+                        if (operation.stateValue.isTerminal) {
+                            // Phase two may already have committed the
+                            // terminal operation before native quiescence was
+                            // acknowledged.  Terminal state is not permission
+                            // to abandon that independent native-debt carrier.
+                            linkedDownloadIds.forEach { downloadId ->
+                                DownloadExecutionRecovery.scheduleRecovery(appContext, downloadId)
+                            }
+                            runCatching {
+                                DownloadExecutionRecovery.reconcile(appContext)
+                            }.onFailure {
+                                android.util.Log.w(
+                                    "LowQualityRedownload",
+                                    "Terminal native recovery pass failed operation=$operationId",
+                                    it,
+                                )
+                            }
+                            val nativeDebtRemains = linkedDownloadIds.any { downloadId ->
+                                DownloadExecutionRecovery.pendingDownloadIds(appContext)
+                                    .contains(downloadId) ||
+                                    DownloadWorker.hasAnyRegisteredNativeProcess(downloadId)
+                            }
+                            if (!nativeDebtRemains) return@launch
+                            delay(retryDelayMs)
+                            retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                            continue
+                        }
+                        if (!operation.cancelRequested) {
                             return@launch
                         }
                         try {
                             val result = repository.completePersistedCancellationWithPublications(
-                                operationId
+                                operationId = operationId,
+                                context = appContext,
                             )
                             DownloadCancellationRegistry.publish(result.publications)
                             result.publications.forEach { publication ->
@@ -361,10 +409,25 @@ object LowQualityRedownloadLedger {
                                     publication.downloadId,
                                     publication.executionId,
                                 ) {
-                                    DownloadWorker.cancelProcessesForExecution(
-                                        publication.downloadId,
-                                        publication.executionId,
-                                    )
+                                    check(
+                                        DownloadWorker.cancelProcessesForExecution(
+                                            publication.downloadId,
+                                            publication.executionId,
+                                        )
+                                    ) {
+                                        "Native cancellation was not acknowledged for " +
+                                            publication.downloadId
+                                    }
+                                    check(
+                                        DownloadExecutionRecovery.markNativeQuiescent(
+                                            context = appContext,
+                                            downloadId = publication.downloadId,
+                                            executionId = publication.executionId,
+                                        )
+                                    ) {
+                                        "Native cancellation recovery carrier was not acknowledged for " +
+                                            publication.downloadId
+                                    }
                                 }
                             }
                         } catch (cancelled: CancellationException) {
@@ -390,7 +453,7 @@ object LowQualityRedownloadLedger {
                             retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
                             continue
                         }
-                        if (latest == null || latest.stateValue.isTerminal) return@launch
+                        if (latest == null) return@launch
                         delay(retryDelayMs)
                         retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
                     }

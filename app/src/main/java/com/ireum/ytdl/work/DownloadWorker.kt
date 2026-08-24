@@ -94,6 +94,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YoutubeQualityRouteInput
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeQualityRouteOutcome
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRetryLog
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionSummary
@@ -228,7 +229,7 @@ class DownloadWorker(
         val releasedIds = linkedSetOf<Long>()
         val recoveryEligibleIds = linkedSetOf<Long>()
         val nativeQuiescenceBlockedIds = linkedSetOf<Long>()
-        val recoveryCarrierIds = linkedSetOf<Long>()
+        val recoveryPublicationFailedIds = linkedSetOf<Long>()
         var firstCleanupFailure: Exception? = null
 
         /**
@@ -318,9 +319,8 @@ class DownloadWorker(
                         item = current,
                         authoritativeIssue = snapshot.authoritativeIssues[downloadId],
                     )
-                    if (recoveryRecorded) {
-                        recoveryCarrierIds += downloadId
-                    } else {
+                    if (!recoveryRecorded) {
+                        recoveryPublicationFailedIds += downloadId
                         firstCleanupFailure = firstCleanupFailure.addOrSuppress(
                             IllegalStateException(
                                 "Could not persist recovery responsibility for download $downloadId"
@@ -333,14 +333,16 @@ class DownloadWorker(
                         ) {
                             "Native process owner changed while cleaning download $downloadId"
                         }
-                        check(
-                            DownloadExecutionRecovery.markNativeQuiescent(
-                                context = context,
-                                downloadId = downloadId,
-                                executionId = expectedExecutionId,
-                            )
-                        ) {
-                            "Native quiescence recovery carrier was not durable for download $downloadId"
+                        if (recoveryRecorded) {
+                            check(
+                                DownloadExecutionRecovery.markNativeQuiescent(
+                                    context = context,
+                                    downloadId = downloadId,
+                                    executionId = expectedExecutionId,
+                                )
+                            ) {
+                                "Native quiescence recovery carrier was not durable for download $downloadId"
+                            }
                         }
                     }
                     runCatching {
@@ -380,7 +382,8 @@ class DownloadWorker(
                         )
                     ) {
                         DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
-                        DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED -> 1
+                        DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
+                        DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED -> 1
                         DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> 1
                         DownloadRepository.RunningDownloadRequeueResult.OWNERSHIP_LOST,
                         DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> 0
@@ -425,14 +428,17 @@ class DownloadWorker(
                     workerExecutionIds[downloadId] == executionId &&
                     (
                         downloadId in releasedIds ||
-                            downloadId in recoveryEligibleIds &&
-                                downloadId in recoveryCarrierIds
-                        )
+                            downloadId in recoveryEligibleIds ||
+                            downloadId in recoveryPublicationFailedIds
+                    )
                 ) {
                     workerExecutionIds.remove(downloadId, executionId)
                     workerDownloadIds.remove(downloadId)
                     workerCleanupDownloadIds.remove(downloadId)
                     DownloadWorkerExecutionOwners.release(downloadId, executionId)
+                    if (!hasNativeProcessRegistryEntry(downloadId, executionId)) {
+                        DownloadWorkerProcessOwners.release(downloadId, executionId)
+                    }
                     workerAuthoritativeIssues.remove(downloadId)
                 }
             }
@@ -448,6 +454,14 @@ class DownloadWorker(
                     runningYTDLInstances.remove(downloadId)
                 }
             }
+        }
+
+        // The DB row is the durable fallback when journal publication failed;
+        // an unresolved native registry gets a live retry owner as well.  The
+        // owner is item-local and does not hold the global claim mutex while
+        // waiting for a later termination acknowledgement.
+        (recoveryEligibleIds + recoveryPublicationFailedIds).forEach { downloadId ->
+            DownloadExecutionRecovery.scheduleRecovery(context, downloadId)
         }
 
         // A History replacement is an irreversible semantic commit.  If the
@@ -575,6 +589,11 @@ class DownloadWorker(
     @SuppressLint("RestrictedApi", "SuspiciousIndentation")
     private suspend fun doWorkSerialized(): Result {
         if (isStopped) return Result.Failure()
+
+        // Configure the durable descendant barrier before any claim, retry,
+        // or cleanup path can address an exact yt-dlp process. WorkManager
+        // may start this worker before the application startup pass runs.
+        YtdlpNativeProcessBarrier.configure(context)
 
         if (!setForegroundSafely()) return Result.retry()
 

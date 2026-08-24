@@ -86,17 +86,34 @@ class LowQualityRedownloadWorker(
             if (runAttemptCount < MAX_COORDINATOR_ATTEMPTS - 1) {
                 Result.retry()
             } else {
-                val result = repository.failCoordinatorWithPublications(operationId)
+                val result = repository.failCoordinatorWithPublications(
+                    operationId = operationId,
+                    context = context,
+                )
                 DownloadCancellationRegistry.publish(result.publications)
                 result.publications.forEach { publication ->
                     withDownloadWorkerExecutionSideEffectLease(
                         publication.downloadId,
                         publication.executionId,
                     ) {
-                        DownloadWorker.cancelProcessesForExecution(
-                            publication.downloadId,
-                            publication.executionId,
-                        )
+                        check(
+                            DownloadWorker.cancelProcessesForExecution(
+                                publication.downloadId,
+                                publication.executionId,
+                            )
+                        ) {
+                            "Native cancellation was not acknowledged for ${publication.downloadId}"
+                        }
+                        check(
+                            DownloadExecutionRecovery.markNativeQuiescent(
+                                context = context,
+                                downloadId = publication.downloadId,
+                                executionId = publication.executionId,
+                            )
+                        ) {
+                            "Native cancellation recovery carrier was not acknowledged for " +
+                                publication.downloadId
+                        }
                     }
                 }
                 repository.progress(operationId)?.let { notification.update(it) }

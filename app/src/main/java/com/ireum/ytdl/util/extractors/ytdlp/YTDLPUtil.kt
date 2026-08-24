@@ -45,6 +45,7 @@ import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import com.ireum.ytdl.util.SubtitleSelection
 import com.ireum.ytdl.util.VideoQualityPolicy
 import com.ireum.ytdl.util.WebUrlInput
+import com.ireum.ytdl.util.process.ProcessQuiescence
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -60,7 +61,6 @@ import java.util.Base64
 import java.util.Locale
 import java.util.StringJoiner
 import java.util.UUID
-import java.util.concurrent.TimeUnit
 import java.util.regex.PatternSyntaxException
 
 class YTDLPUtil(private val context: Context, private val commandTemplateDao: CommandTemplateDao) {
@@ -2537,9 +2537,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             env["LD_LIBRARY_PATH"] = if (current.isBlank()) libs else "$libs:$current"
             val process = builder.start()
             val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-            val finished = process.waitFor(4, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
+            if (!ProcessQuiescence.requestTermination(process, timeoutMillis = 4_000L)) {
                 return@runCatching " $label: timeout"
             }
             val firstLine = output.lineSequence().firstOrNull().orEmpty().take(180)

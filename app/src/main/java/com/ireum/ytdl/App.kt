@@ -14,6 +14,7 @@ import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.HistoryDateFetchManager
 import com.ireum.ytdl.work.DownloadExecutionRecovery
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.yausername.aria2c.Aria2c
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
@@ -36,6 +37,10 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Publish the durable descendant-process namespace synchronously so
+        // a WorkManager/receiver cancellation cannot race startup recovery
+        // and mistake an unconfigured registry for an empty one.
+        YtdlpNativeProcessBarrier.configure(this)
 
         val sharedPreferences =  PreferenceManager.getDefaultSharedPreferences(this@App)
         setDefaultValues()
