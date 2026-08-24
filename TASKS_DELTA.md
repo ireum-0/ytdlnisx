@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **20**
-- Effective active defects: **94**
+- Delta active defects: **21**
+- Effective active defects: **95**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -699,3 +699,43 @@ Focused verification requirements:
 - seed or obtain two partitioned cookies with the same embedded host/name/path and different values under two distinct top-level sites, then prove capture/materialization never merges, arbitrarily selects, or sends one outside its authorized top-level partition;
 - cover a single partitioned cookie, mixed partitioned/unpartitioned rows, redirects/third-party cookie creation, repeated capture, process restart, and manual Netscape import as a non-partitioned control;
 - verify any chosen policy (skip with diagnostic or context-aware materialization) through real WebView/network consumer wiring. No production-path CHIPS/WebView integration test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P3 — continued
+
+### BUG-CACHE-04 — Handle cache-migration WorkManager enqueue failure without an empty-observer crash
+
+**State:** Open  
+**Reviewed checkpoint:** `e4a47f1cd4990a17a40258afb0f179e027868deb`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** Folder settings exposes `move_temporary_files`. Its click handler creates a tagged `MoveCacheFilesWorker`, calls `beginUniqueWork(...).enqueue()`, discards the returned WorkManager `Operation`, and immediately installs a `getWorkInfosByTagLiveData("cacheFiles")` observer. The observer checks `if (list == null)` and then evaluates `if (list.first() == null)`, which dereferences the collection before proving that any `WorkInfo` exists. WorkManager's enqueue API reports asynchronous scheduler/database acceptance through the returned `Operation`; if the first enqueue fails before a tagged WorkSpec is durably accepted, the tag query is allowed to have zero matches. In that state the observer receives an empty `List<WorkInfo>` and `list.first()` throws `NoSuchElementException` on the UI callback instead of preserving the scheduler failure as a failed/not-started migration result.
+
+The broader hypothesis that an ordinary successful first enqueue races a too-early empty query is not required for this defect and was rejected during review: WorkManager serializes enqueue database work and its Room-backed query execution such that a successfully accepted first WorkSpec normally becomes queryable before the later tag observation can be authoritative. The concrete fault path is the scheduler-acceptance failure itself. The app never observes that failure channel, uses a shared historical tag rather than the exact new WorkRequest ID as its completion carrier, and has no outer catch around the empty-list dereference. No migration worker runs and no cache file is moved, but the user action terminates as an uncaught UI exception instead of an actionable scheduling failure.
+
+**Why this is a defect:** enqueue failure is an explicit supported failure result of the scheduler handoff, not an impossible programmer state. A maintenance action must either establish an accepted execution carrier or report that it did not start. Converting a valid zero-carrier state into an uncaught exception makes the cache-migration command unreliable under the exact first-write/scheduler fault that Review Checklist v4 requires reviewers to inject. This is distinct from `BUG-CACHE-01` (moving cache entries owned by live downloads), `BUG-CACHE-02` (losing SAF authority for the configured cache root), and `BUG-CACHE-03` (API 24–25 `renameTo()` failure reported as worker success); those defects assume or concern a worker that reached its filesystem logic, whereas this item owns failure before a WorkManager carrier is accepted.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The same unchecked enqueue plus `list.first()` observer is present at synchronized checkpoint `dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15` and at the reviewed checkpoint.
+
+Required result:
+
+- retain and observe/await the exact `Operation` returned by the cache-migration enqueue, and treat unsuccessful scheduler acceptance as an explicit failed/not-started UI outcome rather than assuming a WorkInfo carrier exists;
+- bind progress/completion observation to the exact `WorkRequest.id` (or another exact attempt identity) instead of a shared historical tag, so older tagged work cannot stand in for the current request and zero-current-carrier state is representable;
+- make an empty WorkInfo observation a normal state with explicit semantics (`firstOrNull()` or an exact-ID nullable result), never a throwable condition;
+- do not report, refresh, or otherwise imply migration completion until the exact accepted attempt reaches the required terminal WorkInfo state; preserve `BUG-CACHE-01/03` worker/filesystem result semantics once a worker actually runs;
+- on lifecycle recreation or a user retry after scheduling failure, either reconnect to a proven accepted exact WorkRequest or create a clearly new attempt; do not inherit success/failure from unrelated older `cacheFiles` work.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision/carrier: the user's cache-migration request plus the exact newly built WorkRequest ID; current code creates that identity but discards the enqueue `Operation` and observes only the broad `cacheFiles` tag;
+- first persistence boundary: WorkManager's internal enqueue/database acceptance. Inject asynchronous `Operation` failure before a tagged WorkSpec is accepted; the durable app state has no migration ledger and the correct filesystem effect is none;
+- recovery carrier/recovery write: current code has none for an unaccepted request. A later explicit button press creates a new WorkRequest/unique name and is a new attempt, not automatic recovery of the failed one;
+- durable Download state, linked Download ledgers, `DownloadOutcome`, and media filesystem publication are not applicable because the worker never starts. The current final application outcome can instead be an uncaught `NoSuchElementException` from the LiveData observer while WorkManager reports enqueue failure;
+- relevant re-entry paths are same-screen retry, Fragment/activity recreation, process restart, a previously completed tagged migration, and a new explicit migration request. Download same-settings retry/raw requeue/reconfigure/notification retry-resume and backup restore are not semantic re-entry paths and should be marked not applicable;
+- the broader successful-enqueue timing candidate is rejected unless concrete WorkManager ordering evidence allows a zero-row observation after successful acceptance; this defect remains scoped to proven scheduler failure/zero-carrier handling.
+
+Focused verification requirements:
+
+- exercise the real Folder-settings click -> `WorkContinuation.enqueue()` -> WorkManager operation/result -> WorkInfo observation path with scheduler/database enqueue forced to fail asynchronously before the new WorkSpec is accepted; assert the UI does not crash, reports not-started/failure, and no filesystem migration occurs;
+- exercise an explicit empty WorkInfo result as a control and prove it is handled without `first()`/index exceptions;
+- cover normal successful enqueue and completion, worker failure as a regression for `BUG-CACHE-03`, lifecycle recreation while enqueue is pending, a prior completed work item sharing the legacy tag, process restart, and a later explicit retry with a distinct exact WorkRequest identity;
+- verification must cover the actual Fragment + WorkManager wiring. No executed production-path test was run in this review, so verification remains `SOURCE-LEVEL ONLY`.
