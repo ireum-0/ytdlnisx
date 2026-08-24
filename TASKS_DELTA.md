@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **22**
-- Effective active defects: **96**
+- Delta active defects: **23**
+- Effective active defects: **97**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -787,3 +787,54 @@ Focused verification requirements:
 - cover same name with different paths/domains (must coexist), identical duplicate lines, secure/session/persistent variants, host-only vs domain controls, generated plus manually imported records, disabled older/newer rows, deletion, repeated projection, and process restart;
 - reverse source creation order and include three successive credential rotations to prove precedence is intentional rather than an artifact of DAO/file iteration;
 - run the real generated cookie file through the same cookie-loading path yt-dlp uses and then issue an authenticated request or equivalent integration assertion. Helper-only text-order tests are insufficient for PASS.
+
+### BUG-NATIVE-01 — Recover STARTING yt-dlp barriers that never acquired a process group
+
+**State:** Open  
+**Reviewed checkpoint:** `cc1ddaa80b15e0857a7271e28bb7d93ab4c3cf91`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** `DownloadWorker` claims a queued Download under a new exact `executionId`, making that execution the durable active owner before yt-dlp starts. `YoutubeDLCompat.execute()` then calls `YtdlpNativeProcessBarrier.prepare(context, processId)` before `ProcessBuilder.start()`. `prepare()` durably writes a non-quiescent marker containing `state=STARTING` and the exact `processId`, but no process-group ID exists yet. If the application process dies after that marker write and before `ProcessBuilder.start()`, no yt-dlp supervisor or child process was ever created, so there is no external process authority left to stop; nevertheless the STARTING marker survives in app storage.
+
+On restart, `App.onCreate()` synchronously configures the durable native barrier and launches `DownloadExecutionRecovery.reconcile()`. The recovery code includes Downloads referenced by durable native markers, sees the old exact execution as native-visible, and calls the normal exact-process cancellation path. `YtdlpNativeProcessBarrier.recover(marker)` cannot recover this state: a non-QUIESCENT marker requires `pgid`, and a STARTING marker written by `prepare()` has none, so `recover()` returns `false`. The exact cancellation therefore fails closed before the stale Active/PostProcessing Download can be requeued or terminalized. Recovery catches the failure and schedules another reconciliation, but the marker is immutable across those attempts; no later retry can manufacture the missing `pgid` for a process that never existed.
+
+The marker also blocks ordinary reuse even if another path later makes the Download look queued. `DownloadWorker` refuses to claim a new execution while `hasAnyRegisteredNativeProcess(downloadId)` is true, and that helper includes unresolved durable yt-dlp markers. Same-settings retry, manual/raw requeue, reconfigure, notification retry/resume, and restart therefore cannot clear the semantic fence merely by publishing a new Download attempt. The result is a durable stale live execution or permanently fenced Download caused by a crash window whose safe state is actually known: process death occurred before any addressable native process identity was published.
+
+There is a neighboring but distinct launch-transition window after the supervisor process starts and before it replaces the marker with `RUNNING` plus `pgid`; that state must remain fail-closed unless exact external-process absence can be proven. The confirmed defect does not require unsafe timeout clearing of all STARTING markers: it requires a crash-consistent protocol in which every persisted non-quiescent state has either sufficient immutable external identity to recover the exact resource or a production-safe proof that no resource could yet exist.
+
+**Why this is a defect:** the newly introduced durable quiescence barrier is meant to prevent a newer Download execution from racing an older native process, but one of its own persisted intermediate states has no possible restart convergence. A normal abrupt process death at a production-reachable persistence boundary can therefore turn safety fencing into permanent loss of liveness: the stale Download cannot be repaired by startup reconciliation and a new exact execution cannot acquire authority. This is not defensive hardening or a test-only concern. It is distinct from `BUG-TERMINATE-01`, which owns the explicit UI terminate path that exits without first requeueing live Download rows; even the new startup recovery intended to repair stale live rows is itself blocked here by an unaddressable durable native marker.
+
+**Ownership / attribution:** remediation regression. `YtdlpNativeProcessBarrier`, the durable native-process marker protocol, and `DownloadExecutionRecovery` were added after the synchronized baseline checkpoint as part of native-process/exceptional-exit remediation; the pinned checkpoint contains the unrecoverable STARTING state.
+
+Required result:
+
+- make the durable yt-dlp barrier a crash-consistent state machine in which every non-quiescent persisted state can converge after process death without weakening exact-owner safety;
+- do not publish a reuse-blocking state before there is either a recoverable immutable external-process identity or a separate durable launch-generation/handshake that can prove on restart whether an external process could have been created;
+- explicitly handle both the pre-`ProcessBuilder.start()` crash window and the supervisor-start-before-`RUNNING/pgid` publication window; never clear a marker merely by age when a matching live process group could still exist;
+- once quiescence is proven, allow `DownloadExecutionRecovery` to requeue/terminalize the stale exact execution and remove the marker so a newer execution can be claimed exactly once;
+- preserve current fail-closed behavior for a genuine RUNNING process group whose termination cannot be proven, including exact execution ownership and sibling isolation;
+- ensure marker publication/transition failure and recovery-write failure retain one deterministic recovery owner rather than producing an unbounded retry of an impossible state.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision/carrier: the claimed Download `executionId` plus the durable native barrier for `download:<id>:<executionId>`; the current critical sequence writes the Download execution before native launch and then writes the STARTING marker before any OS process identity exists;
+- first persistence call in the confirmed crash sequence: durable STARTING marker publication. Inject process death immediately after it and before `ProcessBuilder.start()`; durable Download may remain Active/PostProcessing, linked operation ledgers remain whatever nonterminal state preceded the crash, and the only native artifact required to reproduce is the marker itself;
+- recovery carrier: current STARTING marker has exact app execution identity but no `pgid`; recovery-write/progress is impossible because `recover()` returns false, so startup reconciliation throws/reschedules without changing the durable blocker;
+- filesystem/media effect: no native media output or live process is required for the confirmed pre-launch window. `DownloadOutcome` has no terminal result, the prior WorkManager execution dies with the process, and restart recovery cannot reach the Download requeue/terminal transition;
+- stale Active/PostProcessing possibility: yes, indefinitely. Semantic downgrade is not the primary failure; the defect is permanent loss of recovery/reuse authority despite no remaining native actor;
+- cross-attempt matrix: restart/reconcile deterministically repeats the failed barrier recovery; a newer Worker claim is rejected by the unresolved marker; same-settings retry, raw/manual requeue, reconfigure, and notification retry/resume cannot regain execution while the marker remains unresolved. Restore is not a semantic repair path for this no-backup native-process barrier and must not be treated as one;
+- sibling isolation must remain intact: failure to recover one STARTING marker must not authorize clearing or killing a sibling execution and must not require weakening the exact process-group fence for valid RUNNING markers.
+
+Candidate-rejection proof:
+
+- this candidate is not rejected as merely `BUG-TERMINATE-01`: the failure does not require the app's explicit terminate action, and the current checkpoint already contains startup stale-execution reconciliation; the concrete blocker is the newly persisted native barrier state that that reconciliation cannot resolve;
+- it is not rejected because fail-closed behavior is generally desirable: fail-closed is correct only while privileged external authority may still exist. In the confirmed pre-`ProcessBuilder.start()` crash point no native process has been created, yet the marker has no protocol state that lets restart prove and converge that fact;
+- ordinary `ProcessBuilder.start()` IOException is not a repair barrier for abrupt death: the in-process exception path clears the marker, but process death bypasses that catch entirely;
+- existing native-quiescence tests do not close the path: they begin with in-memory `Process` objects or already registered process owners and do not exercise durable STARTING-without-pgid plus process restart and Room recovery.
+
+Focused verification requirements:
+
+- exercise the real `DownloadWorker`/Room execution claim -> `YoutubeDLCompat.execute()` -> `YtdlpNativeProcessBarrier.prepare()` -> `DownloadExecutionRecovery` wiring with a deterministic death/failpoint after STARTING is durably written but before `ProcessBuilder.start()`; restart and prove the exact stale execution converges, the marker is removed only after safe proof, and the Download can be claimed exactly once by a newer execution;
+- add a separate failpoint after supervisor creation but before `RUNNING/pgid` publication and prove recovery never clears or reuses the resource while the exact supervisor/process group may still be alive;
+- cover `ProcessBuilder.start()` IOException as a control, marker-write failure, STARTING-to-RUNNING transition failure, process death immediately before/after process-group identity publication, recovery persistence failure, true RUNNING group termination success/failure, and sibling recovery isolation;
+- verify same-settings retry/requeue/reconfigure/notification and restart behavior against the durable barrier rather than only helper-local marker parsing. Existing helper/in-memory process tests are insufficient; no such production-path process-death wiring test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
