@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **27**
-- Effective active defects: **101**
+- Delta active defects: **28**
+- Effective active defects: **102**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1049,3 +1049,52 @@ Focused verification requirements:
 - force process death after root success and after History commit but before/after any corrected quiescence/recovery write; restart must discover the exact `download:` marker even if the primary Download row is absent and must converge it exactly once before newer native work can overlap;
 - explicitly seed an orphan `download:<id>:<executionId>` RUNNING marker with no Download row and invoke real startup `DownloadExecutionRecovery`; prove the marker is adopted rather than filtered out, while a recycled-PGID sibling remains untouched as a `BUG-NATIVE-02` regression;
 - cover first History-write failure, `completeAndDelete()` failure, marker-clear failure, cancellation after root exit, same-execution retry, later manual requeue, and process restart. Verification must cover actual Room + Worker + native barrier wiring; no such production-path `root success + unresolved sidecar + Download terminalization` test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+### BUG-TERMINAL-09 — Keep Terminal progress-callback failures inside worker control flow
+
+**State:** Open  
+**Reviewed checkpoint:** `cc1ddaa80b15e0857a7271e28bb7d93ab4c3cf91`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** Terminal Run persists a `TerminalItem`, WorkManager starts `TerminalDownloadWorker`, and the worker calls `YoutubeDLCompat.execute(..., redirectErrorStream = true, callback = ...)`. The compatibility helper starts a dedicated `ProgressStreamReader` thread to drain the native process output. On each newline that thread invokes the supplied callback directly; its `run()` catches `IOException` from stream reading but does not catch callback exceptions. The Terminal callback performs notification/event work and then enters `runBlocking(Dispatchers.IO)` where it calls `TerminalDao.updateLog()` directly. That Room transaction can throw from the read or write boundary. Such an exception leaves the callback on the reader thread, bypasses `TerminalDownloadWorker`'s coroutine/outer `try/catch`, and terminates the only stdout reader rather than becoming a typed worker failure.
+
+The transport consequence is material, not merely lost progress UI. Terminal passes `redirectErrorStream = true`, so the child process writes both stdout and stderr into the pipe drained by that reader. `YoutubeDLCompat.execute()` joins the reader thread and then waits for the process. If the callback kills the reader while yt-dlp/ffmpeg/aria continues emitting enough output to fill the bounded OS pipe, the native child can block on write while the Java side blocks waiting for process exit. On platforms/configurations where the uncaught reader-thread exception reaches the process uncaught-exception handler, the app process can terminate instead. If output is small enough for the child to exit before pipe pressure stalls it, the callback failure still is not propagated through the helper's return contract, so the worker can continue toward publication/terminal success even though an application side effect failed outside its control flow.
+
+The normal Download path does not close this Terminal invariant. Its progress callback routes fallible side effects through guarded helper code so they do not throw through the pipe-drain thread, while Terminal supplies an independent callback with the direct Room write. The failure therefore remains reachable from ordinary Terminal execution without cancellation, descendant-quiescence failure, PGID reuse, or post-publication bookkeeping.
+
+**Why this is a defect:** progress handling is running on a transport-critical reader thread, not on the worker coroutine. A reachable persistence failure in a nonessential/auxiliary progress side effect can therefore stop consumption of a bounded native-process pipe, hang or crash the attempt, and evade the worker's declared failure/retry/cleanup semantics. This is a substantive liveness/reliability defect rather than defensive hardening. It is distinct from `BUG-TERMINAL-01` (post-output bookkeeping reclassifying committed output), `BUG-TERMINAL-07` (post-cancel publication authority), and `BUG-TERMINAL-08` (normal-success descendant quiescence): this path occurs during active output transport before publication and requires only a throwable progress side effect.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The synchronized baseline contains the same `ProgressStreamReader` callback invocation/catch boundary and the same direct Terminal `dao.updateLog()` call inside that callback.
+
+Required result:
+
+- never allow a fallible application callback invoked from the stdout/stderr drain thread to terminate pipe consumption without an explicit owner-visible failure protocol;
+- define whether Terminal progress notification/log persistence failure is degradable or fatal. If degradable, catch/report it while continuing to drain the native pipe. If fatal, communicate the exact failure to the worker, cancel/quiesce the exact native generation, keep draining or otherwise close transport safely, and produce the correct WorkManager/Terminal outcome;
+- propagate callback failure under the worker's attempt identity rather than relying on a caller-thread outer catch that cannot observe exceptions from a separately started reader thread;
+- preserve cancellation and descendant-quiescence guarantees owned by `BUG-TERMINAL-07/08` and `BUG-NATIVE-*`; callback-failure handling must not release cache/task/native authority before the exact attempt is quiescent;
+- apply the same transport-reader invariant to every production callback passed into the compatibility helper, even when a sibling caller currently wraps its own side effects safely.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: the Terminal attempt is already RUNNING and owns its exact native process identity when the callback fault occurs; the progress callback is observational/ledger side-effect code and must not independently seize terminal authority by killing the reader thread;
+- first injected persistence fault: make the first `TerminalDao.updateLog()` reached from a real progress line throw after the native process has started. No durable Terminal success/failure transition is committed by that exception itself, and the worker's outer catch is not entered through the current thread boundary;
+- recovery carrier: the `TerminalItem` and WorkManager/native attempt may still exist, but there is no durable carrier for “progress callback failed and pipe reader stopped.” If the process stalls, no typed `DownloadOutcome` applies and WorkManager may never reach a terminal result; if the app process dies, restart behavior is governed by the existing Terminal/native recovery gaps rather than by a recorded callback failure;
+- filesystem effect: staged output may be partial while the child blocks or the process dies; publication has not yet been authorized in the primary reproduction. A fatal callback policy must quiesce the exact native generation before cache/task cleanup, while a degradable policy must continue draining and leave output semantics unchanged;
+- same-command manual rerun is a new Terminal attempt and does not repair the hung/orphaned old reader; cancellation during the callback fault must still reach the exact process; process restart must not reinterpret an abandoned RUNNING task as successful. Ordinary Download reconfigure/raw requeue/notification retry-resume and backup restore are not semantic re-entry paths for this Terminal transport fault and should be marked not applicable;
+- sibling isolation: failure of one Terminal callback may not stop a shared reader/process belonging to another task or reuse another task's native identity. No AB/BA lock inversion is required for the primary defect.
+
+Candidate-rejection proof:
+
+- this is not rejected as “logging can fail”: the direct Room call executes on the only thread draining a bounded native stdout pipe, and its exception is outside the worker's catch boundary, so the effect can be native-process liveness loss rather than a missing log line;
+- it is not `BUG-TERMINAL-01`: that defect starts after output has been published and concerns later bookkeeping reclassification, whereas this path can stall before native completion/publication;
+- it is not `BUG-TERMINAL-08`: no unresolved descendant sidecar or root-success condition is required; an ordinary progress-line database failure suffices;
+- the guarded Download progress path is not proof of Terminal safety because each caller supplies its own callback and Terminal's callback retains the direct throwable Room update;
+- absence of an executed integration test does not make the path unreachable; it limits verification to `SOURCE-LEVEL ONLY`.
+
+Focused verification requirements:
+
+- exercise the real Terminal UI/Room -> WorkManager -> `TerminalDownloadWorker` -> `YoutubeDLCompat.execute()` wiring with a deterministic fault that makes the first `TerminalDao.updateLog()` from a progress callback throw while a child continues emitting output beyond pipe capacity; prove the attempt neither hangs nor crashes from an uncaught reader-thread exception and reaches the explicitly defined failure/degraded result;
+- inject a throwing notification/progress side effect separately, plus a normal control, low-output child, high-output child, and multiple progress lines;
+- race callback failure with user cancellation and with native root/descendant exit, proving exact quiescence and task/cache ownership remain correct;
+- verify process restart after the fault and a later manual rerun cannot silently adopt or overwrite the failed generation;
+- verification must include the actual callback execution thread and bounded pipe-drain behavior plus real Room/WorkManager wiring. A helper-only callback unit test or source existence check is insufficient for PASS.
