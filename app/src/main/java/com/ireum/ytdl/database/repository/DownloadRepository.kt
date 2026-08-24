@@ -31,6 +31,7 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
+import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.DownloadCancellationRegistry
@@ -744,22 +745,22 @@ class DownloadRepository(private val database: DBManager) {
      * Cancelled row can retain its user-visible status independently of the
      * privileged-operation barrier.
      */
-    internal suspend fun persistHistoryReplacementRefusalCarrier(
+    private suspend fun persistHistoryReplacementRefusalCarrierLocked(
         id: Long,
         expectedExecutionId: String,
         issueCode: String,
         issueStage: String,
-    ): Boolean = database.withTransaction {
+    ): Boolean {
         val current = downloadDao.getNullableDownloadById(id)
-            ?: return@withTransaction false
+            ?: return false
         if (
             expectedExecutionId.isNotBlank() &&
                 current.executionId != expectedExecutionId
         ) {
-            return@withTransaction false
+            return false
         }
         val marker = HistoryRedownloadMarker.parse(current.playlistURL)
-            ?: return@withTransaction false
+            ?: return false
         val existing = database.historyReplacementBarrierDao.getByDownloadId(id)
         if (existing == null) {
             database.historyReplacementBarrierDao.insertIfAbsent(
@@ -776,7 +777,21 @@ class DownloadRepository(private val database: DBManager) {
             )
         }
         val persisted = database.historyReplacementBarrierDao.getByDownloadId(id)
-        persisted?.issueCode == issueCode && persisted.issueStage == issueStage
+        return persisted?.issueCode == issueCode && persisted.issueStage == issueStage
+    }
+
+    internal suspend fun persistHistoryReplacementRefusalCarrier(
+        id: Long,
+        expectedExecutionId: String,
+        issueCode: String,
+        issueStage: String,
+    ): Boolean = database.withTransaction {
+        persistHistoryReplacementRefusalCarrierLocked(
+            id = id,
+            expectedExecutionId = expectedExecutionId,
+            issueCode = issueCode,
+            issueStage = issueStage,
+        )
     }
 
     /**
@@ -798,6 +813,7 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun requeueRunningDownload(
         id: Long,
         expectedExecutionId: String,
+        authoritativeIssue: DownloadIssue? = null,
     ): RunningDownloadRequeueResult = database.withTransaction {
         val current = downloadDao.getNullableDownloadById(id)
             ?: return@withTransaction RunningDownloadRequeueResult.NOT_RUNNING
@@ -812,6 +828,18 @@ class DownloadRepository(private val database: DBManager) {
         }
         if (isCommittedHistoryReplacementLocked(current)) {
             return@withTransaction RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT
+        }
+        authoritativeIssue?.let { issue ->
+            check(
+                persistHistoryReplacementRefusalCarrierLocked(
+                    id = id,
+                    expectedExecutionId = expectedExecutionId,
+                    issueCode = issue.code.name,
+                    issueStage = issue.stage.name,
+                )
+            ) {
+                "Authoritative History refusal carrier was not durable for download $id"
+            }
         }
         if (persistedHistoryRefusalLocked(id) != null) {
             return@withTransaction if (

@@ -6,6 +6,7 @@ import kotlinx.coroutines.sync.withLock
 import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
+import com.ireum.ytdl.database.repository.DownloadRepository
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 
@@ -96,14 +97,19 @@ internal object DownloadWorkerExecutionOwners {
 internal object DownloadWorkerProcessOwners {
     private val owners: MutableMap<Long, String> = ConcurrentHashMap()
 
-    fun claim(downloadId: Long, executionId: String) {
-        if (executionId.isNotBlank()) owners[downloadId] = executionId
+    fun claim(downloadId: Long, executionId: String): Boolean {
+        if (executionId.isBlank()) return true
+        val existing = owners.putIfAbsent(downloadId, executionId)
+        return existing == null || existing == executionId
     }
 
     fun isOwnedBy(downloadId: Long, executionId: String): Boolean =
         executionId.isNotBlank() && owners[downloadId] == executionId
 
     fun ownerOf(downloadId: Long): String? = owners[downloadId]
+
+    /** A queued candidate cannot claim resources held by an unresolved E1. */
+    fun canClaimNewExecution(downloadId: Long): Boolean = owners[downloadId] == null
 
     fun release(downloadId: Long, executionId: String) {
         if (executionId.isNotBlank()) owners.remove(downloadId, executionId)
@@ -186,6 +192,51 @@ internal fun canCancelExecutionProcess(
     }
     val liveExecutionOwner = DownloadWorkerExecutionOwners.ownerOf(downloadId)
     return liveExecutionOwner == null || liveExecutionOwner == expectedExecutionId
+}
+
+/**
+ * Cancellation requested a native process stop, but no OS termination
+ * acknowledgement was obtained.  The exact process owner must remain a
+ * recovery barrier until a later lifecycle pass proves quiescence.
+ */
+internal class NativeProcessQuiescenceException(
+    downloadId: Long,
+    executionId: String,
+) : IllegalStateException(
+    "Native process quiescence was not proven for download $downloadId " +
+        "executionId=$executionId"
+)
+
+/**
+ * The production stopped-worker path uses this issue-aware primitive for both
+ * local and durably persisted History replacement decisions.  The repository
+ * inserts/verifies the typed refusal in the same transaction as its committed
+ * History check, so a local issue cannot fall through to ordinary requeue.
+ */
+internal suspend fun cleanupStoppedDownloadExecution(
+    repository: DownloadRepository,
+    downloadId: Long,
+    executionId: String,
+    authoritativeIssue: DownloadIssue? = null,
+): DownloadRepository.RunningDownloadRequeueResult {
+    val result = repository.requeueRunningDownload(
+        id = downloadId,
+        expectedExecutionId = executionId,
+        authoritativeIssue = authoritativeIssue,
+    )
+    if (authoritativeIssue != null) {
+        check(result != DownloadRepository.RunningDownloadRequeueResult.REQUEUED) {
+            "Authoritative History refusal was downgraded to ordinary requeue " +
+                "for download $downloadId"
+        }
+    }
+    if (result == DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT) {
+        repository.completeAndDelete(
+            id = downloadId,
+            expectedExecutionId = executionId,
+        )
+    }
+    return result
 }
 
 /**

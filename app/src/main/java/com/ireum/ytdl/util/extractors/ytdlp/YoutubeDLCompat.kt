@@ -1,13 +1,13 @@
 ﻿package com.ireum.ytdl.util.extractors.ytdlp
 
 import android.content.Context
-import android.os.Build
 import android.util.Log
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDL.CanceledException
 import com.yausername.youtubedl_android.YoutubeDLException
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
+import com.ireum.ytdl.util.process.ProcessQuiescence
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -148,8 +148,14 @@ object YoutubeDLCompat {
             stdErrProcessor.join()
             process.waitFor()
         } catch (e: InterruptedException) {
-            process.destroy()
-            if (processId != null) idProcessMap.remove(processId)
+            val quiesced = ProcessQuiescence.requestTermination(process)
+            if (processId != null && quiesced) {
+                synchronized(idProcessMap) {
+                    if (idProcessMap[processId] === process) {
+                        idProcessMap.remove(processId)
+                    }
+                }
+            }
             throw e
         }
 
@@ -186,20 +192,40 @@ object YoutubeDLCompat {
         )
     }
 
-    fun destroyProcessById(processId: String): Boolean {
-        if (!idProcessMap.containsKey(processId)) return false
-        val process = idProcessMap[processId] ?: return false
-        var alive = true
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            alive = process.isAlive
+    /**
+     * Requests cancellation and retains the exact process entry until its OS
+     * termination has been acknowledged.  A false result is fail-closed: the
+     * caller must not release the Download execution or make its resources
+     * reusable.
+     */
+    fun destroyProcessById(processId: String): Boolean =
+        destroyProcessByIdAndAwait(processId)
+
+    internal fun destroyProcessByIdAndAwait(processId: String): Boolean {
+        val process = synchronized(idProcessMap) { idProcessMap[processId] }
+            ?: return true
+        val quiesced = ProcessQuiescence.requestTermination(process)
+        if (quiesced) {
+            synchronized(idProcessMap) {
+                if (idProcessMap[processId] === process) {
+                    idProcessMap.remove(processId)
+                }
+            }
         }
-        if (!alive) {
+        return quiesced
+    }
+
+    /** Test seam that registers a fake in the same production process map. */
+    internal fun registerProcessForTesting(processId: String, process: Process) {
+        synchronized(idProcessMap) {
+            idProcessMap[processId] = process
+        }
+    }
+
+    internal fun clearProcessForTesting(processId: String) {
+        synchronized(idProcessMap) {
             idProcessMap.remove(processId)
-            return false
         }
-        process.destroy()
-        idProcessMap.remove(processId)
-        return true
     }
 
     private fun sanitizeArguments(

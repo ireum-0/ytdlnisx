@@ -60,6 +60,7 @@ import com.ireum.ytdl.util.HistoryVideoQualityProbe
 import com.ireum.ytdl.util.MediaPublishedDate
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.PendingDuplicateDownloadStore
+import com.ireum.ytdl.util.process.ProcessQuiescence
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.SubtitleFileValidator
 import com.ireum.ytdl.util.SubtitleFormatConverter
@@ -200,7 +201,7 @@ class DownloadWorker(
 
             val executionIds = workerExecutionIds.toMutableMap().apply {
                 staleItems.forEach { item ->
-                    if (item.executionId.isNotBlank()) put(item.id, item.executionId)
+                    if (item.id !in this) put(item.id, item.executionId)
                 }
             }
             val authoritativeIssues = workerAuthoritativeIssues.toMutableMap().apply {
@@ -226,23 +227,9 @@ class DownloadWorker(
 
         val releasedIds = linkedSetOf<Long>()
         val recoveryEligibleIds = linkedSetOf<Long>()
+        val nativeQuiescenceBlockedIds = linkedSetOf<Long>()
+        val recoveryCarrierIds = linkedSetOf<Long>()
         var firstCleanupFailure: Exception? = null
-
-        // Publish the exceptional-exit carrier before any owner can be
-        // released.  The application-startup reconciler scans the durable
-        // Download rows as well, so this remains recoverable across process
-        // death even when no new DownloadWorker is enqueued.
-        snapshot.activeIds.forEach { downloadId ->
-            dao.getNullableDownloadById(downloadId)?.let { item ->
-                if (!DownloadExecutionRecovery.recordPending(context, item)) {
-                    firstCleanupFailure = firstCleanupFailure.addOrSuppress(
-                        IllegalStateException(
-                            "Could not persist recovery responsibility for download $downloadId"
-                        )
-                    )
-                }
-            }
-        }
 
         /**
          * The side-effect lease is acquired before the worker mutex, matching
@@ -317,8 +304,44 @@ class DownloadWorker(
                     downloadId = downloadId,
                     requireRunning = false,
                 ) { expectedExecutionId ->
+                    // Publish the exceptional-exit carrier only after the
+                    // exact row has been revalidated under this Download's
+                    // lease.  A stale E1 snapshot can therefore never write
+                    // an E1 journal over a newer E2 execution.
+                    val current = dao.getNullableDownloadById(downloadId)
+                        ?.takeIf { it.executionId == expectedExecutionId }
+                        ?: error(
+                            "Download execution changed before recovery publication for $downloadId"
+                        )
+                    val recoveryRecorded = DownloadExecutionRecovery.recordPending(
+                        context = context,
+                        item = current,
+                        authoritativeIssue = snapshot.authoritativeIssues[downloadId],
+                    )
+                    if (recoveryRecorded) {
+                        recoveryCarrierIds += downloadId
+                    } else {
+                        firstCleanupFailure = firstCleanupFailure.addOrSuppress(
+                            IllegalStateException(
+                                "Could not persist recovery responsibility for download $downloadId"
+                            )
+                        )
+                    }
                     if (expectedExecutionId.isNotBlank()) {
-                        cancelProcessesForExecution(downloadId, expectedExecutionId)
+                        check(
+                            cancelProcessesForExecution(downloadId, expectedExecutionId)
+                        ) {
+                            "Native process owner changed while cleaning download $downloadId"
+                        }
+                        check(
+                            DownloadExecutionRecovery.markNativeQuiescent(
+                                context = context,
+                                downloadId = downloadId,
+                                executionId = expectedExecutionId,
+                            )
+                        ) {
+                            "Native quiescence recovery carrier was not durable for download $downloadId"
+                        }
                     }
                     runCatching {
                         NotificationUtil(context).cancelRunningDownloadNotification(downloadId.toInt())
@@ -329,15 +352,18 @@ class DownloadWorker(
                 }
             } catch (cancelled: CancellationException) {
                 firstCleanupFailure = firstCleanupFailure.addOrSuppress(cancelled)
+                nativeQuiescenceBlockedIds += downloadId
                 recoveryEligibleIds += downloadId
             } catch (failure: Exception) {
                 firstCleanupFailure = firstCleanupFailure.addOrSuppress(failure)
+                nativeQuiescenceBlockedIds += downloadId
                 recoveryEligibleIds += downloadId
             }
         }
 
         val refusalRepository = DownloadRepository(dbManager)
         snapshot.activeIds.forEach { downloadId ->
+            if (downloadId in nativeQuiescenceBlockedIds) return@forEach
             try {
                 val issue = snapshot.authoritativeIssues[downloadId]
                 var released = false
@@ -346,62 +372,21 @@ class DownloadWorker(
                     requireRunning = true,
                 ) { executionId ->
                     val affected = when (
-                        refusalRepository.requeueRunningDownload(downloadId, executionId)
+                        cleanupStoppedDownloadExecution(
+                            repository = refusalRepository,
+                            downloadId = downloadId,
+                            executionId = executionId,
+                            authoritativeIssue = issue,
+                        )
                     ) {
                         DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
                         DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED -> 1
-                        DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
-                            refusalRepository.completeAndDelete(
-                                id = downloadId,
-                                expectedExecutionId = executionId,
-                            )
-                            1
-                        }
+                        DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> 1
                         DownloadRepository.RunningDownloadRequeueResult.OWNERSHIP_LOST,
                         DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> 0
                     }
 
-                    if (affected == 0 && issue != null) {
-                        val current = dao.getNullableDownloadById(downloadId)
-                        val currentHasIssue = current?.let {
-                            it.lastIssueCode == issue.code.name &&
-                                it.lastIssueStage == issue.stage.name
-                        } == true
-                        val barrierHasIssue = dbManager.historyReplacementBarrierDao
-                            .getByDownloadId(downloadId)
-                            ?.issueCode == issue.code.name
-                        if (!currentHasIssue && !barrierHasIssue && current?.executionId == executionId) {
-                            check(
-                                dao.persistMismatchIssueForExecution(
-                                    id = downloadId,
-                                    executionId = executionId,
-                                    issueCode = issue.code.name,
-                                    issueStage = issue.stage.name,
-                                ) == 1
-                            ) {
-                                "Mismatch barrier was not durably preserved for download $downloadId"
-                            }
-                        }
-                        val verified = dao.getNullableDownloadById(downloadId)
-                        val verifiedBarrier = dbManager.historyReplacementBarrierDao
-                            .getByDownloadId(downloadId)
-                        val verifiedHasIssue = verified?.let {
-                            it.lastIssueCode == issue.code.name &&
-                                it.lastIssueStage == issue.stage.name
-                        } == true
-                        check(verifiedHasIssue || verifiedBarrier?.issueCode == issue.code.name) {
-                            "Mismatch barrier could not be durably verified for download $downloadId"
-                        }
-                        check(
-                            verified?.executionId != executionId ||
-                                verified.status !in setOf(
-                                    DownloadRepository.Status.Active.name,
-                                    DownloadRepository.Status.PostProcessing.name,
-                                )
-                        ) {
-                            "Owned download $downloadId remained running after failed cleanup"
-                        }
-                    } else if (affected == 0) {
+                    if (affected == 0) {
                         val current = dao.getNullableDownloadById(downloadId)
                         check(
                             current?.executionId != executionId ||
@@ -438,7 +423,11 @@ class DownloadWorker(
                 // have claimed the same Download ID while cleanup was waiting.
                 if (
                     workerExecutionIds[downloadId] == executionId &&
-                    (downloadId in releasedIds || downloadId in recoveryEligibleIds)
+                    (
+                        downloadId in releasedIds ||
+                            downloadId in recoveryEligibleIds &&
+                                downloadId in recoveryCarrierIds
+                        )
                 ) {
                     workerExecutionIds.remove(downloadId, executionId)
                     workerDownloadIds.remove(downloadId)
@@ -497,7 +486,7 @@ class DownloadWorker(
             Log.w(
                 TAG,
                 "Failed to fully clean stopped active downloads ids=${snapshot.activeIds}; " +
-                    "failed rows were released for durable startup recovery",
+                    "durable recovery remains responsible for unresolved rows",
                 firstCleanupFailure
             )
             if (propagateRequeueFailure) throw firstCleanupFailure
@@ -758,6 +747,13 @@ class DownloadWorker(
                     downloadId = candidate.id,
                     executionId = "",
                 ) {
+                    if (!DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id)) {
+                        // A prior execution still owns an unresolved native
+                        // process.  Do not publish a new execution token even
+                        // if an external path prematurely made the row look
+                        // queued; startup recovery must prove quiescence first.
+                        return@withDownloadWorkerExecutionSideEffectLease null
+                    }
                     withDownloadWorkerExecutionLock {
                         val executionId = UUID.randomUUID().toString()
                         val claimed = dao.claimDownloadForWorker(
@@ -3617,10 +3613,15 @@ class DownloadWorker(
                 ) {
                     withDownloadWorkerExecutionLock {
                         assertExecutionOwnedBeforeAttemptLocked(input.downloadItem)
-                        DownloadWorkerProcessOwners.claim(
-                            input.downloadItem.id,
-                            input.downloadItem.executionId,
-                        )
+                        check(
+                            DownloadWorkerProcessOwners.claim(
+                                input.downloadItem.id,
+                                input.downloadItem.executionId,
+                            )
+                        ) {
+                            "Native process owner changed before starting download " +
+                                input.downloadItem.id
+                        }
                     }
                     // The side-effect lease keeps Pause/Cancel and a newer
                     // execution from taking this Download's resources while
@@ -3644,10 +3645,15 @@ class DownloadWorker(
                             !execution.isCompleted
                         }
                         if (shouldCancel) {
-                            cancelYtdlpProcess(
-                                input.downloadItem.id,
-                                input.downloadItem.executionId,
-                            )
+                            check(
+                                cancelYtdlpProcess(
+                                    input.downloadItem.id,
+                                    input.downloadItem.executionId,
+                                )
+                            ) {
+                                "Native yt-dlp process did not quiesce for download " +
+                                    input.downloadItem.id
+                            }
                             execution.cancel()
                         }
                         withDownloadWorkerExecutionLock {
@@ -4325,10 +4331,13 @@ class DownloadWorker(
         private const val FAILURE_FILE_LIST_LIMIT = 80
         private const val FAILURE_STACK_TRACE_LIMIT = 6000
 
-        private fun cancelYtdlpProcess(downloadId: Long, executionId: String) {
+        private fun cancelYtdlpProcess(downloadId: Long, executionId: String): Boolean {
             val processId = YtdlpProcessIdentity.download(downloadId, executionId)
-            YoutubeDL.getInstance().destroyProcessById(processId)
-            YoutubeDLCompat.destroyProcessById(processId)
+            // DownloadWorker uses YoutubeDLCompat.execute for the exact
+            // execution-scoped process.  Its registry retains the Process
+            // entry until waitFor/termination acknowledgement, so the return
+            // value is a real quiescence proof rather than a destroy request.
+            return YoutubeDLCompat.destroyProcessById(processId)
         }
 
         /**
@@ -4339,11 +4348,21 @@ class DownloadWorker(
         internal fun cancelProcessesForExecution(
             downloadId: Long,
             expectedExecutionId: String,
-        ) {
-            if (expectedExecutionId.isBlank()) return
-            if (!canCancelExecutionProcess(downloadId, expectedExecutionId)) return
-            cancelYtdlpProcess(downloadId, expectedExecutionId)
-            cancelPostProcessingById(downloadId, expectedExecutionId)
+        ): Boolean {
+            if (expectedExecutionId.isBlank()) return true
+            if (!canCancelExecutionProcess(downloadId, expectedExecutionId)) return false
+            val ytdlpQuiesced = cancelYtdlpProcess(downloadId, expectedExecutionId)
+            val postProcessingQuiesced = cancelPostProcessingById(
+                downloadId,
+                expectedExecutionId,
+            )
+            if (!ytdlpQuiesced || !postProcessingQuiesced) {
+                throw NativeProcessQuiescenceException(downloadId, expectedExecutionId)
+            }
+            // A newer execution can reuse the resource only after every
+            // process registered by this exact execution has terminated.
+            DownloadWorkerProcessOwners.release(downloadId, expectedExecutionId)
+            return true
         }
 
         /**
@@ -4357,15 +4376,23 @@ class DownloadWorker(
             expectedExecutionId: String,
         ) {
             if (expectedExecutionId.isBlank()) return
-            cancelYtdlpProcess(downloadId, expectedExecutionId)
-            cancelPostProcessingById(downloadId, expectedExecutionId)
+            check(cancelYtdlpProcess(downloadId, expectedExecutionId)) {
+                "Native yt-dlp process did not quiesce before retry for download $downloadId"
+            }
+            check(cancelPostProcessingById(downloadId, expectedExecutionId)) {
+                "Native post-processing did not quiesce before retry for download $downloadId"
+            }
         }
 
-        fun cancelPostProcessingById(downloadId: Long, expectedExecutionId: String) {
+        fun cancelPostProcessingById(downloadId: Long, expectedExecutionId: String): Boolean {
             val key = FfmpegProcessKey(downloadId, expectedExecutionId)
+            var quiesced = true
             runningFfmpegProcesses[key]?.toList().orEmpty().forEach { process ->
-                runCatching { process.destroy() }
+                if (!ProcessQuiescence.requestTermination(process)) {
+                    quiesced = false
+                }
             }
+            return quiesced
         }
     }
 

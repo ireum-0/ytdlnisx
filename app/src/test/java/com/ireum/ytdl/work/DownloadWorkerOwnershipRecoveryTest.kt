@@ -37,10 +37,12 @@ class DownloadWorkerOwnershipRecoveryTest {
         DownloadWorkerExecutionOwners.claim(downloadId, "E2")
 
         assertFalse(canCancelExecutionProcess(downloadId, "E1"))
-        assertTrue(canCancelExecutionProcess(downloadId, "E2"))
+        assertFalse(canCancelExecutionProcess(downloadId, "E2"))
 
         DownloadWorkerExecutionOwners.release(downloadId, "E2")
+        DownloadWorkerProcessOwners.release(downloadId, "E1")
         DownloadWorkerProcessOwners.claim(downloadId, "E2")
+        DownloadWorkerExecutionOwners.claim(downloadId, "E2")
         assertFalse(canCancelExecutionProcess(downloadId, "E1"))
         assertTrue(canCancelExecutionProcess(downloadId, "E2"))
 
