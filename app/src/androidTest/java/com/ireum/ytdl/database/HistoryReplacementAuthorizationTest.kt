@@ -179,7 +179,7 @@ class HistoryReplacementAuthorizationTest {
     fun targetChangedAfterWorkerLoadIsRejectedAndNotOverwritten() = runBlocking {
         val historyId = insertHistory()
         val workerSnapshot = db.historyDao.getItem(historyId)
-        db.historyDao.update(workerSnapshot.copy(url = "https://youtu.be/$OTHER_VIDEO_ID"))
+        db.historyDao.updateRaw(workerSnapshot.copy(url = "https://youtu.be/$OTHER_VIDEO_ID"))
 
         assertEquals(
             HistoryReplacementOutcome.SourceMismatch,
@@ -199,7 +199,7 @@ class HistoryReplacementAuthorizationTest {
             history().copy(url = "http://example.com/video")
         )
         val workerSnapshot = db.historyDao.getItem(historyId)
-        db.historyDao.update(workerSnapshot.copy(url = "https://example.com/video"))
+        db.historyDao.updateRaw(workerSnapshot.copy(url = "https://example.com/video"))
 
         assertEquals(
             HistoryReplacementOutcome.SourceMismatch,
@@ -254,7 +254,7 @@ class HistoryReplacementAuthorizationTest {
     fun authorizedReplacementUsesTheValidatedCurrentSnapshotForPreservationAndCleanup() = runBlocking {
         val historyId = insertHistory()
         val initial = db.historyDao.getItem(historyId)
-        db.historyDao.update(initial.copy(playbackPositionMs = 456L))
+        db.historyDao.updateRaw(initial.copy(playbackPositionMs = 456L))
 
         val outcome = repository().replaceHistoryPreservingAssignmentsAuthorized(
             historyId = historyId,

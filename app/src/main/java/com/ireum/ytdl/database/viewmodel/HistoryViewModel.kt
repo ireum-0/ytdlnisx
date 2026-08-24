@@ -1872,20 +1872,19 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
 
     fun update(item: HistoryItem) = viewModelScope.launch(Dispatchers.IO) {
         Log.d("HistoryPagingVM", "update id=${item.id} author='${item.author}' title='${item.title}'")
-        val currentItem = runCatching { database.historyDao.getItem(item.id) }
-            .getOrDefault(item)
-        repository.update(item)
+        val currentItem = database.historyDao.getNullableItem(item.id) ?: return@launch
+        // This entry point is used by the bulk artist and keyword editors.
+        // The selected HistoryItem can be stale while a replacement commits;
+        // write only the field whose editor owns the mutation.
+        if (currentItem.artist != item.artist) {
+            repository.updateArtist(item.id, item.artist)
+        }
         if (currentItem.keywords != item.keywords) {
             keywordAssignments.updateManualFromMaterializedEditor(
                 item.id,
                 AutomaticKeywordNormalizer.parseKeywords(item.keywords)
             )
         }
-        automaticKeywordRuleEngine.reconcileHistoryUrlChange(
-            item.id,
-            currentItem.url,
-            item.url
-        )
         invalidateCachedIds(triggerRefresh = true)
     }
 
@@ -2102,7 +2101,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
             val item = runCatching { repository.getItem(id) }.getOrNull() ?: continue
             if (item.customThumb.isNotBlank() || item.thumb.isBlank() || !item.thumb.startsWith("http")) continue
             val localPath = downloadThumbToLocalPath(item.id, item.thumb, thumbDir) ?: continue
-            repository.update(item.copy(thumb = localPath))
+            // The network request used a snapshot. Persist only the thumbnail
+            // field so replacement-owned metadata cannot be rolled back.
+            repository.updateThumb(item.id, item.thumb, localPath)
             delay(150)
         }
     }

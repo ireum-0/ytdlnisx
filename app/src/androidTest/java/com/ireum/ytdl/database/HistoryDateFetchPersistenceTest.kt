@@ -87,8 +87,8 @@ class HistoryDateFetchPersistenceTest {
         insertHistory(2, "https://example.com/b")
         val operation = repository.createOrReconnect(now = 100)
         val items = repository.getPendingItems(operation.operationId).associateBy { it.historyId }
-        database.historyDao.update(database.historyDao.getItem(1).copy(url = "https://example.com/changed"))
-        database.historyDao.update(database.historyDao.getItem(2).copy(mediaPublishedAt = 777L))
+        database.historyDao.updateRaw(database.historyDao.getItem(1).copy(url = "https://example.com/changed"))
+        database.historyDao.updateRaw(database.historyDao.getItem(2).copy(mediaPublishedAt = 777L))
 
         repository.checkpointSourceGroup(
             operation.operationId,

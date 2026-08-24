@@ -95,6 +95,13 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE status='Paused'")
     fun getPausedDownloadsList() : List<DownloadItem>
 
+    @Query(
+        "SELECT d.* FROM downloads d " +
+            "INNER JOIN history h ON h.downloadId = d.id " +
+            "WHERE COALESCE(d.playlistURL, '') LIKE 'history-redownload:%'"
+    )
+    suspend fun getCommittedHistoryReplacementDownloads(): List<DownloadItem>
+
     @RewriteQueriesToDropUnusedColumns
     @Query("SELECT * FROM downloads WHERE status = 'Processing'")
     fun getProcessingDownloads() : Flow<List<DownloadItemConfigureMultiple>>
@@ -758,7 +765,7 @@ interface DownloadDao {
             "AND (:newStatus NOT IN ('Queued','Scheduled','Active','Processing','WaitingForMembership') OR " +
             "(" + LOW_QUALITY_REPLACEMENT_RUNNABLE_PREDICATE + "))"
     )
-    suspend fun setStatusMultipleFromStatus(ids: List<Long>, currentStatus: String, newStatus: String)
+    suspend fun setStatusMultipleFromStatus(ids: List<Long>, currentStatus: String, newStatus: String): Int
 
     @Query(
         "UPDATE downloads SET lastIssueCode=:issueCode, lastIssueStage=:issueStage " +
@@ -809,7 +816,10 @@ interface DownloadDao {
             "WHERE id=:id AND executionId=:executionId AND status IN ('Active','PostProcessing') " +
             "AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED') " +
             "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b " +
-            "WHERE b.downloadId=downloads.id)"
+            "WHERE b.downloadId=downloads.id) " +
+            "AND NOT (COALESCE(playlistURL, '') LIKE 'history-redownload:%' " +
+            "AND EXISTS (SELECT 1 FROM history committedHistory " +
+            "WHERE committedHistory.downloadId = downloads.id))"
     )
     suspend fun requeueActiveDownload(id: Long, executionId: String): Int
 

@@ -383,9 +383,11 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
                 group.sortedWith(compareBy<HistoryItem> { it.time }.thenBy { it.id })
             }
 
-    fun update(item: HistoryItem) {
-        historyDao.update(item)
-    }
+    fun updateArtist(id: Long, artist: String): Boolean =
+        historyDao.updateArtistById(id, artist) > 0
+
+    fun updateThumb(id: Long, expectedThumb: String, newThumb: String): Boolean =
+        historyDao.updateThumbIfUnchanged(id, expectedThumb, newThumb) > 0
 
     fun updateDownloadPath(id: Long, downloadPath: List<String>): Boolean =
         HistoryReferenceMutationCoordinator.withLockBlocking {

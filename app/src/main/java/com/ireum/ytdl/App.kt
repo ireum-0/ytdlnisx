@@ -13,6 +13,7 @@ import com.ireum.ytdl.util.ThemeUtil
 import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.HistoryDateFetchManager
+import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.yausername.aria2c.Aria2c
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
@@ -64,6 +65,15 @@ class App : Application() {
                     failure.printStackTrace()
                 }
             )
+        }
+        applicationScope.launch(Dispatchers.IO) {
+            try {
+                // Download/History recovery must not wait for a worker or for
+                // optional native runtime initialization to succeed.
+                DownloadExecutionRecovery.reconcile(this@App)
+            } catch (failure: Exception) {
+                Log.w(TAG, "Download execution/finalization recovery failed", failure)
+            }
         }
         applicationScope.launch(Dispatchers.IO) {
             runStartupReconciliation(

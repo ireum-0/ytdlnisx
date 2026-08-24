@@ -7,7 +7,6 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.repository.DownloadRepository
-import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -41,30 +40,21 @@ class CancelScheduledDownloadWorker(
                             latest.executionId,
                         )
                     }
-                    val hasHistoryRefusal =
-                        HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(
-                            latest.lastIssueCode
-                        ) || dbManager.historyReplacementBarrierDao.getByDownloadId(latest.id) != null
-                    if (hasHistoryRefusal) {
-                        check(
-                            repository.convergeHistoryReplacementRefusal(
+                    when (repository.requeueRunningDownload(latest.id, latest.executionId)) {
+                        DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
+                        DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
+                        DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> Unit
+                        DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
+                            // The History row is already authoritative.  Finish
+                            // the debt; never return this row to the runnable queue.
+                            repository.completeAndDelete(
                                 id = latest.id,
                                 expectedExecutionId = latest.executionId,
-                                forceError = true,
-                            ).downloadUpdated
-                        ) {
-                            "History refusal could not converge for download ${latest.id}"
+                            )
                         }
-                    } else if (latest.executionId.isNotBlank()) {
-                        check(dao.requeueActiveDownload(latest.id, latest.executionId) == 1) {
-                            "Download execution ownership was lost while stopping ${latest.id}"
+                        DownloadRepository.RunningDownloadRequeueResult.OWNERSHIP_LOST -> {
+                            error("Download execution ownership was lost while stopping ${latest.id}")
                         }
-                    } else {
-                        dao.setStatusMultipleFromStatus(
-                            listOf(latest.id),
-                            latest.status,
-                            DownloadRepository.Status.Queued.toString(),
-                        )
                     }
                 }
 

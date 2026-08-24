@@ -228,6 +228,22 @@ class DownloadWorker(
         val recoveryEligibleIds = linkedSetOf<Long>()
         var firstCleanupFailure: Exception? = null
 
+        // Publish the exceptional-exit carrier before any owner can be
+        // released.  The application-startup reconciler scans the durable
+        // Download rows as well, so this remains recoverable across process
+        // death even when no new DownloadWorker is enqueued.
+        snapshot.activeIds.forEach { downloadId ->
+            dao.getNullableDownloadById(downloadId)?.let { item ->
+                if (!DownloadExecutionRecovery.recordPending(context, item)) {
+                    firstCleanupFailure = firstCleanupFailure.addOrSuppress(
+                        IllegalStateException(
+                            "Could not persist recovery responsibility for download $downloadId"
+                        )
+                    )
+                }
+            }
+        }
+
         /**
          * The side-effect lease is acquired before the worker mutex, matching
          * withOwnedExecutionLease().  The current row is re-read while both
@@ -329,46 +345,20 @@ class DownloadWorker(
                     downloadId = downloadId,
                     requireRunning = true,
                 ) { executionId ->
-                    val affected = if (downloadId in snapshot.committedHistoryReplacementIds) {
-                        refusalRepository.completeAndDelete(
-                            id = downloadId,
-                            expectedExecutionId = executionId,
-                        )
-                        1
-                    } else if (executionId.isBlank()) {
-                        if (issue != null) {
-                            check(
-                                refusalRepository.convergeHistoryReplacementRefusal(
-                                    id = downloadId,
-                                    expectedExecutionId = "",
-                                    forceError = true,
-                                ).downloadUpdated
-                            ) {
-                                "History refusal could not converge for download $downloadId"
-                            }
-                        } else {
-                            dao.setStatusMultipleFromStatus(
-                                listOf(downloadId),
-                                DownloadRepository.Status.Active.toString(),
-                                DownloadRepository.Status.Queued.toString()
-                            )
-                            dao.setStatusMultipleFromStatus(
-                                listOf(downloadId),
-                                DownloadRepository.Status.PostProcessing.toString(),
-                                DownloadRepository.Status.Queued.toString()
-                            )
-                        }
-                        1
-                    } else if (issue != null) {
-                        if (
-                            refusalRepository.convergeHistoryReplacementRefusal(
+                    val affected = when (
+                        refusalRepository.requeueRunningDownload(downloadId, executionId)
+                    ) {
+                        DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
+                        DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED -> 1
+                        DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
+                            refusalRepository.completeAndDelete(
                                 id = downloadId,
                                 expectedExecutionId = executionId,
-                                forceError = true,
-                            ).downloadUpdated
-                        ) 1 else 0
-                    } else {
-                        dao.requeueActiveDownload(downloadId, executionId)
+                            )
+                            1
+                        }
+                        DownloadRepository.RunningDownloadRequeueResult.OWNERSHIP_LOST,
+                        DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> 0
                     }
 
                     if (affected == 0 && issue != null) {
@@ -488,16 +478,17 @@ class DownloadWorker(
             }
         }
         if (committedFinalizationDebt.isNotEmpty()) {
-            try {
-                DownloadRepository(dbManager).startDownloadWorker(emptyList(), context)
-            } catch (failure: Exception) {
-                firstCleanupFailure = firstCleanupFailure.addOrSuppress(failure)
-                Log.e(
-                    TAG,
-                    "Could not schedule committed History finalization debt ids=$committedFinalizationDebt",
-                    failure,
-                )
-            }
+            Log.i(
+                TAG,
+                "Committed History finalization debt remains recoverable ids=$committedFinalizationDebt"
+            )
+        }
+
+        try {
+            DownloadExecutionRecovery.reconcile(context, dbManager)
+        } catch (failure: Exception) {
+            firstCleanupFailure = firstCleanupFailure.addOrSuppress(failure)
+            Log.e(TAG, "Download cleanup recovery pass failed", failure)
         }
 
         if (firstCleanupFailure == null) {
@@ -520,98 +511,7 @@ class DownloadWorker(
      * those two operations.
      */
     private suspend fun recoverAbandonedDownloadExecutionsAtStartup(dbManager: DBManager) =
-        withContext(Dispatchers.IO + NonCancellable) {
-            withDownloadWorkerExecutionLock {
-                val dao = dbManager.downloadDao
-                val activeRows = dao.getActiveAndPostProcessingDownloadsList()
-                val barriers = dbManager.historyReplacementBarrierDao
-                    .getByDownloadIds(activeRows.map { it.id })
-                    .associateBy { it.downloadId }
-                val committedHistoryReplacementIds = activeRows
-                    .filter { item ->
-                        val marker = HistoryRedownloadMarker.parse(item.playlistURL)
-                        marker != null &&
-                            dbManager.historyDao.getNullableItem(marker.historyId)?.downloadId == item.id
-                    }
-                    .mapTo(linkedSetOf()) { it.id }
-                val authoritativeIssues = activeRows.associate { item ->
-                    val issue = barriers[item.id]?.let { barrier ->
-                        when (barrier.issueCode) {
-                            DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
-                                HistoryReplacementDiagnostic.issue(
-                                    HistoryReplacementMismatchKind.SOURCE
-                                )
-                            DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
-                                HistoryReplacementDiagnostic.issue(
-                                    HistoryReplacementMismatchKind.TYPE
-                                )
-                            DownloadIssueCode.HISTORY_TARGET_DELETED.name ->
-                                HistoryReplacementDiagnostic.targetDeletedIssue()
-                            else -> error(
-                                "Invalid History replacement barrier issue ${barrier.issueCode}"
-                            )
-                        }
-                    } ?: when (item.lastIssueCode) {
-                        DownloadIssueCode.HISTORY_REPLACEMENT_SOURCE_MISMATCH.name ->
-                            HistoryReplacementDiagnostic.issue(
-                                HistoryReplacementMismatchKind.SOURCE
-                            )
-                        DownloadIssueCode.HISTORY_REPLACEMENT_TYPE_MISMATCH.name ->
-                            HistoryReplacementDiagnostic.issue(
-                                HistoryReplacementMismatchKind.TYPE
-                            )
-                        DownloadIssueCode.HISTORY_TARGET_DELETED.name ->
-                            HistoryReplacementDiagnostic.targetDeletedIssue()
-                        else -> null
-                    }
-                    item.id to issue
-                }
-
-                recoverAbandonedDownloadExecutions(
-                    rows = activeRows.map {
-                        AbandonedDownloadExecution(
-                            downloadId = it.id,
-                            executionId = it.executionId,
-                            status = it.status,
-                        )
-                    },
-                    isOwnedBy = DownloadWorkerExecutionOwners::isOwnedBy,
-                    requeue = { downloadId, executionId ->
-                        if (downloadId in committedHistoryReplacementIds) {
-                            // The History transaction is the semantic commit
-                            // boundary.  A process death after it must finish
-                            // the committed operation, never requeue it for a
-                            // second destructive replacement attempt.
-                            DownloadRepository(dbManager).completeAndDelete(
-                                id = downloadId,
-                                expectedExecutionId = executionId,
-                            )
-                            1
-                        } else if (authoritativeIssues[downloadId] != null) {
-                            DownloadRepository(dbManager)
-                                .convergeHistoryReplacementRefusal(
-                                    id = downloadId,
-                                    expectedExecutionId = executionId,
-                                    forceError = true,
-                                )
-                                .downloadUpdated
-                                .let { if (it) 1 else 0 }
-                        } else {
-                            dao.requeueActiveDownload(downloadId, executionId)
-                        }
-                    },
-                    readCurrent = { downloadId ->
-                        dao.getNullableDownloadById(downloadId)?.let {
-                            AbandonedDownloadExecution(
-                                downloadId = it.id,
-                                executionId = it.executionId,
-                                status = it.status,
-                            )
-                        }
-                    },
-                )
-            }
-        }
+        DownloadExecutionRecovery.reconcile(context, dbManager)
 
     private suspend fun persistDownloadMetadata(
         resultRepo: ResultRepository,

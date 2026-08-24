@@ -226,7 +226,7 @@ class AutomaticKeywordRulePersistenceTest {
         val engine = AutomaticKeywordRuleEngine(db)
         engine.applyFullSync(oldRule, listOf(result("https://youtu.be/old")))
         engine.applyFullSync(newRule, listOf(result("https://youtu.be/new")))
-        db.historyDao.update(
+        db.historyDao.updateRaw(
             db.historyDao.getItem(historyId).copy(url = "https://youtu.be/new")
         )
 
@@ -252,7 +252,7 @@ class AutomaticKeywordRulePersistenceTest {
         val engine = AutomaticKeywordRuleEngine(db)
         engine.applyFullSync(oldRule, listOf(result("https://youtu.be/old")))
         engine.applyFullSync(newRule, listOf(result("https://youtu.be/new")))
-        db.historyDao.update(
+        db.historyDao.updateRaw(
             db.historyDao.getItem(historyId).copy(url = "https://youtu.be/new")
         )
 
@@ -529,7 +529,7 @@ class AutomaticKeywordRulePersistenceTest {
             history(keywords = "Manual")
         )
         val current = db.historyDao.getItem(historyId)
-        db.historyDao.update(current.copy(title = "Renamed", keywords = "Diverged"))
+        db.historyDao.updateRaw(current.copy(title = "Renamed", keywords = "Diverged"))
 
         assertEquals("Renamed", db.historyDao.getItem(historyId).title)
         assertEquals("Manual", db.historyDao.getItem(historyId).keywords)
@@ -545,7 +545,7 @@ class AutomaticKeywordRulePersistenceTest {
         val stale = db.historyDao.getItem(historyId)
         db.historyDao.deleteById(historyId)
 
-        db.historyDao.update(stale.copy(title = "Stale rename"))
+        db.historyDao.updateRaw(stale.copy(title = "Stale rename"))
 
         assertTrue(db.historyDao.getAll().isEmpty())
     }

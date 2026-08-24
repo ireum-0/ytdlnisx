@@ -1197,35 +1197,23 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
                             ) && it.executionId == snapshot.executionId
                         }
                         ?: return@withDownloadWorkerExecutionLock
-                    val refusal = HistoryReplacementDiagnostic
-                        .persistedHistoryReplacementIssue(current.lastIssueCode)
-                        ?: dbManager.historyReplacementBarrierDao
-                            .getByDownloadId(current.id)
-                            ?.let { barrier ->
-                                HistoryReplacementDiagnostic
-                                    .persistedHistoryReplacementIssue(barrier.issueCode)
-                            }
-                    if (refusal != null) {
-                        repository.convergeHistoryReplacementRefusal(
-                            id = current.id,
-                            expectedExecutionId = current.executionId,
-                            forceError = true,
-                        )
-                    } else if (current.executionId.isNotBlank()) {
-                        check(
-                            dao.requeueActiveDownload(current.id, current.executionId) == 1
-                        ) {
-                            "Download execution changed while exiting ${current.id}"
+                    // One repository primitive owns both the modern exact-token
+                    // and legacy blank-token transitions.  In particular, a
+                    // committed History replacement is finalization debt, not
+                    // runnable work.
+                    when (repository.requeueRunningDownload(current.id, current.executionId)) {
+                        DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
+                        DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
+                        DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> Unit
+                        DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
+                            repository.completeAndDelete(
+                                id = current.id,
+                                expectedExecutionId = current.executionId,
+                            )
                         }
-                    } else {
-                        // Legacy running rows have no execution token and no
-                        // process-local owner.  Restrict this compatibility
-                        // transition to the exact status observed above.
-                        dao.setStatusMultipleFromStatus(
-                            listOf(current.id),
-                            current.status,
-                            DownloadRepository.Status.Queued.name,
-                        )
+                        DownloadRepository.RunningDownloadRequeueResult.OWNERSHIP_LOST -> {
+                            check(false) { "Download execution changed while exiting ${current.id}" }
+                        }
                     }
                 }
             }

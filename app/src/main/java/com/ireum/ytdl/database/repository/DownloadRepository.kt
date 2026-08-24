@@ -104,6 +104,15 @@ class DownloadRepository(private val database: DBManager) {
         Active, PostProcessing, Paused, Queued, WaitingForMembership, Error, Cancelled, Saved, Processing, Scheduled, Duplicate
     }
 
+    /** Result of the single authority for reclassifying a running Download. */
+    enum class RunningDownloadRequeueResult {
+        REQUEUED,
+        REFUSAL_CONVERGED,
+        COMMITTED_HISTORY_FINALIZATION_DEBT,
+        OWNERSHIP_LOST,
+        NOT_RUNNING,
+    }
+
     data class UndoableCancellation(
         val pendingToken: String? = null,
         val affectedOperationIds: Set<String> = emptySet(),
@@ -777,6 +786,72 @@ class DownloadRepository(private val database: DBManager) {
      */
     suspend fun isCommittedHistoryReplacement(id: Long): Boolean = database.withTransaction {
         downloadDao.getNullableDownloadById(id)?.let(::isCommittedHistoryReplacementLocked) == true
+    }
+
+    /**
+     * Reclassifies one running Download under one Room transaction.  Every
+     * caller that can stop a worker-owned row must use this primitive so the
+     * History semantic-commit boundary is checked in the same transaction as
+     * the status change.  A committed replacement is returned as debt and is
+     * never rewritten to Queued.
+     */
+    suspend fun requeueRunningDownload(
+        id: Long,
+        expectedExecutionId: String,
+    ): RunningDownloadRequeueResult = database.withTransaction {
+        val current = downloadDao.getNullableDownloadById(id)
+            ?: return@withTransaction RunningDownloadRequeueResult.NOT_RUNNING
+        if (current.status !in setOf(Status.Active.name, Status.PostProcessing.name)) {
+            return@withTransaction RunningDownloadRequeueResult.NOT_RUNNING
+        }
+        if (
+            (expectedExecutionId.isBlank() && current.executionId.isNotBlank()) ||
+                (expectedExecutionId.isNotBlank() && current.executionId != expectedExecutionId)
+        ) {
+            return@withTransaction RunningDownloadRequeueResult.OWNERSHIP_LOST
+        }
+        if (isCommittedHistoryReplacementLocked(current)) {
+            return@withTransaction RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT
+        }
+        if (persistedHistoryRefusalLocked(id) != null) {
+            return@withTransaction if (
+                convergeHistoryReplacementRefusalLocked(
+                    id = id,
+                    expectedExecutionId = expectedExecutionId,
+                    forceError = true,
+                ).downloadUpdated
+            ) {
+                RunningDownloadRequeueResult.REFUSAL_CONVERGED
+            } else {
+                RunningDownloadRequeueResult.OWNERSHIP_LOST
+            }
+        }
+
+        val changed = if (expectedExecutionId.isBlank()) {
+            downloadDao.setStatusMultipleFromStatus(
+                listOf(id),
+                current.status,
+                Status.Queued.name,
+            )
+        } else {
+            downloadDao.requeueActiveDownload(id, expectedExecutionId)
+        }
+        if (changed == 1) {
+            RunningDownloadRequeueResult.REQUEUED
+        } else {
+            val after = downloadDao.getNullableDownloadById(id)
+            if (after?.let(::isCommittedHistoryReplacementLocked) == true) {
+                RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT
+            } else if (
+                after == null ||
+                    after.status !in setOf(Status.Active.name, Status.PostProcessing.name) ||
+                    after.executionId != expectedExecutionId
+            ) {
+                RunningDownloadRequeueResult.OWNERSHIP_LOST
+            } else {
+                RunningDownloadRequeueResult.NOT_RUNNING
+            }
+        }
     }
 
     /** Must be called while the caller already owns the Room transaction. */

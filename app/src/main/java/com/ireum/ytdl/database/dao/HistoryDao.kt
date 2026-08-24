@@ -16,7 +16,6 @@ import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
-import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -148,30 +147,11 @@ interface HistoryDao {
     @Query("SELECT keywords FROM history WHERE id = :id")
     fun getMaterializedKeywordsOrNull(id: Long): String?
 
-    /**
-     * Compatibility writes cannot change the materialized keyword projection.
-     * Keyword changes must go through HistoryKeywordAssignmentRepository.
-     */
-    fun update(item: HistoryItem) {
-        HistoryReferenceMutationCoordinator.withLockBlocking {
-            // Preserve the old @Update no-op behavior when a row was deleted between
-            // being loaded and written by a background/UI task.
-            val current = getNullableItem(item.id) ?: return@withLockBlocking
-            updateRaw(
-                item.copy(
-                    keywords = current.keywords,
-                    // Replacement/reference commits own these fields.  A
-                    // stale metadata snapshot may not overwrite them.
-                    downloadId = current.downloadId,
-                    downloadPath = current.downloadPath,
-                    type = current.type,
-                )
-            )
-        }
-    }
-
     @Update
     fun updateRaw(item: HistoryItem): Int
+
+    @Query("UPDATE history SET artist = :artist WHERE id = :id")
+    fun updateArtistById(id: Long, artist: String): Int
 
     @Query("UPDATE history SET playbackPositionMs = :positionMs WHERE id = :id")
     fun updatePlaybackPosition(id: Long, positionMs: Long)
@@ -223,6 +203,9 @@ interface HistoryDao {
 
     @Query("UPDATE history SET thumb = :thumb WHERE id = :id")
     fun updateThumbById(id: Long, thumb: String): Int
+
+    @Query("UPDATE history SET thumb = :newThumb WHERE id = :id AND thumb = :expectedThumb")
+    fun updateThumbIfUnchanged(id: Long, expectedThumb: String, newThumb: String): Int
 
     @Query("UPDATE history SET keywords = :keywords WHERE id = :id")
     suspend fun updateKeywordsMaterialized(id: Long, keywords: String)
