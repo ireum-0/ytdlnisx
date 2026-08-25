@@ -3,6 +3,7 @@ package com.ireum.ytdl.util.extractors.ytdlp
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -18,6 +19,9 @@ class YtdlpNativeProcessBarrierStateMachineTest {
 
     @After
     fun cleanup() {
+        YtdlpNativeProcessBarrier.markerWriteFailureForTesting = false
+        YtdlpNativeProcessBarrier.markerDeleteFailureForTesting = false
+        YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
         processes.forEach { process ->
             if (isAliveCompat(process)) process.destroy()
             awaitExitCompat(process)
@@ -77,6 +81,24 @@ class YtdlpNativeProcessBarrierStateMachineTest {
     }
 
     @Test
+    fun directNativeRoleMarkerUsesTheSameExactGenerationRecoveryCarrier() {
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val token = "direct-role-${UUID.randomUUID()}"
+        val processId = "download:918003:E1:direct:ffmpeg:${UUID.randomUUID()}"
+        val process = startTaggedProcess(token)
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = processId,
+            state = "RUNNING",
+            generationToken = token,
+        )
+        markers += marker
+
+        assertTrue(YtdlpNativeProcessBarrier.recoverDownloadExecution(918003L, "E1"))
+        assertFalse(isAliveCompat(process))
+        assertFalse(marker.exists())
+    }
+
+    @Test
     fun recycledNumericLocatorWithDifferentGenerationIsNeverSignalled() {
         YtdlpNativeProcessBarrier.configure(appContext)
         val siblingToken = "sibling-${UUID.randomUUID()}"
@@ -95,6 +117,91 @@ class YtdlpNativeProcessBarrierStateMachineTest {
         assertTrue(YtdlpNativeProcessBarrier.recover(oldMarker))
         assertTrue(isAliveCompat(sibling))
         assertFalse(oldMarker.exists())
+    }
+
+    @Test
+    fun quiescenceProofSurvivesMarkerDeleteFailureAsCleanupDebt() {
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = downloadProcessId(),
+            state = "QUIESCENT",
+            generationToken = "cleanup-debt-${UUID.randomUUID()}",
+        )
+        markers += marker
+
+        YtdlpNativeProcessBarrier.markerDeleteFailureForTesting = true
+        val result = YtdlpNativeProcessBarrier.recoverDetailed(marker)
+        assertEquals(
+            YtdlpNativeProcessBarrier.QuiescenceState.PROVEN_QUIESCENT_CLEANUP_PENDING,
+            result.state,
+        )
+        assertTrue(result.isProvenQuiescent)
+        assertTrue(marker.exists())
+        assertTrue(YtdlpNativeProcessBarrier.recover(marker))
+        YtdlpNativeProcessBarrier.markerDeleteFailureForTesting = false
+        assertTrue(YtdlpNativeProcessBarrier.recover(marker))
+        assertFalse(marker.exists())
+    }
+
+    @Test
+    fun quiescencePublicationFailureLeavesLiveStateFailClosed() {
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = downloadProcessId(),
+            state = "RUNNING",
+            generationToken = "publication-debt-${UUID.randomUUID()}",
+        )
+        markers += marker
+
+        YtdlpNativeProcessBarrier.markerWriteFailureForTesting = true
+        val result = YtdlpNativeProcessBarrier.recoverDetailed(marker)
+        assertEquals(
+            YtdlpNativeProcessBarrier.QuiescenceState.UNRESOLVED,
+            result.state,
+        )
+        assertTrue(marker.exists())
+        YtdlpNativeProcessBarrier.markerWriteFailureForTesting = false
+        assertTrue(YtdlpNativeProcessBarrier.recover(marker))
+        assertFalse(marker.exists())
+    }
+
+    @Test
+    fun unreadableOrMalformedMarkerIsUnknownNotAbsent() {
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val processId = downloadProcessId()
+        val marker = YtdlpNativeProcessBarrier.markerFor(processId)
+        marker.parentFile!!.mkdirs()
+        marker.writeText("RUNNING\nnot-a-process-id\n")
+        markers += marker
+
+        assertTrue(
+            YtdlpNativeProcessBarrier.observeGeneration(processId) is
+                YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN,
+        )
+    }
+
+    @Test
+    fun markerIdentityReadFailureIsNotPersistedAsAbsence() {
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val processId = downloadProcessId()
+        val token = "read-failure-${UUID.randomUUID()}"
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = processId,
+            state = "RUNNING",
+            generationToken = token,
+        )
+        markers += marker
+
+        YtdlpNativeProcessBarrier.markerReadFailureForTesting = true
+        assertTrue(
+            YtdlpNativeProcessBarrier.observeGeneration(processId) is
+                YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN,
+        )
+        YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+        assertTrue(
+            YtdlpNativeProcessBarrier.observeGeneration(processId) is
+                YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION,
+        )
     }
 
     private fun downloadProcessId(): String =

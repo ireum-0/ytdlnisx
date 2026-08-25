@@ -61,7 +61,71 @@ class DownloadWorkerCleanupProductionWiringTest {
     @After
     fun closeDb() {
         DownloadExecutionRecovery.commitOverride = null
+        YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
         db.close()
+    }
+
+    @Test
+    fun nativeIdentityReadFailureIsDurablyUnknownAndLaterReadableRecoveryConverges() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val executionId = "identity-read-${UUID.randomUUID()}"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = processId,
+            state = "RUNNING",
+            generationToken = "identity-token-${UUID.randomUUID()}",
+        )
+        try {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = true
+            val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertTrue(DownloadExecutionRecovery.recordPending(appContext, item))
+            assertEquals(
+                "UNKNOWN",
+                appContext.getSharedPreferences(
+                    "download-execution-recovery",
+                    android.content.Context.MODE_PRIVATE,
+                ).getString("$downloadId:native-generation-kind", null),
+            )
+
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            DownloadExecutionRecovery.reconcile(appContext, db)
+
+            assertFalse(marker.exists())
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            marker.delete()
+        }
+    }
+
+    @Test
+    fun legacyBlankExecutionDoesNotTurnAnExistingNativeMarkerIntoAbsence() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = ""))
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = "download:$downloadId:legacy-native",
+            state = "RUNNING",
+            generationToken = "legacy-token-${UUID.randomUUID()}",
+        )
+        try {
+            val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertTrue(DownloadExecutionRecovery.recordPending(appContext, item))
+
+            DownloadExecutionRecovery.reconcile(appContext, db)
+
+            assertFalse(marker.exists())
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            marker.delete()
+        }
     }
 
     @Test

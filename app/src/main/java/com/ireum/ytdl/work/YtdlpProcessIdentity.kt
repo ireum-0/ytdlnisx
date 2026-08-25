@@ -11,5 +11,18 @@ internal object YtdlpProcessIdentity {
         return "download:$downloadId:$executionId"
     }
 
+    /** Unique durable role identity for a direct native writer. */
+    fun directDownload(
+        downloadId: Long,
+        executionId: String,
+        role: String,
+    ): String {
+        require(executionId.isNotBlank()) { "Direct native identity needs an execution token" }
+        require(role.isNotBlank() && !role.contains(':')) {
+            "Direct native role must be a single identity component"
+        }
+        return "download:$downloadId:$executionId:direct:$role:${java.util.UUID.randomUUID()}"
+    }
+
     fun terminal(terminalId: Long): String = "terminal:$terminalId"
 }

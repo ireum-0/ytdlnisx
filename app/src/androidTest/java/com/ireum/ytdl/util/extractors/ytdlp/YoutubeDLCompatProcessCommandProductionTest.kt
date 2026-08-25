@@ -82,7 +82,10 @@ class YoutubeDLCompatProcessCommandProductionTest {
 
             val command = requireNotNull(processCommand)
             val environment = requireNotNull(processEnvironment)
-            assertFalse(result.nativeQuiescent)
+            // The fake starter proves the pre-launch token has no external
+            // process; the finalization proof remains positive even though
+            // there is no supervisor process to observe.
+            assertTrue(result.nativeQuiescent)
             assertEquals(python.absolutePath, command[0])
             assertEquals("-c", command[1])
             // [supervisor Python, -c, script, marker, child Python, yt-dlp, ...]
@@ -148,6 +151,58 @@ class YoutubeDLCompatProcessCommandProductionTest {
         }
     }
 
+    @Test
+    fun nonZeroRootRetainsExtractionFailureUntilNativeQuiescenceIsProven() {
+        val root = File(appContext.noBackupFilesDir, "a2-nonzero-quiescence-test").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val python = File(root, "bundled-python").apply { writeText("test") }
+        val ytdlp = File(root, "yt-dlp").apply { writeText("test") }
+        val quickJs = File(root, "quickjs").apply { writeText("test") }
+        val ssl = File(root, "cert.pem").apply { writeText("test") }
+        YoutubeDLCompat.runtimeLayoutOverrideForTesting = runtimeLayout(
+            root = root,
+            python = python,
+            ytdlp = ytdlp,
+            quickJs = quickJs,
+            ssl = ssl,
+        )
+        val processId = "nonzero-quiescence-${System.nanoTime()}"
+        YoutubeDLCompat.processStarterOverrideForTesting = { _, environment, _ ->
+            YtdlpNativeProcessBarrier.writeMarkerForTesting(
+                processId = processId,
+                state = "RUNNING",
+                generationToken = requireNotNull(
+                    environment[YtdlpNativeProcessBarrier.NATIVE_GENERATION_ENVIRONMENT],
+                ),
+            )
+            YtdlpNativeProcessBarrier.markerWriteFailureForTesting = true
+            ExitedProcess(exitCode = 17)
+        }
+
+        try {
+            var failure: YoutubeDLCompat.NativeExecutionFailure? = null
+            try {
+                YoutubeDLCompat.executeWithQuiescence(
+                    context = appContext,
+                    request = YoutubeDLRequest("https://example.com/video"),
+                    processId = processId,
+                    redirectErrorStream = true,
+                )
+            } catch (caught: YoutubeDLCompat.NativeExecutionFailure) {
+                failure = caught
+            }
+            assertNotNull(failure)
+            assertTrue(requireNotNull(failure).originalFailure is com.yausername.youtubedl_android.YoutubeDLException)
+            assertTrue(YtdlpNativeProcessBarrier.markerFor(processId).exists())
+        } finally {
+            YtdlpNativeProcessBarrier.markerWriteFailureForTesting = false
+            YoutubeDLCompat.destroyProcessById(processId)
+            root.deleteRecursively()
+        }
+    }
+
     private fun runtimeLayout(
         root: File,
         python: File,
@@ -171,13 +226,15 @@ class YoutubeDLCompatProcessCommandProductionTest {
         sslCertificate = ssl,
     )
 
-    private class ExitedProcess : Process() {
+    private class ExitedProcess(
+        private val exitCode: Int = 0,
+    ) : Process() {
         override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
         override fun getInputStream(): InputStream = ByteArrayInputStream(ByteArray(0))
         override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
-        override fun waitFor(): Int = 0
+        override fun waitFor(): Int = exitCode
         override fun waitFor(timeout: Long, unit: TimeUnit): Boolean = true
-        override fun exitValue(): Int = 0
+        override fun exitValue(): Int = exitCode
         override fun destroy() = Unit
         override fun destroyForcibly(): Process = this
         override fun isAlive(): Boolean = false

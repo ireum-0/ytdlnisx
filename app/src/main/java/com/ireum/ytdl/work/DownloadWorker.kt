@@ -103,6 +103,7 @@ import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.referencesSameFile
 import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLException
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.CancellationException
@@ -327,22 +328,20 @@ class DownloadWorker(
                             )
                         )
                     }
-                    if (expectedExecutionId.isNotBlank()) {
+                    check(
+                        cancelProcessesForExecution(downloadId, expectedExecutionId)
+                    ) {
+                        "Native process owner changed while cleaning download $downloadId"
+                    }
+                    if (recoveryRecorded) {
                         check(
-                            cancelProcessesForExecution(downloadId, expectedExecutionId)
+                            DownloadExecutionRecovery.markNativeQuiescent(
+                                context = context,
+                                downloadId = downloadId,
+                                executionId = expectedExecutionId,
+                            )
                         ) {
-                            "Native process owner changed while cleaning download $downloadId"
-                        }
-                        if (recoveryRecorded) {
-                            check(
-                                DownloadExecutionRecovery.markNativeQuiescent(
-                                    context = context,
-                                    downloadId = downloadId,
-                                    executionId = expectedExecutionId,
-                                )
-                            ) {
-                                "Native quiescence recovery carrier was not durable for download $downloadId"
-                            }
+                            "Native quiescence recovery carrier was not durable for download $downloadId"
                         }
                     }
                     runCatching {
@@ -3658,6 +3657,9 @@ class DownloadWorker(
                     throw failure
                 }
             }
+            var completedResponse: YoutubeDLResponse? = null
+            var pendingFailure: Throwable? = null
+            var nativeRecoveryFailure: NativeProcessQuiescenceException? = null
             try {
                 // The global worker mutex only protects the exact ownership
                 // read/claim.  The per-download lease covers the final
@@ -3700,16 +3702,49 @@ class DownloadWorker(
                         input.downloadItem.executionId,
                     )
                     execution.start()
-                    processRegistered.await()
+                    try {
+                        processRegistered.await()
+                    } catch (failure: YoutubeDLCompat.NativeExecutionFailure) {
+                        if (failure.finalization.isProvenQuiescent) {
+                            throw failure.originalFailure
+                        }
+                        throw failure
+                    }
                 }
-                val executionResult = execution.await()
+                val executionResult = try {
+                    execution.await()
+                } catch (failure: YoutubeDLCompat.NativeExecutionFailure) {
+                    if (failure.finalization.isProvenQuiescent) {
+                        throw failure.originalFailure
+                    }
+                    throw failure
+                }
                 if (!executionResult.nativeQuiescent) {
-                    throw NativeProcessQuiescenceException(
+                    completedResponse = executionResult.response
+                    nativeRecoveryFailure = NativeProcessQuiescenceException(
                         downloadId = input.downloadItem.id,
                         executionId = input.downloadItem.executionId,
+                        originalFailure = executionResult.response.exitCode
+                            .takeIf { it > 0 }
+                            ?.let {
+                                YoutubeDLException(
+                                    "yt-dlp exited with code $it while descendants remained unresolved",
+                                )
+                            },
                     )
+                } else {
+                    completedResponse = executionResult.response
                 }
-                executionResult.response
+            } catch (failure: YoutubeDLCompat.NativeExecutionFailure) {
+                nativeRecoveryFailure = NativeProcessQuiescenceException(
+                    downloadId = input.downloadItem.id,
+                    executionId = input.downloadItem.executionId,
+                    originalFailure = failure.originalFailure,
+                )
+            } catch (failure: NativeProcessQuiescenceException) {
+                nativeRecoveryFailure = failure
+            } catch (failure: Throwable) {
+                pendingFailure = failure
             } finally {
                 withContext(Dispatchers.IO + NonCancellable) {
                     withDownloadWorkerExecutionSideEffectLease(
@@ -3717,19 +3752,34 @@ class DownloadWorker(
                         executionId = input.downloadItem.executionId,
                     ) {
                         val shouldCancel = withDownloadWorkerExecutionLock {
-                            !execution.isCompleted
+                            !execution.isCompleted ||
+                                YoutubeDLCompat.hasProcessById(processId)
                         }
                         if (shouldCancel) {
-                            check(
+                            val quiesced = runCatching {
                                 cancelYtdlpProcess(
                                     input.downloadItem.id,
                                     input.downloadItem.executionId,
                                 )
-                            ) {
-                                "Native yt-dlp process did not quiesce for download " +
-                                    input.downloadItem.id
+                            }.getOrDefault(false)
+                            if (quiesced) {
+                                execution.cancel()
+                                nativeRecoveryFailure?.let { failure ->
+                                    if (
+                                        failure.originalFailure != null ||
+                                            completedResponse != null
+                                    ) {
+                                        failure.nativeQuiescenceProven = true
+                                    }
+                                }
+                            } else if (nativeRecoveryFailure == null) {
+                                nativeRecoveryFailure = NativeProcessQuiescenceException(
+                                    downloadId = input.downloadItem.id,
+                                    executionId = input.downloadItem.executionId,
+                                    originalFailure = pendingFailure,
+                                )
+                                pendingFailure = null
                             }
-                            execution.cancel()
                         }
                         // Keep the exact native owner through same-execution
                         // retries and the later hard-sub phase.  Releasing it
@@ -3741,6 +3791,15 @@ class DownloadWorker(
                     }
                 }
             }
+            nativeRecoveryFailure?.let { failure ->
+                if (failure.nativeQuiescenceProven) {
+                    failure.originalFailure?.let { throw it }
+                    return@coroutineScope requireNotNull(completedResponse)
+                }
+                throw failure
+            }
+            pendingFailure?.let { throw it }
+            requireNotNull(completedResponse)
         }
     }
 
@@ -3830,6 +3889,16 @@ class DownloadWorker(
                 throw cancelled
             } catch (attemptError: Exception) {
                 if (attemptError is YtdlpQualityRejectedException) throw attemptError
+                if (attemptError is NativeProcessQuiescenceException) {
+                    // The attempt finally has already run the exact native
+                    // convergence barrier.  Preserve an attached extraction
+                    // failure for the normal retry policy only after that
+                    // barrier succeeds; bare native debt remains recovery-owned.
+                    if (attemptError.nativeQuiescenceProven) {
+                        attemptError.originalFailure?.let { throw it }
+                    }
+                    throw attemptError
+                }
                 if (attemptError is DownloadExecutionOwnershipLostException) {
                     // A stale attempt must not turn an E2-owned Active row
                     // into a retry plan.  Stop before probing, rebuilding a
@@ -4407,8 +4476,14 @@ class DownloadWorker(
          * part of the key; a stale cleanup can therefore address only its
          * exact process set and cannot clear a newer execution's registry.
          */
+        private data class NativePostProcessingHandle(
+            val process: Process,
+            val prepared: YtdlpNativeProcessBarrier.PreparedProcess?,
+        )
+
         private val runningNativePostProcessingProcesses:
-            MutableMap<FfmpegProcessKey, MutableSet<Process>> = ConcurrentHashMap()
+            MutableMap<FfmpegProcessKey, MutableSet<NativePostProcessingHandle>> =
+            ConcurrentHashMap()
         private val activeNativeProcessKey = ThreadLocal<FfmpegProcessKey?>()
         private val loadInfoJsonOptionRegex = Regex("""--load-info-json\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
         private const val FAILURE_YTDLP_TAIL_LINES = 160
@@ -4434,10 +4509,20 @@ class DownloadWorker(
             downloadId: Long,
             expectedExecutionId: String,
         ): Boolean {
-            if (expectedExecutionId.isBlank()) return false
+            if (expectedExecutionId.isBlank()) {
+                // A legacy row has no execution token with which to claim a
+                // native writer.  Any visible same-Download carrier is
+                // therefore a fail-closed recovery barrier, never proof of
+                // absence.
+                return hasAnyRegisteredNativeProcess(downloadId)
+            }
             val processId = YtdlpProcessIdentity.download(downloadId, expectedExecutionId)
             return DownloadWorkerProcessOwners.isOwnedBy(downloadId, expectedExecutionId) ||
                 YoutubeDLCompat.hasProcessById(processId) ||
+                YtdlpNativeProcessBarrier.hasUnresolvedDownloadExecution(
+                    downloadId,
+                    expectedExecutionId,
+                ) ||
                 runningNativePostProcessingProcesses[
                     FfmpegProcessKey(downloadId, expectedExecutionId)
                 ]?.isNotEmpty() == true
@@ -4449,9 +4534,20 @@ class DownloadWorker(
             downloadId: Long,
             expectedExecutionId: String,
         ): Boolean {
-            if (expectedExecutionId.isBlank()) return false
+            if (expectedExecutionId.isBlank()) {
+                return YoutubeDLCompat.hasAnyDownloadProcess(downloadId) ||
+                    YtdlpNativeProcessBarrier.hasUnresolvedDownloadExecution(downloadId) ||
+                    runningNativePostProcessingProcesses.keys.any { key ->
+                        key.downloadItemId == downloadId &&
+                            runningNativePostProcessingProcesses[key]?.isNotEmpty() == true
+                    }
+            }
             val processId = YtdlpProcessIdentity.download(downloadId, expectedExecutionId)
             return YoutubeDLCompat.hasProcessById(processId) ||
+                YtdlpNativeProcessBarrier.hasUnresolvedDownloadExecution(
+                    downloadId,
+                    expectedExecutionId,
+                ) ||
                 runningNativePostProcessingProcesses[
                     FfmpegProcessKey(downloadId, expectedExecutionId)
                 ]?.isNotEmpty() == true
@@ -4498,10 +4594,11 @@ class DownloadWorker(
         private fun registerNativePostProcessingProcess(
             key: FfmpegProcessKey,
             process: Process,
+            prepared: YtdlpNativeProcessBarrier.PreparedProcess? = null,
         ) {
             runningNativePostProcessingProcesses
                 .computeIfAbsent(key) { ConcurrentHashMap.newKeySet() }
-                .add(process)
+                .add(NativePostProcessingHandle(process, prepared))
         }
 
         private fun removeNativePostProcessingProcess(
@@ -4509,7 +4606,7 @@ class DownloadWorker(
             process: Process,
         ) {
             val processSet = runningNativePostProcessingProcesses[key] ?: return
-            processSet.remove(process)
+            processSet.removeIf { it.process === process }
             if (processSet.isEmpty()) {
                 runningNativePostProcessingProcesses.remove(key, processSet)
             }
@@ -4620,12 +4717,26 @@ class DownloadWorker(
         fun cancelPostProcessingById(downloadId: Long, expectedExecutionId: String): Boolean {
             val key = FfmpegProcessKey(downloadId, expectedExecutionId)
             var quiesced = true
-            runningNativePostProcessingProcesses[key]?.toList().orEmpty().forEach { process ->
-                if (ProcessQuiescence.requestTermination(process)) {
-                    removeNativePostProcessingProcess(key, process)
+            runningNativePostProcessingProcesses[key]?.toList().orEmpty().forEach { handle ->
+                val localProcessQuiesced = ProcessQuiescence.requestTermination(handle.process)
+                val durableQuiesced = handle.prepared?.let {
+                    YtdlpNativeProcessBarrier.recoverDetailed(
+                        it.marker,
+                        it.generationToken,
+                    )?.isProvenQuiescent
+                } ?: true
+                if (localProcessQuiesced && durableQuiesced != false) {
+                    removeNativePostProcessingProcess(key, handle.process)
                 } else {
                     quiesced = false
                 }
+            }
+            if (quiesced && !YtdlpNativeProcessBarrier.recoverDownloadExecution(
+                    downloadId,
+                    expectedExecutionId,
+                )
+            ) {
+                quiesced = false
             }
             return quiesced
         }
@@ -5083,10 +5194,10 @@ class DownloadWorker(
                 return@forEach
             }
             consumedSubtitles.add(subtitle.file.absolutePath)
-            val progressTarget = if (downloadItemId != null) {
+            val progressTarget = if (downloadItemId != null && !downloadExecutionId.isNullOrBlank()) {
                 FfmpegProgressTarget(
                     downloadItemId,
-                    downloadExecutionId.orEmpty(),
+                    requireNotNull(downloadExecutionId),
                     downloadLogId,
                     media.name,
                 )
@@ -5723,6 +5834,63 @@ class DownloadWorker(
         }
     }
 
+    private fun startDurableNativeProcess(
+        key: FfmpegProcessKey,
+        role: String,
+        builder: ProcessBuilder,
+    ): NativePostProcessingHandle {
+        val processId = YtdlpProcessIdentity.directDownload(
+            downloadId = key.downloadItemId,
+            executionId = key.executionId,
+            role = role,
+        )
+        val prepared = try {
+            YtdlpNativeProcessBarrier.prepare(context, processId)
+        } catch (failure: Exception) {
+            // An unresolved exact role marker is a reuse barrier.  Do not
+            // reinterpret prepare failure as an ordinary ffmpeg failure and
+            // enter an alternate executable/fallback attempt.
+            throw NativeProcessQuiescenceException(
+                key.downloadItemId,
+                key.executionId,
+                failure,
+            )
+        }
+        builder.environment()[YtdlpNativeProcessBarrier.NATIVE_GENERATION_ENVIRONMENT] =
+            prepared.generationToken
+        builder.environment()["YTDLNISX_PROCESS_ID"] = processId
+        val process = try {
+            builder.start()
+        } catch (failure: Exception) {
+            val finalization = YtdlpNativeProcessBarrier.recoverDetailed(
+                prepared.marker,
+                prepared.generationToken,
+            )
+            if (!finalization.isProvenQuiescent) {
+                throw NativeProcessQuiescenceException(
+                    key.downloadItemId,
+                    key.executionId,
+                )
+            }
+            throw failure
+        }
+
+        if (!YtdlpNativeProcessBarrier.publishDirectProcessRunning(prepared)) {
+            val finalization = YtdlpNativeProcessBarrier.recoverDetailed(
+                prepared.marker,
+                prepared.generationToken,
+            )
+            if (!finalization.isProvenQuiescent) {
+                ProcessQuiescence.requestTermination(process)
+                throw NativeProcessQuiescenceException(
+                    key.downloadItemId,
+                    key.executionId,
+                )
+            }
+        }
+        return NativePostProcessingHandle(process, prepared)
+    }
+
     private fun executeFfmpegWithAutoPatch(
         runtime: FfmpegRuntime,
         args: List<String>,
@@ -5899,11 +6067,21 @@ class DownloadWorker(
         progressTarget: FfmpegProgressTarget? = null
     ): FfmpegExecResult {
         return runCatching {
-            val process = buildFfmpegProcess(runtime, args).start()
             val processKey = progressTarget?.let {
+                if (it.executionId.isBlank()) {
+                    throw NativeProcessQuiescenceException(it.downloadItemId, it.executionId)
+                }
                 FfmpegProcessKey(it.downloadItemId, it.executionId)
             } ?: nativeProcessKeyForCurrentThread()
-            processKey?.let { key -> registerNativePostProcessingProcess(key, process) }
+                ?: error("Direct FFmpeg started without an exact Download execution owner")
+            val handle = startDurableNativeProcess(
+                key = processKey,
+                role = "ffmpeg",
+                builder = buildFfmpegProcess(runtime, args),
+            )
+            val process = handle.process
+            val prepared = requireNotNull(handle.prepared)
+            registerNativePostProcessingProcess(processKey, process, prepared)
             val outputBuilder = StringBuilder()
             val startedAt = System.currentTimeMillis()
             var lastLiveLogAt = 0L
@@ -5954,13 +6132,23 @@ class DownloadWorker(
                 // an unproven process stays in the exact registry for later
                 // recovery instead of becoming an orphan writer.
                 val processQuiesced = ProcessQuiescence.requestTermination(process)
-                if (processQuiesced) {
+                val durableQuiesced = YtdlpNativeProcessBarrier.recoverDetailed(
+                    prepared.marker,
+                    prepared.generationToken,
+                ).isProvenQuiescent
+                if (processQuiesced && durableQuiesced) {
                     processKey?.let { key ->
                         removeNativePostProcessingProcess(key, process)
                     }
+                } else {
+                    throw NativeProcessQuiescenceException(
+                        processKey.downloadItemId,
+                        processKey.executionId,
+                    )
                 }
             }
         }.getOrElse { error ->
+            if (error is NativeProcessQuiescenceException) throw error
             Log.e(TAG, "HardSub ffmpeg process start failed source=${runtime.source}", error)
             FfmpegExecResult(exitCode = 1, output = error.message ?: error.toString())
         }
@@ -6189,28 +6377,35 @@ class DownloadWorker(
         startFailLogPrefix: String,
         failLogPrefix: String
     ): File? {
-        val process = runCatching {
-            ProcessBuilder(
-                converterPath,
-                "parse",
-                input.absolutePath,
-                "--format",
-                format,
-                "--save",
-                "file",
-                "--output",
-                output.absolutePath
-            ).redirectErrorStream(true).start()
+        val processKey = nativeProcessKeyForCurrentThread()
+            ?: error("Dedicated subtitle converter started without an exact Download execution owner")
+        val handle = runCatching {
+            startDurableNativeProcess(
+                key = processKey,
+                role = "subtitle-converter",
+                builder = ProcessBuilder(
+                    converterPath,
+                    "parse",
+                    input.absolutePath,
+                    "--format",
+                    format,
+                    "--save",
+                    "file",
+                    "--output",
+                    output.absolutePath
+                ).redirectErrorStream(true),
+            )
         }.getOrElse { error ->
+            if (error is NativeProcessQuiescenceException) throw error
             Log.w(
                 TAG,
                 "$startFailLogPrefix path=$converterPath source=${input.name} reason=${error.message}"
             )
             return null
         }
-
-        val processKey = nativeProcessKeyForCurrentThread()
-        processKey?.let { key -> registerNativePostProcessingProcess(key, process) }
+        val process = handle.process
+        val prepared = requireNotNull(handle.prepared)
+        registerNativePostProcessingProcess(processKey, process, prepared)
         return try {
             val converterOutput = process.inputStream.bufferedReader().use { it.readText() }
             val exitCode = process.waitFor()
@@ -6223,10 +6418,18 @@ class DownloadWorker(
         } finally {
             // Keep a converter process registered if interruption prevented a
             // positive termination acknowledgement.
-            if (ProcessQuiescence.requestTermination(process)) {
-                processKey?.let { key ->
-                    removeNativePostProcessingProcess(key, process)
-                }
+            val processQuiesced = ProcessQuiescence.requestTermination(process)
+            val durableQuiesced = YtdlpNativeProcessBarrier.recoverDetailed(
+                prepared.marker,
+                prepared.generationToken,
+            ).isProvenQuiescent
+            if (processQuiesced && durableQuiesced) {
+                removeNativePostProcessingProcess(processKey, process)
+            } else {
+                throw NativeProcessQuiescenceException(
+                    processKey.downloadItemId,
+                    processKey.executionId,
+                )
             }
         }
     }

@@ -9,6 +9,7 @@ import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.repository.DownloadRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 
 
@@ -32,62 +33,87 @@ class CancelScheduledDownloadWorker(
             val runningDownloads = withDownloadWorkerExecutionLock {
                 dao.getActiveAndPostProcessingDownloadsList()
             }
-            runningDownloads.forEach { snapshot ->
-                suspend fun cancelAndRequeue(latest: com.ireum.ytdl.database.models.DownloadItem) {
-                    if (latest.executionId.isNotBlank()) {
-                        DownloadWorker.cancelProcessesForExecution(
-                            latest.id,
-                            latest.executionId,
-                        )
-                    }
-                    when (repository.requeueRunningDownload(latest.id, latest.executionId)) {
-                        DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
-                        DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
-                        DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED,
-                        DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> Unit
-                        DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
-                            // The History row is already authoritative.  Finish
-                            // the debt; never return this row to the runnable queue.
-                            repository.completeAndDelete(
-                                id = latest.id,
-                                expectedExecutionId = latest.executionId,
-                            )
-                        }
-                        DownloadRepository.RunningDownloadRequeueResult.OWNERSHIP_LOST -> {
-                            error("Download execution ownership was lost while stopping ${latest.id}")
-                        }
-                    }
+            var firstFailure: Exception? = null
+            fun retainRecoveryResponsibility(downloadId: Long) {
+                runCatching {
+                    DownloadExecutionRecovery.scheduleRecovery(context, downloadId)
+                }.onFailure { schedulingFailure ->
+                    firstFailure = firstFailure.addOrSuppress(schedulingFailure)
                 }
+            }
+            runningDownloads.forEach { snapshot ->
+                try {
+                    suspend fun cancelAndRequeue(latest: com.ireum.ytdl.database.models.DownloadItem) {
+                        check(
+                            DownloadWorker.cancelProcessesForExecution(
+                                latest.id,
+                                latest.executionId,
+                            )
+                        ) {
+                            "Native process did not quiesce while stopping ${latest.id}"
+                        }
+                        when (repository.requeueRunningDownload(latest.id, latest.executionId)) {
+                            DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
+                            DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
+                            DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED,
+                            DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> Unit
+                            DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
+                                // The History row is already authoritative.  Finish
+                                // the debt; never return this row to the runnable queue.
+                                repository.completeAndDelete(
+                                    id = latest.id,
+                                    expectedExecutionId = latest.executionId,
+                                )
+                            }
+                            DownloadRepository.RunningDownloadRequeueResult.OWNERSHIP_LOST -> {
+                                error("Download execution ownership was lost while stopping ${latest.id}")
+                            }
+                        }
+                    }
 
-                if (snapshot.executionId.isNotBlank()) {
-                    withDownloadWorkerExecutionSideEffectLease(snapshot.id, snapshot.executionId) {
-                        // This short check is the only part that needs the
-                        // global lock.  Native cancellation and the DB CAS
-                        // happen while the exact per-download lease is held.
+                    if (snapshot.executionId.isNotBlank()) {
+                        withDownloadWorkerExecutionSideEffectLease(snapshot.id, snapshot.executionId) {
+                            // This short check is the only part that needs the
+                            // global lock.  Native cancellation and the DB CAS
+                            // happen while the exact per-download lease is held.
+                            val current = withDownloadWorkerExecutionLock {
+                                dao.getNullableDownloadById(snapshot.id)?.takeIf {
+                                    it.executionId == snapshot.executionId &&
+                                        it.status in setOf(
+                                            DownloadRepository.Status.Active.name,
+                                            DownloadRepository.Status.PostProcessing.name,
+                                        )
+                                }
+                            }
+                            if (current != null) cancelAndRequeue(current)
+                        }
+                    } else {
                         val current = withDownloadWorkerExecutionLock {
                             dao.getNullableDownloadById(snapshot.id)?.takeIf {
-                                it.executionId == snapshot.executionId &&
+                                it.executionId.isBlank() &&
                                     it.status in setOf(
                                         DownloadRepository.Status.Active.name,
                                         DownloadRepository.Status.PostProcessing.name,
                                     )
                             }
                         }
-                        if (current != null) cancelAndRequeue(current)
-                    }
-                } else {
-                    val current = withDownloadWorkerExecutionLock {
-                        dao.getNullableDownloadById(snapshot.id)?.takeIf {
-                            it.executionId.isBlank() &&
-                                it.status in setOf(
-                                    DownloadRepository.Status.Active.name,
-                                    DownloadRepository.Status.PostProcessing.name,
-                                )
+                        if (current != null) {
+                            withDownloadWorkerExecutionSideEffectLease(snapshot.id, "") {
+                                cancelAndRequeue(current)
+                            }
                         }
                     }
-                    if (current != null) cancelAndRequeue(current)
+                } catch (cancelled: CancellationException) {
+                    firstFailure = firstFailure.addOrSuppress(cancelled)
+                    retainRecoveryResponsibility(snapshot.id)
+                } catch (failure: Exception) {
+                    firstFailure = firstFailure.addOrSuppress(failure)
+                    // A's durable row/marker remains its own recovery carrier;
+                    // continue to B/C instead of aborting the snapshot pass.
+                    retainRecoveryResponsibility(snapshot.id)
                 }
             }
+            firstFailure?.let { throw it }
         }
         return Result.success()
     }

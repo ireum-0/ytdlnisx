@@ -32,6 +32,7 @@ internal object DownloadExecutionRecovery {
     private const val PREFS_NAME = "download-execution-recovery"
     private const val NATIVE_QUIESCENCE_SUFFIX = ":native-quiescence"
     private const val NATIVE_GENERATION_SUFFIX = ":native-generation"
+    private const val NATIVE_GENERATION_KIND_SUFFIX = ":native-generation-kind"
     private const val ISSUE_CODE_SUFFIX = ":issue-code"
     private const val ISSUE_STAGE_SUFFIX = ":issue-stage"
     private const val TERMINAL_ISSUE_CODE_SUFFIX = ":terminal-issue-code"
@@ -54,20 +55,33 @@ internal object DownloadExecutionRecovery {
     private data class PendingRecovery(
         val executionId: String,
         val nativeQuiescencePending: Boolean,
-        val nativeGenerationToken: String?,
+        val nativeGenerationObservation: YtdlpNativeProcessBarrier.GenerationObservation,
         val authoritativeIssue: DownloadIssue?,
-    )
+    ) {
+        val nativeGenerationToken: String?
+            get() = (nativeGenerationObservation as?
+                YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION)?.token
+    }
 
     private fun commit(
         operation: JournalCommitOperation,
         editor: SharedPreferences.Editor,
     ): Boolean = commitOverride?.invoke(operation, editor) ?: editor.commit()
 
+    private fun YtdlpNativeProcessBarrier.GenerationObservation.kindName(): String =
+        when (this) {
+            YtdlpNativeProcessBarrier.GenerationObservation.ABSENT -> "ABSENT"
+            is YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION -> "EXACT_GENERATION"
+            is YtdlpNativeProcessBarrier.GenerationObservation.LEGACY_IDENTITY -> "LEGACY_IDENTITY"
+            YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN -> "UNKNOWN"
+        }
+
     fun recordPending(
         context: Context,
         item: DownloadItem,
         authoritativeIssue: DownloadIssue? = null,
     ): Boolean {
+        YtdlpNativeProcessBarrier.configure(context)
         val refusal = authoritativeIssue?.let(HistoryReplacementRefusal::from)
         val terminalIssue = authoritativeIssue?.takeUnless { refusal != null }
         if (
@@ -80,26 +94,34 @@ internal object DownloadExecutionRecovery {
             return false
         }
         val id = item.id.toString()
-        val nativeGenerationToken = runCatching {
-            if (item.executionId.isBlank()) {
-                null
-            } else {
-                YtdlpNativeProcessBarrier.generationTokenFor(
-                    YtdlpProcessIdentity.download(item.id, item.executionId),
-                )
-            }
-        }.getOrNull()
+        val nativeGenerationObservation = YtdlpNativeProcessBarrier.observeDownloadExecution(
+            downloadId = item.id,
+            executionId = item.executionId,
+        )
         val editor = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(id, item.executionId)
             .putBoolean(
                 id + NATIVE_QUIESCENCE_SUFFIX,
-                item.executionId.isNotBlank(),
+                nativeGenerationObservation !is
+                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT,
             )
-        if (nativeGenerationToken == null) {
-            editor.remove(id + NATIVE_GENERATION_SUFFIX)
-        } else {
-            editor.putString(id + NATIVE_GENERATION_SUFFIX, nativeGenerationToken)
+        editor.putString(
+            id + NATIVE_GENERATION_KIND_SUFFIX,
+            nativeGenerationObservation.kindName(),
+        )
+        when (nativeGenerationObservation) {
+            YtdlpNativeProcessBarrier.GenerationObservation.ABSENT ->
+                editor.remove(id + NATIVE_GENERATION_SUFFIX)
+            is YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION ->
+                editor.putString(id + NATIVE_GENERATION_SUFFIX, nativeGenerationObservation.token)
+            is YtdlpNativeProcessBarrier.GenerationObservation.LEGACY_IDENTITY ->
+                editor.putString(
+                    id + NATIVE_GENERATION_SUFFIX,
+                    nativeGenerationObservation.processId,
+                )
+            YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN ->
+                editor.remove(id + NATIVE_GENERATION_SUFFIX)
         }
         if (refusal == null) {
             editor.remove(id + ISSUE_CODE_SUFFIX)
@@ -129,26 +151,42 @@ internal object DownloadExecutionRecovery {
         executionId: String,
         expectedGenerationToken: String? = null,
     ): Boolean {
+        YtdlpNativeProcessBarrier.configure(context)
         val id = downloadId.toString()
         val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (preferences.getString(id, null) != executionId) return false
         val recordedGenerationToken = preferences.getString(id + NATIVE_GENERATION_SUFFIX, null)
-        if (
-            expectedGenerationToken != null &&
-                recordedGenerationToken != expectedGenerationToken
-        ) {
+        val recordedKind = preferences
+            .getString(id + NATIVE_GENERATION_KIND_SUFFIX, null)
+            ?.uppercase()
+            ?: if (recordedGenerationToken != null) "EXACT_GENERATION" else "UNKNOWN"
+        if (expectedGenerationToken != null && recordedGenerationToken != expectedGenerationToken) {
             return false
         }
-        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
-        val currentGenerationToken = runCatching {
-            YtdlpNativeProcessBarrier.generationTokenFor(processId)
-        }.getOrNull()
-        if (recordedGenerationToken == null) {
-            // A journal recorded before a new native marker appeared must not
-            // be allowed to clear that newer generation.
-            if (currentGenerationToken != null) return false
-        } else if (!YtdlpNativeProcessBarrier.proveGenerationAbsent(recordedGenerationToken)) {
-            return false
+        val currentObservation = YtdlpNativeProcessBarrier.observeDownloadExecution(
+            downloadId,
+            executionId,
+        )
+        when (recordedKind) {
+            "ABSENT" -> if (currentObservation !is
+                YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
+            ) return false
+            "EXACT_GENERATION" -> {
+                val token = recordedGenerationToken ?: return false
+                if (!YtdlpNativeProcessBarrier.proveGenerationAbsent(token)) return false
+                if (currentObservation !is
+                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
+                ) return false
+            }
+            // A legacy processId-only marker has no anti-reuse authority.
+            // Even if the carrier later disappears, recovery cannot prove
+            // that the old external process was absent rather than merely
+            // unrecorded. Keep the owner fail-closed.
+            "LEGACY_IDENTITY" -> return false
+            "UNKNOWN" -> if (currentObservation is
+                YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN
+            ) return false
+            else -> return false
         }
         return commit(
             JournalCommitOperation.MARK_NATIVE_QUIESCENT,
@@ -169,6 +207,7 @@ internal object DownloadExecutionRecovery {
             .remove(id.toString())
             .remove(id.toString() + NATIVE_QUIESCENCE_SUFFIX)
             .remove(id.toString() + NATIVE_GENERATION_SUFFIX)
+            .remove(id.toString() + NATIVE_GENERATION_KIND_SUFFIX)
             .remove(id.toString() + ISSUE_CODE_SUFFIX)
             .remove(id.toString() + ISSUE_STAGE_SUFFIX)
             .remove(id.toString() + TERMINAL_ISSUE_CODE_SUFFIX)
@@ -232,16 +271,44 @@ internal object DownloadExecutionRecovery {
             }
             parsed
         }
+        val nativeGenerationToken = preferences.getString(
+            id + NATIVE_GENERATION_SUFFIX,
+            null,
+        )
+        val nativeGenerationObservation = when (
+            preferences.getString(id + NATIVE_GENERATION_KIND_SUFFIX, null)
+                ?.uppercase()
+        ) {
+            "ABSENT" -> YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
+            "EXACT_GENERATION" -> nativeGenerationToken
+                ?.takeIf { it.isNotBlank() }
+                ?.let { YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION(it) }
+                ?: YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN
+            "LEGACY_IDENTITY" -> nativeGenerationToken
+                ?.takeIf { it.isNotBlank() }
+                ?.let { YtdlpNativeProcessBarrier.GenerationObservation.LEGACY_IDENTITY(it) }
+                ?: YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN
+            "UNKNOWN" -> YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN
+            null -> if (nativeGenerationToken != null) {
+                YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION(
+                    nativeGenerationToken,
+                )
+            } else if (executionId.isBlank()) {
+                YtdlpNativeProcessBarrier.observeDownloadExecution(downloadId, executionId)
+            } else {
+                // A pre-kind journal with no token is not proof that no
+                // marker existed when it was recorded.
+                YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN
+            }
+            else -> YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN
+        }
         return PendingRecovery(
             executionId = executionId,
             nativeQuiescencePending = preferences.getBoolean(
                 id + NATIVE_QUIESCENCE_SUFFIX,
                 executionId.isNotBlank(),
             ),
-            nativeGenerationToken = preferences.getString(
-                id + NATIVE_GENERATION_SUFFIX,
-                null,
-            ),
+            nativeGenerationObservation = nativeGenerationObservation,
             authoritativeIssue = issue ?: terminalIssue,
         )
     }
@@ -259,6 +326,12 @@ internal object DownloadExecutionRecovery {
     ) = withContext(Dispatchers.IO + NonCancellable) {
         YtdlpNativeProcessBarrier.configure(context)
         val repository = DownloadRepository(dbManager)
+        data class Discovery(
+            val candidates: List<DownloadItem>,
+            val orphanNativeProcesses: List<YtdlpNativeProcessBarrier.DurableDownloadProcess>,
+            val orphanJournalIds: List<Long>,
+            val markerCandidates: List<Pair<Long, String>>,
+        )
         val discoveredRecovery = withDownloadWorkerExecutionLock {
             val running = dbManager.downloadDao.getActiveAndPostProcessingDownloadsList()
             val committed = dbManager.downloadDao.getCommittedHistoryReplacementDownloads()
@@ -273,7 +346,7 @@ internal object DownloadExecutionRecovery {
                 .mapNotNull { process ->
                     dbManager.downloadDao.getNullableDownloadById(process.downloadId)
                 }
-            Triple(
+            Discovery(
                 (running + committed + journalRows + nativeRows).distinctBy { it.id },
                 nativeProcesses.filter { process ->
                     dbManager.downloadDao.getNullableDownloadById(process.downloadId) == null
@@ -281,11 +354,13 @@ internal object DownloadExecutionRecovery {
                 journalIds.filter { id ->
                     dbManager.downloadDao.getNullableDownloadById(id) == null
                 },
+                YtdlpNativeProcessBarrier.downloadMarkerCandidates(context),
             )
         }
-        val candidates = discoveredRecovery.first
-        val orphanNativeProcesses = discoveredRecovery.second
-        val orphanJournalIds = discoveredRecovery.third
+        val candidates = discoveredRecovery.candidates
+        val orphanNativeProcesses = discoveredRecovery.orphanNativeProcesses
+        val orphanJournalIds = discoveredRecovery.orphanJournalIds
+        val markerCandidates = discoveredRecovery.markerCandidates
         var firstFailure: Exception? = null
 
         suspend fun convergeOrphanExecution(
@@ -307,39 +382,75 @@ internal object DownloadExecutionRecovery {
                     // this path never invents a replacement row.
                     return@withDownloadWorkerExecutionSideEffectLease
                 }
-                val processId = YtdlpProcessIdentity.download(downloadId, executionId)
-                val currentGenerationToken = runCatching {
-                    YtdlpNativeProcessBarrier.generationTokenFor(processId)
-                }.getOrNull()
+                val processId = if (executionId.isBlank()) null else
+                    YtdlpProcessIdentity.download(downloadId, executionId)
+                val currentObservation = YtdlpNativeProcessBarrier.observeDownloadExecution(
+                    downloadId,
+                    executionId,
+                )
+                val recordedObservation = pending
+                    ?.takeIf { it.executionId == executionId }
+                    ?.nativeGenerationObservation
+                when (recordedObservation) {
+                    is YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION -> {
+                        if (
+                            executionId.isBlank() ||
+                            currentObservation is
+                                YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION &&
+                                currentObservation.token != recordedObservation.token
+                        ) {
+                            check(
+                                YtdlpNativeProcessBarrier.recoverGeneration(
+                                    processId = processId ?: "download:$downloadId:$executionId",
+                                    generationToken = recordedObservation.token,
+                                )
+                            ) {
+                                "Orphan native generation changed for download $downloadId"
+                            }
+                        } else {
+                            check(
+                                DownloadWorker.cancelProcessesForExecution(downloadId, executionId)
+                            ) {
+                                "Orphan native process owner changed for download $downloadId"
+                            }
+                        }
+                    }
+                    YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN -> {
+                        if (
+                            currentObservation is
+                                YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN ||
+                                currentObservation is
+                                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
+                        ) {
+                            throw NativeProcessQuiescenceException(downloadId, executionId)
+                        }
+                        check(
+                            DownloadWorker.cancelProcessesForExecution(downloadId, executionId)
+                        ) {
+                            "Orphan native process identity remained unreadable for download $downloadId"
+                        }
+                    }
+                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT,
+                    is YtdlpNativeProcessBarrier.GenerationObservation.LEGACY_IDENTITY,
+                    null -> {
+                        if (
+                            recordedObservation is
+                                YtdlpNativeProcessBarrier.GenerationObservation.ABSENT &&
+                                currentObservation !is
+                                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
+                        ) {
+                            throw NativeProcessQuiescenceException(downloadId, executionId)
+                        }
+                        check(
+                            DownloadWorker.cancelProcessesForExecution(downloadId, executionId)
+                        ) {
+                            "Orphan native process owner changed for download $downloadId"
+                        }
+                    }
+                }
                 val recordedGenerationToken = pending
                     ?.takeIf { it.executionId == executionId }
                     ?.nativeGenerationToken
-                if (
-                    pending?.executionId == executionId &&
-                        recordedGenerationToken == null &&
-                        currentGenerationToken != null
-                ) {
-                    throw NativeProcessQuiescenceException(downloadId, executionId)
-                }
-                if (
-                    recordedGenerationToken != null &&
-                        currentGenerationToken != recordedGenerationToken
-                ) {
-                    check(
-                        YtdlpNativeProcessBarrier.recoverGeneration(
-                            processId = processId,
-                            generationToken = recordedGenerationToken,
-                        )
-                    ) {
-                        "Orphan native generation changed for download $downloadId"
-                    }
-                } else {
-                    check(
-                        DownloadWorker.cancelProcessesForExecution(downloadId, executionId)
-                    ) {
-                        "Orphan native process owner changed for download $downloadId"
-                    }
-                }
                 if (
                     pending?.executionId == executionId &&
                         pending.nativeQuiescencePending &&
@@ -396,20 +507,33 @@ internal object DownloadExecutionRecovery {
                         ) {
                             throw NativeProcessQuiescenceException(snapshot.id, executionId)
                         }
-                        val processId = YtdlpProcessIdentity.download(snapshot.id, executionId)
-                        val currentGenerationToken = runCatching {
-                            YtdlpNativeProcessBarrier.generationTokenFor(processId)
-                        }.getOrNull()
+                        val processId = executionId
+                            .takeIf { it.isNotBlank() }
+                            ?.let { YtdlpProcessIdentity.download(snapshot.id, it) }
+                        val currentObservation = YtdlpNativeProcessBarrier
+                            .observeDownloadExecution(snapshot.id, executionId)
+                        val recordedObservation = pending
+                            ?.takeIf { it.executionId == executionId }
+                            ?.nativeGenerationObservation
+                        val currentExactToken =
+                            (currentObservation as?
+                                YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION)
+                                ?.token
                         val journalGenerationAppearedAfterRecord =
                             pending?.executionId == executionId &&
-                                nativeGenerationToken == null &&
-                                currentGenerationToken != null
+                                recordedObservation is
+                                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT &&
+                                currentObservation !is
+                                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
                         if (journalGenerationAppearedAfterRecord) {
                             throw NativeProcessQuiescenceException(snapshot.id, executionId)
                         }
                         if (
                             nativeGenerationToken != null &&
-                                currentGenerationToken != nativeGenerationToken
+                                (
+                                    executionId.isBlank() ||
+                                        currentExactToken != nativeGenerationToken
+                                    )
                         ) {
                             // The journal names an older native generation.
                             // Recover only that token; a newer same-processId
@@ -417,7 +541,8 @@ internal object DownloadExecutionRecovery {
                             // process-id cancellation path.
                             check(
                                 YtdlpNativeProcessBarrier.recoverGeneration(
-                                    processId = processId,
+                                    processId = processId
+                                        ?: "download:${snapshot.id}:$executionId",
                                     generationToken = nativeGenerationToken,
                                 )
                             ) {
@@ -426,7 +551,9 @@ internal object DownloadExecutionRecovery {
                         } else {
                             val nativeVisible = nativePending ||
                                 DownloadWorker.hasRegisteredNativeProcess(snapshot.id, executionId) ||
-                                YtdlpNativeProcessBarrier.hasUnresolved(processId)
+                                processId?.let {
+                                    YtdlpNativeProcessBarrier.hasUnresolved(it)
+                                } == true
                             if (nativeVisible) {
                                 check(
                                     DownloadWorker.cancelProcessesForExecution(
@@ -564,13 +691,14 @@ internal object DownloadExecutionRecovery {
                                     !anotherExecutionOwnsTheRow &&
                                     !anotherExecutionHasNativeProcess
                             ) {
-                                val currentProcessId = YtdlpProcessIdentity.download(
-                                    current.id,
-                                    current.executionId,
-                                )
-                                val currentMarker = runCatching {
-                                    YtdlpNativeProcessBarrier.markerFor(currentProcessId)
-                                }.getOrNull()
+                                val currentProcessId = current.executionId
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { YtdlpProcessIdentity.download(current.id, it) }
+                                val currentMarker = currentProcessId?.let {
+                                    runCatching {
+                                        YtdlpNativeProcessBarrier.markerFor(it)
+                                    }.getOrNull()
+                                }
                                 if (
                                     currentMarker?.exists() == true &&
                                         YtdlpNativeProcessBarrier.isQuiescent(currentMarker)
@@ -585,17 +713,29 @@ internal object DownloadExecutionRecovery {
                                             current.id,
                                             current.executionId,
                                         ) ||
-                                        YtdlpNativeProcessBarrier.hasUnresolved(currentProcessId)
+                                        currentProcessId?.let {
+                                            YtdlpNativeProcessBarrier.hasUnresolved(it)
+                                        } == true
                                 if (nativeQuiescenceRequired) {
-                                    val currentGenerationToken = runCatching {
-                                        YtdlpNativeProcessBarrier.generationTokenFor(currentProcessId)
-                                    }.getOrNull()
+                                    val currentObservation =
+                                        YtdlpNativeProcessBarrier.observeDownloadExecution(
+                                            current.id,
+                                            current.executionId,
+                                        )
                                     val recordedGenerationToken = pendingForCurrent
                                         ?.nativeGenerationToken
+                                    val recordedObservation = pendingForCurrent
+                                        ?.nativeGenerationObservation
+                                    val currentExactToken =
+                                        (currentObservation as?
+                                            YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION)
+                                            ?.token
                                     if (
                                         pendingForCurrent != null &&
-                                            recordedGenerationToken == null &&
-                                            currentGenerationToken != null
+                                            recordedObservation is
+                                                YtdlpNativeProcessBarrier.GenerationObservation.ABSENT &&
+                                            currentObservation !is
+                                                YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
                                     ) {
                                         throw NativeProcessQuiescenceException(
                                             current.id,
@@ -604,16 +744,47 @@ internal object DownloadExecutionRecovery {
                                     }
                                     if (
                                         recordedGenerationToken != null &&
-                                            currentGenerationToken != recordedGenerationToken
+                                            (
+                                                current.executionId.isBlank() ||
+                                                    currentExactToken != recordedGenerationToken
+                                                )
                                     ) {
                                         check(
                                             YtdlpNativeProcessBarrier.recoverGeneration(
-                                                processId = currentProcessId,
+                                                processId = currentProcessId
+                                                    ?: "download:${current.id}:${current.executionId}",
                                                 generationToken = recordedGenerationToken,
                                             )
                                         ) {
                                             "Native generation owner changed while recovering download ${current.id}"
                                         }
+                                    } else if (
+                                        current.executionId.isBlank() &&
+                                            currentExactToken != null
+                                    ) {
+                                        check(
+                                            YtdlpNativeProcessBarrier.recoverGeneration(
+                                                processId = "download:${current.id}:${current.executionId}",
+                                                generationToken = currentExactToken,
+                                            )
+                                        ) {
+                                            "Legacy Download native generation could not be recovered " +
+                                                "for ${current.id}"
+                                        }
+                                    } else if (
+                                        recordedObservation is
+                                            YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN &&
+                                            (
+                                                currentObservation is
+                                                    YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN ||
+                                                    currentObservation is
+                                                        YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
+                                                )
+                                    ) {
+                                        throw NativeProcessQuiescenceException(
+                                            current.id,
+                                            current.executionId,
+                                        )
                                     } else {
                                         check(
                                             DownloadWorker.cancelProcessesForExecution(
@@ -742,6 +913,23 @@ internal object DownloadExecutionRecovery {
                 firstFailure = firstFailure.addOrSuppress(failure)
             }
         }
+        markerCandidates
+            .filterNot { (downloadId, executionId) ->
+                orphanNativeProcesses.any {
+                    it.downloadId == downloadId && it.executionId == executionId
+                }
+            }
+            .forEach { (downloadId, executionId) ->
+                try {
+                    convergeOrphanExecution(
+                        downloadId = downloadId,
+                        markerExecutionId = executionId,
+                    )
+                } catch (failure: Exception) {
+                    scheduleRecovery(context, downloadId)
+                    firstFailure = firstFailure.addOrSuppress(failure)
+                }
+            }
         orphanJournalIds
             .filterNot { id -> orphanNativeProcesses.any { it.downloadId == id } }
             .forEach { downloadId ->

@@ -209,9 +209,12 @@ internal fun canCancelExecutionProcess(
 internal class NativeProcessQuiescenceException(
     downloadId: Long,
     executionId: String,
+    val originalFailure: Throwable? = null,
+    @Volatile var nativeQuiescenceProven: Boolean = false,
 ) : IllegalStateException(
     "Native process quiescence was not proven for download $downloadId " +
-        "executionId=$executionId"
+        "executionId=$executionId",
+    originalFailure,
 )
 
 /**
