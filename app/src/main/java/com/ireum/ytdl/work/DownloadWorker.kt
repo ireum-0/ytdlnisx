@@ -2219,6 +2219,16 @@ class DownloadWorker(
                             downloadOutcome = DownloadOutcome.canceled()
                             throw it
                         }
+                        if (it is NativeProcessQuiescenceException) {
+                            // Root yt-dlp success is not a Download success
+                            // while the exact native generation remains
+                            // unresolved. Leave the row/marker as durable
+                            // recovery debt and let doWork() run the native
+                            // cleanup protocol; no output, History,
+                            // notification, outcome, or row deletion may be
+                            // published from this branch.
+                            throw it
+                        }
                         if (
                             it is HistoryReplacementAuthorizationRefusalException ||
                             it is HistoryReplacementRefusalPersistenceException ||
@@ -2680,6 +2690,17 @@ class DownloadWorker(
                     }
                     } catch (unexpected: Exception) {
                         if (unexpected is CancellationException) throw unexpected
+                        if (unexpected is NativeProcessQuiescenceException) {
+                            // A completed root/supervisor process is not a
+                            // completed Download while its exact descendant
+                            // generation remains unresolved.  Keep this out
+                            // of the generic terminal-error branch so it
+                            // cannot publish an outcome, notification, row
+                            // deletion, or handled WorkManager success.  The
+                            // worker-level cleanup path records and retries
+                            // the exact native recovery responsibility.
+                            throw unexpected
+                        }
                         if (
                             unexpected is HistoryReplacementExecutionOwnershipLostException ||
                             unexpected is DownloadExecutionOwnershipLostException
@@ -3624,7 +3645,7 @@ class DownloadWorker(
             val processRegistered = CompletableDeferred<Unit>()
             val execution = async(Dispatchers.IO, start = CoroutineStart.LAZY) {
                 try {
-                    YoutubeDLCompat.execute(
+                    YoutubeDLCompat.executeWithQuiescence(
                         applicationContext,
                         attempt.request,
                         processId,
@@ -3681,7 +3702,14 @@ class DownloadWorker(
                     execution.start()
                     processRegistered.await()
                 }
-                execution.await()
+                val executionResult = execution.await()
+                if (!executionResult.nativeQuiescent) {
+                    throw NativeProcessQuiescenceException(
+                        downloadId = input.downloadItem.id,
+                        executionId = input.downloadItem.executionId,
+                    )
+                }
+                executionResult.response
             } finally {
                 withContext(Dispatchers.IO + NonCancellable) {
                     withDownloadWorkerExecutionSideEffectLease(

@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap
 internal object DownloadExecutionRecovery {
     private const val PREFS_NAME = "download-execution-recovery"
     private const val NATIVE_QUIESCENCE_SUFFIX = ":native-quiescence"
+    private const val NATIVE_GENERATION_SUFFIX = ":native-generation"
     private const val ISSUE_CODE_SUFFIX = ":issue-code"
     private const val ISSUE_STAGE_SUFFIX = ":issue-stage"
     private const val TERMINAL_ISSUE_CODE_SUFFIX = ":terminal-issue-code"
@@ -53,6 +54,7 @@ internal object DownloadExecutionRecovery {
     private data class PendingRecovery(
         val executionId: String,
         val nativeQuiescencePending: Boolean,
+        val nativeGenerationToken: String?,
         val authoritativeIssue: DownloadIssue?,
     )
 
@@ -78,6 +80,15 @@ internal object DownloadExecutionRecovery {
             return false
         }
         val id = item.id.toString()
+        val nativeGenerationToken = runCatching {
+            if (item.executionId.isBlank()) {
+                null
+            } else {
+                YtdlpNativeProcessBarrier.generationTokenFor(
+                    YtdlpProcessIdentity.download(item.id, item.executionId),
+                )
+            }
+        }.getOrNull()
         val editor = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(id, item.executionId)
@@ -85,6 +96,11 @@ internal object DownloadExecutionRecovery {
                 id + NATIVE_QUIESCENCE_SUFFIX,
                 item.executionId.isNotBlank(),
             )
+        if (nativeGenerationToken == null) {
+            editor.remove(id + NATIVE_GENERATION_SUFFIX)
+        } else {
+            editor.putString(id + NATIVE_GENERATION_SUFFIX, nativeGenerationToken)
+        }
         if (refusal == null) {
             editor.remove(id + ISSUE_CODE_SUFFIX)
                 .remove(id + ISSUE_STAGE_SUFFIX)
@@ -111,10 +127,29 @@ internal object DownloadExecutionRecovery {
         context: Context,
         downloadId: Long,
         executionId: String,
+        expectedGenerationToken: String? = null,
     ): Boolean {
         val id = downloadId.toString()
         val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (preferences.getString(id, null) != executionId) return false
+        val recordedGenerationToken = preferences.getString(id + NATIVE_GENERATION_SUFFIX, null)
+        if (
+            expectedGenerationToken != null &&
+                recordedGenerationToken != expectedGenerationToken
+        ) {
+            return false
+        }
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val currentGenerationToken = runCatching {
+            YtdlpNativeProcessBarrier.generationTokenFor(processId)
+        }.getOrNull()
+        if (recordedGenerationToken == null) {
+            // A journal recorded before a new native marker appeared must not
+            // be allowed to clear that newer generation.
+            if (currentGenerationToken != null) return false
+        } else if (!YtdlpNativeProcessBarrier.proveGenerationAbsent(recordedGenerationToken)) {
+            return false
+        }
         return commit(
             JournalCommitOperation.MARK_NATIVE_QUIESCENT,
             preferences.edit()
@@ -133,6 +168,7 @@ internal object DownloadExecutionRecovery {
             .edit()
             .remove(id.toString())
             .remove(id.toString() + NATIVE_QUIESCENCE_SUFFIX)
+            .remove(id.toString() + NATIVE_GENERATION_SUFFIX)
             .remove(id.toString() + ISSUE_CODE_SUFFIX)
             .remove(id.toString() + ISSUE_STAGE_SUFFIX)
             .remove(id.toString() + TERMINAL_ISSUE_CODE_SUFFIX)
@@ -202,6 +238,10 @@ internal object DownloadExecutionRecovery {
                 id + NATIVE_QUIESCENCE_SUFFIX,
                 executionId.isNotBlank(),
             ),
+            nativeGenerationToken = preferences.getString(
+                id + NATIVE_GENERATION_SUFFIX,
+                null,
+            ),
             authoritativeIssue = issue ?: terminalIssue,
         )
     }
@@ -219,21 +259,113 @@ internal object DownloadExecutionRecovery {
     ) = withContext(Dispatchers.IO + NonCancellable) {
         YtdlpNativeProcessBarrier.configure(context)
         val repository = DownloadRepository(dbManager)
-        val candidates = withDownloadWorkerExecutionLock {
+        val discoveredRecovery = withDownloadWorkerExecutionLock {
             val running = dbManager.downloadDao.getActiveAndPostProcessingDownloadsList()
             val committed = dbManager.downloadDao.getCommittedHistoryReplacementDownloads()
-            val journalRows = pendingDownloadIds(context)
+            val journalIds = pendingDownloadIds(context)
+            val journalRows = journalIds
                 .takeIf { it.isNotEmpty() }
                 ?.toList()
                 ?.let(dbManager.downloadDao::getDownloadsByIds)
                 .orEmpty()
-            val nativeRows = YtdlpNativeProcessBarrier.downloadProcesses(context)
+            val nativeProcesses = YtdlpNativeProcessBarrier.downloadProcesses(context)
+            val nativeRows = nativeProcesses
                 .mapNotNull { process ->
                     dbManager.downloadDao.getNullableDownloadById(process.downloadId)
                 }
-            (running + committed + journalRows + nativeRows).distinctBy { it.id }
+            Triple(
+                (running + committed + journalRows + nativeRows).distinctBy { it.id },
+                nativeProcesses.filter { process ->
+                    dbManager.downloadDao.getNullableDownloadById(process.downloadId) == null
+                },
+                journalIds.filter { id ->
+                    dbManager.downloadDao.getNullableDownloadById(id) == null
+                },
+            )
         }
+        val candidates = discoveredRecovery.first
+        val orphanNativeProcesses = discoveredRecovery.second
+        val orphanJournalIds = discoveredRecovery.third
         var firstFailure: Exception? = null
+
+        suspend fun convergeOrphanExecution(
+            downloadId: Long,
+            markerExecutionId: String?,
+        ) {
+            val pending = readPending(context, downloadId)
+            val executionId = markerExecutionId ?: pending?.executionId ?: return
+            withDownloadWorkerExecutionSideEffectLease(
+                downloadId = downloadId,
+                executionId = executionId,
+            ) {
+                val current = withDownloadWorkerExecutionLock {
+                    dbManager.downloadDao.getNullableDownloadById(downloadId)
+                }
+                if (current?.executionId == executionId) {
+                    // The initial discovery raced a row recreation. The
+                    // normal row candidate will perform its exact cleanup;
+                    // this path never invents a replacement row.
+                    return@withDownloadWorkerExecutionSideEffectLease
+                }
+                val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+                val currentGenerationToken = runCatching {
+                    YtdlpNativeProcessBarrier.generationTokenFor(processId)
+                }.getOrNull()
+                val recordedGenerationToken = pending
+                    ?.takeIf { it.executionId == executionId }
+                    ?.nativeGenerationToken
+                if (
+                    pending?.executionId == executionId &&
+                        recordedGenerationToken == null &&
+                        currentGenerationToken != null
+                ) {
+                    throw NativeProcessQuiescenceException(downloadId, executionId)
+                }
+                if (
+                    recordedGenerationToken != null &&
+                        currentGenerationToken != recordedGenerationToken
+                ) {
+                    check(
+                        YtdlpNativeProcessBarrier.recoverGeneration(
+                            processId = processId,
+                            generationToken = recordedGenerationToken,
+                        )
+                    ) {
+                        "Orphan native generation changed for download $downloadId"
+                    }
+                } else {
+                    check(
+                        DownloadWorker.cancelProcessesForExecution(downloadId, executionId)
+                    ) {
+                        "Orphan native process owner changed for download $downloadId"
+                    }
+                }
+                if (
+                    pending?.executionId == executionId &&
+                        pending.nativeQuiescencePending &&
+                        !markNativeQuiescent(
+                            context,
+                            downloadId,
+                            executionId,
+                            recordedGenerationToken,
+                        )
+                ) {
+                    throw NativeProcessQuiescenceException(downloadId, executionId)
+                }
+                DownloadWorkerExecutionOwners.release(downloadId, executionId)
+                if (pending?.executionId == executionId) {
+                    check(
+                        clearPending(
+                            context = context,
+                            id = downloadId,
+                            expectedExecutionId = executionId,
+                        )
+                    ) {
+                        "Orphan Download recovery journal could not be cleared for $downloadId"
+                    }
+                }
+            }
+        }
 
         candidates.forEach { snapshot ->
             try {
@@ -250,6 +382,9 @@ internal object DownloadExecutionRecovery {
                     suspend fun quiesceExactExecution(
                         executionId: String,
                         nativePending: Boolean,
+                        nativeGenerationToken: String? = pending
+                            ?.takeIf { it.executionId == executionId }
+                            ?.nativeGenerationToken,
                     ) {
                         if (
                             DownloadWorkerExecutionOwners.ownerOf(snapshot.id)?.let {
@@ -261,19 +396,57 @@ internal object DownloadExecutionRecovery {
                         ) {
                             throw NativeProcessQuiescenceException(snapshot.id, executionId)
                         }
-                        val nativeVisible = nativePending ||
-                            DownloadWorker.hasRegisteredNativeProcess(snapshot.id, executionId)
-                        if (nativeVisible) {
+                        val processId = YtdlpProcessIdentity.download(snapshot.id, executionId)
+                        val currentGenerationToken = runCatching {
+                            YtdlpNativeProcessBarrier.generationTokenFor(processId)
+                        }.getOrNull()
+                        val journalGenerationAppearedAfterRecord =
+                            pending?.executionId == executionId &&
+                                nativeGenerationToken == null &&
+                                currentGenerationToken != null
+                        if (journalGenerationAppearedAfterRecord) {
+                            throw NativeProcessQuiescenceException(snapshot.id, executionId)
+                        }
+                        if (
+                            nativeGenerationToken != null &&
+                                currentGenerationToken != nativeGenerationToken
+                        ) {
+                            // The journal names an older native generation.
+                            // Recover only that token; a newer same-processId
+                            // marker is never passed through the generic
+                            // process-id cancellation path.
                             check(
-                                DownloadWorker.cancelProcessesForExecution(
-                                    snapshot.id,
-                                    executionId,
+                                YtdlpNativeProcessBarrier.recoverGeneration(
+                                    processId = processId,
+                                    generationToken = nativeGenerationToken,
                                 )
                             ) {
-                                "Native process owner changed while recovering download ${snapshot.id}"
+                                "Native generation owner changed while recovering download ${snapshot.id}"
+                            }
+                        } else {
+                            val nativeVisible = nativePending ||
+                                DownloadWorker.hasRegisteredNativeProcess(snapshot.id, executionId) ||
+                                YtdlpNativeProcessBarrier.hasUnresolved(processId)
+                            if (nativeVisible) {
+                                check(
+                                    DownloadWorker.cancelProcessesForExecution(
+                                        snapshot.id,
+                                        executionId,
+                                    )
+                                ) {
+                                    "Native process owner changed while recovering download ${snapshot.id}"
+                                }
                             }
                         }
-                        if (nativePending && !markNativeQuiescent(context, snapshot.id, executionId)) {
+                        if (
+                            nativePending &&
+                                !markNativeQuiescent(
+                                    context,
+                                    snapshot.id,
+                                    executionId,
+                                    nativeGenerationToken,
+                                )
+                        ) {
                             throw NativeProcessQuiescenceException(snapshot.id, executionId)
                         }
                     }
@@ -295,11 +468,15 @@ internal object DownloadExecutionRecovery {
                             )
                             DownloadWorkerExecutionOwners.release(snapshot.id, executionId)
                             if (pending?.executionId == executionId) {
-                                clearPending(
-                                    context = context,
-                                    id = snapshot.id,
-                                    expectedExecutionId = executionId,
-                                )
+                                check(
+                                    clearPending(
+                                        context = context,
+                                        id = snapshot.id,
+                                        expectedExecutionId = executionId,
+                                    )
+                                ) {
+                                    "Download recovery journal could not be cleared for ${snapshot.id}"
+                                }
                             }
                         }
                         clearJournal = pending != null
@@ -346,11 +523,15 @@ internal object DownloadExecutionRecovery {
                                         staleExecutionId,
                                     )
                                     if (pending?.executionId == staleExecutionId) {
-                                        clearPending(
-                                            context = context,
-                                            id = snapshot.id,
-                                            expectedExecutionId = staleExecutionId,
-                                        )
+                                        check(
+                                            clearPending(
+                                                context = context,
+                                                id = snapshot.id,
+                                                expectedExecutionId = staleExecutionId,
+                                            )
+                                        ) {
+                                            "Stale Download recovery journal could not be cleared for ${snapshot.id}"
+                                        }
                                     }
                                 }
                                 pending = readPending(context, snapshot.id)
@@ -383,28 +564,74 @@ internal object DownloadExecutionRecovery {
                                     !anotherExecutionOwnsTheRow &&
                                     !anotherExecutionHasNativeProcess
                             ) {
+                                val currentProcessId = YtdlpProcessIdentity.download(
+                                    current.id,
+                                    current.executionId,
+                                )
+                                val currentMarker = runCatching {
+                                    YtdlpNativeProcessBarrier.markerFor(currentProcessId)
+                                }.getOrNull()
+                                if (
+                                    currentMarker?.exists() == true &&
+                                        YtdlpNativeProcessBarrier.isQuiescent(currentMarker)
+                                ) {
+                                    check(YtdlpNativeProcessBarrier.recover(currentMarker)) {
+                                        "Quiescent native marker could not be cleared for download ${current.id}"
+                                    }
+                                }
                                 val nativeQuiescenceRequired =
                                     pendingForCurrent?.nativeQuiescencePending == true ||
                                         DownloadWorker.hasRegisteredNativeProcess(
                                             current.id,
                                             current.executionId,
-                                        )
+                                        ) ||
+                                        YtdlpNativeProcessBarrier.hasUnresolved(currentProcessId)
                                 if (nativeQuiescenceRequired) {
-                                    check(
-                                        DownloadWorker.cancelProcessesForExecution(
+                                    val currentGenerationToken = runCatching {
+                                        YtdlpNativeProcessBarrier.generationTokenFor(currentProcessId)
+                                    }.getOrNull()
+                                    val recordedGenerationToken = pendingForCurrent
+                                        ?.nativeGenerationToken
+                                    if (
+                                        pendingForCurrent != null &&
+                                            recordedGenerationToken == null &&
+                                            currentGenerationToken != null
+                                    ) {
+                                        throw NativeProcessQuiescenceException(
                                             current.id,
                                             current.executionId,
                                         )
+                                    }
+                                    if (
+                                        recordedGenerationToken != null &&
+                                            currentGenerationToken != recordedGenerationToken
                                     ) {
-                                        "Native process owner changed while recovering download ${current.id}"
+                                        check(
+                                            YtdlpNativeProcessBarrier.recoverGeneration(
+                                                processId = currentProcessId,
+                                                generationToken = recordedGenerationToken,
+                                            )
+                                        ) {
+                                            "Native generation owner changed while recovering download ${current.id}"
+                                        }
+                                    } else {
+                                        check(
+                                            DownloadWorker.cancelProcessesForExecution(
+                                                current.id,
+                                                current.executionId,
+                                            )
+                                        ) {
+                                            "Native process owner changed while recovering download ${current.id}"
+                                        }
                                     }
                                     if (
                                         pendingForCurrent?.nativeQuiescencePending == true &&
-                                        !markNativeQuiescent(
-                                            context,
-                                            current.id,
-                                            current.executionId,
-                                        )
+                                            !markNativeQuiescent(
+                                                context,
+                                                current.id,
+                                                current.executionId,
+                                                recordedGenerationToken,
+                                            )
                                     ) {
                                         throw NativeProcessQuiescenceException(
                                             current.id,
@@ -487,11 +714,15 @@ internal object DownloadExecutionRecovery {
                     if (clearJournal) {
                         val expectedJournalExecutionId = pending?.executionId
                             ?: snapshot.executionId
-                        clearPending(
-                            context = context,
-                            id = snapshot.id,
-                            expectedExecutionId = expectedJournalExecutionId,
-                        )
+                        check(
+                            clearPending(
+                                context = context,
+                                id = snapshot.id,
+                                expectedExecutionId = expectedJournalExecutionId,
+                            )
+                        ) {
+                            "Download recovery journal could not be cleared for ${snapshot.id}"
+                        }
                     }
                 }
             } catch (failure: Exception) {
@@ -499,6 +730,28 @@ internal object DownloadExecutionRecovery {
                 firstFailure = firstFailure.addOrSuppress(failure)
             }
         }
+
+        orphanNativeProcesses.forEach { process ->
+            try {
+                convergeOrphanExecution(
+                    downloadId = process.downloadId,
+                    markerExecutionId = process.executionId,
+                )
+            } catch (failure: Exception) {
+                scheduleRecovery(context, process.downloadId)
+                firstFailure = firstFailure.addOrSuppress(failure)
+            }
+        }
+        orphanJournalIds
+            .filterNot { id -> orphanNativeProcesses.any { it.downloadId == id } }
+            .forEach { downloadId ->
+                try {
+                    convergeOrphanExecution(downloadId, markerExecutionId = null)
+                } catch (failure: Exception) {
+                    scheduleRecovery(context, downloadId)
+                    firstFailure = firstFailure.addOrSuppress(failure)
+                }
+            }
 
         firstFailure?.let { throw it }
     }
@@ -517,8 +770,8 @@ internal object DownloadExecutionRecovery {
                     while (true) {
                         val dbManager = DBManager.getInstance(appContext)
                         val current = dbManager.downloadDao.getNullableDownloadById(downloadId)
-                        if (current == null) return@launch
                         if (
+                            current != null &&
                             current.executionId.isNotBlank() &&
                                 DownloadWorkerExecutionOwners.isOwnedBy(
                                     downloadId,
@@ -539,11 +792,15 @@ internal object DownloadExecutionRecovery {
                             }
                         val latest = dbManager.downloadDao.getNullableDownloadById(downloadId)
                         val journalRemains = pendingDownloadIds(appContext).contains(downloadId)
+                        val nativeMarkerRemains = runCatching {
+                            YtdlpNativeProcessBarrier.downloadProcesses(appContext)
+                                .any { it.downloadId == downloadId }
+                        }.getOrDefault(true)
                         val stillRunning = latest?.status in setOf(
                             DownloadRepository.Status.Active.name,
                             DownloadRepository.Status.PostProcessing.name,
                         )
-                        if (!journalRemains && !stillRunning) return@launch
+                        if (!journalRemains && !nativeMarkerRemains && !stillRunning) return@launch
                         delay(retryDelayMillis)
                         retryDelayMillis = (retryDelayMillis * 2L).coerceAtMost(5_000L)
                     }

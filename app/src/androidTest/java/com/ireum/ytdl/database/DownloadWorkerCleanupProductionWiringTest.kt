@@ -14,6 +14,7 @@ import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.work.HistoryReplacementPersistenceResult
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
@@ -43,6 +44,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class DownloadWorkerCleanupProductionWiringTest {
@@ -406,6 +408,113 @@ class DownloadWorkerCleanupProductionWiringTest {
             DownloadRepository.Status.Queued.name,
             db.downloadDao.getNullableDownloadById(downloadId)?.status,
         )
+    }
+
+    @Test
+    fun rowBackedUnjournaledNativeMarkerIsRecoveredBeforeRequeue() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val executionId = "row-marker-${UUID.randomUUID()}"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val generationToken = "row-marker-generation-${UUID.randomUUID()}"
+        val process = ProcessBuilder(
+            "/system/bin/sh",
+            "-c",
+            "exec sleep 60",
+        ).apply {
+            environment()[YtdlpNativeProcessBarrier.NATIVE_GENERATION_ENVIRONMENT] = generationToken
+        }.start()
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = processId,
+            state = "RUNNING",
+            generationToken = generationToken,
+        )
+
+        try {
+            DownloadExecutionRecovery.reconcile(appContext, db)
+
+            assertFalse(isAliveCompat(process))
+            assertFalse(marker.exists())
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            if (isAliveCompat(process)) process.destroy()
+            awaitExitCompat(process)
+            marker.delete()
+        }
+    }
+
+    @Test
+    fun orphanDownloadMarkerIsAdoptedWithoutInventingADownloadRow() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val downloadId = 918_001L
+        val executionId = "orphan-${UUID.randomUUID()}"
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val generationToken = "orphan-generation-${UUID.randomUUID()}"
+        val process = ProcessBuilder(
+            "/system/bin/sh",
+            "-c",
+            "exec sleep 60",
+        ).apply {
+            environment()[YtdlpNativeProcessBarrier.NATIVE_GENERATION_ENVIRONMENT] = generationToken
+        }.start()
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = processId,
+            state = "RUNNING",
+            generationToken = generationToken,
+        )
+
+        try {
+            DownloadExecutionRecovery.reconcile(appContext, db)
+
+            assertFalse(isAliveCompat(process))
+            assertFalse(marker.exists())
+            assertNull(db.downloadDao.getNullableDownloadById(downloadId))
+        } finally {
+            if (isAliveCompat(process)) process.destroy()
+            awaitExitCompat(process)
+            marker.delete()
+        }
+    }
+
+    @Test
+    fun orphanStartingMarkerConvergesAfterPreLaunchProcessDeath() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val downloadId = 918_002L
+        val executionId = "pre-launch-${UUID.randomUUID()}"
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = YtdlpProcessIdentity.download(downloadId, executionId),
+            state = "STARTING",
+            generationToken = "pre-launch-generation-${UUID.randomUUID()}",
+        )
+
+        try {
+            DownloadExecutionRecovery.reconcile(appContext, db)
+
+            assertFalse(marker.exists())
+            assertNull(db.downloadDao.getNullableDownloadById(downloadId))
+        } finally {
+            marker.delete()
+        }
+    }
+
+    private fun isAliveCompat(process: Process): Boolean = try {
+        process.exitValue()
+        false
+    } catch (_: IllegalThreadStateException) {
+        true
+    }
+
+    private fun awaitExitCompat(process: Process) {
+        repeat(80) {
+            if (!isAliveCompat(process)) return
+            Thread.sleep(25L)
+        }
     }
 
     private fun history() = HistoryItem(

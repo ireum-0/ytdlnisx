@@ -31,7 +31,12 @@ object YoutubeDLCompat {
 
     private data class TrackedProcess(
         val process: Process,
-        val descendantBarrier: File?,
+        val descendantBarrier: YtdlpNativeProcessBarrier.PreparedProcess?,
+    )
+
+    internal data class ExecutionResult(
+        val response: YoutubeDLResponse,
+        val nativeQuiescent: Boolean,
     )
 
     /**
@@ -51,17 +56,44 @@ marker = sys.argv[1]
 command = sys.argv[2:]
 
 def write_marker(state, pgid=None):
-    values = [state, "processId=" + os.environ.get("YTDLNISX_PROCESS_ID", "")]
+    generation = os.environ.get("YTDLNISX_NATIVE_GENERATION", "")
+    supervisor_pid = os.getpid()
+    supervisor_start_time = read_start_time(supervisor_pid)
+    values = [
+        state,
+        "processId=" + os.environ.get("YTDLNISX_PROCESS_ID", ""),
+        "generationToken=" + generation,
+        "supervisorPid=" + str(supervisor_pid),
+        "supervisorStartTime=" + str(supervisor_start_time),
+    ]
     if pgid is not None:
+        values.append("childPid=" + str(child.pid))
+        if child_start_time is not None:
+            values.append("childStartTime=" + str(child_start_time))
         values.append("pgid=" + str(pgid))
+        if child_pgid_start_time is not None:
+            values.append("pgidStartTime=" + str(child_pgid_start_time))
     temporary = marker + ".tmp"
     with open(temporary, "w") as stream:
         stream.write("\n".join(values) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary, marker)
+
+def read_start_time(pid):
+    with open("/proc/" + str(pid) + "/stat", "r") as stream:
+        value = stream.read()
+    close_paren = value.rfind(") ")
+    if close_paren < 0:
+        raise RuntimeError("invalid /proc stat")
+    fields = value[close_paren + 2:].split()
+    return int(fields[19])
 
 child = None
 child_pgid = None
-write_marker("STARTING")
+child_start_time = None
+child_pgid_start_time = None
+write_marker("SUPERVISOR_STARTED")
 
 def group_exists(pgid):
     try:
@@ -102,8 +134,21 @@ def stop(signum, frame):
 
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
+write_marker("LAUNCHING_CHILD")
 child = subprocess.Popen(command, start_new_session=True)
 child_pgid = child.pid
+try:
+    child_pgid = os.getpgid(child.pid)
+except ProcessLookupError:
+    pass
+try:
+    child_start_time = read_start_time(child.pid)
+except (FileNotFoundError, ProcessLookupError):
+    child_start_time = None
+try:
+    child_pgid_start_time = read_start_time(child_pgid)
+except (FileNotFoundError, ProcessLookupError):
+    child_pgid_start_time = None
 write_marker("RUNNING", child_pgid)
 try:
     exit_code = child.wait()
@@ -117,11 +162,32 @@ finally:
 sys.exit(exit_code)
 """.trimIndent()
 
+    /** Shared production command builder; the Android execution path uses it directly. */
+    internal fun buildSupervisorCommand(
+        pythonPath: String,
+        markerPath: String,
+        command: List<String>,
+    ): List<String> = buildList {
+        add(pythonPath)
+        add("-c")
+        add(PROCESS_SUPERVISOR_SCRIPT)
+        add(markerPath)
+        addAll(command)
+    }
+
     private val idProcessMap =
         Collections.synchronizedMap(HashMap<String, TrackedProcess>())
     private val allowedConfigFilesByRequest =
         Collections.synchronizedMap(WeakHashMap<YoutubeDLRequest, MutableSet<File>>())
     private val initLock = Any()
+
+    /** Production execute-path seams used only by command/protocol tests. */
+    @Volatile
+    internal var processStarterOverrideForTesting:
+        ((List<String>, Map<String, String>, Boolean) -> Process)? = null
+
+    @Volatile
+    internal var runtimeLayoutOverrideForTesting: RuntimeLayout? = null
 
     data class RuntimeLayout(
         val baseDir: File,
@@ -141,6 +207,7 @@ sys.exit(exit_code)
     )
 
     fun runtimeLayout(context: Context): RuntimeLayout {
+        runtimeLayoutOverrideForTesting?.let { return it }
         val baseDir = File(context.noBackupFilesDir, BASE_NAME)
         val packagesDir = File(baseDir, PACKAGES_ROOT)
         val nativeBinDir = File(context.applicationInfo.nativeLibraryDir)
@@ -173,7 +240,30 @@ sys.exit(exit_code)
         redirectErrorStream: Boolean = false,
         callback: ((Float, Long, String) -> Unit)? = null,
         onProcessRegistered: (() -> Unit)? = null,
-    ): YoutubeDLResponse {
+    ): YoutubeDLResponse = executeWithQuiescence(
+        context = context,
+        request = request,
+        processId = processId,
+        redirectErrorStream = redirectErrorStream,
+        callback = callback,
+        onProcessRegistered = onProcessRegistered,
+    ).response
+
+    /**
+     * Compatibility execution result for callers that own a durable native
+     * sidecar. Root-process success is intentionally separate from exact
+     * descendant quiescence so Download cannot publish semantic success while
+     * its native generation remains addressable.
+     */
+    @Throws(YoutubeDLException::class, InterruptedException::class, CanceledException::class)
+    internal fun executeWithQuiescence(
+        context: Context,
+        request: YoutubeDLRequest,
+        processId: String? = null,
+        redirectErrorStream: Boolean = false,
+        callback: ((Float, Long, String) -> Unit)? = null,
+        onProcessRegistered: (() -> Unit)? = null,
+    ): ExecutionResult {
         val runtime = runtimeLayout(context)
         val nativeBinDir = runtime.nativeBinDir
         val pythonPath = runtime.pythonBinary
@@ -214,13 +304,15 @@ sys.exit(exit_code)
         val processCommand = if (processId == null) {
             command
         } else {
-            mutableListOf<String>().apply {
-                add(pythonPath.absolutePath)
-                add("-c")
-                add(PROCESS_SUPERVISOR_SCRIPT)
-                add(descendantBarrier!!.absolutePath)
-                addAll(command.drop(1))
-            }
+            // The supervisor must launch the same command as the normal
+            // path: bundled Python first, writable app-data yt-dlp second.
+            // Dropping command[0] would directly exec yt-dlp from writable
+            // app-private storage and violate Android W^X.
+            buildSupervisorCommand(
+                pythonPath = pythonPath.absolutePath,
+                markerPath = descendantBarrier!!.marker.absolutePath,
+                command = command,
+            )
         }
         val processBuilder = ProcessBuilder(processCommand).redirectErrorStream(redirectErrorStream)
         processBuilder.environment().apply {
@@ -230,16 +322,27 @@ sys.exit(exit_code)
             this["PYTHONHOME"] = envPythonHome
             this["HOME"] = envPythonHome
             this["TMPDIR"] = context.cacheDir.absolutePath
-            if (processId != null) this["YTDLNISX_PROCESS_ID"] = processId
+            if (processId != null) {
+                this["YTDLNISX_PROCESS_ID"] = processId
+                this["YTDLNISX_NATIVE_GENERATION"] = descendantBarrier!!.generationToken
+            }
         }
 
         val startTime = System.currentTimeMillis()
         val outBuffer = StringBuffer()
         val errBuffer = StringBuffer()
         val process = try {
-            processBuilder.start()
+            processStarterOverrideForTesting?.invoke(
+                processCommand.toList(),
+                processBuilder.environment().toMap(),
+                redirectErrorStream,
+            ) ?: processBuilder.start()
         } catch (e: IOException) {
-            descendantBarrier?.let { runCatching { YtdlpNativeProcessBarrier.clear(it) } }
+            descendantBarrier?.let {
+                runCatching {
+                    YtdlpNativeProcessBarrier.clear(it.marker, it.generationToken)
+                }
+            }
             throw YoutubeDLException(e)
         }
 
@@ -261,7 +364,7 @@ sys.exit(exit_code)
                     process,
                     terminationProof = {
                         descendantBarrier == null ||
-                            YtdlpNativeProcessBarrier.isQuiescent(descendantBarrier)
+                            YtdlpNativeProcessBarrier.isQuiescent(descendantBarrier.marker)
                     },
                 )
                 throw YoutubeDLException("Process ID already exists")
@@ -302,7 +405,17 @@ sys.exit(exit_code)
         }
         processId?.let { removeExactProcess(it, process) }
 
-        return YoutubeDLResponse(command, exitCode, System.currentTimeMillis() - startTime, out, err)
+        return ExecutionResult(
+            response = YoutubeDLResponse(
+                command,
+                exitCode,
+                System.currentTimeMillis() - startTime,
+                out,
+                err,
+            ),
+            nativeQuiescent = processId == null ||
+                descendantBarrier?.let { YtdlpNativeProcessBarrier.isQuiescent(it.marker) } == true,
+        )
     }
 
     fun allowAppGeneratedConfigFile(request: YoutubeDLRequest, configFile: File) {
@@ -388,11 +501,15 @@ sys.exit(exit_code)
             if (
                 tracked?.process === process &&
                     (tracked.descendantBarrier == null ||
-                        YtdlpNativeProcessBarrier.isQuiescent(tracked.descendantBarrier))
+                        YtdlpNativeProcessBarrier.isQuiescent(
+                            tracked.descendantBarrier.marker,
+                        ))
             ) {
                 idProcessMap.remove(processId)
                 tracked.descendantBarrier?.let {
-                    runCatching { YtdlpNativeProcessBarrier.clear(it) }
+                    runCatching {
+                        YtdlpNativeProcessBarrier.clear(it.marker, it.generationToken)
+                    }
                 }
             }
         }
@@ -416,17 +533,47 @@ sys.exit(exit_code)
                 .getOrElse { false }
             return recovered
         }
+        val trackedBarrier = tracked.descendantBarrier
+        if (trackedBarrier != null) {
+            val currentGenerationToken = runCatching {
+                YtdlpNativeProcessBarrier.generationTokenFor(processId)
+            }.getOrNull()
+            if (
+                currentGenerationToken != null &&
+                    currentGenerationToken != trackedBarrier.generationToken
+            ) {
+                // The marker path is shared by the product process ID, so a
+                // stale in-memory E1 entry must not pass its old File object
+                // to recovery after a newer same-ID generation published a
+                // different token. Recover E1 by token only, then remove its
+                // exact Java registry entry without touching E2's marker.
+                val recovered = YtdlpNativeProcessBarrier.recoverGeneration(
+                    processId = processId,
+                    generationToken = trackedBarrier.generationToken,
+                )
+                if (recovered) {
+                    synchronized(idProcessMap) {
+                        if (idProcessMap[processId]?.process === tracked.process) {
+                            idProcessMap.remove(processId)
+                        }
+                    }
+                }
+                return recovered
+            }
+        }
         val acknowledged = ProcessQuiescence.requestTermination(
             process = tracked.process,
             terminationProof = {
                 tracked.descendantBarrier == null ||
-                    YtdlpNativeProcessBarrier.isQuiescent(tracked.descendantBarrier)
+                    YtdlpNativeProcessBarrier.isQuiescent(tracked.descendantBarrier.marker)
             },
         )
         val recovered = if (acknowledged) {
             true
         } else {
-            tracked.descendantBarrier?.let(YtdlpNativeProcessBarrier::recover) ?: false
+            tracked.descendantBarrier?.let {
+                YtdlpNativeProcessBarrier.recover(it.marker)
+            } ?: false
         }
         if (recovered) {
             synchronized(idProcessMap) {
@@ -434,7 +581,11 @@ sys.exit(exit_code)
                     idProcessMap.remove(processId)
                 }
             }
-            tracked.descendantBarrier?.let { runCatching { YtdlpNativeProcessBarrier.clear(it) } }
+            tracked.descendantBarrier?.let {
+                runCatching {
+                    YtdlpNativeProcessBarrier.clear(it.marker, it.generationToken)
+                }
+            }
         }
         return recovered
     }
