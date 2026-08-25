@@ -92,6 +92,16 @@ internal object YtdlpNativeProcessBarrier {
     @Volatile
     internal var markerReadFailureForTesting: Boolean = false
 
+    @Volatile
+    internal var markerReadFailurePathForTesting: String? = null
+
+    @Volatile
+    internal var markerEnumerationFailureForTesting: Boolean = false
+
+    internal class NativeMarkerNamespaceUnavailableException(
+        message: String,
+    ) : IllegalStateException(message)
+
     internal data class PreparedProcess(
         val marker: File,
         val generationToken: String,
@@ -222,9 +232,11 @@ internal object YtdlpNativeProcessBarrier {
 
     /**
      * Returns the exact native observations for all roles of one Download
-     * execution.  More than one non-quiescent marker is intentionally UNKNOWN
-     * for the single-token journal carrier; recovery still enumerates every
-     * marker independently before releasing the execution owner.
+     * execution. A readable QUIESCENT marker still carries its exact token:
+     * it is native-finalization debt, not proof that the marker namespace is
+     * absent. More than one token is intentionally UNKNOWN for the single
+     * journal carrier; recovery still enumerates every marker independently
+     * before releasing the execution owner.
      */
     internal fun observeDownloadExecution(
         downloadId: Long,
@@ -256,7 +268,6 @@ internal object YtdlpNativeProcessBarrier {
                     ) {
                         return GenerationObservation.UNKNOWN
                     }
-                    if (snapshot.state == STATE_QUIESCENT) continue
                     snapshot.generationToken?.let(exactTokens::add)
                         ?: run { legacyProcessId = snapshot.processId }
                 }
@@ -420,16 +431,20 @@ internal object YtdlpNativeProcessBarrier {
             // marker belongs to the generation being recovered.
             return false
         }
-        directory?.listFiles() ?: return false
+        markerFilesOrNull() ?: return false
         val candidateMarkers = buildList {
             marker?.let { if (it.exists()) add(it) }
             val parts = processId.split(':')
             if (parts.size >= 3 && parts[0] == "download") {
                 parts[1].toLongOrNull()?.let { downloadId ->
-                    markerCandidates(
-                        downloadId = downloadId,
-                        executionId = parts[2],
-                    )?.let(::addAll)
+                    if (parts[2].isBlank()) {
+                        downloadMarkerCandidatesForId(downloadId)?.let(::addAll)
+                    } else {
+                        markerCandidates(
+                            downloadId = downloadId,
+                            executionId = parts[2],
+                        )?.let(::addAll)
+                    }
                 }
             }
         }.distinctBy { it.absolutePath }
@@ -462,7 +477,7 @@ internal object YtdlpNativeProcessBarrier {
         }
 
     fun hasUnresolved(processId: String): Boolean {
-        val marker = runCatching { markerFor(processId) }.getOrNull() ?: return false
+        val marker = runCatching { markerFor(processId) }.getOrNull() ?: return true
         return marker.exists() && !isQuiescent(marker)
     }
 
@@ -476,9 +491,9 @@ internal object YtdlpNativeProcessBarrier {
         downloadId: Long,
         executionId: String? = null,
     ): Boolean {
-        val root = directory ?: return false
+        if (directory == null) return true
         val files = if (executionId == null || executionId.isBlank()) {
-            root.listFiles()?.filter { it.name.startsWith("download_${downloadId}_") }
+            markerFilesOrNull()?.filter { it.name.startsWith("download_${downloadId}_") }
         } else {
             markerCandidates(downloadId, executionId)
         } ?: return true
@@ -504,9 +519,13 @@ internal object YtdlpNativeProcessBarrier {
         downloadId: Long,
         expectedProcessId: String,
     ): Boolean {
-        val root = directory ?: return false
+        if (directory == null) return true
         val prefix = "download_${downloadId}_"
-        val files = root.listFiles() ?: return true
+        val files = markerFilesOrNull() ?: return true
+        val expectedExecutionId = expectedProcessId.split(':').getOrNull(2)
+        val expectedBase = markerFor(expectedProcessId)
+            .name
+            .removeSuffix(".marker")
         return files.any { marker ->
             if (!marker.isFile || marker.extension != "marker") return@any false
             if (!marker.name.startsWith(prefix)) return@any false
@@ -516,12 +535,16 @@ internal object YtdlpNativeProcessBarrier {
                     parts.size >= 3 &&
                         parts[0] == "download" &&
                         parts[1] == downloadId.toString() &&
-                        observation.snapshot.processId != expectedProcessId &&
+                        parts[2] != expectedExecutionId &&
                         observation.snapshot.state != STATE_QUIESCENT
                 }
                 MarkerObservation.ABSENT -> false
                 MarkerObservation.MALFORMED,
-                MarkerObservation.UNREADABLE -> true
+                MarkerObservation.UNREADABLE ->
+                    !(
+                        marker.name == "$expectedBase.marker" ||
+                            marker.name.startsWith("${expectedBase}_")
+                        )
             }
         }
     }
@@ -538,9 +561,11 @@ internal object YtdlpNativeProcessBarrier {
     }
 
     internal fun downloadMarkerCandidates(): List<Pair<Long, String>> {
-        val root = directory ?: return emptyList()
-        return root.listFiles()
-            .orEmpty()
+        val files = markerFilesOrNull()
+            ?: throw NativeMarkerNamespaceUnavailableException(
+                "Download native marker namespace could not be enumerated",
+            )
+        return files
             .asSequence()
             .filter { it.isFile && it.extension == "marker" }
             .mapNotNull { marker ->
@@ -562,11 +587,11 @@ internal object YtdlpNativeProcessBarrier {
     }
 
     private fun markerCandidates(downloadId: Long, executionId: String): List<File>? {
-        val root = directory ?: return emptyList()
+        if (directory == null) return null
         val base = markerFor("download:$downloadId:$executionId")
             .name
             .removeSuffix(".marker")
-        return root.listFiles()?.filter { marker ->
+        return markerFilesOrNull()?.filter { marker ->
             marker.isFile &&
                 marker.extension == "marker" &&
                 (
@@ -577,9 +602,9 @@ internal object YtdlpNativeProcessBarrier {
     }
 
     private fun downloadMarkerCandidatesForId(downloadId: Long): List<File>? {
-        val root = directory ?: return emptyList()
+        if (directory == null) return null
         val prefix = "download_${downloadId}_"
-        return root.listFiles()?.filter { marker ->
+        return markerFilesOrNull()?.filter { marker ->
             marker.isFile &&
                 marker.extension == "marker" &&
                 marker.name.startsWith(prefix)
@@ -592,8 +617,7 @@ internal object YtdlpNativeProcessBarrier {
     }
 
     fun configuredDownloadProcesses(): List<DurableDownloadProcess> {
-        val root = directory ?: return emptyList()
-        return root.listFiles()
+        return markerFilesOrNull()
             .orEmpty()
             .filter { it.isFile && it.extension == "marker" }
             .mapNotNull { marker ->
@@ -620,16 +644,76 @@ internal object YtdlpNativeProcessBarrier {
         downloadId: Long,
         executionId: String,
     ): Boolean {
-        val markers = configuredDownloadProcesses()
-            .filter {
-                it.downloadId == downloadId &&
-                    (executionId.isBlank() || it.executionId == executionId)
+        val markers = if (executionId.isBlank()) {
+            downloadMarkerCandidatesForId(downloadId)
+        } else {
+            markerCandidates(downloadId, executionId)
+        } ?: return false
+
+        var allProven = true
+        markers.forEach { marker ->
+            when (val observation = readMarkerObservation(marker)) {
+                MarkerObservation.ABSENT -> Unit
+                MarkerObservation.MALFORMED,
+                MarkerObservation.UNREADABLE -> allProven = false
+                is MarkerObservation.PRESENT -> {
+                    val snapshot = observation.snapshot
+                    if (!belongsToExecution(snapshot.processId, downloadId, executionId)) {
+                        // Filename discovery is only candidate visibility. A
+                        // body mismatch is never destructive authority.
+                        allProven = false
+                    } else if (!recoverDetailed(marker, snapshot.generationToken).isProvenQuiescent) {
+                        allProven = false
+                    }
+                }
             }
-            .map { markerFor(it.processId) }
-        if (markers.isEmpty()) {
-            return !hasUnresolvedDownloadExecution(downloadId, executionId)
         }
-        return markers.all { recover(it) }
+        if (!allProven) return false
+
+        // A readable-only first pass is not enough. Re-enumerate the exact
+        // filename candidate set and fail closed for any opaque or newly
+        // appeared non-quiescent carrier. QUIESCENT is finalization-only debt.
+        val remaining = if (executionId.isBlank()) {
+            downloadMarkerCandidatesForId(downloadId)
+        } else {
+            markerCandidates(downloadId, executionId)
+        } ?: return false
+        return remaining.all { marker ->
+            when (val observation = readMarkerObservation(marker)) {
+                MarkerObservation.ABSENT -> true
+                MarkerObservation.MALFORMED,
+                MarkerObservation.UNREADABLE -> false
+                is MarkerObservation.PRESENT -> {
+                    belongsToExecution(observation.snapshot.processId, downloadId, executionId) &&
+                        observation.snapshot.state == STATE_QUIESCENT
+                }
+            }
+        }
+    }
+
+    /**
+     * Includes readable and opaque marker carriers. A QUIESCENT marker is
+     * still debt because physical deletion may need a later retry, although
+     * it never represents live native work.
+     */
+    internal fun hasDownloadMarkerDebt(
+        downloadId: Long,
+        executionId: String? = null,
+    ): Boolean {
+        if (directory == null) return true
+        val files = markerFilesOrNull() ?: return true
+        val candidates = if (executionId == null || executionId.isBlank()) {
+            files.filter { it.name.startsWith("download_${downloadId}_") }
+        } else {
+            val base = markerFor("download:$downloadId:$executionId")
+                .name
+                .removeSuffix(".marker")
+            files.filter { marker ->
+                marker.name == "$base.marker" ||
+                    marker.name.startsWith("${base}_")
+            }
+        }
+        return candidates.any { it.isFile && it.extension == "marker" }
     }
 
     /**
@@ -698,6 +782,24 @@ internal object YtdlpNativeProcessBarrier {
             ),
         )
         return marker
+    }
+
+    private fun markerFilesOrNull(): List<File>? {
+        if (markerEnumerationFailureForTesting) return null
+        val root = directory ?: return null
+        return root.listFiles()?.toList()
+    }
+
+    private fun belongsToExecution(
+        processId: String,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean {
+        val parts = processId.split(':')
+        return parts.size >= 3 &&
+            parts[0] == "download" &&
+            parts[1] == downloadId.toString() &&
+            (executionId.isBlank() || parts[2] == executionId)
     }
 
     private fun recoverSelector(
@@ -1011,7 +1113,12 @@ internal object YtdlpNativeProcessBarrier {
     }
 
     private fun readMarkerObservation(marker: File): MarkerObservation {
-        if (markerReadFailureForTesting) return MarkerObservation.UNREADABLE
+        if (
+            markerReadFailureForTesting ||
+            markerReadFailurePathForTesting == marker.absolutePath
+        ) {
+            return MarkerObservation.UNREADABLE
+        }
         if (!marker.exists()) return MarkerObservation.ABSENT
         if (!marker.isFile) return MarkerObservation.MALFORMED
         val lines = try {

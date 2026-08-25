@@ -109,6 +109,7 @@ class LowQualityRedownloadWorker(
                                 context = context,
                                 downloadId = publication.downloadId,
                                 executionId = publication.executionId,
+                                exactGenerationProof = true,
                             )
                         ) {
                             "Native cancellation recovery carrier was not acknowledged for " +

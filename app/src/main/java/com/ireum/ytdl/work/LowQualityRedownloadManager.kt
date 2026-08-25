@@ -125,6 +125,7 @@ class LowQualityRedownloadManager private constructor(context: Context) {
                             context = appContext,
                             downloadId = publication.downloadId,
                             executionId = publication.executionId,
+                            exactGenerationProof = true,
                         )
                     ) {
                         "Native cancellation recovery carrier was not acknowledged for " +
@@ -423,6 +424,7 @@ object LowQualityRedownloadLedger {
                                             context = appContext,
                                             downloadId = publication.downloadId,
                                             executionId = publication.executionId,
+                                            exactGenerationProof = true,
                                         )
                                     ) {
                                         "Native cancellation recovery carrier was not acknowledged for " +

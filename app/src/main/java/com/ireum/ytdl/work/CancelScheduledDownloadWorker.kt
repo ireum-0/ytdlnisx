@@ -38,7 +38,13 @@ class CancelScheduledDownloadWorker(
                 runCatching {
                     DownloadExecutionRecovery.scheduleRecovery(context, downloadId)
                 }.onFailure { schedulingFailure ->
-                    firstFailure = firstFailure.addOrSuppress(schedulingFailure)
+                    firstFailure = firstFailure.addOrSuppress(
+                        schedulingFailure as? Exception
+                            ?: IllegalStateException(
+                                "Recovery owner scheduling failed for download $downloadId",
+                                schedulingFailure,
+                            )
+                    )
                 }
             }
             runningDownloads.forEach { snapshot ->

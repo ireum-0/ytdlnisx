@@ -22,6 +22,8 @@ class YtdlpNativeProcessBarrierStateMachineTest {
         YtdlpNativeProcessBarrier.markerWriteFailureForTesting = false
         YtdlpNativeProcessBarrier.markerDeleteFailureForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+        YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
+        YtdlpNativeProcessBarrier.markerEnumerationFailureForTesting = false
         processes.forEach { process ->
             if (isAliveCompat(process)) process.destroy()
             awaitExitCompat(process)
@@ -95,6 +97,66 @@ class YtdlpNativeProcessBarrierStateMachineTest {
 
         assertTrue(YtdlpNativeProcessBarrier.recoverDownloadExecution(918003L, "E1"))
         assertFalse(isAliveCompat(process))
+        assertFalse(marker.exists())
+    }
+
+    @Test
+    fun recoveryDoesNotReportSuccessAfterOnlyReadableMarkerSubsetConverges() {
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val downloadId = 918004L
+        val executionId = "E1"
+        val readable = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = "download:$downloadId:$executionId",
+            state = "RUNNING",
+            generationToken = "readable-${UUID.randomUUID()}",
+        )
+        val opaque = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = "download:$downloadId:$executionId:direct:ffmpeg",
+            state = "RUNNING",
+            generationToken = "opaque-${UUID.randomUUID()}",
+        )
+        markers += readable
+        markers += opaque
+
+        YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = opaque.absolutePath
+        assertFalse(
+            YtdlpNativeProcessBarrier.recoverDownloadExecution(downloadId, executionId)
+        )
+        assertFalse(readable.exists())
+        assertTrue(opaque.exists())
+
+        YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
+        assertTrue(
+            YtdlpNativeProcessBarrier.recoverDownloadExecution(downloadId, executionId)
+        )
+        assertFalse(readable.exists())
+        assertFalse(opaque.exists())
+    }
+
+    @Test
+    fun downloadRecoveryTreatsQuiescentDeleteFailureAsRetryableCleanupDebt() {
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val downloadId = 918005L
+        val executionId = "E1"
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = "download:$downloadId:$executionId",
+            state = "RUNNING",
+            generationToken = "cleanup-retry-${UUID.randomUUID()}",
+        )
+        markers += marker
+
+        YtdlpNativeProcessBarrier.markerDeleteFailureForTesting = true
+        assertTrue(
+            YtdlpNativeProcessBarrier.recoverDownloadExecution(downloadId, executionId)
+        )
+        assertTrue(marker.exists())
+        assertTrue(YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId, executionId))
+        assertTrue(YtdlpNativeProcessBarrier.isQuiescent(marker))
+
+        YtdlpNativeProcessBarrier.markerDeleteFailureForTesting = false
+        assertTrue(
+            YtdlpNativeProcessBarrier.recoverDownloadExecution(downloadId, executionId)
+        )
         assertFalse(marker.exists())
     }
 

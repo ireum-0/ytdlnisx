@@ -116,6 +116,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -129,6 +130,43 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.text.Regex
+
+
+/**
+ * Production startup boundary: per-Download recovery debt is retained by
+ * DownloadExecutionRecovery, while a healthy queue may still be observed.
+ * Only a genuinely global reconciliation failure escapes before admission.
+ */
+internal data class DownloadQueueAdmission(
+    val recovery: DownloadExecutionRecovery.ReconcileResult,
+    val queuedItems: Flow<List<DownloadItem>>,
+)
+
+internal suspend fun observeQueuedDownloadsAfterRecovery(
+    context: Context,
+    dbManager: DBManager,
+    priorityItemIds: List<Long>,
+    currentTimeMillis: Long,
+): DownloadQueueAdmission {
+    val recovery = DownloadExecutionRecovery.reconcile(context, dbManager)
+    if (recovery.deferredDownloadIds.isNotEmpty()) {
+        Log.w(
+            "DownloadWorker",
+            "Queue admission continues with per-Download recovery debt ids=" +
+                recovery.deferredDownloadIds,
+        )
+    }
+    val queuedItems = when (DownloadQueuePolicy.observationMode(priorityItemIds)) {
+        DownloadQueueObservationMode.STANDARD ->
+            dbManager.downloadDao.getQueuedScheduledDownloadsUntil(currentTimeMillis)
+        DownloadQueueObservationMode.PRIORITY ->
+            dbManager.downloadDao.getQueuedScheduledDownloadsUntilWithPriority(
+                currentTimeMillis,
+                priorityItemIds,
+            )
+    }
+    return DownloadQueueAdmission(recovery, queuedItems)
+}
 
 
 class DownloadWorker(
@@ -339,6 +377,7 @@ class DownloadWorker(
                                 context = context,
                                 downloadId = downloadId,
                                 executionId = expectedExecutionId,
+                                exactGenerationProof = true,
                             )
                         ) {
                             "Native quiescence recovery carrier was not durable for download $downloadId"
@@ -506,15 +545,6 @@ class DownloadWorker(
         }
     }
 
-    /**
-     * Reconcile every abandoned execution before queue observation.  The same
-     * mutex serializes this scan with claim plus process-local owner
-     * registration, so an E2 claim cannot be mistaken for a dead E1 between
-     * those two operations.
-     */
-    private suspend fun recoverAbandonedDownloadExecutionsAtStartup(dbManager: DBManager) =
-        DownloadExecutionRecovery.reconcile(context, dbManager)
-
     private suspend fun persistDownloadMetadata(
         resultRepo: ResultRepository,
         dao: DownloadDao,
@@ -614,12 +644,13 @@ class DownloadWorker(
             (inputData.getLongArray("priority_item_ids") ?: longArrayOf()).toList()
         var priorityItemIDs = requestedPriorityItemIDs
         val continueAfterPriorityIds = inputData.getBoolean("continue_after_priority_ids", true)
-        recoverAbandonedDownloadExecutionsAtStartup(dbManager)
-        val queuedItems = when (DownloadQueuePolicy.observationMode(priorityItemIDs)) {
-            DownloadQueueObservationMode.STANDARD -> dao.getQueuedScheduledDownloadsUntil(time)
-            DownloadQueueObservationMode.PRIORITY ->
-                dao.getQueuedScheduledDownloadsUntilWithPriority(time, requestedPriorityItemIDs)
-        }
+        val queueAdmission = observeQueuedDownloadsAfterRecovery(
+            context = context,
+            dbManager = dbManager,
+            priorityItemIds = requestedPriorityItemIDs,
+            currentTimeMillis = time,
+        )
+        val queuedItems = queueAdmission.queuedItems
 
         // this is needed for observe sources call, so it wont create result items
         // [removed]
@@ -4684,6 +4715,14 @@ class DownloadWorker(
             )
             if (!ytdlpQuiesced || !postProcessingQuiesced) {
                 throw NativeProcessQuiescenceException(downloadId, expectedExecutionId)
+            }
+            check(
+                YtdlpNativeProcessBarrier.recoverDownloadExecution(
+                    downloadId = downloadId,
+                    executionId = expectedExecutionId,
+                )
+            ) {
+                "Durable native marker set remained unresolved while cancelling download $downloadId"
             }
             // A newer execution can reuse the resource only after every
             // process registered by this exact execution has terminated.

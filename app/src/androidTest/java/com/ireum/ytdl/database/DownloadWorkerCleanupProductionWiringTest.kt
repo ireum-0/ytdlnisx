@@ -20,11 +20,14 @@ import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
 import com.ireum.ytdl.work.YtdlpProcessIdentity
+import com.ireum.ytdl.work.observeQueuedDownloadsAfterRecovery
 import com.ireum.ytdl.work.cleanupStoppedDownloadExecution
 import com.ireum.ytdl.work.persistHistoryReplacementTerminalState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.After
@@ -60,9 +63,254 @@ class DownloadWorkerCleanupProductionWiringTest {
 
     @After
     fun closeDb() {
+        DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
         DownloadExecutionRecovery.commitOverride = null
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+        YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
+        YtdlpNativeProcessBarrier.markerEnumerationFailureForTesting = false
         db.close()
+    }
+
+    @Test
+    fun startupRecoveryFailureDoesNotBlockHealthyQueueAdmission() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val failingId = db.downloadDao.insertRaw(download().copy(executionId = "opaque-E1"))
+        val healthyId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Queued.name,
+                executionId = "",
+            )
+        )
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = YtdlpProcessIdentity.download(failingId, "opaque-E1"),
+            state = "RUNNING",
+            generationToken = "opaque-generation-${UUID.randomUUID()}",
+        )
+        try {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = true
+
+            val admission = observeQueuedDownloadsAfterRecovery(
+                context = appContext,
+                dbManager = db,
+                priorityItemIds = emptyList(),
+                currentTimeMillis = System.currentTimeMillis() + 10_000L,
+            )
+            val queued = admission.queuedItems.first()
+
+            assertTrue(admission.recovery.deferredDownloadIds.contains(failingId))
+            assertTrue(queued.any { it.id == healthyId })
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(failingId)?.status,
+            )
+            assertTrue(
+                YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(
+                    failingId,
+                    "opaque-E1",
+                )
+            )
+            val healthy = requireNotNull(db.downloadDao.getNullableDownloadById(healthyId))
+            assertEquals(
+                1,
+                db.downloadDao.claimDownloadForWorker(
+                    id = healthyId,
+                    expectedOperationId = healthy.operationId,
+                    expectedRetryAttempt = healthy.retryAttempt,
+                    executionId = "healthy-E1",
+                )
+            )
+        } finally {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            marker.delete()
+        }
+    }
+
+    @Test
+    fun multiplePerDownloadRecoveryFailuresStillAdmitHealthySibling() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val firstId = db.downloadDao.insertRaw(download().copy(executionId = "opaque-A"))
+        val secondId = db.downloadDao.insertRaw(download().copy(executionId = "opaque-B"))
+        val healthyId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Queued.name,
+                executionId = "",
+            )
+        )
+        val markers = listOf(
+            YtdlpNativeProcessBarrier.writeMarkerForTesting(
+                processId = YtdlpProcessIdentity.download(firstId, "opaque-A"),
+                state = "RUNNING",
+                generationToken = "opaque-generation-A-${UUID.randomUUID()}",
+            ),
+            YtdlpNativeProcessBarrier.writeMarkerForTesting(
+                processId = YtdlpProcessIdentity.download(secondId, "opaque-B"),
+                state = "RUNNING",
+                generationToken = "opaque-generation-B-${UUID.randomUUID()}",
+            ),
+        )
+        try {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = true
+
+            val admission = observeQueuedDownloadsAfterRecovery(
+                context = appContext,
+                dbManager = db,
+                priorityItemIds = emptyList(),
+                currentTimeMillis = System.currentTimeMillis() + 10_000L,
+            )
+            val queued = admission.queuedItems.first()
+
+            assertTrue(admission.recovery.deferredDownloadIds.contains(firstId))
+            assertTrue(admission.recovery.deferredDownloadIds.contains(secondId))
+            assertTrue(queued.any { it.id == healthyId })
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(firstId)?.status,
+            )
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(secondId)?.status,
+            )
+        } finally {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            markers.forEach { it.delete() }
+        }
+    }
+
+    @Test
+    fun globalMarkerDiscoveryFailureStillFailsQueueAdmission() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val healthyId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Queued.name,
+                executionId = "",
+            )
+        )
+        YtdlpNativeProcessBarrier.markerEnumerationFailureForTesting = true
+
+        var failure: Throwable? = null
+        try {
+            observeQueuedDownloadsAfterRecovery(
+                context = appContext,
+                dbManager = db,
+                priorityItemIds = emptyList(),
+                currentTimeMillis = System.currentTimeMillis() + 10_000L,
+            )
+        } catch (error: Throwable) {
+            failure = error
+        }
+
+        assertTrue(
+            failure is YtdlpNativeProcessBarrier.NativeMarkerNamespaceUnavailableException
+        )
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(healthyId)?.status,
+        )
+    }
+
+    @Test
+    fun unreadableCurrentMarkerRetainsRecoveryOwnerUntilReadablePass() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val executionId = "opaque-row-${UUID.randomUUID()}"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = YtdlpProcessIdentity.download(downloadId, executionId),
+            state = "RUNNING",
+            generationToken = "opaque-row-generation-${UUID.randomUUID()}",
+        )
+        try {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = true
+            val failed = DownloadExecutionRecovery.reconcile(appContext, db)
+            assertTrue(failed.deferredDownloadIds.contains(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertTrue(marker.exists())
+
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            val recovered = DownloadExecutionRecovery.reconcile(appContext, db)
+            assertTrue(recovered.completedCleanly)
+            assertFalse(marker.exists())
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            marker.delete()
+        }
+    }
+
+    @Test
+    fun unreadableOrphanMarkerRemainsVisibleWithoutInventingRow() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val downloadId = 918_101L
+        val executionId = "opaque-orphan-${UUID.randomUUID()}"
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = YtdlpProcessIdentity.download(downloadId, executionId),
+            state = "RUNNING",
+            generationToken = "opaque-orphan-generation-${UUID.randomUUID()}",
+        )
+        try {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = true
+            val failed = DownloadExecutionRecovery.reconcile(appContext, db)
+            assertTrue(failed.deferredDownloadIds.contains(downloadId))
+            assertTrue(marker.exists())
+            assertNull(db.downloadDao.getNullableDownloadById(downloadId))
+
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            val recovered = DownloadExecutionRecovery.reconcile(appContext, db)
+            assertTrue(recovered.completedCleanly)
+            assertFalse(marker.exists())
+            assertNull(db.downloadDao.getNullableDownloadById(downloadId))
+        } finally {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            marker.delete()
+        }
+    }
+
+    @Test
+    fun opaqueMarkerKeepsRetryOwnerAliveUntilReadableRecovery() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val downloadId = 918_200L + (System.nanoTime() and 0xFFFF)
+        val executionId = "opaque-retry-${UUID.randomUUID()}"
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = YtdlpProcessIdentity.download(downloadId, executionId),
+            state = "RUNNING",
+            generationToken = "opaque-retry-generation-${UUID.randomUUID()}",
+        )
+        try {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = true
+            DownloadExecutionRecovery.scheduleRecovery(appContext, downloadId)
+            delay(250L)
+            assertTrue(
+                DownloadExecutionRecovery.isRecoveryJobActiveForTesting(downloadId),
+            )
+
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            assertTrue(
+                YtdlpNativeProcessBarrier.recoverDownloadExecution(downloadId, executionId),
+            )
+            repeat(50) {
+                if (DownloadExecutionRecovery.isRecoveryJobActiveForTesting(downloadId)) {
+                    delay(20L)
+                }
+            }
+            assertFalse(
+                DownloadExecutionRecovery.isRecoveryJobActiveForTesting(downloadId),
+            )
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            marker.delete()
+        }
     }
 
     @Test
@@ -124,6 +372,55 @@ class DownloadWorkerCleanupProductionWiringTest {
                 db.downloadDao.getNullableDownloadById(downloadId)?.status,
             )
         } finally {
+            marker.delete()
+        }
+    }
+
+    @Test
+    fun legacyBlankExecutionWithoutNativeCarrierConvergesSafely() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = ""))
+
+        val result = DownloadExecutionRecovery.reconcile(appContext, db)
+
+        assertTrue(result.completedCleanly)
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+    }
+
+    @Test
+    fun legacyBlankExecutionWithUnreadableCarrierStaysFailClosedAndOwned() = runBlocking {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        YtdlpNativeProcessBarrier.configure(appContext)
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = ""))
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = "download:$downloadId:legacy-native-opaque",
+            state = "RUNNING",
+            generationToken = "legacy-opaque-${UUID.randomUUID()}",
+        )
+        try {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = true
+            val failed = DownloadExecutionRecovery.reconcile(appContext, db)
+            assertTrue(failed.deferredDownloadIds.contains(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertTrue(marker.exists())
+
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            val recovered = DownloadExecutionRecovery.reconcile(appContext, db)
+            assertTrue(recovered.completedCleanly)
+            assertFalse(marker.exists())
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
             marker.delete()
         }
     }
