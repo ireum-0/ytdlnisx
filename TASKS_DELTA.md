@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **32**
-- Effective active defects: **106**
+- Delta active defects: **33**
+- Effective active defects: **107**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1293,3 +1293,58 @@ Focused verification requirements:
 - reverse creation order, add exact-duplicate controls, same name with different paths, parent/subdomain combinations, comment/header variations, generated plus imported rows, disabled-row controls, deletion, repeated projection, and process restart;
 - add a same-key different-value regression for `BUG-COOKIE-08` and host-only/domain/partition controls for `BUG-COOKIE-05/07` so exact-line/identity handling does not weaken those semantics;
 - verification must exercise the actual generated file through the downstream cookie-loading path. No production-path execution was performed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P1 — continued
+
+### BUG-NATIVE-06 — Fence new Download claims on unresolved durable native-marker debt
+
+**State:** Open  
+**Reviewed checkpoint:** `0aebdb76b0081a7c05b6a1c5b8d6f33b0682c89c`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the pinned checkpoint deliberately localizes startup-recovery failures by Download ID: `DownloadExecutionRecovery.reconcile()` catches a candidate's quiescence/recovery exception, retains the durable debt, records that Download in `deferredDownloadIds`, installs a retry owner, and allows the broader queue observation to continue. That is safe only if admission for the deferred Download independently fences on every surviving authority carrier. The pre-claim path says exactly that in its comment, but the predicate does not implement it. Before `claimDownloadForWorker()` publishes a new execution token, `DownloadWorker` checks `DownloadWorkerProcessOwners.canClaimNewExecution(id)` plus `hasAnyRegisteredNativeProcess(id)`. `hasAnyRegisteredNativeProcess()` reads only process-local `DownloadWorkerProcessOwners`, `YoutubeDLCompat` process registry, and in-memory post-processing processes; unlike the exact-generation `hasNativeProcessRegistryEntry()` sibling helper, it does **not** consult `YtdlpNativeProcessBarrier.hasUnresolvedDownloadExecution()` or `hasDownloadMarkerDebt()`.
+
+A concrete cross-process path reaches that gap. The user-facing confirmed app-termination path can durably requeue an `Active`/`PostProcessing` Download and clear its `executionId` before exiting the app process. If the old yt-dlp supervisor/descendant generation has a durable non-quiescent `download:<id>:<E1>` marker, process death erases the process-local owner/registry maps while the marker survives. On restart, recovery discovers E1 and attempts exact quiescence. A STARTING transition in the post-spawn/pre-PGID-publication window, a RUNNING generation whose termination cannot be proven, marker/generation recovery failure, or any other fail-closed native recovery fault can leave the marker unresolved and defer that Download. The row can nevertheless remain durably `Queued` from the earlier requeue.
+
+The same `DownloadWorker` then continues observing runnable queued rows. When it reaches that Download, `hasAnyRegisteredNativeProcess(id)` returns false because all of its consulted registries were process-local and were reset by process death. The surviving durable E1 marker is invisible to this gate. The worker therefore generates E2 and successfully changes the row to `Active` with the new token even though startup recovery has just failed to prove E1 quiescent. If E1's external process/group genuinely survives, E1 and E2 can now mutate the same Download's staging/output domain concurrently; even if E1 later becomes recoverable, its cleanup is now racing a newer authorized generation. The per-Download side-effect lease serializes the recovery and claim code sections, but it does not repair the missing predicate after recovery releases the lease with durable debt still present.
+
+**Why this is a defect:** a durable native marker exists specifically to preserve external execution authority after Java/app-process state disappears. The new-claim boundary converts that surviving non-quiescent authority into “no native process” solely because it asks a narrower same-process helper. This violates the fail-closed exact-generation contract and permits overlapping attempts of one Download after restart, with concrete risks of conflicting file writes, cleanup of resources still used by the older generation, and inconsistent terminal/History state. The existing `BUG-NATIVE-01` record even assumed the opposite—that unresolved durable markers participate in `hasAnyRegisteredNativeProcess()` and therefore fence reuse—so this is not a duplicate of its STARTING-state convergence defect; it is a separate admission failure exposed once recovery is allowed to defer one Download without globally aborting the queue.
+
+**Ownership / attribution:** remediation regression / incomplete closure of the native crash-convergence remediation. The same-process-only helper predates the pinned recovery-localization change, but the pinned checkpoint's item-local defer-and-continue behavior makes an unresolved marker and a still-runnable queued row reach the pre-claim gate without a global recovery exception suppressing queue admission.
+
+Required result:
+
+- make pre-claim reuse authorization include every durable native carrier that represents unresolved authority for the Download, including exact or opaque `YtdlpNativeProcessBarrier` marker debt, not only process-local registries;
+- when startup or same-process recovery defers a Download because exact quiescence is not proven, exclude that Download from new execution admission until the durable debt is cleared or a stronger exact-generation protocol proves reuse safe;
+- keep the per-Download execution/side-effect lease and Room claim CAS, but treat them as ordering mechanisms rather than substitutes for the missing durable-state predicate;
+- do not weaken `BUG-NATIVE-01/02/03/04/05` requirements: an unaddressable STARTING state must converge safely, recycled external identifiers must not authorize sibling destruction, successful attempts must retain recovery ownership until quiescent, positive quiescence must survive cleanup, and legacy blank identities must remain compatible;
+- ensure every raw/manual requeue, confirmed app-exit requeue, pause/resume, retry/reconfigure, and restart path that can make a row runnable reaches the same durable native-debt fence before a new execution token is published.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision: E1's durable non-quiescent marker is still present after process-local ownership disappeared; that means new native authority for the same Download is forbidden until E1 is exactly quiescent;
+- first persistence creating the re-entry state can be the supported `Active/PostProcessing -> Queued` requeue used during app termination, which clears the old `executionId`. If that write fails, this particular queued-admission path does not proceed and the stale running row remains under recovery instead;
+- recovery carrier is E1's durable native marker, optionally plus Download recovery journal. Force exact recovery/quiescence to fail; current code keeps the carrier and records item-local deferred recovery, but does not feed that result into queue eligibility or the pre-claim predicate;
+- durable Download state after the defect commits is E2=`Active` with a fresh execution token while E1 marker debt remains. No linked ledger transition is required to reproduce the authority split. E1 may still mutate temp/output files while E2 starts another native request for the same Download;
+- the previous WorkManager attempt died with the app process; the restarted worker remains live and may proceed normally under E2. There is no immediate typed `DownloadOutcome` required—the substantive defect is concurrent authorization before any later terminal result;
+- semantic downgrade/reinterpretation is explicit: “unresolved durable external authority” is reinterpreted as “no registered native process” at claim admission because the helper's carrier set is process-local only;
+- same-settings retry, manual/raw requeue, reconfigure, notification resume/retry, confirmed app-exit requeue, restart/reconcile, and any other path that produces a runnable row are unsafe unless they converge/fence the old marker first. Restore is not a semantic recovery path for an app-owned native marker and must not manufacture authority from backup state;
+- lock order is not an AB/BA deadlock: recovery and claim both serialize through the per-Download side-effect lease and the process-global claim lock where applicable. The defect occurs **after** failed recovery releases those locks while durable debt remains; the next serialized claimant checks an incomplete authority predicate.
+
+Candidate-rejection proof:
+
+- do not reject this because exact-generation helpers such as `hasNativeProcessRegistryEntry(id, executionId)` consult the durable barrier. The production pre-claim path calls a different helper, `hasAnyRegisteredNativeProcess(id)`, whose implementation omits the barrier entirely;
+- do not reject it because startup recovery exists. The pinned checkpoint intentionally catches candidate failures, records the ID as deferred, schedules item-local recovery, and continues rather than making one failed Download a global queue-admission failure. That continuation therefore requires an independent reuse fence for the same ID;
+- do not reject it as `BUG-NATIVE-01`: that finding owns inability to converge a STARTING marker with no recoverable process identity. This finding remains reachable with any durable marker whose quiescence attempt is deferred, including a post-spawn STARTING transition or RUNNING termination failure, and its incorrect effect is authorization of E2 rather than merely E1 non-convergence;
+- do not reject it as `BUG-NATIVE-02`: no PID/PGID reuse or wrong-sibling signal is required; the original exact E1 process may simply still exist while E2 is started;
+- do not reject it as `BUG-NATIVE-03`: no normal successful Download completion or row deletion is required; the row is explicitly runnable and is reused too early;
+- do not reject it as `BUG-TERMINATE-01`: app termination is one concrete producer of the queued state, but the violated invariant belongs to the later execution-admission boundary and applies to any supported requeue/re-entry path that leaves old marker debt.
+
+Focused verification requirements:
+
+- exercise the real `DownloadViewModel/MainActivity requeue -> process death -> App/DownloadExecutionRecovery -> DownloadWorker queue admission -> Room claim -> native launch` wiring. Seed or produce a queued Download with an old exact E1 durable marker, clear all process-local registries as restart would, force recovery of E1 to remain unresolved, and assert no E2 `claimDownloadForWorker()` or native launch occurs;
+- include a STARTING post-spawn/pre-PGID-publication case, RUNNING quiescence failure, marker/generation recovery-write failure, and an opaque/legacy marker state that must remain fail-closed; prove repeated item-local recovery can run while the row stays fenced;
+- add a positive control where E1 is exactly proven quiescent and the durable marker/journal debt is cleared; then and only then may the queued row be claimed once under E2;
+- repeat through same-settings retry, manual/raw requeue, reconfigure, notification resume/retry where applicable, explicit app-exit requeue, and cold restart. Assert no route bypasses the same durable debt predicate;
+- verify sibling isolation: a deferred marker for Download A must not globally block independent Download B, while A itself remains fenced. This is the intended benefit of item-local recovery without sacrificing per-item exact authority;
+- no production Room + WorkManager + process-death/native-barrier integration test for this exact admission gap was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
