@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **29**
-- Effective active defects: **103**
+- Delta active defects: **30**
+- Effective active defects: **104**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1146,3 +1146,54 @@ Focused verification requirements:
 - add an upstream-change case where the first successful observation has no requested subtitle, the source later gains it with settings unchanged, and an explicit rescan can re-observe and queue the row according to the defined freshness/invalidation policy;
 - include unchanged same-settings authoritative no-match as a control, an ambiguous/empty lookup regression for `BUG-HARDSUB-01`, an already-hard-subbed/`hardSubDone=true` control, worker retry/exhaustion, process restart between scans, and repeated reconfiguration;
 - verification must cover the real settings + WorkManager worker + Room candidate query + replacement-queue wiring. No such executed production-path test was run in this review, so verification is `SOURCE-LEVEL ONLY`.
+
+## P1 — continued
+
+### BUG-NATIVE-04 — Preserve proven native quiescence across marker cleanup
+
+**State:** Open  
+**Reviewed checkpoint:** `6dc57cb11f53d78cce20b499f35282e0de2fd172`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** a normal Download reaches `YoutubeDLCompat.executeWithQuiescence()` under its exact `download:<id>:<executionId>` process identity. The supervisor can complete normally, prove that the exact descendant generation is gone, and persist the durable barrier as `QUIESCENT`. `execute()` then calls `removeExactProcess(processId, process)`. That helper first observes the marker as quiescent, removes the in-memory process owner, and calls `YtdlpNativeProcessBarrier.clear(marker, generationToken)`, whose successful path deletes the marker. Only **after** that cleanup returns does `execute()` construct `ExecutionResult.nativeQuiescent` by calling `YtdlpNativeProcessBarrier.isQuiescent(marker)` again. `isQuiescent()` is defined as `readMarker(marker)?.state == QUIESCENT`, so the expected absence of a successfully cleared marker evaluates to `false`.
+
+The semantic inversion reaches the real Download path directly. `DownloadWorker.executeYtdlpAttempt()` awaits that `ExecutionResult` and throws `NativeProcessQuiescenceException` whenever `nativeQuiescent` is false, before it permits normal History/output publication, finished notification, completed `DownloadOutcome`, or Download-row deletion. The outer worker code deliberately keeps that exception out of generic terminal-success handling and enters the native recovery/requeue cleanup protocol. Thus a fully successful native generation whose quiescence proof was consumed and cleaned up exactly as intended is reclassified as **unresolved native authority**. No race, process death, PGID reuse, descendant leak, or I/O fault is required.
+
+The failure is self-reproducing. Cleanup/recovery can observe that no native marker/process remains and requeue the Download, but a later same-settings attempt executes the same ordering: it writes a new exact marker, reaches QUIESCENT, clears it, then rereads absence as false and rejects normal success again. Manual/raw requeue and reconfiguration do not repair the helper ordering; restart can converge any prior running row but the next successful attempt repeats the same false-negative result. The newly added test source at this checkpoint expects `nativeQuiescent == true` together with `marker.exists() == false`, but there is no executed CI/status evidence for the checkpoint and the production implementation computes those two assertions from mutually inconsistent ordering.
+
+**Why this is a defect:** descendant quiescence is an authoritative safety decision that gates the core Download success path. The remediation consumes a valid positive proof, destroys its carrier as successful cleanup, and then reconstructs the caller-visible result by re-reading the now-destroyed carrier. This deterministically converts a normal successful Download into exceptional recovery/requeue behavior and can prevent ordinary Downloads from reaching their intended terminal success despite no remaining native authority. This is a substantive core liveness/reliability regression, not defensive hardening.
+
+**Ownership / attribution:** remediation regression introduced by the native-generation crash-convergence change present at the reviewed checkpoint. It is distinct from `BUG-NATIVE-01` (unrecoverable pre-identity STARTING state), `BUG-NATIVE-02` (wrong-sibling authority through reusable external identity), and `BUG-NATIVE-03` (the opposite semantic error: treating a genuinely unresolved descendant generation as successful and then losing its carrier).
+
+Required result:
+
+- carry the authoritative quiescence observation forward as part of the exact cleanup/execute result instead of re-querying a marker that successful cleanup is expected to delete;
+- make `removeExactProcess()` or an equivalent exact-generation finalizer return a typed result that distinguishes `proven quiescent and cleared`, `proven quiescent but marker cleanup failed`, `still unresolved`, and `owner/generation changed`, without inferring unresolved authority from expected carrier absence;
+- preserve fail-closed behavior for a genuinely RUNNING/non-quiescent marker and for generation/ownership mismatch; fixing the false negative must not weaken `BUG-NATIVE-01/02/03` safety requirements;
+- define marker-delete/write failure semantics explicitly: successful semantic quiescence must not be lost merely because cleanup fails, while a failed or mismatched cleanup must retain enough exact recovery evidence for restart;
+- keep Download terminal publication behind the corrected exact-generation quiescence result and allow the normal success path to publish/delete the Download exactly once when quiescence was proven.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: exact descendant generation reaches durable `QUIESCENT`; the first relevant persistence call is the supervisor's QUIESCENT marker publication. First-write failure there must remain fail-closed and is not needed for the primary defect;
+- post-commit barrier: `removeExactProcess()` consumes that positive state and deletes its marker. The defect occurs because caller-visible `nativeQuiescent` is created **after** proof-carrier destruction and re-observes absence as false;
+- recovery carrier: after successful marker deletion no native recovery carrier should be required because the generation is already proven gone. Current code nonetheless creates exceptional Download recovery debt from the false result; recovery may requeue the Download but cannot make the next execute attempt succeed because the same helper ordering repeats;
+- durable Download state in the primary path remains nonterminal until worker cleanup/requeue; History/final publication and completed `DownloadOutcome` are intentionally withheld. Files produced by the native attempt may exist in attempt-owned staging/cache state, but the normal success publication path is not authorized. The WorkManager attempt exits through exceptional cleanup rather than ordinary success;
+- stale Active/PostProcessing is not required for reproduction. If cleanup persistence itself fails, existing exceptional-recovery debt can remain, but that is a secondary first-write/recovery-write fault and not necessary to prove this defect;
+- cross-attempt matrix: same-settings retry repeats the false negative; manual/raw requeue repeats it; reconfigure still traverses the same execute finalizer; notification retry/resume is not an independent repair barrier and any new native attempt repeats it; restart/reconcile can repair prior execution bookkeeping but the next successful generation fails the same way; backup restore is not a semantic repair path for native quiescence;
+- concurrency/sibling matrix: no interleaving or lock-order inversion is required. The single exact owner follows the wrong local order deterministically; sibling isolation must nevertheless remain intact in the correction.
+
+Candidate-rejection proof:
+
+- this is not `BUG-NATIVE-03`: that defect is `root success + marker still unresolved -> false success`; this defect is `marker proven QUIESCENT + successfully cleared -> false unresolved`. The durable/terminal effect and corrective barrier are opposite;
+- it is not `BUG-NATIVE-01` or `BUG-NATIVE-02`: neither an unaddressable STARTING state nor external-identifier reuse is needed;
+- expected marker absence after successful `clear()` cannot itself prove `nativeQuiescent=false` because `clear()` is reached only after exact-generation QUIESCENT proof. The positive observation must be preserved through cleanup rather than discarded;
+- the newly added test source is not PASS evidence. It asserts both a true quiescence result and an absent marker, but no test execution/status is present for the checkpoint and direct source ordering contradicts that intended assertion.
+
+Focused verification requirements:
+
+- execute the production `YoutubeDLCompat.executeWithQuiescence()` path with a normal zero-exit child whose exact generation reaches QUIESCENT; prove the returned result reports `nativeQuiescent=true` while the marker is successfully removed;
+- exercise the real `DownloadWorker -> executeYtdlpAttempt()`/Room path and prove that same control reaches normal History/publication, completed outcome, queue-row deletion, and WorkManager success exactly once rather than exceptional requeue;
+- add controls for a genuinely unresolved RUNNING generation (`nativeQuiescent=false`), generation mismatch, marker-clear failure, marker disappearance caused by a competing/stale owner, cancellation, and process death before/after QUIESCENT publication;
+- repeat same-settings retry, manual/raw requeue, reconfigure, notification re-entry where applicable, and restart/reconcile to prove no path recreates the false negative or weakens exact-generation recovery;
+- the new helper/source tests at this checkpoint remain insufficient until executed and paired with actual DownloadWorker/Room/WorkManager wiring. Verification remains `SOURCE-LEVEL ONLY`.
