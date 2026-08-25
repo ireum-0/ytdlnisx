@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **28**
-- Effective active defects: **102**
+- Delta active defects: **29**
+- Effective active defects: **103**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -347,7 +347,7 @@ Focused verification requirements:
 
 A concrete race exists at the native-execution/publication boundary. If yt-dlp has already returned (or returns before WorkManager cancellation is delivered) when the user taps Cancel, the receiver can durably delete the only task row while the worker still advances into the cache-to-destination move. WorkManager cancellation is transport cleanup, not a synchronous semantic barrier, and there is no shared Terminal execution lease between receiver deletion and worker publication. The stale worker can therefore create/move destination files after the user-requested cancellation has been committed as task removal. Cancellation arriving during a non-atomic multi-file move can also leave a partial destination while the Terminal row is already gone. The worker's normal and cancellation paths later delete the row again and may return success, but neither can reconstruct or durably represent an output that was published or partially published after cancellation.
 
-**Why this is a defect:** notification Cancel is an explicit revocation of the Terminal attempt, yet the implementation destroys its durable carrier before proving that every actor holding publication authority has stopped. A normal scheduling race can make a cancelled task publish output after revocation, or leave partial filesystem effects with no persistent task identity from which restart/retry can reconcile them. This is distinct from `BUG-TERMINAL-02` (cross-domain ID/process identity), `BUG-TERMINAL-04` (the worker misclassifying its own partial publication as success), `BUG-TERMINAL-05` (persisted task with lost enqueue carrier), and `BUG-TERMINAL-06` (manual cache cleanup deleting files owned by a live task). The same receiver/worker ordering is present at the prior synchronized checkpoint, so this is a pre-existing baseline defect discovered post ledger split rather than a remediation regression.
+**Why this is a defect:** notification Cancel is an explicit revocation of the Terminal attempt, yet the implementation destroys its durable carrier before proving that every actor holding publication authority has stopped. A normal scheduling race can make a cancelled task publish output after revocation, or leave partial filesystem effects with no persistent task identity from which restart/retry can reconcile them. This is distinct from `BUG-TERMINAL-02` (cross-domain ID/process identity), `BUG-TERMINAL-04` (the worker misclassifying its own partial publication after `FileUtil.moveFile()`), `BUG-TERMINAL-05` (persisted task with lost enqueue carrier), and `BUG-TERMINAL-06` (manual cache cleanup deleting files owned by a live task). The same receiver/worker ordering is present at the prior synchronized checkpoint, so this is a pre-existing baseline defect discovered post ledger split rather than a remediation regression.
 
 **Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
 
@@ -1098,3 +1098,51 @@ Focused verification requirements:
 - race callback failure with user cancellation and with native root/descendant exit, proving exact quiescence and task/cache ownership remain correct;
 - verify process restart after the fault and a later manual rerun cannot silently adopt or overwrite the failed generation;
 - verification must include the actual callback execution thread and bounded pipe-drain behavior plus real Room/WorkManager wiring. A helper-only callback unit test or source existence check is insufficient for PASS.
+
+### BUG-HARDSUB-04 — Re-evaluate hard-sub scan exclusions when eligibility inputs change
+
+**State:** Open  
+**Reviewed checkpoint:** `cc1ddaa80b15e0857a7271e28bb7d93ab4c3cf91`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** `HardSubScanWorker` reads the current `subs_lang` preference and queries `HistoryDao.getHardSubScanCandidates()`, which selects only video rows with `hardSubScanRemoved = 0` and `hardSubDone = 0`. Consider a row whose initial scan runs under `subs_lang = "en"`. The metadata fetch can succeed authoritatively and return only `availableSubtitles = ["fr"]`; `SubtitleLanguageMatcher.hasRequestedSubtitle(...)` is therefore false and the worker durably writes `historyDao.updateHardSubScanState(id, removed = true, done = false)`. That exclusion is semantically valid for the observation that just occurred.
+
+The eligibility inputs are mutable, but the durable carrier does not record or invalidate them. `ProcessingSettingsFragment` lets the user change `subs_lang` (for example from `en` to `fr`) and its explicit “Scan now” action merely enqueues another `HardSubScanWorker`. The new worker reads the new `fr` preference, but the row is excluded by `getHardSubScanCandidates()` before any new source observation occurs because `hardSubScanRemoved` is still true. The worker's one-time rescan helper cannot repair it: `resetHardSubDoneForRescan()` resets only rows whose `hardSubDone = 1`, not removed-only rows with `hardSubDone = 0`; `hard_sub_rescan_done_once_v2` is set false after the initial reset and no production writer sets it true again. `HistoryRepository.updateHardSubScanRemoved()` / `HistoryViewModel.setHardSubScanRemoved()` exist, but repository-wide production search finds no UI/setting/reconciliation caller that clears an exclusion after subtitle-language reconfiguration.
+
+The same stale classification can outlive source changes even without local reconfiguration. If a successful first fetch authoritatively shows no requested language and the upstream video later gains that subtitle, later “Scan now” runs still skip the row before fetching source metadata. Process restart preserves the Room flag and has no reconciliation that binds it to a subtitle-language or source-observation generation. Thus a time-scoped fact—“no requested subtitle under configuration/source snapshot A”—is reinterpreted as permanent semantic identity under later configuration/source state B.
+
+**Why this is a defect:** the user-facing hard-sub scan is intended to evaluate current History items against the current requested subtitle languages and source metadata. A previously valid negative observation becomes a permanent exclusion even after ordinary supported configuration changes or later source availability make the row eligible. The user can explicitly request another scan and receive normal completion while a now-eligible item is never re-observed or queued. This is a substantive reliability/correctness defect, not an optimization cache. It is distinct from `BUG-HARDSUB-01`: that finding owns ambiguous/non-authoritative first observations that must not create an exclusion at all. Here the first no-match can be fully authoritative; the defect arises because the resulting negative decision has no dependency identity or invalidation across later attempts.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The pinned `HardSubScanWorker.kt` has the same blob as synchronized baseline `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`, including the same candidate filter, removed-state write, and rescan-reset behavior.
+
+Required result:
+
+- treat `hardSubScanRemoved` as a negative eligibility decision bound to the exact configuration/source observation that produced it, not as permanent media identity;
+- invalidate or version removed-only exclusions when `subs_lang` changes and when an explicit rescan is intended to observe current source eligibility, or persist enough configuration/source fingerprinting to prove an exclusion is still current before skipping metadata lookup;
+- re-observe authoritative subtitle availability before preserving a prior exclusion across a changed eligibility generation, while keeping already completed `hardSubDone = true` semantics distinct from “not eligible under the previous scan”;
+- preserve `BUG-HARDSUB-01` fail-closed behavior: ambiguous/ignored-error/empty lookup results still must not create a negative exclusion, regardless of the new invalidation scheme;
+- make restart and repeated manual scans converge on current configuration/source state without silently reusing stale negative authority.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: a successful subtitle metadata observation evaluated against the exact current `subs_lang`; first durable write is `updateHardSubScanState(id, removed = true, done = false)` for an authoritative no-match;
+- first-write failure is fail-safe for this invariant because the row remains eligible for a later scan; the confirmed defect is the successful negative write followed by a later change to an input on which that decision depended;
+- recovery carrier is only the boolean `hardSubScanRemoved`; it has no language-set/source-observation generation, so no recovery or restart path can decide whether the old authority is still semantically current;
+- durable Download state, linked Download ledgers, filesystem publication, `DownloadOutcome`, and native-process authority are not involved until a row becomes a candidate and a replacement Download is queued; the defect prevents that later workflow from being reached;
+- same-settings rescan after an unchanged authoritative no-match may legitimately keep the exclusion; subtitle-language reconfigure is unsafe today; manual “Scan now” after reconfigure is unsafe; a later upstream subtitle addition is unsafe; process restart provides no repair. Download raw/manual requeue, notification retry/resume, and restore are not semantic repair paths for this scan-classification state unless they explicitly invalidate/re-evaluate the same exclusion;
+- expected-identity mutability is central: both `subs_lang` and the source's subtitle set can change. No concurrency or AB/BA lock interleaving is required for reproduction.
+
+Candidate-rejection proof:
+
+- do not reject this as `BUG-HARDSUB-01`: that defect concerns whether the **first** lookup was authoritative enough to justify `removed = true`; this path remains defective even when the first successful no-match is unquestionably authoritative;
+- do not treat `resetHardSubDoneForRescan()` as an invalidation barrier: its SQL predicate only touches `hardSubDone = 1` rows and leaves `hardSubScanRemoved = 1, hardSubDone = 0` unchanged;
+- do not treat the existence of `setHardSubScanRemoved(..., false)` helpers as production repair evidence: no production setting-change, scan-now, startup, or reconciliation path calls them for this state;
+- do not reject the path because a user changed settings or the upstream source changed. v4 explicitly requires cross-attempt/reconfigure analysis and forbids treating a supported reconfiguration as proof that stale authority may be retained;
+- no test source or helper-only test restores the missing production invalidation barrier. No dedicated production-path hard-sub rescan wiring test covering this transition was found, so verification remains `SOURCE-LEVEL ONLY`.
+
+Focused verification requirements:
+
+- exercise the real Processing settings -> `subs_lang` persistence -> `HardSubScanWorker.enqueue()` -> Room History candidate/state path with an authoritative first observation `subs_lang=en`, subtitles `[fr]`; assert `removed=true/done=false`, then change `subs_lang=fr`, invoke “Scan now,” and prove the same row is re-selected, re-observed, and queued for hard-sub replacement;
+- add an upstream-change case where the first successful observation has no requested subtitle, the source later gains it with settings unchanged, and an explicit rescan can re-observe and queue the row according to the defined freshness/invalidation policy;
+- include unchanged same-settings authoritative no-match as a control, an ambiguous/empty lookup regression for `BUG-HARDSUB-01`, an already-hard-subbed/`hardSubDone=true` control, worker retry/exhaustion, process restart between scans, and repeated reconfiguration;
+- verification must cover the real settings + WorkManager worker + Room candidate query + replacement-queue wiring. No such executed production-path test was run in this review, so verification is `SOURCE-LEVEL ONLY`.
