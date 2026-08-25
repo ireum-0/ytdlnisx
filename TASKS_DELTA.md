@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **30**
-- Effective active defects: **104**
+- Delta active defects: **31**
+- Effective active defects: **105**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -23,6 +23,8 @@ Production truth always comes from the exact reviewed checkpoint SHA. This file 
 Android's platform contract makes this a false capability result rather than an unavailable feature: `AlarmManager.canScheduleExactAlarms()` was added in API 31, and the exact-alarm special-access requirement begins with Android 12 / API 31 for apps targeting that level. The supported API 24–30 band therefore must not be represented as incapable merely because the API-31 capability query does not exist.
 
 **Why this is a defect:** a supported OS band can enable the scheduler in settings but then have ordinary queueing outside the window reject the same scheduler configuration and silently turn it off. The failure is deterministic from the SDK-version branch and blocks a user-requested scheduling workflow even though the platform can schedule the exact alarms the implementation uses. This is distinct from `BUG-SCHEDULER-01` (daily recurrence/midnight semantics), `BUG-SCHEDULER-03` (successor alarms for individually scheduled AlarmManager work), and `BUG-SCHEDULER-04` (daily shutdown cancelling future WorkManager carriers).
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression.
 
 Required result:
 
@@ -1197,3 +1199,49 @@ Focused verification requirements:
 - add controls for a genuinely unresolved RUNNING generation (`nativeQuiescent=false`), generation mismatch, marker-clear failure, marker disappearance caused by a competing/stale owner, cancellation, and process death before/after QUIESCENT publication;
 - repeat same-settings retry, manual/raw requeue, reconfigure, notification re-entry where applicable, and restart/reconcile to prove no path recreates the false negative or weakens exact-generation recovery;
 - the new helper/source tests at this checkpoint remain insufficient until executed and paired with actual DownloadWorker/Room/WorkManager wiring. Verification remains `SOURCE-LEVEL ONLY`.
+
+### BUG-NATIVE-05 — Preserve startup recovery for migrated Downloads with blank execution identity
+
+**State:** Open  
+**Reviewed checkpoint:** `6dc57cb11f53d78cce20b499f35282e0de2fd172`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** `Migration(56, 57)` adds `downloads.executionId TEXT NOT NULL DEFAULT ''`, so a Download row that was already durably `Active` or `PostProcessing` before upgrade can legitimately survive migration with a blank execution identity. The current model retains the same blank default. `App.onCreate()` starts `DownloadExecutionRecovery.reconcile()`, whose purpose includes abandoned running rows. In the current crash-convergence implementation, once such a row is selected and no process-local owner or conflicting current generation owns it, recovery unconditionally constructs `YtdlpProcessIdentity.download(current.id, current.executionId)` to inspect/clear its exact native marker. `YtdlpProcessIdentity.download()` calls `require(executionId.isNotBlank())`, so the supported migrated row throws `IllegalArgumentException` before `cleanupStoppedDownloadExecution()` can requeue or otherwise converge it. The reconciliation catch schedules another recovery but leaves the same durable row unchanged, so same-process retry and later process restart repeat the identical exception.
+
+This is not an unsupported/corrupt-state hypothesis. Production code explicitly has a legacy branch in `DownloadWorker.cancelProcessesForExecution()` for `expectedExecutionId.isBlank()`: it documents that legacy rows have no exact execution identity, refuses unsafe cancellation by numeric Download ID alone, and treats absence of any registered native process as the fail-closed safe condition. At the previous checkpoint, startup recovery could reach the legacy cleanup path without first constructing an exact `YtdlpProcessIdentity`; the reviewed crash-convergence change inserted the unconditional strict-identity lookup while repairing native generation recovery.
+
+**Why this is a defect:** a supported schema upgrade can leave an abandoned running Download in a durable state that startup reconciliation is specifically responsible for repairing, yet the new exact-identity helper rejects that state before the first recovery mutation. No live native process or marker is needed to trigger the failure. The row can remain indefinitely stale `Active`/`PostProcessing` with its original WorkManager execution gone, and restart simply re-enters the same require-failure loop. This is a substantive liveness/reliability regression rather than defensive hardening.
+
+**Ownership / attribution:** remediation regression introduced by the native crash-convergence change at the reviewed checkpoint. Existing `BUG-NATIVE-01` through `BUG-NATIVE-04` own STARTING convergence, external-ID reuse, unresolved-success carrier loss, and quiescence-proof destruction respectively; none owns supported legacy Room rows rejected by the new exact-identity constructor.
+
+Required result:
+
+- branch supported legacy blank-execution rows before any call that requires a nonblank `YtdlpProcessIdentity`;
+- when no native registry/marker authority is visible for a blank legacy row, converge stale `Active`/`PostProcessing` through the existing legacy-safe cleanup/requeue contract without inventing an execution token;
+- if an unknown native process/registry entry is visible for a blank legacy row, remain fail-closed and never signal/cancel by numeric Download ID alone;
+- preserve the exact nonblank execution-generation path and all safety requirements owned by `BUG-NATIVE-01` through `BUG-NATIVE-04`;
+- make the first actual recovery persistence write and its failure/process-death retry durable under the existing row/recovery carrier so a migrated row cannot fall into another infinite recovery loop.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative state: a supported migrated Download row with status `Active` or `PostProcessing` and `executionId = ""`; the migration itself preserves that sentinel as durable state;
+- first recovery persistence call is never reached in the defect path because strict process-identity construction throws first. Inject failure at the first corrected cleanup/requeue write and prove the same legacy row remains discoverable for retry rather than being silently terminalized;
+- recovery carrier is the Download row itself. No durable native marker, filesystem side effect, completed `DownloadOutcome`, or current WorkManager owner is required to reproduce the defect;
+- durable Download state can remain stale `Active`/`PostProcessing` indefinitely; linked ledgers/filesystem state remain whatever the abandoned pre-upgrade attempt left, and no new terminal outcome is produced;
+- restart/reconcile repeats the same exception today. Same-settings/manual/raw requeue, reconfigure, notification retry/resume, and restore do not populate an exact execution ID for this already-running migrated row and are not automatic repair barriers; a corrected startup path must converge the legacy carrier before a newer exact attempt is allowed to own the Download;
+- sibling isolation remains fail-closed: a blank legacy row may not cancel another execution merely because a numeric Download ID collides or some unrelated native generation exists.
+
+Candidate-rejection proof:
+
+- the state is reachable through the checked-in supported migration, not malformed input: v56→57 explicitly adds the non-null column with default `''`, and the current model still declares that default;
+- production code explicitly labels blank execution IDs as legacy and defines safe behavior for them in `cancelProcessesForExecution()`, so the new strict helper cannot dismiss them as impossible;
+- no existing defect owns this invariant. `BUG-NATIVE-01` concerns a durable STARTING marker with no recoverable external identity; this path needs no marker or native process at all. `BUG-NATIVE-03/04` concern completion-side quiescence semantics, not startup migration compatibility;
+- the previous recovery implementation did not unconditionally construct an exact native process identity on this path, establishing that the new failure is introduced by remediation rather than inherited baseline behavior.
+
+Focused verification requirements:
+
+- seed a real v56 database with abandoned `Active` and `PostProcessing` Download rows, run the production migrations to v58, and assert those rows reach startup recovery with blank `executionId`;
+- with no native marker/process, invoke the real `App -> DownloadExecutionRecovery -> Room` wiring and prove each row converges through the legacy-safe cleanup/requeue/terminal contract exactly once rather than throwing/rescheduling forever;
+- add a control with a blank legacy row plus visible unknown native registry authority and prove recovery stays fail-closed without numeric-ID cancellation;
+- add nonblank current-generation controls, queued/non-running blank-row controls, process restart, repeated reconciliation, and failure/process death at the first corrected recovery write;
+- verification must use the migration plus actual startup/recovery wiring. No executed migration+Room+startup integration test was found in this review, so verification remains `SOURCE-LEVEL ONLY`.
