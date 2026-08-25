@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **33**
-- Effective active defects: **107**
+- Delta active defects: **34**
+- Effective active defects: **108**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1348,3 +1348,57 @@ Focused verification requirements:
 - repeat through same-settings retry, manual/raw requeue, reconfigure, notification resume/retry where applicable, explicit app-exit requeue, and cold restart. Assert no route bypasses the same durable debt predicate;
 - verify sibling isolation: a deferred marker for Download A must not globally block independent Download B, while A itself remains fenced. This is the intended benefit of item-local recovery without sacrificing per-item exact authority;
 - no production Room + WorkManager + process-death/native-barrier integration test for this exact admission gap was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-TERMINAL-10 — Keep Terminal setup failures inside worker terminal/recovery control flow
+
+**State:** Open  
+**Reviewed checkpoint:** `0aebdb76b0081a7c05b6a1c5b8d6f33b0682c89c`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the production Terminal Run action first persists a `TerminalItem`, then submits a one-time `TerminalDownloadWorker`. In the confirmed path the WorkManager carrier is accepted and the worker has already passed its separately guarded `setForeground()` block. `doWorkInternal()` then builds `config-TERMINAL[<timestamp>].txt` with `File.writeText(terminalPlan.sanitizedConfig)` and calls `terminalPlan.createRequest(configFile)` **before** entering the broad `try/catch/finally` that owns native execution, notification cleanup, Terminal-row deletion, and `FileUtil.deleteConfigFiles(request)`. A real app-cache write failure such as an `IOException` from full/unwritable storage therefore escapes before that semantic error boundary; request construction has the same unowned throwable window.
+
+`TerminalDownloadWorker.doWork()` does not add a compensating catch. Its `finally` calls `cleanupStoppedWorker()` only when `isStopped`; an ordinary setup exception is not a user/WorkManager stop. The exception therefore reaches WorkManager without the worker choosing `Result.retry()` or `Result.failure()`, while the main catch never cancels the running notification or deletes the durable `TerminalItem`, and the request-scoped config cleanup is not reached. `TerminalDao` has no separate task status: every surviving row in `terminalDownloads` is returned as an active Terminal and counted by `getActiveTerminalsCount()`. The Terminal screen's WorkInfo observer may see a terminal failed state and reset its Run/Cancel controls, but it does not delete or otherwise reconcile the stale Room row. There is also no startup reconciler that pairs failed/absent WorkManager state with persisted Terminal rows.
+
+The stale state survives ordinary re-entry. A manual rerun creates a new `TerminalItem`/ID and work request rather than adopting the failed row; process restart reloads the same old row and still has no failed-task reconciliation; the user can repair it only by an explicit unrelated cancel/delete action. The stale row can also keep maintenance paths that rely on `getActiveTerminalsCount()` believing Terminal work is active after its only execution carrier has already failed.
+
+**Why this is a defect:** once the user request is durably represented and an execution carrier has started, every fallible setup operation needed to enter the command attempt must be owned by a terminal/recovery contract. A supported filesystem/setup failure currently bypasses that contract and leaves durable state claiming an active Terminal task with no live attempt or automatic convergence. This is a substantive reliability/state-integrity failure, not defensive hardening.
+
+This is distinct from `BUG-TERMINAL-05`: that defect owns the earlier Room-to-WorkManager handoff where the Terminal row exists but the worker carrier is never durably accepted. Here the carrier was accepted and the worker is already running. It is also distinct from `BUG-TERMINAL-01`, which starts after output has been committed, and `BUG-TERMINAL-09`, which requires a later progress-callback exception on the native transport reader thread. No native process, publication, callback, cancellation, or concurrency interleaving is required here.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The synchronized baseline `TerminalDownloadWorker.kt` contains the same config-file write/request construction before the main `try/catch/finally`.
+
+Required result:
+
+- place all fallible Terminal-attempt setup after durable task/carrier creation under one owner-visible typed error/retry boundary, or individually wrap setup operations with equivalent durable semantics before any exception can escape;
+- on config-file creation/write or request-construction failure, produce an explicit WorkManager result and make the exact `TerminalItem` converge to the defined retryable/failed/removed state rather than remaining indefinitely active;
+- cancel/update the exact Terminal notification consistently and clean only attempt-owned partial config/cache artifacts whose ownership is proven; preserve `CancellationException`/`isStopped` semantics separately from ordinary setup failure;
+- if setup failure is retryable, retain one exact durable retry carrier and prevent a manual/new attempt from being confused with the failed generation. If setup is terminal failure, retire the row honestly without implying that a command ever ran;
+- add startup/re-entry reconciliation for any persisted Terminal task whose matching WorkManager attempt terminated exceptionally before the task reached its own terminal write, while preserving the enqueue-loss ownership of `BUG-TERMINAL-05` and the later native/publication invariants of `BUG-TERMINAL-07/08/09`.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative carrier: the exact persisted `TerminalItem.id` plus an accepted/running WorkManager request. The confirmed fault is after foreground admission but before native-process creation;
+- first durable application write, the Terminal-row insert, has already succeeded. Inject the first setup filesystem fault at `configFile.writeText()`: current code performs no recovery/terminal Room write afterward because the exception escapes before the main catch;
+- recovery carrier: the Terminal row survives but contains no retry/failure generation or status, while the WorkManager attempt becomes exceptional/terminal. There is no startup owner that consumes this mismatch; recovery-write failure is therefore currently replaced by complete absence of a recovery write;
+- durable Download state and Download-linked ledgers are not applicable. No native yt-dlp process or destination media output is needed for reproduction. A partially created app-cache config file may remain because the request-scoped `finally` is not entered;
+- final WorkManager semantics are not an explicit application `Result.failure()`/`Result.retry()`; the worker throws. The durable Terminal table nevertheless continues to classify the task as active, creating a false nonterminal application state;
+- stale Active possibility: yes, indefinitely at the Terminal-ledger level. A later same-command manual Run creates another task identity and does not repair the old one; manual Cancel/Delete is user intervention rather than automatic convergence; process restart leaves the row stale; Download retry/reconfigure/notification retry and backup restore are not semantic repair paths;
+- no AB/BA lock order or sibling race is required. A single worker under ordinary storage/setup failure reproduces the defect.
+
+Candidate-rejection proof:
+
+- do not reject as `BUG-TERMINAL-05`: that item ends at scheduler handoff and has no accepted worker; this path requires a worker that was accepted and entered `doWorkInternal()`/foreground execution;
+- do not reject as `BUG-TERMINAL-01`: no destination output has been committed and no post-output bookkeeping is involved;
+- do not reject as `BUG-TERMINAL-09`: no native reader/callback thread exists yet; the throwable is on the worker coroutine before `YoutubeDLCompat.execute()`;
+- do not treat WorkManager's framework handling of a thrown `CoroutineWorker` exception as an application recovery barrier. It does not delete or terminalize the app's separate Terminal row, and the current UI observer only resets controls for terminal WorkInfo states;
+- absence of an integration test does not make the setup operation non-throwing; it keeps verification at `SOURCE-LEVEL ONLY`.
+
+Focused verification requirements:
+
+- exercise the real `TerminalFragment -> TerminalViewModel.insert() -> WorkManager -> TerminalDownloadWorker` path, allow foreground admission, force `configFile.writeText()` to throw, and prove the exact task reaches the defined explicit retry/failure state without a stale active Terminal row or running notification;
+- separately fault `terminalPlan.createRequest(configFile)` and any fallible plan/config preparation that remains before the terminal owner catch, plus normal setup as a control;
+- inject process death immediately before and after config-file creation and after a partial write, then restart and prove the exact persisted task is either resumed/retried once or terminalized honestly with owned artifacts cleaned;
+- cover user/WorkManager cancellation during setup, a manual same-command rerun after setup failure, Fragment recreation, stale-row impact on `getActiveTerminalsCount()`, and `BUG-TERMINAL-05/07/08/09` non-regression controls;
+- verification must include actual Room + WorkManager + Terminal worker wiring. No executed production-path setup-fault test was found in this review, so verification remains `SOURCE-LEVEL ONLY`.
