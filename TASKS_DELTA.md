@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **31**
-- Effective active defects: **105**
+- Delta active defects: **32**
+- Effective active defects: **106**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1245,3 +1245,51 @@ Focused verification requirements:
 - add a control with a blank legacy row plus visible unknown native registry authority and prove recovery stays fail-closed without numeric-ID cancellation;
 - add nonblank current-generation controls, queued/non-running blank-row controls, process restart, repeated reconciliation, and failure/process death at the first corrected recovery write;
 - verification must use the migration plus actual startup/recovery wiring. No executed migration+Room+startup integration test was found in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P3 — continued
+
+### BUG-COOKIE-09 — Deduplicate projected cookie lines by exact identity, not substring containment
+
+**State:** Open  
+**Reviewed checkpoint:** `6dc57cb11f53d78cce20b499f35282e0de2fd172`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the Cookies clipboard-import path accepts a Netscape cookie file, persists each import as a separate enabled `CookieItem`, and immediately rebuilds the shared runtime `cookies.txt`. Enabled rows are returned newest-first. `CookieViewModel.updateCookiesFile()` then iterates every source line and asks `cookieTXT.contains(line)` before appending the source record. `StringBuilder.contains()` is raw substring membership, not exact-line or semantic cookie identity.
+
+Two ordinary valid, distinct Netscape cookies can therefore make one another look duplicated. For example, let the newer enabled import contain `.sub.example.com\tTRUE\t/\tFALSE\t0\tsid\tV` and the older enabled import contain `.example.com\tTRUE\t/\tFALSE\t0\tsid\tV`, with the same standard Netscape header. The newer row is materialized first. The entire older cookie line is then a literal substring of the newer line beginning at `.example.com`, while the shared header line is also already present. Every line of the older record therefore satisfies `cookieTXT.contains(line)`, so its content is never appended at all. The two cookies are not the same destination identity: one is scoped to `.sub.example.com`, while the omitted one is the distinct parent-domain cookie needed for `example.com` and its authorized subdomains.
+
+The omission is then written successfully to the app-owned `cookies.txt` and consumed by cookie-enabled yt-dlp paths. A request to `example.com` can consequently lose an enabled credential that Room still contains, while the narrower `.sub.example.com` credential remains. Rebuilding after process restart deterministically repeats the same substring decision because the Room rows and newest-first ordering survive. No write failure, malformed cookie, concurrency race, partitioned-cookie feature, or same-key conflict is required.
+
+**Why this is a defect:** the runtime cookie file is intended to materialize the current enabled credential set. Raw substring containment is neither Netscape line equality nor semantic cookie identity and can delete a distinct enabled credential from the execution input even when Room state and filesystem publication both succeed. The user-visible enabled state can therefore disagree with the exact credential set sent by yt-dlp, causing repeatable authentication failure or wrong request authority. This is separate from `BUG-COOKIE-08`, which concerns precedence when two sources map to the **same** cookie key with different values; this defect loses a **different** domain/path identity before the downstream cookie parser ever sees it. It is also distinct from `BUG-COOKIE-01`, whose invariant is durability/current-generation ordering of the Room-to-file projection rather than completeness of a successfully written projection.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The same `cookieTXT.contains(line)` merge and clipboard-import path are present at synchronized checkpoint `dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`.
+
+Required result:
+
+- parse enabled source content into exact Netscape cookie records and materialize by semantic identity, or at minimum compare complete normalized records/lines rather than arbitrary substring occurrence;
+- preserve every distinct domain/path/name identity, including parent-domain and nested-subdomain cookies whose serialized text overlaps;
+- integrate exact-duplicate suppression with the explicit same-key conflict/precedence semantics required by `BUG-COOKIE-08`; fixing substring omission must not reintroduce stale-value precedence or broaden host/domain/partition authority owned by the other cookie defects;
+- keep malformed/comment handling explicit so header/comment text cannot accidentally suppress a credential record, and make the projection result deterministic across import order, enable/disable/delete, and restart;
+- do not report or consume a current cookie projection unless every enabled supported credential is either materialized exactly once under the defined merge policy or explicitly rejected with an actionable result.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative observation is the set of enabled Room cookie records and each exact Netscape record identity they contribute; carrier creation fails semantically at the raw-substring dedup step before the runtime file is written;
+- the first filesystem persistence call can succeed completely and still commit the wrong credential set, so first-write failure is not required to trigger this defect. Projection write/revocation failures remain owned by `BUG-COOKIE-01/03`;
+- there is no Download terminal-state or linked-ledger mutation required in the primary path. The material durable carrier is the generated `cookies.txt`; the downstream effect is missing authentication authority for requests whose applicable cookie was omitted;
+- same-settings retry, raw/manual requeue, reconfigure, notification retry/resume, ordinary metadata retry, repeated projection, and process restart do not repair the omission because they reuse or regenerate the same deterministic substring-filtered jar. A later explicit disable/delete of the containing row may accidentally expose the omitted row, but that unrelated user mutation is not a recovery barrier;
+- no concurrency or lock ordering is required. The expected identity is stable and the failure occurs with two durable enabled rows in one projection pass.
+
+Candidate-rejection proof:
+
+- do not reject as `BUG-COOKIE-08`: that item requires two inputs collapsing to the same semantic cookie key and traces downstream duplicate overwrite precedence. Here the cookie keys are distinct (`.example.com` versus `.sub.example.com`), and the parent record is discarded before consumer parsing;
+- do not reject as `BUG-COOKIE-01`: Room and filesystem can be perfectly synchronized and the write can be durable; the materialized contents are still incomplete because of the merge predicate itself;
+- do not reject as a malformed-import edge case: both example lines are valid Netscape-style records and repeated clipboard import is a production-supported way to create simultaneously enabled rows;
+- manual cleanup of one enabled row is not proof of correctness for the supported multi-enabled-row state, and absence of a production integration test limits verification to `SOURCE-LEVEL ONLY` rather than making the path unreachable.
+
+Focused verification requirements:
+
+- exercise the real Cookies clipboard import -> Room -> `CookieDao.getAllEnabledCookies()` -> `CookieViewModel.updateCookiesFile()` -> yt-dlp `--cookies` consumer path with a newer `.sub.example.com` cookie and older `.example.com` cookie whose remaining fields are identical; assert both distinct credentials survive the runtime projection and apply only to their correct domains;
+- reverse creation order, add exact-duplicate controls, same name with different paths, parent/subdomain combinations, comment/header variations, generated plus imported rows, disabled-row controls, deletion, repeated projection, and process restart;
+- add a same-key different-value regression for `BUG-COOKIE-08` and host-only/domain/partition controls for `BUG-COOKIE-05/07` so exact-line/identity handling does not weaken those semantics;
+- verification must exercise the actual generated file through the downstream cookie-loading path. No production-path execution was performed in this review, so verification remains `SOURCE-LEVEL ONLY`.
