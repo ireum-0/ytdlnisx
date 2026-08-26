@@ -233,6 +233,13 @@ internal suspend fun claimDownloadThroughProductionAdmission(
         }
         val currentCandidate = dao.getNullableDownloadById(candidate.id)
             ?: return@withDownloadWorkerExecutionLock null
+        if (dbManager.lowQualityRedownloadDao.hasCancellationRequestedByDownload(candidate.id)) {
+            // Low-quality phase-one revocation is a durable claim fence.  It
+            // must be rechecked under the same global lock as the claim CAS
+            // so a queued linked child cannot publish E2 after cancellation
+            // has won the coordinator boundary.
+            return@withDownloadWorkerExecutionLock null
+        }
         if (isDurablyCommittedHistoryReplacementForScheduler(dbManager, currentCandidate)) {
             // Queue selection and this claim are separate observations.  The
             // History semantic commit may have won in between; a finalization

@@ -25,6 +25,16 @@ import java.util.concurrent.atomic.AtomicInteger
 class LowQualityRedownloadRepository(private val database: DBManager) {
     private val dao = database.lowQualityRedownloadDao
 
+    /** Deterministic hook immediately before final revalidation/action ownership. */
+    @Volatile
+    internal var beforeFinalLinkedExecutionRevalidationForTesting:
+        (suspend (String, List<Pair<Long, String>>) -> Unit)? = null
+
+    /** Deterministic hook while the final revalidation/action lock is held. */
+    @Volatile
+    internal var beforeFinalLinkedExecutionActionForTesting:
+        (suspend (String, List<Pair<Long, String>>) -> Unit)? = null
+
     val currentOperation: Flow<LowQualityRedownloadOperation?> = dao.observeCurrentOperation()
 
     fun observeItems(operationId: String): Flow<List<LowQualityRedownloadItem>> =
@@ -550,13 +560,25 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
             }
             val result = withDownloadWorkerExecutionSideEffectLeases(executions) {
                 beforeAction()
-                val stillCurrent = withDownloadWorkerExecutionLock {
-                    currentLinkedExecutionTokens(operationId) == executions
-                }
-                if (!stillCurrent) {
-                    null
-                } else {
-                    withDownloadWorkerExecutionLock { action() }
+                beforeFinalLinkedExecutionRevalidationForTesting?.invoke(
+                    operationId,
+                    executions,
+                )
+                // Keep the final token-set revalidation and the terminal or
+                // revocation transaction in one global critical section. A
+                // queued child claimed after the snapshot is therefore either
+                // observed here and retried with its lease, or is prevented
+                // from publishing an E2 until this action commits.
+                withDownloadWorkerExecutionLock {
+                    if (currentLinkedExecutionTokens(operationId) != executions) {
+                        null
+                    } else {
+                        beforeFinalLinkedExecutionActionForTesting?.invoke(
+                            operationId,
+                            executions,
+                        )
+                        action()
+                    }
                 }
             }
             if (result != null) return result

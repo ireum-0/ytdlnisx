@@ -28,11 +28,14 @@ import com.ireum.ytdl.work.HistoryReplacementPersistenceResult
 import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorker
+import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.YtdlpProcessIdentity
+import com.ireum.ytdl.work.claimDownloadThroughProductionAdmission
 import com.ireum.ytdl.work.dispatchLowQualityRedownloadRecovery
 import com.ireum.ytdl.work.persistHistoryReplacementTerminalState
+import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import kotlinx.coroutines.CompletableDeferred
@@ -41,6 +44,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -55,6 +59,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -82,6 +87,8 @@ class LowQualityRedownloadPersistenceTest {
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         DownloadExecutionRecovery.commitOverride = null
+        repository.beforeFinalLinkedExecutionRevalidationForTesting = null
+        repository.beforeFinalLinkedExecutionActionForTesting = null
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
         YtdlpNativeProcessBarrier.markerEnumerationFailureForTesting = false
@@ -386,6 +393,36 @@ class LowQualityRedownloadPersistenceTest {
             DownloadRepository.Status.Cancelled.name,
             database.downloadDao.getNullableDownloadById(linkedId)?.status,
         )
+    }
+
+    @Test
+    fun requestCancellationClaimWinsAndRetriesWithClaimedChild() = runBlocking {
+        assertA11ClaimWins(A11Surface.REQUEST_CANCELLATION, 904L)
+    }
+
+    @Test
+    fun completePersistedCancellationClaimWinsAndWaitsForClaimedChildLease() = runBlocking {
+        assertA11ClaimWins(A11Surface.COMPLETE_CANCELLATION, 905L)
+    }
+
+    @Test
+    fun failCoordinatorClaimWinsAndWaitsForClaimedChildLease() = runBlocking {
+        assertA11ClaimWins(A11Surface.COORDINATOR_FAILURE, 906L)
+    }
+
+    @Test
+    fun requestCancellationRevocationWinsBeforeProductionClaim() = runBlocking {
+        assertA11TerminalWins(A11Surface.REQUEST_CANCELLATION, 907L)
+    }
+
+    @Test
+    fun completePersistedCancellationWinsBeforeProductionClaim() = runBlocking {
+        assertA11TerminalWins(A11Surface.COMPLETE_CANCELLATION, 908L)
+    }
+
+    @Test
+    fun failCoordinatorWinsBeforeProductionClaim() = runBlocking {
+        assertA11TerminalWins(A11Surface.COORDINATOR_FAILURE, 909L)
     }
 
     @Test
@@ -1976,6 +2013,303 @@ class LowQualityRedownloadPersistenceTest {
             DownloadWorkerProcessOwners.release(linkedId, "E1")
         }
     }
+
+    private suspend fun assertA11ClaimWins(
+        surface: A11Surface,
+        historyId: Long,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val fixture = createA11Fixture(
+            historyId = historyId,
+            initiallyCancelRequested = false,
+        )
+        val queuedCandidate = requireNotNull(
+            database.downloadDao.getNullableDownloadById(fixture.claimedChildId),
+        )
+        val firstBoundaryReached = CompletableDeferred<Unit>()
+        val releaseFirstBoundary = CompletableDeferred<Unit>()
+        val retriedBoundary = CompletableDeferred<List<Pair<Long, String>>>()
+        val firstInvocation = AtomicBoolean(false)
+        repository.beforeFinalLinkedExecutionRevalidationForTesting = { operationId, executions ->
+            if (operationId == fixture.operationId) {
+                if (firstInvocation.compareAndSet(false, true)) {
+                    firstBoundaryReached.complete(Unit)
+                    releaseFirstBoundary.await()
+                } else {
+                    retriedBoundary.complete(executions)
+                }
+            }
+        }
+
+        val coordinator = async(Dispatchers.IO) {
+            invokeA11Surface(surface, fixture.operationId, context)
+        }
+        var claimedExecutionId: String? = null
+        var claimLeaseJob: kotlinx.coroutines.Deferred<Unit>? = null
+        val releaseClaimLease = CompletableDeferred<Unit>()
+        try {
+            firstBoundaryReached.await()
+
+            val claimed = requireNotNull(claimA11Child(context, queuedCandidate))
+            claimedExecutionId = claimed.executionId
+            assertTrue(claimed.executionId.isNotBlank())
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                database.downloadDao.getNullableDownloadById(fixture.claimedChildId)?.status,
+            )
+
+            if (surface == A11Surface.COMPLETE_CANCELLATION) {
+                // The real phase-one request is already represented by the
+                // running coordinator. Keep this write outside the helper's
+                // final boundary so the production E2 claim can win first.
+                assertEquals(
+                    1,
+                    database.lowQualityRedownloadDao.requestCancellation(
+                        fixture.operationId,
+                        102L,
+                    ),
+                )
+            }
+
+            val claimedExecutionLeaseHeld = CompletableDeferred<Unit>()
+            val executionId = claimed.executionId
+            val leaseJob = async(Dispatchers.IO) {
+                withDownloadWorkerExecutionSideEffectLease(
+                    downloadId = fixture.claimedChildId,
+                    executionId = executionId,
+                ) {
+                    claimedExecutionLeaseHeld.complete(Unit)
+                    releaseClaimLease.await()
+                }
+            }
+            claimLeaseJob = leaseJob
+            claimedExecutionLeaseHeld.await()
+
+            releaseFirstBoundary.complete(Unit)
+            val bypassedLease = withTimeoutOrNull(1_000L) {
+                retriedBoundary.await()
+            }
+            assertNull(
+                "Coordinator bypassed the claimed E2 execution side-effect lease",
+                bypassedLease,
+            )
+            assertEquals(
+                LowQualityRedownloadOperationState.RUNNING,
+                repository.getOperation(fixture.operationId)?.stateValue,
+            )
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                database.downloadDao.getNullableDownloadById(fixture.claimedChildId)?.status,
+            )
+
+            releaseClaimLease.complete(Unit)
+            leaseJob.await()
+            val retryTokens = withTimeout(5_000L) { retriedBoundary.await() }
+            assertTrue(retryTokens.contains(fixture.firstId to fixture.firstExecutionId))
+            assertTrue(retryTokens.contains(fixture.claimedChildId to executionId))
+
+            coordinator.await()
+            assertA11Outcome(surface, fixture, context)
+        } finally {
+            releaseFirstBoundary.complete(Unit)
+            releaseClaimLease.complete(Unit)
+            claimLeaseJob?.cancel()
+            if (!coordinator.isCompleted) coordinator.cancel()
+            claimedExecutionId?.let { executionId ->
+                DownloadWorkerExecutionOwners.release(
+                    fixture.claimedChildId,
+                    executionId,
+                )
+            }
+            repository.beforeFinalLinkedExecutionRevalidationForTesting = null
+            repository.beforeFinalLinkedExecutionActionForTesting = null
+        }
+    }
+
+    private suspend fun assertA11TerminalWins(
+        surface: A11Surface,
+        historyId: Long,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val fixture = createA11Fixture(
+            historyId = historyId,
+            initiallyCancelRequested = surface == A11Surface.COMPLETE_CANCELLATION,
+        )
+        val queuedCandidate = requireNotNull(
+            database.downloadDao.getNullableDownloadById(fixture.claimedChildId),
+        )
+        val finalBoundaryReached = CompletableDeferred<Unit>()
+        val releaseFinalBoundary = CompletableDeferred<Unit>()
+        val firstInvocation = AtomicBoolean(false)
+        repository.beforeFinalLinkedExecutionActionForTesting = { operationId, _ ->
+            if (
+                operationId == fixture.operationId &&
+                firstInvocation.compareAndSet(false, true)
+            ) {
+                finalBoundaryReached.complete(Unit)
+                releaseFinalBoundary.await()
+            }
+        }
+
+        val coordinator = async(Dispatchers.IO) {
+            invokeA11Surface(surface, fixture.operationId, context)
+        }
+        var claimJob: kotlinx.coroutines.Deferred<DownloadItem?>? = null
+        try {
+            finalBoundaryReached.await()
+            val productionClaim = async(Dispatchers.IO) {
+                claimA11Child(context, queuedCandidate)
+            }
+            claimJob = productionClaim
+            val claimWhileAtomicActionHeld = withTimeoutOrNull(1_000L) {
+                productionClaim.await()
+            }
+            assertNull(
+                "Production claim completed while coordinator held the atomic action lock",
+                claimWhileAtomicActionHeld,
+            )
+            assertFalse(productionClaim.isCompleted)
+            releaseFinalBoundary.complete(Unit)
+            coordinator.await()
+
+            repository.beforeFinalLinkedExecutionRevalidationForTesting = null
+            repository.beforeFinalLinkedExecutionActionForTesting = null
+            assertNull(productionClaim.await())
+            assertNull(DownloadWorkerExecutionOwners.ownerOf(fixture.claimedChildId))
+            assertA11Outcome(surface, fixture, context)
+        } finally {
+            releaseFinalBoundary.complete(Unit)
+            claimJob?.cancel()
+            if (!coordinator.isCompleted) coordinator.cancel()
+            DownloadWorkerExecutionOwners.ownerOf(fixture.claimedChildId)?.let { executionId ->
+                DownloadWorkerExecutionOwners.release(
+                    fixture.claimedChildId,
+                    executionId,
+                )
+            }
+            repository.beforeFinalLinkedExecutionRevalidationForTesting = null
+            repository.beforeFinalLinkedExecutionActionForTesting = null
+        }
+    }
+
+    private suspend fun createA11Fixture(
+        historyId: Long,
+        initiallyCancelRequested: Boolean,
+    ): A11Fixture {
+        val operation = repository.createOrReconnect(now = 100)
+        val firstId = linkDownload(
+            operationId = operation.operationId,
+            historyId = historyId,
+            status = DownloadRepository.Status.Active,
+            executionId = "a11-E1",
+        )
+        val claimedChildId = linkDownload(
+            operationId = operation.operationId,
+            historyId = historyId + 1L,
+            status = DownloadRepository.Status.Queued,
+        )
+        if (initiallyCancelRequested) {
+            assertEquals(
+                1,
+                database.lowQualityRedownloadDao.requestCancellation(
+                    operation.operationId,
+                    101L,
+                ),
+            )
+        }
+        return A11Fixture(
+            operationId = operation.operationId,
+            firstId = firstId,
+            firstExecutionId = "a11-E1",
+            claimedChildId = claimedChildId,
+        )
+    }
+
+    private suspend fun invokeA11Surface(
+        surface: A11Surface,
+        operationId: String,
+        context: Context,
+    ): Any = when (surface) {
+        A11Surface.REQUEST_CANCELLATION -> repository.requestCancellation(operationId)
+        A11Surface.COMPLETE_CANCELLATION ->
+            repository.completePersistedCancellationWithPublications(
+                operationId = operationId,
+                context = context,
+            )
+        A11Surface.COORDINATOR_FAILURE ->
+            repository.failCoordinatorWithPublications(
+                operationId = operationId,
+                context = context,
+            )
+    }
+
+    private suspend fun claimA11Child(
+        context: Context,
+        candidate: DownloadItem,
+    ): DownloadItem? = claimDownloadThroughProductionAdmission(
+        context = context,
+        dbManager = database,
+        candidate = candidate,
+        // Keep A's linked E1 live while leaving one real admission slot for
+        // B to win the coordinator race.
+        concurrentDownloadLimit = 2,
+    )
+
+    private suspend fun assertA11Outcome(
+        surface: A11Surface,
+        fixture: A11Fixture,
+        context: Context,
+    ) {
+        repository.beforeFinalLinkedExecutionRevalidationForTesting = null
+        repository.beforeFinalLinkedExecutionActionForTesting = null
+        when (surface) {
+            A11Surface.REQUEST_CANCELLATION -> {
+                val phaseOne = requireNotNull(repository.getOperation(fixture.operationId))
+                assertEquals(LowQualityRedownloadOperationState.RUNNING, phaseOne.stateValue)
+                assertTrue(phaseOne.cancelRequested)
+                assertEquals(
+                    LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+                    repository.getItems(fixture.operationId)
+                        .single { it.downloadId == fixture.claimedChildId }
+                        .stateValue,
+                )
+                repository.completePersistedCancellationWithPublications(
+                    operationId = fixture.operationId,
+                    context = context,
+                )
+                assertEquals(
+                    LowQualityRedownloadOperationState.CANCELLED,
+                    repository.getOperation(fixture.operationId)?.stateValue,
+                )
+            }
+            A11Surface.COMPLETE_CANCELLATION -> assertEquals(
+                LowQualityRedownloadOperationState.CANCELLED,
+                repository.getOperation(fixture.operationId)?.stateValue,
+            )
+            A11Surface.COORDINATOR_FAILURE -> assertEquals(
+                LowQualityRedownloadOperationState.FAILED,
+                repository.getOperation(fixture.operationId)?.stateValue,
+            )
+        }
+        DownloadExecutionRecovery.reconcile(context, database)
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getNullableDownloadById(fixture.claimedChildId)?.status,
+        )
+    }
+
+    private enum class A11Surface {
+        REQUEST_CANCELLATION,
+        COMPLETE_CANCELLATION,
+        COORDINATOR_FAILURE,
+    }
+
+    private data class A11Fixture(
+        val operationId: String,
+        val firstId: Long,
+        val firstExecutionId: String,
+        val claimedChildId: Long,
+    )
 
     private suspend fun awaitOperationState(
         operationId: String,
