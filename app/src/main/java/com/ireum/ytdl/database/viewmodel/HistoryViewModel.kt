@@ -2249,7 +2249,11 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         if (filteredPaths.isEmpty() || filteredPaths == item.downloadPath) return item
         val updated = item.copy(downloadPath = filteredPaths)
         viewModelScope.launch(Dispatchers.IO) {
-            repository.updateDownloadPath(updated.id, updated.downloadPath)
+            repository.updateDownloadPath(
+                id = updated.id,
+                downloadPath = updated.downloadPath,
+                expectedDownloadPath = item.downloadPath,
+            )
         }
         return updated
     }

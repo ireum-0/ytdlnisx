@@ -3209,15 +3209,32 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             localTreePath = treeMeta.second
         )
         HistoryReferenceMutationCoordinator.withLockBlocking {
-            db.historyDao.updateReconnectedMedia(
-                id = updatedItem.id,
-                url = updatedItem.url,
-                downloadPath = updatedItem.downloadPath,
-                filesize = updatedItem.filesize,
-                format = updatedItem.format,
-                localTreeUri = updatedItem.localTreeUri,
-                localTreePath = updatedItem.localTreePath,
-            )
+            val current = db.historyDao.getNullableItem(selected.id)
+            if (
+                current != null &&
+                    current.downloadId == selected.downloadId &&
+                    current.url == selected.url &&
+                    current.downloadPath == selected.downloadPath
+            ) {
+                check(
+                    db.historyDao.updateReconnectedMedia(
+                        id = updatedItem.id,
+                        expectedUrl = selected.url,
+                        expectedDownloadPath = selected.downloadPath,
+                        url = updatedItem.url,
+                        downloadPath = updatedItem.downloadPath,
+                        filesize = updatedItem.filesize,
+                        format = updatedItem.format,
+                        localTreeUri = updatedItem.localTreeUri,
+                        localTreePath = updatedItem.localTreePath,
+                    ) == 1
+                ) {
+                    "History reconnect write lost its expected target id=${selected.id}"
+                }
+            }
+            // A replacement/deletion that won before this commit invalidates
+            // the dialog's stale reconnect intent.  Do not fall through to
+            // inserting a second History row for the same local file.
         }
         candidates.removeAll { it.id == selected.id }
         return true
@@ -6882,14 +6899,26 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             filesize = size
         )
         HistoryReferenceMutationCoordinator.withLockBlocking {
-            db.historyDao.updateReconnectedFile(
-                id = item.id,
-                downloadPath = listOf(uri.toString()),
-                filesize = size,
-                format = updatedFormat,
-                localTreeUri = "",
-                localTreePath = "",
-            )
+            val current = db.historyDao.getNullableItem(item.id)
+            if (
+                current != null &&
+                    current.downloadId == item.downloadId &&
+                    current.downloadPath == item.downloadPath
+            ) {
+                check(
+                    db.historyDao.updateReconnectedFile(
+                        id = item.id,
+                        expectedDownloadPath = item.downloadPath,
+                        downloadPath = listOf(uri.toString()),
+                        filesize = size,
+                        format = updatedFormat,
+                        localTreeUri = "",
+                        localTreePath = "",
+                    ) == 1
+                ) {
+                    "History file reconnect write lost its expected target id=${item.id}"
+                }
+            }
         }
     }
 

@@ -389,9 +389,21 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
     fun updateThumb(id: Long, expectedThumb: String, newThumb: String): Boolean =
         historyDao.updateThumbIfUnchanged(id, expectedThumb, newThumb) > 0
 
-    fun updateDownloadPath(id: Long, downloadPath: List<String>): Boolean =
+    fun updateDownloadPath(
+        id: Long,
+        downloadPath: List<String>,
+        expectedDownloadPath: List<String>? = null,
+    ): Boolean =
         HistoryReferenceMutationCoordinator.withLockBlocking {
-            historyDao.updateDownloadPathById(id, downloadPath) > 0
+            if (expectedDownloadPath == null) {
+                historyDao.updateDownloadPathById(id, downloadPath) > 0
+            } else {
+                historyDao.updateDownloadPathIfUnchanged(
+                    id = id,
+                    expectedDownloadPath = expectedDownloadPath,
+                    downloadPath = downloadPath,
+                ) > 0
+            }
         }
 
     fun updateMediaPublishedAtIfMissing(

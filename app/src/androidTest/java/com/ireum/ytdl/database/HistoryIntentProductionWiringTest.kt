@@ -128,6 +128,68 @@ class HistoryIntentProductionWiringTest {
     }
 
     @Test
+    fun staleReconnectMediaWriteCannotOverwriteCommittedReplacement() = runBlocking {
+        val historyId = insertWithManualKeywords()
+        val staleSnapshot = db.historyDao.getItem(historyId)
+        persistReplacementMetadata(staleSnapshot)
+
+        assertEquals(
+            0,
+            db.historyDao.updateReconnectedMedia(
+                id = historyId,
+                expectedUrl = staleSnapshot.url,
+                expectedDownloadPath = staleSnapshot.downloadPath,
+                url = "content://stale-reconnect",
+                downloadPath = listOf("content://stale-reconnect"),
+                filesize = 1L,
+                format = staleSnapshot.format.copy(container = "3gp"),
+                localTreeUri = "stale-tree",
+                localTreePath = "stale-path",
+            )
+        )
+
+        assertReplacementMetadata(db.historyDao.getItem(historyId))
+    }
+
+    @Test
+    fun staleReconnectFileWriteCannotOverwriteCommittedReplacement() = runBlocking {
+        val historyId = insertWithManualKeywords()
+        val staleSnapshot = db.historyDao.getItem(historyId)
+        persistReplacementMetadata(staleSnapshot)
+
+        assertEquals(
+            0,
+            db.historyDao.updateReconnectedFile(
+                id = historyId,
+                expectedDownloadPath = staleSnapshot.downloadPath,
+                downloadPath = listOf("content://stale-reconnect"),
+                filesize = 1L,
+                format = staleSnapshot.format.copy(container = "3gp"),
+                localTreeUri = "stale-tree",
+                localTreePath = "stale-path",
+            )
+        )
+
+        assertReplacementMetadata(db.historyDao.getItem(historyId))
+    }
+
+    @Test
+    fun stalePathSanitizationCannotOverwriteCommittedReplacement() = runBlocking {
+        val historyId = insertWithManualKeywords()
+        val staleSnapshot = db.historyDao.getItem(historyId)
+        persistReplacementMetadata(staleSnapshot)
+
+        assertFalse(
+            HistoryRepository(db.historyDao, db.playlistDao).updateDownloadPath(
+                id = historyId,
+                downloadPath = listOf("/stale/only.mp4"),
+                expectedDownloadPath = staleSnapshot.downloadPath,
+            )
+        )
+        assertReplacementMetadata(db.historyDao.getItem(historyId))
+    }
+
+    @Test
     fun staleVideoPlayerEditPreservesReplacementOwnedMetadataAndSourceDate() = runBlocking {
         val historyId = insertWithManualKeywords()
         val staleSnapshot = db.historyDao.getItem(historyId)

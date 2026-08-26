@@ -188,12 +188,24 @@ interface HistoryDao {
     fun updateDownloadPathById(id: Long, downloadPath: List<String>): Int
 
     @Query(
+        "UPDATE history SET downloadPath = :downloadPath " +
+            "WHERE id = :id AND downloadPath = :expectedDownloadPath"
+    )
+    fun updateDownloadPathIfUnchanged(
+        id: Long,
+        expectedDownloadPath: List<String>,
+        downloadPath: List<String>,
+    ): Int
+
+    @Query(
         "UPDATE history SET url = :url, downloadPath = :downloadPath, filesize = :filesize, " +
             "format = :format, localTreeUri = :localTreeUri, localTreePath = :localTreePath " +
-            "WHERE id = :id"
+            "WHERE id = :id AND url = :expectedUrl AND downloadPath = :expectedDownloadPath"
     )
     fun updateReconnectedMedia(
         id: Long,
+        expectedUrl: String,
+        expectedDownloadPath: List<String>,
         url: String,
         downloadPath: List<String>,
         filesize: Long,
@@ -205,10 +217,11 @@ interface HistoryDao {
     @Query(
         "UPDATE history SET downloadPath = :downloadPath, filesize = :filesize, " +
             "format = :format, localTreeUri = :localTreeUri, localTreePath = :localTreePath " +
-            "WHERE id = :id"
+            "WHERE id = :id AND downloadPath = :expectedDownloadPath"
     )
     fun updateReconnectedFile(
         id: Long,
+        expectedDownloadPath: List<String>,
         downloadPath: List<String>,
         filesize: Long,
         format: Format,
