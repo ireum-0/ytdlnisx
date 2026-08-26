@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **34**
-- Effective active defects: **108**
+- Delta active defects: **35**
+- Effective active defects: **109**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1402,3 +1402,55 @@ Focused verification requirements:
 - inject process death immediately before and after config-file creation and after a partial write, then restart and prove the exact persisted task is either resumed/retried once or terminalized honestly with owned artifacts cleaned;
 - cover user/WorkManager cancellation during setup, a manual same-command rerun after setup failure, Fragment recreation, stale-row impact on `getActiveTerminalsCount()`, and `BUG-TERMINAL-05/07/08/09` non-regression controls;
 - verification must include actual Room + WorkManager + Terminal worker wiring. No executed production-path setup-fault test was found in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P1 — continued
+
+### BUG-RECONFIGURE-01 — Do not delete surviving existing Downloads when one reconfigure sibling fails
+
+**State:** Open  
+**Reviewed checkpoint:** `abc3998d26bd2f17517097cc9ad1231aad10f6ed`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** multiple existing Download rows can be moved from `Processing` back to `Saved` while `UpdateMultipleDownloadsFormatsWorker` refreshes their formats; the worker later posts a “formats updated” notification containing the captured Download IDs. That notification can remain valid after one sibling has independently been deleted. When the user taps it, `HomeFragment.onResume()` calls `turnDownloadItemsToProcessingDownloads(ids, deleteExisting = true)` to edit the existing rows in place. The method first globally clears current Processing drafts, then iterates the captured IDs one by one. For an existing sibling A, `repository.getItemByID(A)` succeeds and `deleteExisting=true` causes the same durable row to be updated from `Saved` to `Processing`. If a later sibling B was deleted after notification creation, `repository.getItemByID(B)` reaches non-null `DownloadDao.getDownloadById(B)` and throws. The enclosing catch then calls `deleteProcessing()`, whose repository implementation deletes every Download currently in `Processing` and the linked History-replacement/low-quality barrier rows for that status. A—an existing user Download that was merely moved temporarily into Processing for reconfiguration—is therefore permanently deleted because unrelated sibling B failed current lookup. Any unrelated Download that legitimately entered Processing before that cleanup can be deleted by the same global status sweep.
+
+The same failure class is reachable from another mid-loop throwable after an earlier existing sibling has committed its in-place status change, such as retry metadata/Room update failure. There is no batch transaction, prior-status snapshot rollback, exact attempt-created-ID cleanup set, or durable reconfiguration carrier. The catch swallows the exception after destructive cleanup and emits only `processingItems=false`; the Home caller can continue to navigation without a typed partial/failure result. Process restart preserves the row deletion, and later manual reconfigure/raw requeue cannot recover a Download row that no longer exists.
+
+**Why this is a defect:** `deleteExisting=true` explicitly means the flow is temporarily staging already durable user-owned Download records for editing, not creating disposable Processing clones. A later sibling's stale identity or persistence failure cannot authorize deletion of a sibling that successfully existed and was only reclassified to Processing. The cleanup derives destructive authority solely from a mutable status shared with genuine drafts, so a normal stale notification ordering causes persistent Download configuration/data loss and can cross sibling boundaries. This is distinct from `BUG-RETRY-01`, which concerns unchanged errored retry configuration being semantically reclassified in the clone-based/default `deleteExisting=false` flow; it does not own destructive cleanup of in-place existing rows after a later sibling failure.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The synchronized baseline checkpoint contains the same `turnDownloadItemsToProcessingDownloads()` mid-loop catch plus global `deleteProcessing()` cleanup behavior.
+
+Required result:
+
+- separate transient attempt-created Processing drafts from pre-existing durable Downloads that are temporarily moved into Processing; cleanup authority must be based on exact provenance/attempt identity, never status alone;
+- make multi-item reconfiguration sibling-isolated or transactional: failure/missing identity for B must not delete or discard A after A's earlier in-place transition, and must not sweep unrelated Processing rows;
+- when editing existing rows in place, retain the exact prior durable status/configuration identity needed to roll back only the rows mutated by this attempt, or validate the whole batch before the first mutation and then commit coherently under expected-current predicates;
+- return a typed complete/partial/failure result to the notification/Home caller and do not navigate as though reconfiguration succeeded after destructive cleanup;
+- make stale notification re-entry, retry/reconfigure, manual/raw requeue, process restart, and later format refresh converge without requiring restoration from an unrelated backup and without broad status-based deletion of surviving rows;
+- preserve linked History-replacement/low-quality ledger semantics for rows that remain authoritative; a sibling failure must not delete those ledgers merely because the row temporarily carried `Processing`.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision: the user reopens the exact existing Download IDs captured by the completed format-update notification; current existence/expected identity for every row must be proven before destructive status-dependent cleanup can own it;
+- first persistence in the concrete failure path: A's successful `Saved -> Processing` in-place Room update. Inject B missing/read failure immediately afterward; current recovery performs global `deleteProcessing()` rather than rollback and deletes A;
+- recovery carrier: none. If the destructive cleanup succeeds, A is absent. If that cleanup itself fails, A can remain stranded in `Processing` without a durable record of its prior Saved status or of the failed batch generation;
+- linked-ledger state: `DownloadRepository.deleteProcessing()` also removes History replacement barriers and low-quality-redownload ledger rows for Processing status. No filesystem/media publication is required to reproduce the primary defect;
+- final application result: the inner coroutine catches and suppresses the failure and emits `processingItems=false`; the caller receives no typed batch failure. WorkManager already completed the earlier format-update task and is not the owner of this re-entry failure. Stale Active/PostProcessing is not required;
+- semantic downgrade: a durable existing Download temporarily marked Processing is reinterpreted as a disposable draft solely because another sibling throws;
+- cross-attempt matrix: tapping the same stale notification again retains the obsolete ID set; manual reconfigure or raw/manual requeue cannot recover a row already deleted; notification retry/resume is not a repair path; restart preserves absence; restore from an older backup is not semantic recovery and must not be relied upon. A later format refresh may only act on whatever rows survive and cannot reconstruct the lost row;
+- concurrency/sibling isolation: a supported deletion/status change of B after notification creation is sufficient; no AB/BA deadlock is required. The batch must tolerate mutable sibling identities without transferring destructive authority to A or unrelated Processing rows.
+
+Candidate-rejection proof:
+
+- this candidate is not rejected because B changed or was deleted after notification creation: stale re-entry identity is explicitly part of the supported cross-attempt surface, and B's mutation grants no authority over sibling A;
+- `deleteExisting=true` proves A is an existing durable row being edited in place; it is not equivalent to the transient id=0 clones used by the ordinary clone-based Processing flow, so the global cleanup cannot be justified as disposing only attempt-created drafts;
+- this is not `BUG-RETRY-01`: that defect owns retry/reconfigure semantic classification for unchanged Error settings and does not require or cover a later sibling exception or deletion of an already existing Download row;
+- the presence of one outer catch does not restore atomicity: its cleanup is the destructive step that violates provenance and sibling isolation, and there is no prior-status rollback or exact created-row set;
+- no production test exercising a later-sibling failure after an earlier in-place `deleteExisting=true` commit was found; absence of such a test keeps verification at `SOURCE-LEVEL ONLY` rather than making the path unreachable.
+
+Focused verification requirements:
+
+- exercise the real `UpdateMultipleDownloadsFormatsWorker -> formats-updated notification -> HomeFragment -> DownloadViewModel.turnDownloadItemsToProcessingDownloads(deleteExisting=true) -> DownloadRepository/Room` wiring with two existing rows A and B. Create the notification, delete B before tapping it, then assert A is not deleted or stranded and unrelated Processing rows are untouched;
+- repeat with B failing from a DAO/update/retry-preparation fault after A's in-place transition, and inject failure into the first rollback/recovery write of the corrected implementation;
+- cover B as first versus later sibling, three-row batches, an unrelated existing Processing row, linked History-replacement/low-quality ledgers, process death after A transitions but before B is read, repeated stale-notification taps, and normal all-present reconfiguration;
+- exercise both `deleteExisting=true` and clone-based `deleteExisting=false` as controls so corrected provenance-aware cleanup does not leak temporary clones or delete pre-existing rows;
+- verification must cover the actual Home/notification + ViewModel + Room wiring and the persistent state after restart. No such production-path test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
