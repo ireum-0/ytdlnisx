@@ -18,6 +18,7 @@ import com.ireum.ytdl.util.LowQualityRedownloadNotification
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -341,129 +342,153 @@ object LowQualityRedownloadLedger {
      * this process; startup recovery invokes the same protocol after process
      * death.
      */
-    fun scheduleCancellationConvergence(context: Context, operationId: String) {
+    fun scheduleCancellationConvergence(
+        context: Context,
+        operationId: String,
+        dbManager: DBManager = DBManager.getInstance(context.applicationContext),
+    ) {
         if (operationId.isBlank()) return
         val appContext = context.applicationContext
         cancellationJobs.computeIfAbsent(operationId) {
             convergenceScope.launch {
+                val ownerJob = coroutineContext[Job]
                 var retryDelayMs = 100L
                 try {
                     while (true) {
-                        val repository = LowQualityRedownloadRepository(
-                            DBManager.getInstance(appContext)
-                        )
-                        val operation = try {
-                            repository.getOperation(operationId)
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: Exception) {
-                            android.util.Log.w(
-                                "LowQualityRedownload",
-                                "Could not inspect cancellation convergence operation=$operationId",
-                                error,
-                            )
-                            delay(retryDelayMs)
-                            retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
-                            continue
-                        } ?: return@launch
-                        val linkedDownloadIds = repository.getItems(operationId)
-                            .mapNotNull { it.downloadId }
-                            .distinct()
-                        if (operation.stateValue.isTerminal) {
-                            // Phase two may already have committed the
-                            // terminal operation before native quiescence was
-                            // acknowledged.  Terminal state is not permission
-                            // to abandon that independent native-debt carrier.
-                            linkedDownloadIds.forEach { downloadId ->
-                                DownloadExecutionRecovery.scheduleRecovery(appContext, downloadId)
-                            }
-                            runCatching {
-                                DownloadExecutionRecovery.reconcile(appContext)
-                            }.onFailure {
-                                android.util.Log.w(
-                                    "LowQualityRedownload",
-                                    "Terminal native recovery pass failed operation=$operationId",
-                                    it,
-                                )
-                            }
-                            val nativeDebtRemains = linkedDownloadIds.any { downloadId ->
-                                DownloadExecutionRecovery.pendingDownloadIds(appContext)
-                                    .contains(downloadId) ||
-                                    DownloadWorker.hasAnyRegisteredNativeProcess(downloadId)
-                            }
-                            if (!nativeDebtRemains) return@launch
-                            delay(retryDelayMs)
-                            retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
-                            continue
-                        }
-                        if (!operation.cancelRequested) {
-                            return@launch
-                        }
                         try {
-                            val result = repository.completePersistedCancellationWithPublications(
-                                operationId = operationId,
-                                context = appContext,
-                            )
-                            DownloadCancellationRegistry.publish(result.publications)
-                            result.publications.forEach { publication ->
-                                withDownloadWorkerExecutionSideEffectLease(
-                                    publication.downloadId,
-                                    publication.executionId,
-                                ) {
-                                    check(
-                                        DownloadWorker.cancelProcessesForExecution(
-                                            publication.downloadId,
-                                            publication.executionId,
-                                        )
+                            val repository = LowQualityRedownloadRepository(dbManager)
+                            val operation = repository.getOperation(operationId)
+                                ?: return@launch
+                            // This read is part of the cancellation-debt
+                            // decision. Keep it inside the owner boundary so a
+                            // transient Room failure cannot tear down the
+                            // only same-process recovery responsibility.
+                            val linkedDownloadIds = repository.getItems(operationId)
+                                .mapNotNull { it.downloadId }
+                                .distinct()
+                            if (operation.stateValue.isTerminal) {
+                                // Phase two may already have committed the
+                                // terminal operation before native quiescence
+                                // was acknowledged. Terminal state is not
+                                // permission to abandon that independent
+                                // native-debt carrier.
+                                linkedDownloadIds.forEach { downloadId ->
+                                    DownloadExecutionRecovery.scheduleRecovery(
+                                        appContext,
+                                        downloadId,
+                                        dbManager,
+                                    )
+                                }
+                                try {
+                                    DownloadExecutionRecovery.reconcile(appContext, dbManager)
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (error: Exception) {
+                                    // A failed recovery pass leaves the
+                                    // durable carrier in place. Retry the whole
+                                    // convergence iteration rather than using
+                                    // a partial debt observation to terminate.
+                                    android.util.Log.w(
+                                        "LowQualityRedownload",
+                                        "Terminal native recovery pass failed operation=$operationId",
+                                        error,
+                                    )
+                                    delay(retryDelayMs)
+                                    retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                                    continue
+                                }
+                                val nativeDebtRemains = linkedDownloadIds.any { downloadId ->
+                                    DownloadExecutionRecovery.pendingDownloadIds(appContext)
+                                        .contains(downloadId) ||
+                                        DownloadWorker.hasAnyRegisteredNativeProcess(downloadId)
+                                }
+                                if (!nativeDebtRemains) return@launch
+                                delay(retryDelayMs)
+                                retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                                continue
+                            }
+                            if (!operation.cancelRequested) {
+                                return@launch
+                            }
+                            try {
+                                val result = repository.completePersistedCancellationWithPublications(
+                                    operationId = operationId,
+                                    context = appContext,
+                                )
+                                DownloadCancellationRegistry.publish(result.publications)
+                                result.publications.forEach { publication ->
+                                    withDownloadWorkerExecutionSideEffectLease(
+                                        publication.downloadId,
+                                        publication.executionId,
                                     ) {
-                                        "Native cancellation was not acknowledged for " +
-                                            publication.downloadId
-                                    }
-                                    check(
-                                        DownloadExecutionRecovery.markNativeQuiescent(
-                                            context = appContext,
-                                            downloadId = publication.downloadId,
-                                            executionId = publication.executionId,
-                                            exactGenerationProof = true,
-                                        )
-                                    ) {
-                                        "Native cancellation recovery carrier was not acknowledged for " +
-                                            publication.downloadId
+                                        check(
+                                            DownloadWorker.cancelProcessesForExecution(
+                                                publication.downloadId,
+                                                publication.executionId,
+                                            )
+                                        ) {
+                                            "Native cancellation was not acknowledged for " +
+                                                publication.downloadId
+                                        }
+                                        check(
+                                            DownloadExecutionRecovery.markNativeQuiescent(
+                                                context = appContext,
+                                                downloadId = publication.downloadId,
+                                                executionId = publication.executionId,
+                                                exactGenerationProof = true,
+                                            )
+                                        ) {
+                                            "Native cancellation recovery carrier was not acknowledged for " +
+                                                publication.downloadId
+                                        }
                                     }
                                 }
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                android.util.Log.w(
+                                    "LowQualityRedownload",
+                                    "Low-quality cancellation convergence retry failed operation=$operationId",
+                                    error,
+                                )
                             }
+                            if (repository.getOperation(operationId) == null) return@launch
+                            delay(retryDelayMs)
+                            retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (error: Exception) {
+                            // Every ordinary Room/native observation in this
+                            // iteration is retryable cancellation debt. In
+                            // particular, getItems() must not escape to the
+                            // finally block while cancelRequested remains
+                            // durable.
                             android.util.Log.w(
                                 "LowQualityRedownload",
-                                "Low-quality cancellation convergence retry failed operation=$operationId",
-                                error,
-                            )
-                        }
-                        val latest = try {
-                            repository.getOperation(operationId)
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: Exception) {
-                            android.util.Log.w(
-                                "LowQualityRedownload",
-                                "Could not re-read cancellation convergence operation=$operationId",
+                                "Low-quality cancellation convergence iteration failed operation=$operationId",
                                 error,
                             )
                             delay(retryDelayMs)
                             retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
-                            continue
                         }
-                        if (latest == null) return@launch
-                        delay(retryDelayMs)
-                        retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
                     }
                 } finally {
-                    cancellationJobs.remove(operationId)
+                    if (ownerJob != null) cancellationJobs.remove(operationId, ownerJob)
                 }
             }
         }
+    }
+
+    internal fun isCancellationConvergenceActiveForTesting(operationId: String): Boolean =
+        cancellationJobs[operationId]?.isActive == true
+
+    internal fun cancelCancellationConvergenceForTesting(operationId: String) {
+        cancellationJobs.remove(operationId)?.cancel()
+    }
+
+    internal fun cancelAllCancellationConvergenceJobsForTesting() {
+        cancellationJobs.values.forEach { it.cancel() }
+        cancellationJobs.clear()
     }
 
     suspend fun refresh(context: Context, operationIds: Collection<String>) {

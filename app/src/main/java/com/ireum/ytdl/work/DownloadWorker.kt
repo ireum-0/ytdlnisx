@@ -4520,12 +4520,19 @@ class DownloadWorker(
 
         /**
          * Used before publishing a new execution token.  A row is not
-         * reusable while a process for any older execution is still visible
-         * in any same-process registry, even if its worker owner disappeared.
+         * reusable while any older execution remains visible in a same-process
+         * registry or in the durable native-marker namespace, even if its
+         * worker owner disappeared.
          */
         internal fun hasAnyRegisteredNativeProcess(downloadId: Long): Boolean {
             return DownloadWorkerProcessOwners.ownerOf(downloadId) != null ||
                 YoutubeDLCompat.hasAnyDownloadProcess(downloadId) ||
+                // Process-local registries disappear with the app process.
+                // A durable marker is still a same-Download native carrier,
+                // including QUIESCENT cleanup debt, so it fences every new
+                // execution until the marker namespace is authoritatively
+                // cleared.
+                YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId) ||
                 runningNativePostProcessingProcesses.keys.any { key ->
                     key.downloadItemId == downloadId &&
                         runningNativePostProcessingProcesses[key]?.isNotEmpty() == true

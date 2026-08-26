@@ -6,6 +6,7 @@ import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import java.util.UUID
 
 /**
@@ -38,6 +39,10 @@ internal fun classifyDownloadSchedulerOwnership(
         liveExecutionIds = liveIds,
         liveHardSubIds = live
             .asSequence()
+            // Preserve the scheduler's existing hard-sub policy: only a
+            // live Active row consumes hard-sub admission authority. A live
+            // PostProcessing row has already released that scheduler gate.
+            .filter { it.status == DownloadRepository.Status.Active.name }
             .filter(::isHardSubRedownloadForScheduler)
             .mapTo(linkedSetOf(), DownloadItem::id),
         recoveryOwnedIds = activeOrPostProcessing
@@ -180,6 +185,10 @@ internal suspend fun claimDownloadThroughProductionAdmission(
     downloadId = candidate.id,
     executionId = "",
 ) {
+    // The claim boundary is also used by production-wiring callers that do
+    // not first enter DownloadWorker.doWork(). Ensure the durable marker
+    // namespace is configured before the fail-closed native check.
+    YtdlpNativeProcessBarrier.configure(context)
     if (DownloadExecutionRecovery.pendingDownloadIds(context).contains(candidate.id)) {
         // A durable recovery/finalization carrier is stronger than a queued
         // observation.  Do not let an unrelated worker reinterpret it as a
@@ -202,6 +211,14 @@ internal suspend fun claimDownloadThroughProductionAdmission(
         // candidate's lease is already held and before publishing its token.
         // This preserves the lease -> global lock -> short CAS order without
         // holding the global lock while waiting for a per-Download lease.
+        // Recheck the per-Download native authority here as well: a durable
+        // marker can appear after the initial precheck but before publication.
+        if (
+            !DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id) ||
+                DownloadWorker.hasAnyRegisteredNativeProcess(candidate.id)
+        ) {
+            return@withDownloadWorkerExecutionLock null
+        }
         val currentOwnership = classifyDownloadSchedulerOwnership(
             dao.getActiveAndPostProcessingDownloadsList()
         )

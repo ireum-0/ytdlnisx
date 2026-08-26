@@ -29,14 +29,18 @@ import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
+import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.work.dispatchLowQualityRedownloadRecovery
 import com.ireum.ytdl.work.persistHistoryReplacementTerminalState
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -67,11 +71,20 @@ class LowQualityRedownloadPersistenceTest {
             .allowMainThreadQueries()
             .build()
         repository = LowQualityRedownloadRepository(database)
+        YtdlpNativeProcessBarrier.configure(context)
     }
 
     @After
     fun closeDatabase() {
+        LowQualityRedownloadLedger.cancelAllCancellationConvergenceJobsForTesting()
+        LowQualityRedownloadRepository.getItemsFailureCountForTesting = 0
+        DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
+        DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
+        DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         DownloadExecutionRecovery.commitOverride = null
+        YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+        YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
+        YtdlpNativeProcessBarrier.markerEnumerationFailureForTesting = false
         if (::database.isInitialized) database.close()
     }
 
@@ -310,6 +323,69 @@ class LowQualityRedownloadPersistenceTest {
             database.downloadDao.getNullableDownloadById(linkedId)?.status,
         )
         assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(linkedId))
+    }
+
+    @Test
+    fun cancellationConvergenceRetriesFirstGetItemsReadInSameProcess() = runBlocking {
+        assertCancellationConvergenceRetriesGetItemsFailures(failureCount = 1, historyId = 901)
+    }
+
+    @Test
+    fun cancellationConvergenceRetriesRepeatedGetItemsReadsInSameProcess() = runBlocking {
+        assertCancellationConvergenceRetriesGetItemsFailures(failureCount = 4, historyId = 902)
+    }
+
+    @Test
+    fun cancellationConvergenceCancellationStopsOwnerWithoutRetryLoop() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(
+            operationId = operation.operationId,
+            historyId = 903,
+            status = DownloadRepository.Status.Active,
+            executionId = "E1",
+        )
+
+        repository.requestCancellation(operation.operationId)
+        LowQualityRedownloadRepository.getItemsFailureCountForTesting = Int.MAX_VALUE
+        LowQualityRedownloadLedger.scheduleCancellationConvergence(
+            context = context,
+            operationId = operation.operationId,
+            dbManager = database,
+        )
+        awaitCancellationOwnerActive(operation.operationId)
+
+        LowQualityRedownloadLedger.cancelCancellationConvergenceForTesting(operation.operationId)
+        awaitCancellationOwnerStopped(operation.operationId)
+
+        val interrupted = requireNotNull(repository.getOperation(operation.operationId))
+        assertEquals(LowQualityRedownloadOperationState.RUNNING, interrupted.stateValue)
+        assertTrue(interrupted.cancelRequested)
+        LowQualityRedownloadRepository.getItemsFailureCountForTesting = 0
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        // A later live owner can still complete the durable debt; this is a
+        // test cleanup and also proves cancellation did not corrupt the
+        // operation into an unretryable state.
+        LowQualityRedownloadLedger.scheduleCancellationConvergence(
+            context = context,
+            operationId = operation.operationId,
+            dbManager = database,
+        )
+        awaitOperationState(operation.operationId, LowQualityRedownloadOperationState.CANCELLED)
+        awaitCancellationOwnerStopped(operation.operationId)
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getNullableDownloadById(linkedId)?.status,
+        )
     }
 
     @Test
@@ -1837,6 +1913,97 @@ class LowQualityRedownloadPersistenceTest {
         assertEquals(DownloadIssueCode.HISTORY_TARGET_DELETED.name, persisted.lastIssueCode)
     }
 
+    private suspend fun assertCancellationConvergenceRetriesGetItemsFailures(
+        failureCount: Int,
+        historyId: Long,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(
+            operationId = operation.operationId,
+            historyId = historyId,
+            status = DownloadRepository.Status.Active,
+            executionId = "E1",
+        )
+        val siblingId = database.downloadDao.insert(
+            download(historyId + 1_000L).apply { playlistURL = "" },
+        )
+        val processId = YtdlpProcessIdentity.download(linkedId, "E1")
+        val process = ControlledNativeProcess(acknowledgeOnForce = true)
+        assertTrue(DownloadWorkerProcessOwners.claim(linkedId, "E1"))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+
+        try {
+            assertEquals(listOf(linkedId), repository.requestCancellation(operation.operationId))
+            assertEquals(
+                LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+                repository.getItems(operation.operationId).single().stateValue,
+            )
+
+            LowQualityRedownloadRepository.getItemsFailureCountForTesting = failureCount
+            LowQualityRedownloadLedger.scheduleCancellationConvergence(
+                context = context,
+                operationId = operation.operationId,
+                dbManager = database,
+            )
+            awaitCancellationOwnerActive(operation.operationId)
+            awaitOperationState(operation.operationId, LowQualityRedownloadOperationState.CANCELLED)
+            process.destroyRequested.await()
+            LowQualityRedownloadRepository.getItemsFailureCountForTesting = 0
+            awaitCancellationOwnerStopped(operation.operationId)
+
+            assertEquals(1, process.destroyRequests)
+            assertEquals(1, process.destroyForciblyRequests)
+            assertEquals(
+                LowQualityRedownloadItemState.CANCELLED,
+                repository.getItems(operation.operationId).single().stateValue,
+            )
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                database.downloadDao.getNullableDownloadById(linkedId)?.status,
+            )
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                database.downloadDao.getNullableDownloadById(siblingId)?.status,
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(linkedId))
+            assertFalse(DownloadWorker.hasAnyRegisteredNativeProcess(linkedId))
+            assertFalse(YoutubeDLCompat.hasProcessById(processId))
+        } finally {
+            LowQualityRedownloadRepository.getItemsFailureCountForTesting = 0
+            process.acknowledgeTermination()
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(linkedId, "E1")
+        }
+    }
+
+    private suspend fun awaitOperationState(
+        operationId: String,
+        state: LowQualityRedownloadOperationState,
+    ) {
+        withTimeout(20_000L) {
+            while (repository.getOperation(operationId)?.stateValue != state) {
+                delay(25L)
+            }
+        }
+    }
+
+    private suspend fun awaitCancellationOwnerActive(operationId: String) {
+        withTimeout(2_000L) {
+            while (!LowQualityRedownloadLedger.isCancellationConvergenceActiveForTesting(operationId)) {
+                delay(10L)
+            }
+        }
+    }
+
+    private suspend fun awaitCancellationOwnerStopped(operationId: String) {
+        withTimeout(20_000L) {
+            while (LowQualityRedownloadLedger.isCancellationConvergenceActiveForTesting(operationId)) {
+                delay(25L)
+            }
+        }
+    }
+
     @Test
     fun cancelRequestedQualityReplacementCannotBeQueuedOrClaimed() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
@@ -1957,6 +2124,10 @@ class LowQualityRedownloadPersistenceTest {
         private val terminated = CountDownLatch(1)
         private var alive = true
         val destroyRequested = CompletableDeferred<Unit>()
+        var destroyRequests = 0
+            private set
+        var destroyForciblyRequests = 0
+            private set
 
         override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
 
@@ -1978,10 +2149,12 @@ class LowQualityRedownloadPersistenceTest {
         }
 
         override fun destroy() {
+            destroyRequests += 1
             destroyRequested.complete(Unit)
         }
 
         override fun destroyForcibly(): Process {
+            destroyForciblyRequests += 1
             if (acknowledgeOnForce) acknowledgeTermination()
             return this
         }

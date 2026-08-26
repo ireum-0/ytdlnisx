@@ -12,6 +12,7 @@ import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
@@ -20,6 +21,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Application-lifecycle recovery for rows whose worker carrier disappeared.
@@ -63,6 +65,19 @@ internal object DownloadExecutionRecovery {
     @Volatile
     internal var commitOverride:
         ((JournalCommitOperation, SharedPreferences.Editor) -> Boolean)? = null
+
+    /** Deterministic recovery-owner DB-read fault seam for production-path tests. */
+    private val recoveryReadFailureCount = AtomicInteger(0)
+
+    /** Deterministic committed-History finalization fault seam. */
+    @Volatile
+    internal var failCommittedHistoryFinalizationForTesting: Boolean = false
+
+    internal var recoveryReadFailureCountForTesting: Int
+        get() = recoveryReadFailureCount.get()
+        set(value) {
+            recoveryReadFailureCount.set(value.coerceAtLeast(0))
+        }
 
     private val retryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val retryJobs = ConcurrentHashMap<Long, Job>()
@@ -451,7 +466,7 @@ internal object DownloadExecutionRecovery {
 
         fun deferRecovery(downloadId: Long, failure: Exception) {
             try {
-                scheduleRecovery(context, downloadId)
+                scheduleRecovery(context, downloadId, dbManager)
             } catch (schedulingFailure: Exception) {
                 failure.addSuppressed(schedulingFailure)
                 android.util.Log.e(
@@ -1134,6 +1149,10 @@ internal object DownloadExecutionRecovery {
                                     // The exact lease and reread prevent a
                                     // stale recovery token from touching E2.
                                 } else if (isCommittedHistoryReplacement(dbManager, latest)) {
+                                    if (failCommittedHistoryFinalizationForTesting) {
+                                        failCommittedHistoryFinalizationForTesting = false
+                                        error("Injected committed History finalization failure")
+                                    }
                                     repository.completeAndDelete(
                                         id = latest.id,
                                         expectedExecutionId = latest.executionId,
@@ -1268,7 +1287,7 @@ internal object DownloadExecutionRecovery {
                     DownloadRepository.Status.PostProcessing.name,
                 )
             if (debtRemains) {
-                runCatching { scheduleRecovery(context, downloadId) }
+                runCatching { scheduleRecovery(context, downloadId, dbManager) }
                     .onFailure { schedulingFailure ->
                         val failure = IllegalStateException(
                             "Could not install live recovery owner for durable download $downloadId",
@@ -1297,54 +1316,95 @@ internal object DownloadExecutionRecovery {
      * boundary.  The DB row/journal remains the durable carrier; this job is
      * only the live retry owner and is never used as the sole restart proof.
      */
-    internal fun scheduleRecovery(context: Context, downloadId: Long) {
+    internal fun scheduleRecovery(
+        context: Context,
+        downloadId: Long,
+        dbManager: DBManager = DBManager.getInstance(context),
+    ) {
         val appContext = context.applicationContext
         retryJobs.computeIfAbsent(downloadId) {
             retryScope.launch {
+                val ownerJob = coroutineContext[Job]
                 var retryDelayMillis = 100L
                 try {
                     while (true) {
-                        val dbManager = DBManager.getInstance(appContext)
-                        val current = dbManager.downloadDao.getNullableDownloadById(downloadId)
-                        val journalRemains = pendingDownloadIds(appContext).contains(downloadId)
-                        val nativeMarkerRemains =
-                            YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId)
-                        if (
-                            current != null &&
-                            current.executionId.isNotBlank() &&
-                                DownloadWorkerExecutionOwners.isOwnedBy(
-                                    downloadId,
-                                    current.executionId,
-                                ) &&
-                                !journalRemains &&
-                                !nativeMarkerRemains
-                        ) {
-                            // A live worker owns the exact row; its cleanup or
-                            // retry protocol remains authoritative.
-                            return@launch
-                        }
-                        runCatching { reconcile(appContext, dbManager) }
-                            .onFailure {
-                                android.util.Log.w(
-                                    "DownloadExecutionRecovery",
-                                    "Recovery retry failed id=$downloadId",
-                                    it,
-                                )
+                        try {
+                            val current = readRecoveryDownloadForRetry(dbManager, downloadId)
+                            val journalRemains = pendingDownloadIds(appContext).contains(downloadId)
+                            val nativeMarkerRemains =
+                                YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId)
+                            if (
+                                current != null &&
+                                current.executionId.isNotBlank() &&
+                                    DownloadWorkerExecutionOwners.isOwnedBy(
+                                        downloadId,
+                                        current.executionId,
+                                    ) &&
+                                    !journalRemains &&
+                                    !nativeMarkerRemains
+                            ) {
+                                // A live worker owns the exact row; its cleanup or
+                                // retry protocol remains authoritative.
+                                return@launch
                             }
-                        val latest = dbManager.downloadDao.getNullableDownloadById(downloadId)
-                        val stillRunning = latest?.status in setOf(
-                            DownloadRepository.Status.Active.name,
-                            DownloadRepository.Status.PostProcessing.name,
-                        )
-                        if (!journalRemains && !nativeMarkerRemains && !stillRunning) return@launch
-                        delay(retryDelayMillis)
-                        retryDelayMillis = (retryDelayMillis * 2L).coerceAtMost(5_000L)
+
+                            // Reconcile may itself perform ordinary Room/marker
+                            // reads and writes.  Keep those failures inside the
+                            // same owner boundary so the durable carrier retains
+                            // this retry responsibility.
+                            reconcile(appContext, dbManager)
+
+                            val latest = readRecoveryDownloadForRetry(dbManager, downloadId)
+                            val latestJournalRemains =
+                                pendingDownloadIds(appContext).contains(downloadId)
+                            val latestNativeMarkerRemains =
+                                YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId)
+                            val stillRunning = latest?.status in setOf(
+                                DownloadRepository.Status.Active.name,
+                                DownloadRepository.Status.PostProcessing.name,
+                            )
+                            if (
+                                !latestJournalRemains &&
+                                    !latestNativeMarkerRemains &&
+                                    !stillRunning
+                            ) {
+                                return@launch
+                            }
+                            delay(retryDelayMillis)
+                            retryDelayMillis = (retryDelayMillis * 2L).coerceAtMost(5_000L)
+                        } catch (cancelled: CancellationException) {
+                            // A real owner cancellation must end this coroutine;
+                            // it is not recoverable debt.
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            android.util.Log.w(
+                                "DownloadExecutionRecovery",
+                                "Recovery retry iteration failed id=$downloadId",
+                                failure,
+                            )
+                            delay(retryDelayMillis)
+                            retryDelayMillis = (retryDelayMillis * 2L).coerceAtMost(5_000L)
+                        }
                     }
                 } finally {
-                    retryJobs.remove(downloadId)
+                    if (ownerJob != null) retryJobs.remove(downloadId, ownerJob)
                 }
             }
         }
+    }
+
+    private fun readRecoveryDownloadForRetry(
+        dbManager: DBManager,
+        downloadId: Long,
+    ): DownloadItem? {
+        while (true) {
+            val remaining = recoveryReadFailureCount.get()
+            if (remaining <= 0) break
+            if (recoveryReadFailureCount.compareAndSet(remaining, remaining - 1)) {
+                throw IllegalStateException("Injected transient recovery DB read failure")
+            }
+        }
+        return dbManager.downloadDao.getNullableDownloadById(downloadId)
     }
 
     /** Deterministic visibility for the opaque-marker retry-owner test. */

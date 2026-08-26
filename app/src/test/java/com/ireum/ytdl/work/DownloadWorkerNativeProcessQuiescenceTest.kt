@@ -1,23 +1,42 @@
 package com.ireum.ytdl.work
 
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.process.ProcessQuiescence
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
+import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class DownloadWorkerNativeProcessQuiescenceTest {
+    private lateinit var markerDirectory: java.io.File
+
+    @Before
+    fun configureNativeBarrier() {
+        markerDirectory = Files
+            .createTempDirectory("ytdlnisx-native-barrier-test")
+            .toFile()
+        YtdlpNativeProcessBarrier.configureForTesting(markerDirectory)
+    }
+
+    @After
+    fun clearNativeBarrier() {
+        markerDirectory.deleteRecursively()
+    }
+
     @Test
     fun api25UsesBoundedExitValuePollingWithoutApi26Methods() {
         val process = LegacyCompatibleProcess(acknowledgeOnDestroy = true)

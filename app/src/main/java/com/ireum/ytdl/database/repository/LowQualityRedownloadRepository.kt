@@ -20,6 +20,7 @@ import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLeases
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 class LowQualityRedownloadRepository(private val database: DBManager) {
     private val dao = database.lowQualityRedownloadDao
@@ -39,8 +40,18 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     suspend fun getOperation(operationId: String): LowQualityRedownloadOperation? =
         dao.getOperation(operationId)
 
-    suspend fun getItems(operationId: String): List<LowQualityRedownloadItem> =
-        dao.getItems(operationId)
+    suspend fun getItems(operationId: String): List<LowQualityRedownloadItem> {
+        while (true) {
+            val remaining = getItemsFailureCount.get()
+            if (remaining <= 0) break
+            if (getItemsFailureCount.compareAndSet(remaining, remaining - 1)) {
+                throw IllegalStateException(
+                    "Injected transient low-quality getItems failure",
+                )
+            }
+        }
+        return dao.getItems(operationId)
+    }
 
     suspend fun hasLinkedDownload(downloadId: Long): Boolean =
         dao.getItemByDownloadId(downloadId) != null
@@ -755,6 +766,15 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     }
 
     companion object {
+        /** Deterministic Room-read fault seam for the production convergence owner. */
+        private val getItemsFailureCount = AtomicInteger(0)
+
+        internal var getItemsFailureCountForTesting: Int
+            get() = getItemsFailureCount.get()
+            set(value) {
+                getItemsFailureCount.set(value.coerceAtLeast(0))
+            }
+
         const val REASON_NO_CANDIDATES = "NO_CANDIDATES"
         const val REASON_NO_CANDIDATES_WITH_FAILURES = "NO_CANDIDATES_WITH_FAILURES"
         const val REASON_SCAN_FAILED = "SCAN_FAILED"

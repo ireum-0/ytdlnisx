@@ -20,7 +20,9 @@ import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
 import com.ireum.ytdl.work.YtdlpProcessIdentity
+import com.ireum.ytdl.work.admitQueuedDownloadsThroughProductionPath
 import com.ireum.ytdl.work.observeQueuedDownloadsAfterRecovery
+import com.ireum.ytdl.work.claimDownloadThroughProductionAdmission
 import com.ireum.ytdl.work.cleanupStoppedDownloadExecution
 import com.ireum.ytdl.work.persistHistoryReplacementTerminalState
 import kotlinx.coroutines.CompletableDeferred
@@ -64,6 +66,8 @@ class DownloadWorkerCleanupProductionWiringTest {
     @After
     fun closeDb() {
         DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
+        DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
+        DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         DownloadExecutionRecovery.commitOverride = null
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
@@ -88,7 +92,10 @@ class DownloadWorkerCleanupProductionWiringTest {
             generationToken = "opaque-generation-${UUID.randomUUID()}",
         )
         try {
-            YtdlpNativeProcessBarrier.markerReadFailureForTesting = true
+            // Keep the recovery failure scoped to A's exact marker. A global
+            // namespace read failure would correctly fail-closed the healthy
+            // candidate's native absence check as well.
+            YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = marker.absolutePath
 
             val admission = observeQueuedDownloadsAfterRecovery(
                 context = appContext,
@@ -110,18 +117,37 @@ class DownloadWorkerCleanupProductionWiringTest {
                     "opaque-E1",
                 )
             )
-            val healthy = requireNotNull(db.downloadDao.getNullableDownloadById(healthyId))
-            assertEquals(
-                1,
-                db.downloadDao.claimDownloadForWorker(
-                    id = healthyId,
-                    expectedOperationId = healthy.operationId,
-                    expectedRetryAttempt = healthy.retryAttempt,
-                    executionId = "healthy-E1",
-                )
+            val productionAdmission = admitQueuedDownloadsThroughProductionPath(
+                dbManager = db,
+                items = queued,
+                priorityItemIds = emptyList(),
+                currentTimeMillis = System.currentTimeMillis() + 10_000L,
+                concurrentDownloadLimit = 1,
+                continueAfterPriorityItems = true,
+                claim = { candidate ->
+                    claimDownloadThroughProductionAdmission(
+                        context = appContext,
+                        dbManager = db,
+                        candidate = candidate,
+                        concurrentDownloadLimit = 1,
+                    )
+                },
             )
+            assertTrue(productionAdmission.selectedCandidates.any { it.id == healthyId })
+            assertTrue(productionAdmission.claimedItems.any { it.id == healthyId })
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(healthyId)?.status,
+            )
+            productionAdmission.claimedItems.forEach { claimed ->
+                DownloadWorkerExecutionOwners.release(claimed.id, claimed.executionId)
+            }
         } finally {
             YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
+            YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
+            DownloadWorkerExecutionOwners.ownerOf(healthyId)?.let { executionId ->
+                DownloadWorkerExecutionOwners.release(healthyId, executionId)
+            }
             marker.delete()
         }
     }

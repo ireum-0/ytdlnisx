@@ -160,6 +160,11 @@ internal object YtdlpNativeProcessBarrier {
         }
     }
 
+    /** Test-only namespace injection for JVM coverage of fail-closed checks. */
+    internal fun configureForTesting(root: File) {
+        directory = root
+    }
+
     internal fun isConfigured(): Boolean = directory != null
 
     /**
