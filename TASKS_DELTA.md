@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **39**
-- Effective active defects: **113**
+- Delta active defects: **40**
+- Effective active defects: **114**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1664,3 +1664,53 @@ Focused verification requirements:
 - change cadence while a future occurrence is pending and prove the old generation is revoked/replaced without duplicate runs; select disabled and prove no later occurrence fires;
 - inject scheduler-acceptance failure for the initial and successor carrier, retry/process death around successor publication, and duplicate WorkManager delivery. Require an exact durable recurrence owner rather than best-effort UI state;
 - include active-Download/temp-cache ownership controls as regressions for `BUG-CLEANUP-02`. Helper-only delay calculations or source tests are insufficient; verification must use actual WorkManager scheduling and the production worker. No such executed recurrence test was found in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-CACHE-05 — Protect live Terminal cache from cache migration
+
+**State:** Open  
+**Reviewed checkpoint:** `92113cdaba27922ec129e8db648ae3ff951fc789`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** Folder settings exposes `move_temporary_files`. Unlike the Clear Cache and clear-logs actions, its click handler directly enqueues `MoveCacheFilesWorker` and does not call `hasActiveDownloads()`, even though that helper includes `terminalDao.getActiveTerminalsCount()`. `MoveCacheFilesWorker` then walks the entire `FileUtil.getCachePath(context)` tree and relocates every non-directory entry to public `Downloads/YTDLnisx/CACHE_IMPORT`. A normal cache-staged Terminal task meanwhile uses `<cache>/TERMINAL/<taskId>` as its yt-dlp output/staging path. No shared Terminal task/execution lease, current-row revalidation, subtree exclusion, or per-directory ownership check exists between those actors.
+
+If migration enumerates after a Terminal task has created or begun writing `<cache>/TERMINAL/<id>`, it can `Files.move()` those live files out to `CACHE_IMPORT` while yt-dlp still owns the staging tree. The same race exists after native completion but before `TerminalDownloadWorker` publishes from that exact directory with `FileUtil.moveFile()`: migration can remove the staged output first, so the Terminal worker reaches publication with missing/relocated inputs and can enter its failure path. That path can delete the Terminal row/directory, while the migration has no durable task-to-`CACHE_IMPORT/TERMINAL/<id>` mapping or recovery carrier that reconnects the relocated files to the failed command. A process restart therefore cannot reconstruct the intended Terminal staging/publication state from the maintenance destination.
+
+**Why this is a defect:** a user-facing maintenance worker can seize filesystem objects that are under exact live Terminal execution ownership and relocate them as cache leftovers. A normal Terminal command can consequently fail or lose its intended publication, while user-requested output is stranded in a maintenance recovery folder with no durable task association. This is a real cross-owner destructive filesystem race, not only a stale progress/UI issue.
+
+This is distinct from `BUG-CACHE-01`, which owns the same migration worker racing ordinary `DownloadWorker` temp IDs and its `Active`/`PostProcessing` ownership. That finding does not establish Terminal task identity or `TERMINAL/<taskId>` ownership. It is also distinct from `BUG-TERMINAL-06`, which owns the separate Clear Cache deletion path through `AppCacheManager.delete(TERMINAL_CACHE)`, and from `BUG-CACHE-03/04`, which own legacy move-result false success and scheduler-handoff/empty-observer failure rather than live Terminal relocation.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The same `MoveCacheFilesWorker` blob is present at synchronized baseline `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15` and at the reviewed checkpoint.
+
+Required result:
+
+- serialize `MoveCacheFilesWorker` with Terminal task creation/execution/publication using a shared exact task/cache ownership primitive, or explicitly exclude and prove unowned every `TERMINAL/<taskId>` subtree before the first relocation;
+- do not treat an aggregate idle snapshot as durable migration authority; prevent a new Terminal task from acquiring a staging directory while migration can move that directory, or revalidate exact task ownership at each destructive move under the same ownership primitive used by task creation;
+- if stale Terminal cache recovery is intended, migrate only task directories proven to have no persisted/runnable/running Terminal owner, preserving exact task provenance for any recoverable leftovers;
+- if relocation has already begun and ownership changes or is discovered, retain a durable exact mapping/recovery carrier or abort without moving further live files; never leave a Terminal row/result and its relocated output semantically disconnected;
+- integrate the ordinary Download cache-ownership requirements from `BUG-CACHE-01` without conflating Download IDs with Terminal task IDs or treating one namespace's lease as proof for the other.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision: the exact `TerminalItem`/task ID and its live staging directory own `TERMINAL/<id>` while the task is persisted/runnable/running/publishing; the migration worker currently has no exact authority over that owner;
+- first destructive side effect: the first successful `Files.move()` on API 26+ or successful `renameTo()` on older supported APIs for an entry under `TERMINAL/<id>`. A persistence fault is not required to trigger the primary defect; a successful filesystem relocation is already wrong when the exact task is live;
+- durable state/filesystem effect: the Terminal row can remain live briefly while its staging files are moved to `CACHE_IMPORT`, then the worker can fail and delete the row/cache. The moved files can survive outside the task namespace with no task ledger that authorizes or recovers them;
+- final scheduler outcomes can diverge: cache migration may return `Result.success()` while the Terminal attempt returns failure/throws because its expected staging inputs vanished. No ordinary Download `DownloadOutcome` applies to the Terminal command;
+- same-command manual rerun creates a new Terminal task identity and does not automatically adopt `CACHE_IMPORT/TERMINAL/<oldId>`; Terminal cancellation, migration retry, and process restart must preserve or explicitly retire the old exact owner. Ordinary Download same-settings retry/reconfigure/notification retry are not semantic repair paths for the Terminal task and should be marked not applicable;
+- sibling isolation must preserve independent Terminal tasks and ordinary Download cache owners. Fixing one Terminal task/migration race must not globally block unrelated maintenance forever, but a live exact owner must fence mutation of its own subtree.
+
+Candidate-rejection proof:
+
+- do not reject because Terminal work might normally be absent when the user chooses cache migration: the production move action has no active-work gate at all, while Terminal Run can create a cache-staged task concurrently and `TerminalCommandPlanFactory` places it under the exact tree the migration recursively walks;
+- do not merge into `BUG-CACHE-01`: that finding's victim/authority carrier is an ordinary Download row/execution and its temp directory. Terminal has a separate durable table, task identity, worker, and staging namespace that the Download-side fix need not protect;
+- do not merge into `BUG-TERMINAL-06`: that finding's mutator is `AppCacheManager.delete(TERMINAL_CACHE)` from Clear Cache after a stale idle snapshot. Here the mutator is `MoveCacheFilesWorker`, a separately wired action with different relocation effects and no snapshot check at all;
+- do not merge into `BUG-CACHE-03/04`: this path assumes the migration WorkManager request was accepted and a filesystem move succeeds; it concerns authority over the moved object, not whether a move failure or enqueue failure is reported correctly;
+- no production test exercising `MoveCacheFilesWorker` against a live cache-staged Terminal task was found. Absence of that wiring evidence keeps verification at `SOURCE-LEVEL ONLY`; it does not make the shared path unreachable.
+
+Focused verification requirements:
+
+- exercise the real Folder-settings -> WorkManager `MoveCacheFilesWorker` path together with a real cache-staged `TerminalDownloadWorker`. Latch the Terminal task after it creates/writes `<cache>/TERMINAL/<id>`, run migration, and prove the live task directory/files are not relocated;
+- repeat with migration latched while the task is runnable but has not created its directory yet, while yt-dlp is actively writing, immediately after native completion but before `FileUtil.moveFile()` publication, and during publication;
+- cover Terminal cancellation during migration, process death/restart after an attempted conflict, migration retry, multiple Terminal siblings, an ordinary Download cache sibling as a `BUG-CACHE-01` regression, and a truly stale `TERMINAL/<id>` directory that should remain migratable only after exact non-ownership proof;
+- verification must exercise the actual Room + WorkManager + filesystem ownership wiring. Helper-only path or exclusion tests are insufficient; no such production-path race was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
