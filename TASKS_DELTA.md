@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **35**
-- Effective active defects: **109**
+- Delta active defects: **36**
+- Effective active defects: **110**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1454,3 +1454,53 @@ Focused verification requirements:
 - cover B as first versus later sibling, three-row batches, an unrelated existing Processing row, linked History-replacement/low-quality ledgers, process death after A transitions but before B is read, repeated stale-notification taps, and normal all-present reconfiguration;
 - exercise both `deleteExisting=true` and clone-based `deleteExisting=false` as controls so corrected provenance-aware cleanup does not leak temporary clones or delete pre-existing rows;
 - verification must cover the actual Home/notification + ViewModel + Room wiring and the persistent state after restart. No such production-path test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-QUEUE-05 — Include paused Downloads in Clear Queue cancellation
+
+**State:** Open  
+**Reviewed checkpoint:** `abc3998d26bd2f17517097cc9ad1231aad10f6ed`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the production Downloads screen exposes a `Clear Queue` action. After the user confirms it, `DownloadQueueMainFragment` calls `DownloadViewModel.cancelAllDownloads()`. That path requests cancellation of tagged WorkManager Download work and then calls the repository's item-isolated `cancelActiveQueuedWithResult()`. The repository snapshots its cancellation targets with `DownloadDao.getActiveAndQueuedDownloadsList()`, whose SQL includes `Active`, `PostProcessing`, `Queued`, `WaitingForMembership`, and `Scheduled` but **omits `Paused`**. A valid durably paused Download is therefore never iterated, never passed to `cancelByUserWithPublication()`, and receives no durable cancellation write or cancellation publication from Clear Queue.
+
+The omission conflicts with the same durable state machine's own cancellation and re-entry semantics. `DownloadDao.cancelActiveQueued()` and `cancelByUser(id)` both explicitly define user cancellation over `Paused` in addition to the other queue-owned statuses. Other pending/ID selectors also include `Paused`, and `resetPausedToQueued()` / exact notification Resume can move a valid paused row back to `Queued` and start the Download worker. Thus a concrete ordinary sequence is: pause Download A -> invoke and confirm Clear Queue -> every status selected by the snapshot is cancelled, but A remains durably `Paused` -> restart or later Resume/Resume All -> A becomes runnable/Queued and can download even though the user previously cleared the queue. No race, first-write failure, stale selection, malformed row, or native-process ambiguity is required.
+
+**Why this is a defect:** Clear Queue is a destructive user command whose semantic authority is broader than the snapshot predicate currently used to implement it. `Paused` is not terminal history; it is a retained queue intent that production resume paths can make runnable again. Omitting it silently preserves executable work after the application has presented the queue-clear operation as complete. This is a correctness/reliability defect rather than a UI preference, and it is distinct from `BUG-QUEUE-02`/`BUG-QUEUE-04`, which require stale UI/worker-claim races, and from pause-specific ownership defects, which concern establishing or resuming `Paused` incorrectly rather than a correctly paused row being skipped by bulk cancellation.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The synchronized baseline checkpoint uses the same `getActiveAndQueuedDownloadsList()` status set that omits `Paused`, while its durable pause/resume/cancel primitives already treat `Paused` as a cancellable/requeueable queue state.
+
+Required result:
+
+- define the Clear Queue target set explicitly from the durable Download state machine and include every nonterminal queue intent that the user action promises to revoke, including `Paused` unless an explicit product invariant proves otherwise;
+- make the item-isolated cancellation snapshot and the per-item cancellation mutation agree on the same status taxonomy so a valid state cannot be filtered out before the authoritative reread/CAS runs;
+- preserve the current exact-owner/item-isolation remediation for `Active`/`PostProcessing` and sibling failures; adding `Paused` must not weaken execution-token checks for states with live owners;
+- when a paused row is linked to low-quality or History-replacement authority, apply the same cancellation/convergence rules that a direct user cancellation of that exact row would apply rather than silently retaining the linked runnable intent;
+- ensure repeated Clear Queue, restart/reconcile, notification Resume, Resume All/manual requeue, and reconfigure cannot resurrect a Download that was within the committed clear operation unless the user creates a genuinely new queue intent afterward.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision: the confirmed Clear Queue command. For a row already durably `Paused`, the current implementation performs **no first cancellation persistence call at all** because target selection filters the row out before per-item handling; this missing-write boundary is the primary defect. A corrected first cancellation write must be fault-injected separately and must leave the row discoverably non-cleared rather than falsely reporting it as cancelled;
+- recovery carrier: today the unchanged `Paused` Download row survives with no record that Clear Queue intended to revoke it. WorkManager cancellation may be requested globally, but a paused row has no live execution carrier that turns that transport request into durable semantic cancellation;
+- durable Download state after the defect is still `Paused`; linked ledgers/barriers remain whatever state they held before Clear Queue; no filesystem mutation or `DownloadOutcome` is required to reproduce the omission. Other in-scope siblings can be durably `Cancelled`, making the partial clear externally plausible rather than throwing an error;
+- final application result has no per-paused-row failure because the row was never a candidate. Stale Active/PostProcessing is not required. The semantic downgrade is `clear all retained queue intent -> clear only the selector's status subset`;
+- cross-attempt matrix: same-settings retry is not itself available from a valid Paused row, but notification Resume and `resetPausedToQueued()` can make the preserved row runnable; manual/raw requeue and reconfigure can likewise create later executable state from the surviving row; restart preserves Paused; ordinary reconciliation does not encode the missing Clear Queue intent; restore is not a repair barrier and must not be relied upon. A second Clear Queue repeats the same omission while the row remains Paused;
+- concurrency/lock order is not required for the primary path. The current per-Download side-effect lease is keyed by Download ID and therefore does serialize exact live resource ownership correctly; this candidate remains after rejecting a separate token-keyed-lease hypothesis. The defect is the earlier status-set omission before any lease/transaction is acquired for the paused row.
+
+Candidate-rejection proof:
+
+- do not reject the path because the snapshot helper is named `getActiveAndQueuedDownloadsList()`: function naming is not the user-visible invariant. The same DAO defines both bulk and per-item user cancellation predicates to include `Paused`, and separate pending/ID/resume queries prove Paused is retained executable queue state rather than terminal archive state;
+- do not reject because WorkManager `cancelAllWorkByTag("download")` runs first. That is transport cancellation and does not mutate the paused Room row to `Cancelled`; later production resume paths can create new worker work from the unchanged row;
+- do not reject as `BUG-BACKUP-05`: that item owns omission of Paused from backup/restore categories, not omission from user cancellation;
+- do not reject as a pause/resume ownership defect: this reproduction begins with a valid, already durable Paused row and needs no failed pause write, stale notification, or concurrent worker;
+- do not reject as `BUG-QUEUE-02` or `BUG-QUEUE-04`: neither stale Queued selection nor a race with worker claim/deletion is needed. The paused row is deterministically absent from the target SQL;
+- no production test exercising Clear Queue with a valid Paused row was found. Test-source absence is not correctness proof and leaves verification at `SOURCE-LEVEL ONLY`.
+
+Focused verification requirements:
+
+- exercise the real `DownloadQueueMainFragment -> DownloadViewModel.cancelAllDownloads() -> WorkManager cancellation -> DownloadRepository.cancelActiveQueuedWithResult() -> DownloadDao/Room` wiring with one row in each supported nonterminal queue status, including a valid `Paused` row; after Clear Queue, assert every in-scope row is durably cancelled or explicitly converged according to linked-ledger authority;
+- inject failure on the first corrected Paused cancellation write and prove the action exposes/retains an exact retryable failure rather than silently claiming that row was cleared; repeat with a healthy sibling to preserve item isolation;
+- after successful Clear Queue, exercise notification Resume, Resume All/`resetPausedToQueued()`, manual/raw requeue, reconfigure, process restart/reconcile, and a second Clear Queue; none may resurrect the cleared prior intent without a new explicit user queue action;
+- add Active/PostProcessing claim-race controls for the current item-isolation remediation, Scheduled and WaitingForMembership controls, low-quality/History-replacement linked rows, and a truly terminal Saved/Cancelled/Error control proving the status set does not broaden indiscriminately;
+- verification must cover the actual Fragment/ViewModel/Repository/Room plus WorkManager handoff. No production-path test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
