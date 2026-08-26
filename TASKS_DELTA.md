@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **37**
-- Effective active defects: **111**
+- Delta active defects: **38**
+- Effective active defects: **112**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1556,3 +1556,59 @@ Focused verification requirements:
 - inject a failure on the first exact corrected delete/update, process death after one selected sibling is handled, and retry/reopen; prove only exact selected identities are retried/removed and unselected siblings remain owned;
 - restart after the unavailable operation and verify surviving B remains editable with its exact prior configuration;
 - verification must cover the actual dialogs/ViewModel/Repository/Room path. No executed production-path wiring test for this selection-to-cleanup identity narrowing was found, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-ADMISSION-01 — Keep a successful Download claim recoverable across post-claim publication failure
+
+**State:** Open  
+**Reviewed checkpoint:** `92113cdaba27922ec129e8db648ae3ff951fc789`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the production `DownloadWorker` observes a runnable queued/scheduled candidate and calls `claimDownloadThroughProductionAdmission()`. Under the per-Download side-effect lease and process-global execution lock, admission revalidates the current row and calls `DownloadDao.claimDownloadForWorker()`. A successful CAS durably changes the exact row to `Active` and installs a new execution token E1. Admission then immediately publishes E1 into the process-local `DownloadWorkerExecutionOwners` registry. Only after those two ownership mutations does it perform another fallible Room query, `getNullableDownloadById(id)`, in order to reconstruct the claimed row; the caller's `onClaimed` callback, which adds the ID/token to `workerExecutionIds`, `workerDownloadIds`, and `workerCleanupDownloadIds`, runs only after that reread succeeds.
+
+If the claim CAS succeeds and the first post-claim Room reread throws, the helper exits with a durable `Active/E1` Download and a process-local exact owner, but before any item coroutine/native process is launched and before the enclosing worker has registered that Download in its cleanup inventories. `DownloadWorker.doWork()` catches the propagated exception and calls `cleanupStoppedWorker(includeStaleRows = false)`, but that cleanup derives its owned snapshot from those local maps/sets. Because `onClaimed` was never reached, E1 is absent and cleanup cannot requeue/terminalize the row or release the leaked `DownloadWorkerExecutionOwners` token.
+
+Same-process recovery does not repair the mismatch. `DownloadExecutionRecovery` treats `DownloadWorkerExecutionOwners.isOwnedBy(id, E1)` as evidence that the current Active/PostProcessing execution still has a live exact owner and therefore does not enter abandoned-execution cleanup for that row. No native marker or recovery journal exists to contradict that process-local ownership because execution never reached native launch. A later Download worker also cannot claim the row because it is durably `Active`, and the leaked E1 can continue consuming an active/concurrency slot until application process death clears the static registry. Cold restart can then recognize the ownerless stale row and converge it, but requiring process death is not a valid recovery contract for an ordinary post-first-write persistence fault.
+
+**Why this is a defect:** the claim CAS is the semantic point at which a queued intent becomes a durably active execution. After that write succeeds, every subsequent throwable operation must leave either a real actor attached to E1 or an exact durable/process-local recovery owner that the enclosing failure path can converge. Current admission instead splits ownership publication across the Room CAS, a process-local owner token, a second Room read, and caller bookkeeping. Failure in that gap creates a false-live execution: durable state and the owner registry agree that E1 is active, while no actor can execute it and the cleanup/recovery paths use the same leaked token as a reason not to reclaim it. This is a substantive liveness/reliability defect, not defensive hardening.
+
+This is distinct from `BUG-NATIVE-06`, which concerns a **pre-claim** omission where unresolved old native-marker debt is not included in the new-execution gate and E2 can be admitted after restart. `BUG-ADMISSION-01` requires no old marker, restart, user race, or second execution: the first new E1 claim itself succeeds, then becomes a ghost because post-claim attachment fails. It is also distinct from queue/UI stale-owner defects because no later user mutation is required.
+
+**Ownership / attribution:** remediation regression / incomplete closure of execution-admission remediation. `DownloadSchedulerAdmission.kt` and the exact claim/owner handoff are post-baseline remediation structures; the synchronized baseline checkpoint does not contain this production admission helper.
+
+Required result:
+
+- make a successful `Queued/Scheduled -> Active/E1` claim and attachment to the worker's execution/cleanup ownership one recoverable handoff; there must be no fallible post-claim step that can leave E1 durable and apparently owned without either a runnable actor or exact recovery responsibility;
+- preferably return the complete claimed state from the same transactional/CAS boundary or eliminate the unnecessary post-claim reread. If a later read/materialization is unavoidable, register exact cleanup/recovery responsibility before it can throw and make failure durably requeue/record E1 under an expected-execution predicate;
+- release `DownloadWorkerExecutionOwners` only after the exact claim is either fully attached to a worker actor or has been safely converged. Process-local owner presence by itself must not be treated as proof of liveness when actor attachment failed;
+- preserve the current per-Download side-effect lease, global execution-lock order, operation/retry CAS predicates, low-quality cancellation fence, native-debt fence, and sibling isolation. Fixing the handoff must not broaden claim authority or weaken existing fail-closed admission checks;
+- make first recovery-write failure and process death during the post-claim handoff retain enough exact identity to retry convergence without inventing a newer execution or leaving a permanent false-live owner.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision: `claimDownloadForWorker(id, expectedOperationId, expectedRetryAttempt, E1) == 1`; this is the first durable execution-ownership write and changes the row to `Active/E1`;
+- first-write failure/control: if that CAS throws or affects zero rows, no E1 may be published in the process-local owner registry and the candidate remains unclaimed. The primary defect begins only after the CAS commits successfully;
+- helper-internal fault: inject failure on the immediately following `getNullableDownloadById(id)`. Current durable state is `Active/E1`; current process-local state contains E1 in `DownloadWorkerExecutionOwners`; caller cleanup maps and worker item coroutine are absent; no native marker/process, filesystem publication, History mutation, linked-ledger terminal mutation, or `DownloadOutcome` is required;
+- outer result: the admission exception reaches the enclosing `DownloadWorker` catch. Its cleanup misses E1 because the callback-owned cleanup inventory was never populated, so the WorkManager attempt can terminate exceptionally while application state still describes a live Download;
+- recovery semantic identity: the exact row/token survives, but same-process `DownloadExecutionRecovery` treats the leaked owner registry entry as live authority and does not reclaim it. No recovery journal/native sidecar exists because the attempt failed before those carriers were created;
+- stale state: `Active/E1` can remain indefinitely in the same process and can occupy Download concurrency capacity. With a low concurrency limit it can prevent unrelated queued siblings from starting; with larger limits it still permanently consumes one slot until manual intervention or process death;
+- cross-attempt matrix: same-process scheduler/worker retry and ordinary reconcile do not repair the row while E1 remains registered; manual/raw requeue and reconfigure are not automatic safe recovery barriers for an Active exact owner; notification retry/resume has no corresponding failed/paused capability; a direct user cancel may manually retire the row but is not semantic convergence of the failed claim; cold restart clears the process-local registry and can then recover E1, proving the state is recoverable only through unrelated process death. Restore is not a semantic repair path;
+- concurrency/lock order: no AB/BA inversion is required. The failure occurs inside the correctly ordered per-ID side-effect lease -> global execution lock critical section. The locks serialize the claim but do not make the multi-step post-CAS ownership handoff atomic or recoverable.
+
+Candidate-rejection proof:
+
+- do not reject because the CAS itself is exact and transactional: the defect begins **after** the exact CAS succeeds, when a second Room query can throw before actor/cleanup attachment is complete;
+- do not reject because `DownloadWorkerExecutionOwners` contains E1: that registry is the false-live carrier in this path. There is no executing item coroutine/native process behind it, and same-process recovery uses the token as a reason to skip abandoned-owner cleanup;
+- do not reject because the enclosing worker has a broad catch: its cleanup inventory is populated by `onClaimed`, which is downstream of the throwing reread, so the catch cannot identify this E1 with `includeStaleRows=false`;
+- do not reject because cold restart repairs the row. v4 requires same-attempt/same-process recovery and first-write fault handling; an otherwise unnecessary application process death is not a semantic barrier;
+- do not merge this into `BUG-NATIVE-06`: that defect requires surviving old native debt before a claim and owns unsafe E2 admission. This defect requires no native debt and owns loss of liveness for the newly claimed E1 itself;
+- no existing `TASKS.md` or earlier `TASKS_DELTA.md` entry owns the `claim CAS -> process-local owner -> post-claim reread -> callback cleanup registration` throwable window.
+
+Focused verification requirements:
+
+- exercise the real `DownloadWorker -> claimDownloadThroughProductionAdmission -> DownloadDao/Room` wiring with a runnable candidate, let `claimDownloadForWorker()` commit `Active/E1`, then force the **first post-claim reread** to throw before `onClaimed`; assert the same worker failure path immediately leaves E1 either requeued/recovery-owned or otherwise durably convergent, releases any unattached process-local owner, and does not require application restart;
+- in the same process, invoke real `DownloadExecutionRecovery` and a fresh Download worker after the injected fault; prove E1 cannot remain falsely live and unrelated queued sibling B can still use available concurrency;
+- add controls for claim CAS zero rows, claim-write exception, normal post-claim reread/callback, failure while publishing any corrected recovery journal, and process death immediately after the CAS, after process-local owner publication, and after actor/cleanup attachment;
+- regress the current low-quality cancellation-vs-claim serialization, operation/retry expected-identity CAS, `BUG-NATIVE-06` durable native-debt preclaim fence, and sibling-isolated recovery so closing this gap cannot make stale claims or unresolved old generations runnable;
+- verification must cover actual Room + DownloadWorker/WorkManager cleanup/recovery wiring. No executed production-path post-claim-read fault test was found for the pinned checkpoint, so verification remains `SOURCE-LEVEL ONLY`.
