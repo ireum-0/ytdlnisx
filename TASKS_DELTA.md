@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **38**
-- Effective active defects: **112**
+- Delta active defects: **39**
+- Effective active defects: **113**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1612,3 +1612,55 @@ Focused verification requirements:
 - add controls for claim CAS zero rows, claim-write exception, normal post-claim reread/callback, failure while publishing any corrected recovery journal, and process death immediately after the CAS, after process-local owner publication, and after actor/cleanup attachment;
 - regress the current low-quality cancellation-vs-claim serialization, operation/retry expected-identity CAS, `BUG-NATIVE-06` durable native-debt preclaim fence, and sibling-isolated recovery so closing this gap cannot make stale claims or unresolved old generations runnable;
 - verification must cover actual Room + DownloadWorker/WorkManager cleanup/recovery wiring. No executed production-path post-claim-read fault test was found for the pinned checkpoint, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-CLEANUP-03 — Keep recurring leftover cleanup armed after every successful run
+
+**State:** Open  
+**Reviewed checkpoint:** `92113cdaba27922ec129e8db648ae3ff951fc789`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** Download settings exposes `cleanup_leftover_downloads` as a persistent `ListPreference` whose supported values are `disabled`, `daily`, `weekly`, and `monthly`. When the value changes to a recurring cadence, `DownloadSettingsFragment` computes only the next occurrence, constructs `OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>()`, applies that one initial delay, and enqueues the request under a unique name derived from `System.currentTimeMillis()`. It does not create a `PeriodicWorkRequest`, a stable recurring unique-work identity, or a durable next-run operation record. The worker itself performs one cleanup pass and returns `Result.success()` without scheduling a successor. Repository-wide production search for `cleanup_leftover_downloads` finds no startup materializer, worker-success successor, or other scheduler owner beyond this preference-change listener.
+
+Consequently, selecting `daily`, `weekly`, or `monthly` creates at most one delayed cleanup execution for that preference change. If WorkManager accepts the request and the worker later succeeds normally, its one-time carrier becomes terminal and disappears from future execution. The persisted preference still says `daily`/`weekly`/`monthly`, but there is no carrier for the next interval and no reconciliation that rebuilds one from that durable intent. Reopening settings without changing the value does not invoke the change listener, and process restart after the first success likewise leaves the recurring preference with no scheduled successor. A new cleanup is armed only if the user changes the setting again.
+
+**Why this is a defect:** `daily`, `weekly`, and `monthly` are explicit recurring user semantics, not labels for a one-shot delayed maintenance command. The implementation faithfully performs the first occurrence but then silently downgrades durable recurring intent into a terminal one-time WorkManager request. Leftover cancelled/errored Download cleanup and temp-cache maintenance therefore stop permanently after one successful interval while the UI continues to show the recurring cadence as enabled. This is a substantive reliability/functional correctness defect, not defensive hardening.
+
+This is distinct from `BUG-CLEANUP-02`, which owns destructive ownership races **when** automatic leftover cleanup actually runs; the present finding owns liveness of the recurring execution carrier after a successful run. It is also distinct from `BUG-SCHEDULER-01/03/04/05`, which govern the Download queue's AlarmManager/daily-scheduler semantics and exact-alarm capability rather than this independent maintenance preference and `CleanUpLeftoverDownloads` worker.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The synchronized baseline `DownloadSettingsFragment` contains the same one-time-only scheduling logic, and `CleanUpLeftoverDownloads` has no successor publication path there either.
+
+Required result:
+
+- represent `daily`, `weekly`, and `monthly` with a recurring execution carrier whose semantic identity survives the current worker's terminal success, using a stable periodic/successor protocol appropriate to the requested cadence;
+- bind the recurring carrier to the current preference generation so changing cadence replaces the prior schedule exactly once and selecting disabled reliably revokes all future occurrences without cancelling unrelated maintenance work;
+- if recurrence uses one-shot successors rather than periodic work, durably publish/accept the next exact successor before the current occurrence can release the only recurrence owner, and reconcile any carrier-creation failure or process death without duplicating occurrences;
+- materialize or reconcile the persisted recurring preference on application restart so a durable enabled cadence cannot remain silently carrierless;
+- preserve the filesystem/live-owner safety requirements of `BUG-CLEANUP-02`: recurrence repair must not authorize cleanup of directories currently owned by active Downloads.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: the persisted `cleanup_leftover_downloads` value `daily`/`weekly`/`monthly`; it means future occurrences continue until reconfigured or disabled;
+- first execution carrier: the current code submits one `OneTimeWorkRequest`. Scheduler acceptance failure must be handled explicitly in a correction, but the primary confirmed defect requires no fault: assume that first carrier is accepted and runs successfully;
+- current terminal result: `CleanUpLeftoverDownloads.doWork()` deletes cancelled/errored Download rows, conditionally cleans `DOWNLOAD_TEMP`, and returns `Result.success()`. No successor persistence or scheduler handoff follows that successful result;
+- durable Download state/filesystem effects: the first occurrence can correctly remove its intended rows/files subject to the separate ownership defect; after that there is no durable Download operation ledger for recurrence. The recurring preference remains the only durable user intent;
+- recovery carrier after first success: none. Restart/reconcile does not scan the preference and does not recreate work. There is no stale Active/PostProcessing requirement and no semantic `DownloadOutcome` for this maintenance worker;
+- semantic downgrade is deterministic: recurring cadence -> one delayed occurrence. Same-settings/no-change re-entry leaves the schedule dead after the first success; changing daily->weekly creates one new weekly one-shot and then dies again; changing to disabled cancels tagged pending work but does not prove recurrence was ever maintained; restart before the first accepted run relies on WorkManager's persisted one-shot, while restart after its success has no repair path. Manual/raw Download requeue, notification retry/resume, and backup restore are not semantic recurrence carriers and must not be counted as closure;
+- concurrency/lock order is not required for the primary defect. A corrected successor protocol must nevertheless avoid duplicate successor publication across worker retry/process death and must remain isolated from active Download cleanup ownership.
+
+Candidate-rejection proof:
+
+- do not reject because `setInitialDelay()` uses one day/week/month: delay determines only when this `OneTimeWorkRequest` becomes eligible; the request does not repeat, and the worker contains no self-rescheduling code;
+- do not reject because the cadence value remains in SharedPreferences: repository-wide production search finds no startup/reconciliation/materialization path that turns the retained value back into a carrier after the first work reaches terminal success;
+- do not merge into `BUG-CLEANUP-02`: that defect can be reproduced during a single scheduled cleanup and concerns stale authority over live temp files. This finding remains even if cleanup is perfectly safe and its first run succeeds;
+- do not merge into the Download scheduler defects: they operate on different settings, AlarmManager/queue state, and Download execution carriers. No existing `TASKS.md` or prior delta item owns recurrence of `CleanUpLeftoverDownloads`;
+- absence of a production-path recurrence test does not make the one-shot request recurring; verification therefore remains `SOURCE-LEVEL ONLY` rather than PASS.
+
+Focused verification requirements:
+
+- exercise the real Download-settings preference -> WorkManager -> `CleanUpLeftoverDownloads` wiring for each of `daily`, `weekly`, and `monthly`; advance scheduler time through **at least two** full intervals and prove one exact cleanup occurrence is accepted/executed per interval without another preference edit;
+- terminate/restart the application after the first successful occurrence and prove the persisted cadence still has exactly one future carrier; repeat process death before successor publication if recurrence uses chained one-shots;
+- change cadence while a future occurrence is pending and prove the old generation is revoked/replaced without duplicate runs; select disabled and prove no later occurrence fires;
+- inject scheduler-acceptance failure for the initial and successor carrier, retry/process death around successor publication, and duplicate WorkManager delivery. Require an exact durable recurrence owner rather than best-effort UI state;
+- include active-Download/temp-cache ownership controls as regressions for `BUG-CLEANUP-02`. Helper-only delay calculations or source tests are insufficient; verification must use actual WorkManager scheduling and the production worker. No such executed recurrence test was found in this review, so verification remains `SOURCE-LEVEL ONLY`.
