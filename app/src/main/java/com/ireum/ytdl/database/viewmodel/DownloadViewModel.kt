@@ -68,6 +68,7 @@ import com.ireum.ytdl.util.preset.DownloadPreset
 import com.ireum.ytdl.util.preset.DownloadPresetMapper
 import com.ireum.ytdl.util.preset.DownloadPresetStore
 import com.ireum.ytdl.work.AlarmScheduler
+import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.UpdateMultipleDownloadsDataWorker
@@ -79,6 +80,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -1143,7 +1145,42 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
 
     private suspend fun cancelActiveQueued(): List<com.ireum.ytdl.work.DownloadCancellationRegistry.Publication> = withContext(Dispatchers.IO) {
         processingItemsJob?.apply { cancel(CancellationException()) }
-        repository.cancelActiveQueued()
+        val result = repository.cancelActiveQueuedWithResult()
+        var firstFailure = result.failure
+        result.publications.forEach { publication ->
+            try {
+                withDownloadWorkerExecutionSideEffectLease(
+                    downloadId = publication.downloadId,
+                    executionId = publication.executionId,
+                ) {
+                    cancelDownloadOnlyOwned(
+                        id = publication.downloadId,
+                        expectedExecutionId = publication.executionId,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                firstFailure = firstFailure?.also {
+                    if (it !== cancelled) it.addSuppressed(cancelled)
+                } ?: cancelled
+            } catch (failure: Exception) {
+                firstFailure = firstFailure?.also {
+                    if (it !== failure) it.addSuppressed(failure)
+                } ?: failure
+            }
+        }
+        try {
+            LowQualityRedownloadLedger.refresh(application, result.affectedOperationIds)
+        } catch (cancelled: CancellationException) {
+            firstFailure = firstFailure?.also {
+                if (it !== cancelled) it.addSuppressed(cancelled)
+            } ?: cancelled
+        } catch (failure: Exception) {
+            firstFailure = firstFailure?.also {
+                if (it !== failure) it.addSuppressed(failure)
+            } ?: failure
+        }
+        firstFailure?.let { throw it }
+        result.publications
     }
 
     fun getQueued() : List<DownloadItem> {
@@ -1173,53 +1210,144 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
         return dao.getActiveAndPostProcessingDownloadsList()
     }
 
-    suspend fun requeueActiveDownloadsForExit(ids: List<Long>) = withContext(Dispatchers.IO) {
-        val snapshots = withDownloadWorkerExecutionLock {
-            repository.getAllItemsByIDs(ids)
-                .filter {
-                    it.status in setOf(
-                        DownloadRepository.Status.Active.name,
-                        DownloadRepository.Status.PostProcessing.name,
-                    )
-                }
-        }
-        snapshots.forEach { snapshot ->
-            withDownloadWorkerExecutionSideEffectLease(
-                downloadId = snapshot.id,
-                executionId = snapshot.executionId,
-            ) {
-                withDownloadWorkerExecutionLock {
-                    val current = dao.getNullableDownloadById(snapshot.id)
-                        ?.takeIf {
-                            it.status in setOf(
-                                DownloadRepository.Status.Active.name,
-                                DownloadRepository.Status.PostProcessing.name,
-                            ) && it.executionId == snapshot.executionId
+    suspend fun requeueActiveDownloadsForExit(ids: List<Long>) =
+        withContext(Dispatchers.IO + NonCancellable) {
+            var firstFailure: Exception? = null
+            fun recordFailure(failure: Exception) {
+                firstFailure = firstFailure?.also {
+                    if (it !== failure) it.addSuppressed(failure)
+                } ?: failure
+            }
+
+            try {
+                WorkManager.getInstance(application).cancelAllWorkByTag("download")
+            } catch (cancelled: CancellationException) {
+                recordFailure(cancelled)
+            } catch (failure: Exception) {
+                recordFailure(failure)
+            }
+
+            val snapshots = withDownloadWorkerExecutionLock {
+                repository.getAllItemsByIDs(ids)
+                    .filter {
+                        it.status in setOf(
+                            DownloadRepository.Status.Active.name,
+                            DownloadRepository.Status.PostProcessing.name,
+                        )
+                    }
+            }
+            snapshots.forEach { snapshot ->
+                try {
+                    withDownloadWorkerExecutionSideEffectLease(
+                        downloadId = snapshot.id,
+                        executionId = snapshot.executionId,
+                    ) {
+                        val current = withDownloadWorkerExecutionLock {
+                            dao.getNullableDownloadById(snapshot.id)
+                                ?.takeIf {
+                                    it.status in setOf(
+                                        DownloadRepository.Status.Active.name,
+                                        DownloadRepository.Status.PostProcessing.name,
+                                    ) && it.executionId == snapshot.executionId
+                                }
+                        } ?: return@withDownloadWorkerExecutionSideEffectLease
+
+                        // Establish an exact durable recovery carrier before
+                        // quiescing the native process.  If any later step
+                        // fails, exit is withheld and startup can retry this
+                        // Download without exposing a fresh queued attempt.
+                        check(
+                            DownloadExecutionRecovery.recordPending(
+                                context = application,
+                                item = current,
+                            )
+                        ) {
+                            "Could not persist exit recovery responsibility for ${current.id}"
                         }
-                        ?: return@withDownloadWorkerExecutionLock
-                    // One repository primitive owns both the modern exact-token
-                    // and legacy blank-token transitions.  In particular, a
-                    // committed History replacement is finalization debt, not
-                    // runnable work.
-                    when (repository.requeueRunningDownload(current.id, current.executionId)) {
-                        DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
-                        DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
-                        DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED,
-                        DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> Unit
-                        DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
+                        check(
+                            DownloadWorker.cancelProcessesForExecution(
+                                current.id,
+                                current.executionId,
+                            )
+                        ) {
+                            "Native process did not quiesce while exiting ${current.id}"
+                        }
+                        check(
+                            DownloadExecutionRecovery.markNativeQuiescent(
+                                context = application,
+                                downloadId = current.id,
+                                executionId = current.executionId,
+                                exactGenerationProof = true,
+                            )
+                        ) {
+                            "Exit recovery carrier was not acknowledged for ${current.id}"
+                        }
+
+                        val requeueResult = withDownloadWorkerExecutionLock {
+                            val latest = dao.getNullableDownloadById(current.id)
+                                ?.takeIf {
+                                    it.status in setOf(
+                                        DownloadRepository.Status.Active.name,
+                                        DownloadRepository.Status.PostProcessing.name,
+                                    ) && it.executionId == current.executionId
+                                }
+                            latest?.let {
+                                // One repository primitive owns both the
+                                // modern exact-token and legacy blank-token
+                                // transitions. A committed History replacement
+                                // is finalization debt, never runnable work.
+                                repository.requeueRunningDownload(it.id, it.executionId)
+                            }
+                        } ?: return@withDownloadWorkerExecutionSideEffectLease
+
+                        // Keep completeAndDelete outside the global claim lock.
+                        // It may perform cache/reference cleanup, while this
+                        // exact Download lease still prevents resource reuse.
+                        if (
+                            requeueResult ==
+                                DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT
+                        ) {
                             repository.completeAndDelete(
                                 id = current.id,
                                 expectedExecutionId = current.executionId,
                             )
                         }
-                        DownloadRepository.RunningDownloadRequeueResult.OWNERSHIP_LOST -> {
-                            check(false) { "Download execution changed while exiting ${current.id}" }
-                        }
+
+                        // Leave the exact carrier for the next lifecycle pass.
+                        // The process is about to terminate, and admission
+                        // remains fenced by this journal if termination is
+                        // delayed or the finalization write was partial.
+                    }
+                } catch (cancelled: CancellationException) {
+                    recordFailure(cancelled)
+                    runCatching {
+                        DownloadExecutionRecovery.scheduleRecovery(application, snapshot.id)
+                    }.onFailure { schedulingFailure ->
+                        recordFailure(
+                            schedulingFailure as? Exception
+                                ?: IllegalStateException(
+                                    "Exit recovery scheduling failed for ${snapshot.id}",
+                                    schedulingFailure,
+                                )
+                        )
+                    }
+                } catch (failure: Exception) {
+                    recordFailure(failure)
+                    runCatching {
+                        DownloadExecutionRecovery.scheduleRecovery(application, snapshot.id)
+                    }.onFailure { schedulingFailure ->
+                        recordFailure(
+                            schedulingFailure as? Exception
+                                ?: IllegalStateException(
+                                    "Exit recovery scheduling failed for ${snapshot.id}",
+                                    schedulingFailure,
+                                )
+                        )
                     }
                 }
             }
+            firstFailure?.let { throw it }
         }
-    }
 
     fun getActiveDownloadsCount() : Int {
         return repository.getActiveDownloadsCount()
@@ -2544,40 +2672,27 @@ class DownloadViewModel(private val application: Application) : AndroidViewModel
     }
 
     private suspend fun cancelAllDownloadsImpl() {
-        WorkManager.getInstance(application).cancelAllWorkByTag("download")
-        val linkedBatchIds = dbManager.lowQualityRedownloadDao.getActiveOperation()
-            ?.let { operation ->
-                dbManager.lowQualityRedownloadDao.getNonterminalDownloadIds(operation.operationId)
-            }
-            .orEmpty()
-        withContext(Dispatchers.IO) {
-            val downloadsToCancel = withDownloadWorkerExecutionLock {
-                getActiveAndPostProcessingDownloads() + dao.getMembershipWaitingDownloads()
-            }
-            downloadsToCancel.distinctBy(DownloadItem::id).forEach { item ->
-                withDownloadWorkerExecutionSideEffectLease(item.id, item.executionId) {
-                    val affected = withDownloadWorkerExecutionLock {
-                        val current = dao.getNullableDownloadById(item.id)
-                        if (current == null || current.executionId != item.executionId) {
-                            return@withDownloadWorkerExecutionLock null
-                        }
-                        repository.cancelByUser(item.id, current.executionId)
-                    }
-                    if (affected != null) {
-                        cancelDownloadOnlyOwned(item.id, item.executionId)
-                        LowQualityRedownloadLedger.refresh(application, affected)
-                    }
-                }
-            }
+        var firstFailure: Exception? = null
+        try {
+            WorkManager.getInstance(application).cancelAllWorkByTag("download")
+        } catch (cancelled: CancellationException) {
+            firstFailure = cancelled
+        } catch (failure: Exception) {
+            firstFailure = failure
         }
-        linkedBatchIds.forEach { id ->
-            LowQualityRedownloadLedger.transition(
-                application,
-                id,
-                LowQualityRedownloadItemState.CANCELLED,
-                "ITEM_CANCELLED"
-            )
+
+        try {
+            cancelActiveQueued()
+        } catch (cancelled: CancellationException) {
+            firstFailure = firstFailure?.also {
+                if (it !== cancelled) it.addSuppressed(cancelled)
+            } ?: cancelled
+        } catch (failure: Exception) {
+            firstFailure = firstFailure?.also {
+                if (it !== failure) it.addSuppressed(failure)
+            } ?: failure
         }
+        firstFailure?.let { throw it }
     }
 
     fun resumeDownload(itemID: Long) = viewModelScope.launch {

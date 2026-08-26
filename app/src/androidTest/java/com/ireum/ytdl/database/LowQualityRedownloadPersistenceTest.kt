@@ -915,6 +915,32 @@ class LowQualityRedownloadPersistenceTest {
     }
 
     @Test
+    fun clearQueuePrimitiveCancelsLinkedQueuedChildAndFinalizesLedger() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(
+            operation.operationId,
+            historyId = 81,
+            status = DownloadRepository.Status.Queued,
+        )
+
+        val result = DownloadRepository(database).cancelActiveQueuedWithResult()
+
+        assertEquals(null, result.failure)
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getNullableDownloadById(linkedId)?.status,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+    }
+
+    @Test
     fun waitingScheduledAndPausedUserActionsKeepDistinctReasons() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
         val waitingId = linkDownload(

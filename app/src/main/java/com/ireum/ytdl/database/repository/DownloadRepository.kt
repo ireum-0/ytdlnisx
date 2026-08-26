@@ -35,6 +35,8 @@ import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.DownloadWorker
+import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
+import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.CancellationException
@@ -168,6 +170,21 @@ class DownloadRepository(private val database: DBManager) {
         val downloadUpdated: Boolean,
         val affectedOperationIds: Set<String> = emptySet(),
     )
+
+    internal data class UserCancellationResult(
+        val affectedOperationIds: Set<String> = emptySet(),
+        val publication: DownloadCancellationRegistry.Publication? = null,
+    )
+
+    internal data class BulkCancellationResult(
+        val publications: List<DownloadCancellationRegistry.Publication> = emptyList(),
+        val affectedOperationIds: Set<String> = emptySet(),
+        val failure: Exception? = null,
+    )
+
+    /** Test seam for a first per-Download cancellation persistence failure. */
+    @Volatile
+    internal var cancelActiveQueuedFailureForTesting: ((Long) -> Exception?)? = null
 
     suspend fun insert(item: DownloadItem) : Long {
         return downloadDao.insert(item)
@@ -1299,50 +1316,62 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun deleteAllWithIDs(ids: List<Long>): Set<String> =
         deleteKnownUserRemoval(downloadDao.getDownloadsByIdsSuspend(ids.distinct()))
 
+    private suspend fun cancelByUserWithPublication(
+        id: Long,
+        expectedExecutionId: String? = null,
+    ): UserCancellationResult {
+        val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
+        val affectedOperationIds = database.withTransaction {
+            val item = downloadDao.getNullableDownloadById(id)
+                ?: return@withTransaction emptySet()
+            val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
+            if (expected != null && item.executionId != expected) {
+                return@withTransaction emptySet()
+            }
+            if (isCommittedHistoryReplacementLocked(item)) {
+                return@withTransaction emptySet()
+            }
+            val changed = if (item.executionId.isBlank()) {
+                downloadDao.cancelByUser(item.id) == 1
+            } else {
+                downloadDao.cancelIfExecutionOwned(item.id, item.executionId) == 1
+            }
+            if (changed) {
+                publications += DownloadCancellationRegistry.Publication(
+                    downloadId = item.id,
+                    executionId = item.executionId,
+                    reason = DownloadCancellationRegistry.Reason.CANCELLED,
+                )
+            }
+            if (!changed && item.status != Status.Cancelled.name) {
+                return@withTransaction emptySet()
+            }
+            if (persistedHistoryRefusalLocked(item.id) != null) {
+                return@withTransaction convergeHistoryReplacementRefusalLocked(
+                    id = item.id,
+                    expectedExecutionId = downloadDao.getNullableDownloadById(item.id)?.executionId.orEmpty(),
+                    forceError = false,
+                ).affectedOperationIds
+            }
+            terminalizeLinkedChildren(
+                downloadIds = listOf(item.id),
+                reason = REASON_USER_CANCELLED,
+                now = System.currentTimeMillis()
+            )
+        }
+        return UserCancellationResult(
+            affectedOperationIds = affectedOperationIds,
+            publication = publications.singleOrNull(),
+        )
+    }
+
     suspend fun cancelByUser(
         id: Long,
         expectedExecutionId: String? = null,
     ): Set<String> {
-        val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
-        val affectedOperationIds = database.withTransaction {
-        val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction emptySet()
-        val expected = expectedExecutionId?.takeIf { it.isNotBlank() }
-        if (expected != null && item.executionId != expected) {
-            return@withTransaction emptySet()
-        }
-        if (isCommittedHistoryReplacementLocked(item)) {
-            return@withTransaction emptySet()
-        }
-        val changed = if (item.executionId.isBlank()) {
-            downloadDao.cancelByUser(item.id) == 1
-        } else {
-            downloadDao.cancelIfExecutionOwned(item.id, item.executionId) == 1
-        }
-        if (changed) {
-            publications += DownloadCancellationRegistry.Publication(
-                downloadId = item.id,
-                executionId = item.executionId,
-                reason = DownloadCancellationRegistry.Reason.CANCELLED,
-            )
-        }
-        if (!changed && item.status != Status.Cancelled.name) {
-            return@withTransaction emptySet()
-        }
-        if (persistedHistoryRefusalLocked(item.id) != null) {
-            return@withTransaction convergeHistoryReplacementRefusalLocked(
-                id = item.id,
-                expectedExecutionId = downloadDao.getNullableDownloadById(item.id)?.executionId.orEmpty(),
-                forceError = false,
-            ).affectedOperationIds
-        }
-        terminalizeLinkedChildren(
-            downloadIds = listOf(item.id),
-            reason = REASON_USER_CANCELLED,
-            now = System.currentTimeMillis()
-        )
-        }
-        DownloadCancellationRegistry.publish(publications)
-        return affectedOperationIds
+        val result = cancelByUserWithPublication(id, expectedExecutionId)
+        result.publication?.let { DownloadCancellationRegistry.publish(listOf(it)) }
+        return result.affectedOperationIds
     }
 
     suspend fun completeAndDelete(
@@ -1820,33 +1849,67 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     internal suspend fun cancelActiveQueued(): List<DownloadCancellationRegistry.Publication> {
+        val result = cancelActiveQueuedWithResult()
+        result.failure?.let { throw it }
+        return result.publications
+    }
+
+    /**
+     * Durable Clear Queue cancellation is item-isolated.  A single Room
+     * transaction over the whole queue would roll back A's failure into a
+     * batch-wide failure and leave healthy siblings runnable.  Each item is
+     * re-read inside its own transaction, so a Queued -> Active claim that
+     * wins the race is canceled through that exact current execution token.
+     */
+    internal suspend fun cancelActiveQueuedWithResult(): BulkCancellationResult {
+        val snapshots = downloadDao.getActiveAndQueuedDownloadsList()
+            .distinctBy(DownloadItem::id)
+            .sortedBy(DownloadItem::id)
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
-        database.withTransaction {
-            downloadDao.getActiveAndQueuedDownloadsList().forEach { item ->
-                if (isCommittedHistoryReplacementLocked(item)) return@forEach
-                val changed = if (item.executionId.isBlank()) {
-                    downloadDao.cancelByUser(item.id) == 1
-                } else {
-                    downloadDao.cancelIfExecutionOwned(item.id, item.executionId) == 1
+        val affectedOperationIds = linkedSetOf<String>()
+        var firstFailure: Exception? = null
+
+        snapshots.forEach { snapshot ->
+            try {
+                val result = withDownloadWorkerExecutionSideEffectLease(
+                    downloadId = snapshot.id,
+                    executionId = snapshot.executionId,
+                ) {
+                    withDownloadWorkerExecutionLock {
+                        cancelActiveQueuedFailureForTesting?.invoke(snapshot.id)?.let { throw it }
+                        cancelByUserWithPublication(
+                            id = snapshot.id,
+                            // Clear Queue owns the current queue intent, not
+                            // the stale execution token from the observation
+                            // snapshot. The transaction rereads and CASes
+                            // that current token.
+                            expectedExecutionId = null,
+                        )
+                    }
                 }
-                if (changed) {
-                    publications += DownloadCancellationRegistry.Publication(
-                        downloadId = item.id,
-                        executionId = item.executionId,
-                        reason = DownloadCancellationRegistry.Reason.CANCELLED,
-                    )
+                affectedOperationIds += result.affectedOperationIds
+                result.publication?.let { publication ->
+                    publications += publication
+                    // The DB transaction has returned successfully, so this
+                    // execution-scoped cancellation publication is now safe.
+                    DownloadCancellationRegistry.publish(listOf(publication))
                 }
-                if (persistedHistoryRefusalLocked(item.id) != null) {
-                    convergeHistoryReplacementRefusalLocked(
-                        id = item.id,
-                        expectedExecutionId = item.executionId,
-                        forceError = false,
-                    )
-                }
+            } catch (cancelled: CancellationException) {
+                firstFailure = firstFailure?.also {
+                    if (it !== cancelled) it.addSuppressed(cancelled)
+                } ?: cancelled
+            } catch (failure: Exception) {
+                firstFailure = firstFailure?.also {
+                    if (it !== failure) it.addSuppressed(failure)
+                } ?: failure
             }
         }
-        DownloadCancellationRegistry.publish(publications)
-        return publications.toList()
+
+        return BulkCancellationResult(
+            publications = publications.toList(),
+            affectedOperationIds = affectedOperationIds,
+            failure = firstFailure,
+        )
     }
 
     fun removeLogID(logID: Long){

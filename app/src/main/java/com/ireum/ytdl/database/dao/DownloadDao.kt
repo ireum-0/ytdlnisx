@@ -27,6 +27,11 @@ private const val LOW_QUALITY_TERMINAL_DEBT_GUARD =
         "AND debt.itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
         "AND COALESCE(downloads.lastIssueCode, '') != '')"
 
+private const val COMMITTED_HISTORY_REPLACEMENT_GUARD =
+    "AND NOT (COALESCE(playlistURL, '') LIKE 'history-redownload:%' " +
+        "AND EXISTS (SELECT 1 FROM history committedHistory " +
+        "WHERE committedHistory.downloadId = downloads.id)) "
+
 private const val LOW_QUALITY_REPLACEMENT_RUNNABLE_PREDICATE =
     "NOT (COALESCE(playlistURL, '') LIKE 'history-redownload:%:quality:%' " +
         "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items q " +
@@ -34,9 +39,7 @@ private const val LOW_QUALITY_REPLACEMENT_RUNNABLE_PREDICATE =
         // A replacement whose History row already points at this Download is
         // past the semantic commit boundary.  It must be finalized, never
         // admitted as a new destructive attempt.
-        "AND NOT (COALESCE(playlistURL, '') LIKE 'history-redownload:%' " +
-            "AND EXISTS (SELECT 1 FROM history committedHistory " +
-            "WHERE committedHistory.downloadId = downloads.id)) " +
+        COMMITTED_HISTORY_REPLACEMENT_GUARD +
         "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items lqi " +
         "LEFT JOIN low_quality_redownload_operations lqo " +
         "ON lqo.operationId = lqi.operationId " +
@@ -422,6 +425,7 @@ interface DownloadDao {
             "WHERE lqi.downloadId = downloads.id " +
             "AND (lqi.itemState IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED','CANCELLATION_REQUESTED') " +
             "OR lqo.operationId IS NULL OR lqo.state != 'RUNNING' OR lqo.cancelRequested = 1))"
+            + COMMITTED_HISTORY_REPLACEMENT_GUARD
             + LOW_QUALITY_TERMINAL_DEBT_GUARD
     )
     suspend fun claimDownloadForWorker(

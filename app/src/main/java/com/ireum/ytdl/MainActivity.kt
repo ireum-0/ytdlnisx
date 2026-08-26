@@ -251,9 +251,20 @@ class MainActivity : BaseActivity() {
                     }
                     terminateDialog.show()
                 }else{
-                    finishAndRemoveTask()
-                    android.util.Log.e("ExitTrace", "exitProcess requested (terminate no dialog)", Throwable())
-                    exitProcess(0)
+                    lifecycleScope.launch {
+                        withContext(Dispatchers.IO) {
+                            val activeDownloads = downloadViewModel
+                                .getActiveAndPostProcessingDownloads()
+                            if (activeDownloads.isNotEmpty()) {
+                                downloadViewModel.requeueActiveDownloadsForExit(
+                                    activeDownloads.map { it.id }
+                                )
+                            }
+                        }
+                        finishAndRemoveTask()
+                        android.util.Log.e("ExitTrace", "exitProcess requested (terminate no dialog)", Throwable())
+                        exitProcess(0)
+                    }
                 }
                 true
             }

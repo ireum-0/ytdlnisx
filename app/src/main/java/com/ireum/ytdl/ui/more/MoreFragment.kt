@@ -22,7 +22,9 @@ import com.ireum.ytdl.ui.more.settings.SettingsActivity
 import com.ireum.ytdl.ui.more.terminal.TerminalActivity
 import com.ireum.ytdl.util.NavbarUtil
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.system.exitProcess
 
 class MoreFragment : Fragment() {
@@ -165,7 +167,15 @@ class MoreFragment : Fragment() {
 
     fun terminateApp() {
         lifecycleScope.launch {
-            downloadViewModel.pauseAllDownloads()
+            withContext(Dispatchers.IO) {
+                val activeDownloads = downloadViewModel
+                    .getActiveAndPostProcessingDownloads()
+                if (activeDownloads.isNotEmpty()) {
+                    downloadViewModel.requeueActiveDownloadsForExit(
+                        activeDownloads.map { it.id }
+                    )
+                }
+            }
             mainActivity.finishAndRemoveTask()
             mainActivity.finishAffinity()
             android.util.Log.e("ExitTrace", "exitProcess requested (MoreFragment)", Throwable())

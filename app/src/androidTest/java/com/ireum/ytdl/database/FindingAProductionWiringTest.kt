@@ -13,10 +13,12 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.work.DownloadExecutionRecovery
+import com.ireum.ytdl.work.claimDownloadThroughProductionAdmission
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -137,6 +139,34 @@ class FindingAProductionWiringTest {
     }
 
     @Test
+    fun committedHistoryReplacementCannotBeClaimedAsFreshQueueAttempt() = runBlocking {
+        val historyId = db.historyDao.insertAndGetIdRaw(history())
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                playlistURL = "history-redownload:$historyId",
+                status = DownloadRepository.Status.Queued.name,
+                executionId = "",
+            )
+        )
+        db.historyDao.updateRaw(db.historyDao.getItem(historyId).copy(downloadId = downloadId))
+
+        val candidate = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertEquals(
+            null,
+            claimDownloadThroughProductionAdmission(
+                context = ApplicationProvider.getApplicationContext(),
+                dbManager = db,
+                candidate = candidate,
+                concurrentDownloadLimit = 1,
+            )
+        )
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+    }
+
+    @Test
     fun applicationRecoveryRequeuesAbandonedOrdinaryRowWithoutDownloadWorker() = runBlocking {
         val downloadId = db.downloadDao.insertRaw(download().copy(executionId = "dead-E1"))
 
@@ -160,6 +190,88 @@ class FindingAProductionWiringTest {
         DownloadExecutionRecovery.reconcile(ApplicationProvider.getApplicationContext(), db)
 
         assertEquals(null, db.downloadDao.getNullableDownloadById(downloadId))
+    }
+
+    @Test
+    fun clearQueueCancelsEveryOrdinaryQueueIntentDurably() = runBlocking {
+        val queuedId = db.downloadDao.insertRaw(
+            download().copy(status = DownloadRepository.Status.Queued.name)
+        )
+        val waitingId = db.downloadDao.insertRaw(
+            download().copy(status = DownloadRepository.Status.WaitingForMembership.name)
+        )
+        val scheduledId = db.downloadDao.insertRaw(
+            download().copy(status = DownloadRepository.Status.Scheduled.name)
+        )
+        val activeId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = "clear-E1",
+            )
+        )
+
+        val result = DownloadRepository(db).cancelActiveQueuedWithResult()
+
+        assertEquals(null, result.failure)
+        listOf(queuedId, waitingId, scheduledId, activeId).forEach { id ->
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(id)?.status,
+            )
+        }
+        assertTrue(result.publications.any { it.downloadId == activeId && it.executionId == "clear-E1" })
+
+        // A later worker claim/recovery pass cannot resurrect the cleared
+        // queue intent from its durable Cancelled state.
+        listOf(queuedId, waitingId, scheduledId, activeId).forEach { id ->
+            val current = requireNotNull(db.downloadDao.getNullableDownloadById(id))
+            assertEquals(
+                0,
+                db.downloadDao.claimDownloadForWorker(
+                    id = id,
+                    expectedOperationId = current.operationId,
+                    expectedRetryAttempt = current.retryAttempt,
+                    executionId = "unrelated-E2-$id",
+                )
+            )
+        }
+        DownloadExecutionRecovery.reconcile(ApplicationProvider.getApplicationContext(), db)
+        assertTrue(
+            listOf(queuedId, waitingId, scheduledId, activeId).all { id ->
+                db.downloadDao.getNullableDownloadById(id)?.status ==
+                    DownloadRepository.Status.Cancelled.name
+            }
+        )
+    }
+
+    @Test
+    fun clearQueueCancellationFailureDoesNotSkipSiblingsOrReportSuccess() = runBlocking {
+        val failingId = db.downloadDao.insertRaw(
+            download().copy(status = DownloadRepository.Status.Queued.name)
+        )
+        val siblingId = db.downloadDao.insertRaw(
+            download().copy(status = DownloadRepository.Status.Queued.name)
+        )
+        val repository = DownloadRepository(db)
+        repository.cancelActiveQueuedFailureForTesting = { id ->
+            if (id == failingId) IllegalStateException("injected first cancellation write failure") else null
+        }
+
+        try {
+            val result = repository.cancelActiveQueuedWithResult()
+
+            assertNotNull(result.failure)
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(failingId)?.status,
+            )
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(siblingId)?.status,
+            )
+        } finally {
+            repository.cancelActiveQueuedFailureForTesting = null
+        }
     }
 
     private fun history() = HistoryItem(

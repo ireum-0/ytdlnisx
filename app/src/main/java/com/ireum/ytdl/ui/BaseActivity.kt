@@ -11,6 +11,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.os.bundleOf
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.ViewModelProvider
 import androidx.navigation.NavController
 import androidx.navigation.findNavController
 import androidx.navigation.fragment.findNavController
@@ -116,9 +117,20 @@ open class BaseActivity : AppCompatActivity() {
     }
 
     private fun exit() {
-        android.util.Log.e("ExitTrace", "System.exit requested", Throwable())
-        finishAffinity()
-        exitProcess(0)
+        val downloadViewModel = ViewModelProvider(this)[DownloadViewModel::class.java]
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                val activeDownloads = downloadViewModel.getActiveAndPostProcessingDownloads()
+                if (activeDownloads.isNotEmpty()) {
+                    downloadViewModel.requeueActiveDownloadsForExit(
+                        activeDownloads.map { it.id }
+                    )
+                }
+            }
+            android.util.Log.e("ExitTrace", "System.exit requested", Throwable())
+            finishAffinity()
+            exitProcess(0)
+        }
     }
 
 }
