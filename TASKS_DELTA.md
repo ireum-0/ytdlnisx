@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **36**
-- Effective active defects: **110**
+- Delta active defects: **37**
+- Effective active defects: **111**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1504,3 +1504,55 @@ Focused verification requirements:
 - after successful Clear Queue, exercise notification Resume, Resume All/`resetPausedToQueued()`, manual/raw requeue, reconfigure, process restart/reconcile, and a second Clear Queue; none may resurrect the cleared prior intent without a new explicit user queue action;
 - add Active/PostProcessing claim-race controls for the current item-isolation remediation, Scheduled and WaitingForMembership controls, low-quality/History-replacement linked rows, and a truly terminal Saved/Cancelled/Error control proving the status set does not broaden indiscriminately;
 - verification must cover the actual Fragment/ViewModel/Repository/Room plus WorkManager handoff. No production-path test was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-FORMAT-03 — Scope unavailable-format cleanup to the selected Download identities
+
+**State:** Open  
+**Reviewed checkpoint:** `abc3998d26bd2f17517097cc9ad1231aad10f6ed`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the multi-Download configuration screen supports selecting an exact subset of Processing rows by Download ID. When the user opens Format for that subset, `DownloadMultipleBottomSheetDialog` calls `downloadViewModel.getProcessingDownloads(listAdapter.getCheckedItemsOrNull())` and stores only those selected rows in `FormatViewModel`. `FormatSelectionBottomSheetDialog` refreshes formats for that selected set. In the multi-item branch, if the authoritative format-fetch result reports selected URL U as unavailable, the listener calls `DownloadViewModel.removeUnavailableDownloadAndResultByURL(U)`. That helper drops the selected identities entirely and calls `DownloadRepository.deleteProcessingByUrl(U)`, whose DAO mutation is `DELETE FROM downloads WHERE status='Processing' AND url=:url`.
+
+Two valid Processing drafts can share U while carrying different Download IDs and configuration/type. If A is selected for the format operation and B with the same URL is not selected, an unavailable result for A therefore authorizes deletion of **both** A and B. B was never part of the selected operation and no current B identity/configuration was observed before the destructive write. The result-cache deletion by URL can reasonably be source-wide; the correctness defect is the Download-row deletion, where UI authority was exact-ID scoped but the repository broadens cleanup to a coarser URL key. The deletion is immediately durable, has no rollback/recovery carrier, and process restart preserves B's absence.
+
+**Why this is a defect:** an unavailable observation about a selected source URL does not grant authority to destroy every independent Processing Download configuration that happens to reference the same URL. Processing rows are user-owned durable drafts with distinct IDs/settings, and the UI explicitly permits subset operations. A normal selected refresh can therefore delete an unselected sibling and its configuration without any persistence fault, race, or malformed state. This is a destructive data-integrity defect rather than defensive hardening.
+
+This is distinct from `BUG-FORMAT-01`, which owns ignored/partial background format-refresh errors, and `BUG-FORMAT-02`, which owns stale format-update notification IDs overwriting current Download ownership. Neither requires or covers a live selected-subset operation whose cleanup key broadens from exact Download IDs to URL and deletes an unselected sibling.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The synchronized baseline contains the same exact-ID selection path, URL-only unavailable callback, and `deleteProcessingByUrl()` mutation.
+
+Required result:
+
+- preserve the exact selected Download IDs from the format operation through unavailable-result handling and delete/mark unavailable only the exact rows the user operation authorized, under expected current Processing identity;
+- never use URL alone as destructive authority over Download rows when the initiating operation was scoped to a subset of IDs; if source-wide result-cache cleanup is desired, keep that separate from Download-draft cleanup;
+- if multiple selected rows share the same unavailable URL, apply the decision only to the selected exact rows and preserve unselected same-URL siblings unchanged;
+- return/propagate a typed unavailable result for the selected identities so partial selection behavior remains explicit and retry/reconfigure can continue for surviving drafts;
+- after process death or persistence failure at the first delete/write boundary, retain enough exact row identity for the operation to retry or surface partial completion without broadening authority on re-entry.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision: format retrieval for the exact selected set reports URL U unavailable; this does not imply that every Processing row with U was selected or should be destroyed;
+- first destructive persistence call: `DownloadDao.deleteProcessingByUrl(U)`. Successful execution is the primary defect because it deletes an unselected sibling. A failed first delete leaves rows intact and must not be reinterpreted as successful cleanup;
+- recovery carrier: none exists after successful overbroad deletion. The deleted B row/configuration cannot be reconstructed from the remaining URL/result cache, and no WorkManager or operation ledger owns the format-sheet cleanup;
+- durable Download effect: selected A and unselected B can both be absent. Linked per-Download state associated with those rows can also lose its owner according to normal deletion behavior. No media filesystem publication or `DownloadOutcome` is required;
+- final UI flow removes the unavailable URL from the selected format list and can continue with other selected siblings, so the unrelated deletion of B is not surfaced as a failure;
+- cross-attempt matrix: reopening/reconfiguring A cannot restore B; manual/raw requeue cannot act on a deleted B; notification retry/resume is not a repair path; restart preserves B's absence; a later source recovery/format refresh has no exact B configuration to reconstruct; backup restore is not semantic recovery and must not be relied upon;
+- no AB/BA lock cycle is required. The identity-granularity mismatch alone reproduces the defect. Concurrent mutation of B would only strengthen the need for an expected-ID/current-status predicate.
+
+Candidate-rejection proof:
+
+- do not reject because A and B share the same source URL: the configuration screen treats them as distinct rows/IDs and explicitly allows selecting one without the other, so URL equality is not destructive Download identity;
+- do not reject because the source-unavailable observation is authoritative: it may justify source/result-cache invalidation, but it does not widen the user's selected Download-draft deletion authority to unselected siblings;
+- do not reject as `BUG-FORMAT-01`: no ignored exception or background partial refresh is required; a normal successful `unavailable=true` result triggers this path;
+- do not reject as `BUG-FORMAT-02`: no stale notification or delayed ownership handoff is required; the defect occurs inside the live format-selection flow;
+- no existing `TASKS.md` or `TASKS_DELTA.md` entry owns `removeUnavailableDownloadAndResultByURL` / `deleteProcessingByUrl` or the selected-ID-to-URL destructive broadening invariant.
+
+Focused verification requirements:
+
+- exercise the real `DownloadMultipleBottomSheetDialog -> FormatSelectionBottomSheetDialog -> onItemUnavailable -> DownloadViewModel -> DownloadRepository -> DownloadDao/Room` wiring with Processing rows A and B sharing URL U but distinct IDs/configurations; select only A (plus an unrelated selected sibling as needed to use the multi-item refresh branch), force U unavailable, and assert B survives unchanged;
+- cover two selected same-URL rows plus one unselected same-URL row, different Download types/configurations for the same URL, selected-all behavior, and a source/result-cache cleanup control;
+- inject a failure on the first exact corrected delete/update, process death after one selected sibling is handled, and retry/reopen; prove only exact selected identities are retried/removed and unselected siblings remain owned;
+- restart after the unavailable operation and verify surviving B remains editable with its exact prior configuration;
+- verification must cover the actual dialogs/ViewModel/Repository/Room path. No executed production-path wiring test for this selection-to-cleanup identity narrowing was found, so verification remains `SOURCE-LEVEL ONLY`.
