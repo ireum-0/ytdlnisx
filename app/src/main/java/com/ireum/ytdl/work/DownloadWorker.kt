@@ -684,149 +684,83 @@ class DownloadWorker(
         queuedItems.collect { items ->
             if (this@DownloadWorker.isStopped) return@collect
 
-            val selectedDownloads = withDownloadWorkerExecutionLock {
+            // Recovery responsibility is a liveness carrier, not a scheduler
+            // capacity owner.  Recompute it for this observation; a Download
+            // that later requeues and is claimed as E2 must not remain
+            // excluded merely because it was deferred during startup.
+            val recoveryResponsibility = DownloadExecutionRecovery
+                .hasRecoveryResponsibility(context, dbManager)
+            val admission = admitQueuedDownloadsThroughProductionPath(
+                dbManager = dbManager,
+                items = items,
+                priorityItemIds = priorityItemIDs,
+                currentTimeMillis = time,
+                concurrentDownloadLimit = sharedPreferences
+                    .getInt("concurrent_downloads", 1)
+                    .coerceAtLeast(1),
+                continueAfterPriorityItems = continueAfterPriorityIds,
+                claim = { candidate ->
+                    claimDownloadThroughProductionAdmission(
+                        context = context,
+                        dbManager = dbManager,
+                        candidate = candidate,
+                        concurrentDownloadLimit = sharedPreferences
+                            .getInt("concurrent_downloads", 1)
+                            .coerceAtLeast(1),
+                    ) { claimedItem ->
+                        workerExecutionIds[claimedItem.id] = claimedItem.executionId
+                        workerDownloadIds.add(claimedItem.id)
+                        workerCleanupDownloadIds.add(claimedItem.id)
+                    }
+                },
+            )
+            priorityItemIDs = admission.prioritySnapshot.outstandingIds
+            withDownloadWorkerExecutionLock {
                 runningYTDLInstances.clear()
-                val activeDownloads = dao.getActiveDownloadsList()
-                activeDownloads.forEach {
-                    runningYTDLInstances.add(it.id)
-                }
-
-                val running = ArrayList(runningYTDLInstances)
-                val priorityRecords = if (priorityItemIDs.isEmpty()) {
-                    emptyList()
-                } else {
-                    dao.getDownloadsByIdsSuspend(priorityItemIDs)
-                }
-                val prioritySnapshot = DownloadQueuePolicy.prioritySnapshot(
-                    priorityItemIds = priorityItemIDs,
-                    queueRecords = priorityRecords,
-                    eligibleItemIds = priorityRecords.asSequence()
-                        .filter { record ->
-                            record.status in setOf(
-                                DownloadRepository.Status.Queued.name,
-                                DownloadRepository.Status.Scheduled.name,
-                            ) && record.downloadStartTime <= time
-                        }
-                        .mapTo(linkedSetOf(), DownloadItem::id),
-                    activeOrRunningIds = running.toSet(),
-                    nonterminalLinkedIds = if (priorityItemIDs.isEmpty()) {
-                        emptySet()
-                    } else {
-                        dbManager.lowQualityRedownloadDao
-                            .getNonterminalItemsByDownloadIds(priorityItemIDs)
-                            .mapNotNullTo(linkedSetOf()) { it.downloadId }
-                    },
-                    idOf = DownloadItem::id,
-                    statusOf = DownloadItem::status,
-                )
-                priorityItemIDs = prioritySnapshot.outstandingIds
-                val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
-                if (
-                    items.isEmpty() &&
-                    running.isEmpty() &&
-                    prioritySnapshot.outstandingIds.isEmpty()
-                ) {
-                    WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
-                    return@collect
-                }
-
-                if (useScheduler){
-                    if (
-                        items.none { it.downloadStartTime > 0L } &&
-                        running.isEmpty() &&
-                        prioritySnapshot.outstandingIds.isEmpty() &&
-                        !alarmScheduler.isDuringTheScheduledTime()
-                    ) {
-                        WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
-                        return@collect
-                    }
-                }
-
-                if (DownloadQueuePolicy.shouldStopAfterPriorities(
-                        priorityItemIDs,
-                        continueAfterPriorityIds,
-                    )
-                ) {
-                    WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
-                    return@collect
-                }
-
-                val concurrentDownloads = (
-                    sharedPreferences.getInt("concurrent_downloads", 1).coerceAtLeast(1) -
-                        running.size
-                    ).coerceAtLeast(0)
-                val baseEligibleDownloads = DownloadQueuePolicy.selectCandidates(
-                    items = if (prioritySnapshot.outstandingIds.isEmpty()) {
-                        items
-                    } else {
-                        (priorityRecords + items).distinctBy(DownloadItem::id)
-                    },
-                    runningIds = running.toSet(),
-                    prioritySnapshot = prioritySnapshot,
-                    availableSlots = concurrentDownloads,
-                    idOf = DownloadItem::id,
-                )
-                val hasRunningHardSub = activeDownloads.any { isHardSubRedownload(it) }
-                (if (hasRunningHardSub) {
-                    baseEligibleDownloads.filterNot { isHardSubRedownload(it) }
-                } else {
-                    val hardSubs = baseEligibleDownloads.filter { isHardSubRedownload(it) }
-                    if (hardSubs.size <= 1) {
-                        baseEligibleDownloads
-                    } else {
-                        val firstHardSubId = hardSubs.first().id
-                        baseEligibleDownloads.filter { !isHardSubRedownload(it) || it.id == firstHardSubId }
-                    }
-                }).filterNot { candidate ->
-                    // A committed History replacement is a finalization debt,
-                    // never a fresh destructive attempt even if an earlier
-                    // cleanup left its Download row queued.
-                    isDurablyCommittedHistoryReplacement(dbManager, candidate)
-                }
-
+                runningYTDLInstances.addAll(admission.ownership.liveCapacityIds)
             }
+            val hasOutstandingWorkerExecution =
+                workerDownloadIds.isNotEmpty() ||
+                    workerCleanupDownloadIds.isNotEmpty() ||
+                    admission.ownership.liveExecutionIds.isNotEmpty()
+            val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
+            if (
+                items.isEmpty() &&
+                admission.ownership.liveCapacityIds.isEmpty() &&
+                admission.prioritySnapshot.outstandingIds.isEmpty() &&
+                !hasOutstandingWorkerExecution &&
+                !recoveryResponsibility
+            ) {
+                WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
+                return@collect
+            }
+
+            if (useScheduler){
+                if (
+                    items.none { it.downloadStartTime > 0L } &&
+                    admission.ownership.liveCapacityIds.isEmpty() &&
+                    admission.prioritySnapshot.outstandingIds.isEmpty() &&
+                    !hasOutstandingWorkerExecution &&
+                    !recoveryResponsibility &&
+                    !alarmScheduler.isDuringTheScheduledTime()
+                ) {
+                    WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
+                    return@collect
+                }
+            }
+
+            if (admission.stoppedAfterPriorities && !recoveryResponsibility) {
+                WorkManager.getInstance(context).cancelWorkById(this@DownloadWorker.id)
+                return@collect
+            }
+
+            val eligibleDownloads = admission.claimedItems
 
             // Claims publish the execution token while the exact per-Download
             // side-effect lease is held.  Cleanup/pause/cancel therefore cannot
             // pass its ownership check and then address the resource before a
             // newly claimed execution is visible in the process-local owner
             // registry.
-            val eligibleDownloads = selectedDownloads.mapNotNull { candidate ->
-                withDownloadWorkerExecutionSideEffectLease(
-                    downloadId = candidate.id,
-                    executionId = "",
-                ) {
-                    if (
-                        !DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id) ||
-                            hasAnyRegisteredNativeProcess(candidate.id)
-                    ) {
-                        // A prior execution still owns an unresolved native
-                        // process.  Do not publish a new execution token even
-                        // if an external path prematurely made the row look
-                        // queued; startup recovery must prove quiescence first.
-                        return@withDownloadWorkerExecutionSideEffectLease null
-                    }
-                    withDownloadWorkerExecutionLock {
-                        val executionId = UUID.randomUUID().toString()
-                        val claimed = dao.claimDownloadForWorker(
-                            id = candidate.id,
-                            expectedOperationId = candidate.operationId,
-                            expectedRetryAttempt = candidate.retryAttempt,
-                            executionId = executionId,
-                        ) == 1
-                        if (!claimed) {
-                            null
-                        } else {
-                            workerExecutionIds[candidate.id] = executionId
-                            workerDownloadIds.add(candidate.id)
-                            workerCleanupDownloadIds.add(candidate.id)
-                            DownloadWorkerExecutionOwners.claim(candidate.id, executionId)
-                            dao.getNullableDownloadById(candidate.id)
-                                ?.takeIf { it.executionId == executionId }
-                        }
-                    }
-                }
-            }
 
             runDownloadItemsIndependently(
                 items = eligibleDownloads,

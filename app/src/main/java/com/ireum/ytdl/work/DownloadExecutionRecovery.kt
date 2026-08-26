@@ -379,6 +379,33 @@ internal object DownloadExecutionRecovery {
         .mapNotNull { it.toLongOrNull() }
         .toSet()
 
+    /**
+     * Current queue-worker liveness proof.  This is intentionally evaluated
+     * from current durable/process state on every admission cycle rather than
+     * from the startup ReconcileResult.  An unowned running row remains
+     * recovery-owned, while a later exact E2 owner is live work and therefore
+     * is not kept alive by stale E1 bookkeeping.
+     */
+    internal fun hasRecoveryResponsibility(
+        context: Context,
+        dbManager: DBManager,
+    ): Boolean {
+        YtdlpNativeProcessBarrier.configure(context)
+        if (pendingDownloadIds(context).isNotEmpty()) return true
+
+        return dbManager.downloadDao
+            .getActiveAndPostProcessingDownloadsList()
+            .any { item ->
+                val hasCurrentWorkerOwner = item.executionId.isNotBlank() &&
+                    DownloadWorkerExecutionOwners.isOwnedBy(item.id, item.executionId)
+                !hasCurrentWorkerOwner ||
+                    YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(
+                        item.id,
+                        item.executionId,
+                    )
+            }
+    }
+
     suspend fun reconcile(
         context: Context,
         dbManager: DBManager = DBManager.getInstance(context),
