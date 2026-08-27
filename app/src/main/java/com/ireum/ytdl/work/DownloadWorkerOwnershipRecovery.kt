@@ -88,6 +88,11 @@ internal object DownloadWorkerExecutionOwners {
     fun release(downloadId: Long, executionId: String) {
         if (executionId.isNotBlank()) owners.remove(downloadId, executionId)
     }
+
+    /** Test-only teardown for the process-local owner registry. */
+    internal fun clearForTesting() {
+        owners.clear()
+    }
 }
 
 /**
@@ -120,6 +125,11 @@ internal object DownloadWorkerProcessOwners {
 
     fun release(downloadId: Long, executionId: String) {
         if (executionId.isNotBlank()) owners.remove(downloadId, executionId)
+    }
+
+    /** Test-only teardown for the process-local native owner registry. */
+    internal fun clearForTesting() {
+        owners.clear()
     }
 }
 

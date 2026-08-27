@@ -1421,6 +1421,14 @@ internal object DownloadExecutionRecovery {
         retryJobs.clear()
     }
 
+    /** Test-only teardown for the durable recovery carrier. */
+    internal fun clearForTesting(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
+    }
+
     private fun isCommittedHistoryReplacement(
         dbManager: DBManager,
         item: DownloadItem,

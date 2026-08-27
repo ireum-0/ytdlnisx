@@ -2,20 +2,49 @@ package com.ireum.ytdl.work
 
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import java.io.IOException
+import java.nio.file.Files
 
 class DownloadWorkerOwnershipRecoveryTest {
+    private lateinit var markerDirectory: java.io.File
+
+    @Before
+    fun configureNativeBarrier() {
+        markerDirectory = Files
+            .createTempDirectory("ytdlnisx-ownership-test")
+            .toFile()
+        YtdlpNativeProcessBarrier.configureForTesting(markerDirectory)
+    }
+
+    @After
+    fun clearTestState() {
+        listOf(
+            903L to "E1",
+            903L to "E2",
+            906L to "E2",
+            907L to "E1",
+            907L to "E2",
+        ).forEach { (downloadId, executionId) ->
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+            DownloadWorkerProcessOwners.release(downloadId, executionId)
+        }
+        markerDirectory.deleteRecursively()
+    }
+
     @Test
     fun releasingDeadExecutionCannotClearNewerExecutionOwner() {
         val downloadId = 903L

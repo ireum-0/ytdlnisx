@@ -9,10 +9,13 @@ import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
+import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorkerAdmissionResult
@@ -46,6 +49,11 @@ class FindingAProductionWiringTest {
 
     @Before
     fun createDb() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
+        DownloadExecutionRecovery.clearForTesting(context)
+        DownloadWorkerExecutionOwners.clearForTesting()
+        DownloadWorkerProcessOwners.clearForTesting()
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
             DBManager::class.java,
@@ -57,6 +65,9 @@ class FindingAProductionWiringTest {
     @After
     fun closeDb() {
         DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
+        DownloadExecutionRecovery.clearForTesting(ApplicationProvider.getApplicationContext())
+        DownloadWorkerExecutionOwners.clearForTesting()
+        DownloadWorkerProcessOwners.clearForTesting()
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
@@ -261,8 +272,8 @@ class FindingAProductionWiringTest {
         assertNull(DownloadWorkerProcessOwners.ownerOf(firstId))
 
         val siblingCandidate = requireNotNull(db.downloadDao.getNullableDownloadById(siblingId))
-        val siblingClaimed = try {
-            requireNotNull(
+        try {
+            val siblingClaimed = requireNotNull(
                 claimDownloadThroughProductionAdmission(
                     context = context,
                     dbManager = db,
@@ -271,28 +282,28 @@ class FindingAProductionWiringTest {
                     onClaimed = { callbackCount += 1 },
                 )
             )
+
+            assertEquals(1, callbackCount)
+            assertEquals(siblingId, siblingClaimed.id)
+            assertEquals(siblingCandidate.url, siblingClaimed.url)
+            assertEquals(siblingCandidate.operationId, siblingClaimed.operationId)
+            assertEquals(siblingCandidate.retryAttempt, siblingClaimed.retryAttempt)
+            assertEquals(DownloadRepository.Status.Active.name, siblingClaimed.status)
+            assertTrue(siblingClaimed.executionId.isNotBlank())
+            assertEquals(
+                siblingClaimed.executionId,
+                DownloadWorkerExecutionOwners.ownerOf(siblingId),
+            )
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(firstId)?.status,
+            )
         } finally {
             DownloadWorkerExecutionOwners.ownerOf(siblingId)?.let { executionId ->
                 DownloadWorkerExecutionOwners.release(siblingId, executionId)
             }
             DownloadExecutionRecovery.reconcile(context, db)
         }
-
-        assertEquals(1, callbackCount)
-        assertEquals(siblingId, siblingClaimed.id)
-        assertEquals(siblingCandidate.url, siblingClaimed.url)
-        assertEquals(siblingCandidate.operationId, siblingClaimed.operationId)
-        assertEquals(siblingCandidate.retryAttempt, siblingClaimed.retryAttempt)
-        assertEquals(DownloadRepository.Status.Active.name, siblingClaimed.status)
-        assertTrue(siblingClaimed.executionId.isNotBlank())
-        assertEquals(
-            siblingClaimed.executionId,
-            DownloadWorkerExecutionOwners.ownerOf(siblingId),
-        )
-        assertEquals(
-            DownloadRepository.Status.Queued.name,
-            db.downloadDao.getNullableDownloadById(firstId)?.status,
-        )
     }
 
     @Test
@@ -634,17 +645,14 @@ class FindingAProductionWiringTest {
     @Test
     fun staleRecoveryOwnedHardSubDoesNotConsumeProductionHardSubAdmission() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        val staleId = db.downloadDao.insertRaw(
-            hardSubDownload(1001L).copy(
-                status = DownloadRepository.Status.Active.name,
-                executionId = "stale-hard-E1",
-            )
+        val staleId = insertHardSubDownload(
+            historyId = 1001L,
+            status = DownloadRepository.Status.Active,
+            executionId = "stale-hard-E1",
         )
-        val healthyId = db.downloadDao.insertRaw(
-            hardSubDownload(1002L).copy(
-                status = DownloadRepository.Status.Queued.name,
-                executionId = "",
-            )
+        val healthyId = insertHardSubDownload(
+            historyId = 1002L,
+            status = DownloadRepository.Status.Queued,
         )
         assertTrue(
             DownloadExecutionRecovery.recordPending(
@@ -785,17 +793,14 @@ class FindingAProductionWiringTest {
 
     @Test
     fun genuinelyLiveActiveHardSubBlocksSecondHardSub() = runBlocking {
-        val liveId = db.downloadDao.insertRaw(
-            hardSubDownload(1101L).copy(
-                status = DownloadRepository.Status.Active.name,
-                executionId = "live-hard-E1",
-            )
+        val liveId = insertHardSubDownload(
+            historyId = 1101L,
+            status = DownloadRepository.Status.Active,
+            executionId = "live-hard-E1",
         )
-        val queuedId = db.downloadDao.insertRaw(
-            hardSubDownload(1102L).copy(
-                status = DownloadRepository.Status.Queued.name,
-                executionId = "",
-            )
+        val queuedId = insertHardSubDownload(
+            historyId = 1102L,
+            status = DownloadRepository.Status.Queued,
         )
         DownloadWorkerExecutionOwners.claim(liveId, "live-hard-E1")
 
@@ -815,17 +820,14 @@ class FindingAProductionWiringTest {
 
     @Test
     fun livePostProcessingHardSubKeepsPriorActiveOnlyHardSubPolicy() = runBlocking {
-        val postProcessingId = db.downloadDao.insertRaw(
-            hardSubDownload(1201L).copy(
-                status = DownloadRepository.Status.PostProcessing.name,
-                executionId = "live-post-hard-E1",
-            )
+        val postProcessingId = insertHardSubDownload(
+            historyId = 1201L,
+            status = DownloadRepository.Status.PostProcessing,
+            executionId = "live-post-hard-E1",
         )
-        val queuedId = db.downloadDao.insertRaw(
-            hardSubDownload(1202L).copy(
-                status = DownloadRepository.Status.Queued.name,
-                executionId = "",
-            )
+        val queuedId = insertHardSubDownload(
+            historyId = 1202L,
+            status = DownloadRepository.Status.Queued,
         )
         DownloadWorkerExecutionOwners.claim(postProcessingId, "live-post-hard-E1")
 
@@ -995,6 +997,37 @@ class FindingAProductionWiringTest {
         download().copy(
             playlistURL = HistoryRedownloadMarker.quality(historyId, 1080),
         )
+
+    private suspend fun insertHardSubDownload(
+        historyId: Long,
+        status: DownloadRepository.Status,
+        executionId: String = "",
+    ): Long {
+        val repository = LowQualityRedownloadRepository(db)
+        val operation = repository.createOrReconnect()
+        db.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = operation.operationId,
+                historyId = historyId,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.CHECKING.name,
+            )
+        )
+        val id = repository.linkDownloadAtomically(
+            operationId = operation.operationId,
+            historyId = historyId,
+            downloadItem = hardSubDownload(historyId).copy(
+                operationId = operation.operationId,
+                status = DownloadRepository.Status.Queued.name,
+                executionId = executionId,
+            ),
+        )
+        val linkedId = requireNotNull(id)
+        if (status != DownloadRepository.Status.Queued) {
+            db.downloadDao.setStatus(linkedId, status.name)
+        }
+        return linkedId
+    }
 
     @Test
     fun applicationRecoveryRequeuesAbandonedOrdinaryRowWithoutDownloadWorker() = runBlocking {
