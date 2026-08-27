@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **41**
-- Effective active defects: **115**
+- Delta active defects: **42**
+- Effective active defects: **116**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1771,3 +1771,60 @@ Focused verification requirements:
 - inject failure into the first corrected recovery persistence write and into cleanup's subsequent authority reread, then verify exact process-local ownership is retained/released only from proven current state and restart remains convergent;
 - add controls for real row deletion, execution-ID replacement, Paused, Cancelled, low-quality cancellation request, and healthy current E1; those proven states should retain their intended stop/continue semantics;
 - exercise same-process fresh worker/reconcile plus cold restart after the fault and assert A remains exactly recoverable while independent sibling B continues. No executed production Worker + Room fault-injection test was found for this path, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-SCHEDULER-06 — Revalidate current due-time authority before claiming a scheduled Download
+
+**State:** Open  
+**Reviewed checkpoint:** `1426246948a2b9a0b7e01e2d7bc5e04609902347`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** Download admission discovers runnable work through `getQueuedScheduledDownloadsUntil(now)`, so a Scheduled row becomes a candidate only because its observed `downloadStartTime <= now`. That candidate snapshot can outlive the observation. The production Scheduled Downloads screen lets the user open that same still-Scheduled row and choose a new future date/time; `ScheduledDownloadsFragment` calls `DownloadViewModel.rescheduleExistingDownload(id, futureTime)`, and `DownloadDao.rescheduleQueuedOrScheduled()` durably keeps the row `Scheduled`, writes the new future `downloadStartTime`, and clears `executionId`. Crucially, that supported reconfiguration does not change `operationId` or `retryAttempt`.
+
+A worker that already retained the old due snapshot can later enter `claimDownloadThroughProductionAdmission()`. Admission rereads the current row for history/low-quality blockers, but it never re-evaluates the due-time predicate that originally granted eligibility. `claimDownloadForWorkerAndRead()` then calls the exact claim CAS using the stale candidate's `operationId` and `retryAttempt`; the SQL accepts any current `Queued`/`Scheduled` row with those identities and likewise contains no `downloadStartTime <= currentTime` or expected schedule-generation predicate. Because the future reschedule preserved status/operation/retry identity, the stale claimant changes the newly rescheduled row to `Active` and attaches a live execution even though the latest durable user decision says the Download is not due until the future time.
+
+The new transactional claim materialization at this checkpoint does not repair this semantic gap. It correctly prevents the separate post-claim reread failure owned by `BUG-ADMISSION-01` from leaving a committed claim outside the transaction, but its transaction validates only the state **after** the stale CAS has already accepted the row. Starting another worker from `rescheduleExistingDownload()` is also not a repair barrier: the newer observer will correctly skip the future row, while the older in-memory candidate remains independently capable of claiming it.
+
+**Why this is a defect:** the due-time predicate is mutable execution authority. A successful supported future reschedule is a revocation of any earlier “run now” observation, yet the claim boundary preserves only coarse status plus operation/retry identity and therefore permits a stale worker to override the later durable schedule. The concrete result is early execution: native/filesystem/History side effects may begin before the user-selected future time with no error or terminal failure exposing the semantic violation. This is a substantive scheduling correctness defect, not defensive hardening.
+
+This is distinct from `BUG-SCHEDULER-02`, which owns the opposite stale-ordering direction: a stale Scheduled UI action can attempt to rewrite a row after a worker has already changed it to live execution state. Here the user's reschedule write is valid and succeeds **before** worker claim; the defect is that the later stale worker fails to treat that newer schedule as revoking its old candidate authority. `BUG-SCHEDULER-01/03/04/05` govern recurrence, successor carriers, shutdown cancellation, and platform exact-alarm capability rather than claim-time preservation of a revised per-row due time.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. At synchronized baseline `dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`, `rescheduleQueuedOrScheduled()` already preserved operation/retry identity while changing `downloadStartTime`, and `claimDownloadForWorker()` already matched status + operationId + retryAttempt without revalidating due time. The current admission refactor retains that inherited expected-identity gap.
+
+Required result:
+
+- treat the currently persisted schedule/due generation as part of execution authorization for Scheduled rows, not merely as a discovery-time filter;
+- after a candidate is observed and immediately before the `Scheduled -> Active` claim, re-evaluate `downloadStartTime <= currentTime` from the current row inside the same transaction/serialization boundary as claim, or compare an immutable schedule-generation/expected-time token changed by every supported reschedule;
+- a successful future reschedule must revoke every stale due candidate that predates it, even when status, `operationId`, and `retryAttempt` remain unchanged;
+- preserve the normal immediate-run path (`downloadStartTime=0` / Queued), unchanged-due Scheduled claims, operation/retry CAS semantics, low-quality/history blockers, native-debt fences, and the transactional actor-attachment fix for `BUG-ADMISSION-01`;
+- if claim-time current-state observation or schedule-generation persistence fails, fail closed without starting the actor and retain the exact Scheduled row for later eligible retry rather than silently converting the failure into “due now”.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative observation: the latest successful `rescheduleQueuedOrScheduled(id, T_new)` with `T_new > now`; the old in-memory worker candidate was authorized only by an earlier `T_old <= now` observation;
+- first persistence call in the confirmed interleaving is the future-reschedule Room update. If that write fails, the old due schedule remains authoritative and this specific stale-revocation defect is not triggered. Assume the reschedule succeeds fully for the primary path;
+- carrier-creation gap: no durable schedule-generation capability is created or compared. The stale worker retains only the old `DownloadItem` snapshot while the current row carries the new time;
+- claim persistence: `claimDownloadForWorkerAndRead()` can succeed normally and return a current `Active` row because its CAS does not include current due time. No first-write fault is required; successful stale claim is the defect;
+- durable Download state becomes `Active` under the new execution token even though its latest persisted `downloadStartTime` is future. Linked ledgers/filesystem state need not change at the claim itself, but normal downstream native execution, destination publication, History mutation, finished notification, and completed `DownloadOutcome` can all occur before `T_new`;
+- final WorkManager result can be ordinary success. There is no automatic semantic downgrade/error indicating that the user schedule was violated;
+- same-settings retry does not restore the missed future delay after early execution. Manual/raw requeue and reconfigure are later user actions, not repair barriers. Notification retry/resume is not needed to trigger the path. Process death **before** the stale claim can incidentally discard the in-memory candidate so a later worker sees the future time, but process death is not a required correctness barrier; restart **after** stale claim inherits normal live-execution recovery, not the user's revoked due authority. Restore is not a semantic repair path;
+- concurrency/lock order: the reschedule UI mutation is not serialized under the worker's per-Download side-effect lease/global claim lock. No AB/BA deadlock is required. The essential ordering is `observe due T_old -> release observation boundary -> successful future reschedule T_new -> stale claim CAS without T_new revalidation`.
+
+Candidate-rejection proof:
+
+- do not reject because the user changed the schedule after the worker observed the row. Supported reconfiguration is exactly a revocation path that v4 requires the claim to respect;
+- do not reject because `rescheduleQueuedOrScheduled()` has an expected-status predicate: the row legitimately remains `Scheduled`, so that predicate succeeds while the semantically important due time changes;
+- do not reject because claim checks `operationId/retryAttempt`: the reschedule path does not mutate either field, so those predicates cannot distinguish the newer schedule generation;
+- do not treat admission's `currentCandidate` reread as proof of current eligibility: the code checks history/low-quality blockers but never rechecks `downloadStartTime` before claim;
+- do not treat the transactional `claimDownloadForWorkerAndRead()` materialization as restoration of the semantic barrier: it makes the stale claim atomic and recoverable but does not add the missing due predicate;
+- do not merge into `BUG-SCHEDULER-02`: that record covers a stale UI mutation attempting to overwrite a later live worker state, whereas this path has a valid newer UI reschedule followed by a stale worker overriding it;
+- repository evidence at synchronized baseline proves the same expected-identity gap existed before the admission remediation, so this is not attributed to the current claim-materialization fix.
+
+Focused verification requirements:
+
+- exercise the real `ScheduledDownloadsFragment -> date picker -> DownloadViewModel.rescheduleExistingDownload -> DownloadDao/Room -> DownloadWorker queue observation -> claimDownloadThroughProductionAdmission()` wiring with a deterministic latch after a due candidate is observed/selected but before claim; reschedule that exact row to `T_new > now`, release the claimant, and assert claim is rejected, status remains Scheduled, and no actor/native launch occurs;
+- advance time to `T_new` and prove the same exact row becomes eligible and is claimed exactly once;
+- add controls for unchanged due Scheduled row, future reschedule before discovery, reschedule to `0`/Run Now, operation/retry identity change, status change to Processing/Cancelled, priority items, multiple siblings, and low-quality/history/native-debt blockers;
+- inject failure of the future-reschedule write and failure of the first corrected claim/revalidation write, plus process death after reschedule but before claim; every path must preserve the latest durable schedule semantics and exact identity;
+- verification must use actual Fragment/ViewModel/Room/DownloadWorker/WorkManager admission wiring. No executed production-path schedule-revision-vs-stale-claim test was found during this review, so verification remains `SOURCE-LEVEL ONLY`.
