@@ -2,6 +2,7 @@ package com.ireum.ytdl.work
 
 import android.content.Context
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.dao.DownloadClaimTestHooks
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.repository.DownloadRepository
@@ -247,19 +248,21 @@ internal suspend fun claimDownloadThroughProductionAdmission(
             return@withDownloadWorkerExecutionLock null
         }
         val executionId = UUID.randomUUID().toString()
-        val claimed = dao.claimDownloadForWorker(
+        val claimedItem = dao.claimDownloadForWorkerAndRead(
             id = candidate.id,
             expectedOperationId = candidate.operationId,
             expectedRetryAttempt = candidate.retryAttempt,
             executionId = executionId,
-        ) == 1
-        if (!claimed) {
+        )
+        if (claimedItem == null) {
             null
         } else {
-            DownloadWorkerExecutionOwners.claim(candidate.id, executionId)
-            dao.getNullableDownloadById(candidate.id)
-                ?.takeIf { it.executionId == executionId }
-                ?.also(onClaimed)
+            DownloadClaimTestHooks.afterClaimMaterializationBeforeOwnerPublicationForTesting
+                ?.invoke(claimedItem)
+            DownloadWorkerExecutionOwners.claim(claimedItem.id, claimedItem.executionId)
+            DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting
+                ?.invoke(claimedItem)
+            claimedItem.also(onClaimed)
         }
     }
 }

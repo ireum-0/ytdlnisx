@@ -18,6 +18,7 @@ import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.repository.DownloadRepository
 import kotlinx.coroutines.flow.Flow
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val HISTORY_TARGET_DELETED_ISSUE = "HISTORY_TARGET_DELETED"
 
@@ -434,6 +435,43 @@ interface DownloadDao {
         expectedRetryAttempt: Int,
         executionId: String,
     ): Int
+
+    /**
+     * Claims and materializes one exact queue snapshot as one Room
+     * transaction.  A successful claim without an exact readable row is a
+     * failed handoff, not a nullable success: throwing here makes Room roll
+     * the CAS back before process-local ownership can be published.
+     */
+    @Transaction
+    suspend fun claimDownloadForWorkerAndRead(
+        id: Long,
+        expectedOperationId: String,
+        expectedRetryAttempt: Int,
+        executionId: String,
+    ): DownloadItem? {
+        check(!DownloadClaimTestHooks.consumeClaimWriteFailureForTesting()) {
+            "Injected Download claim write failure"
+        }
+        if (
+            claimDownloadForWorker(
+                id = id,
+                expectedOperationId = expectedOperationId,
+                expectedRetryAttempt = expectedRetryAttempt,
+                executionId = executionId,
+            ) != 1
+        ) {
+            return null
+        }
+        check(!DownloadClaimTestHooks.consumeMaterializationReadFailureForTesting()) {
+            "Injected Download claim materialization read failure"
+        }
+        return getNullableDownloadById(id)
+            ?.takeIf { it.executionId == executionId }
+            ?: error(
+                "Claimed Download row could not be materialized for " +
+                    "executionId=$executionId id=$id"
+            )
+    }
 
     @Query("SELECT * FROM downloads WHERE id IN (:ids)")
     fun getDownloadsByIdsFlow(ids: List<Long>) : Flow<List<DownloadItem>>
@@ -1042,4 +1080,38 @@ interface DownloadDao {
 
     @Query("SELECT COUNT(id) FROM downloads WHERE status='Processing' AND incognito='1' and id in (:ids)")
     fun getProcessingAsIncognitoCountByIDs(ids: List<Long>): Int
+}
+
+/** Narrow fault controls for deterministic production-path claim tests. */
+internal object DownloadClaimTestHooks {
+    private val failNextClaimWrite = AtomicBoolean(false)
+    private val failNextMaterializationRead = AtomicBoolean(false)
+
+    @Volatile
+    internal var afterClaimMaterializationBeforeOwnerPublicationForTesting:
+        ((DownloadItem) -> Unit)? = null
+
+    @Volatile
+    internal var afterExecutionOwnerPublicationForTesting: ((DownloadItem) -> Unit)? = null
+
+    internal fun failNextClaimWriteForTesting() {
+        failNextClaimWrite.set(true)
+    }
+
+    internal fun failNextMaterializationReadForTesting() {
+        failNextMaterializationRead.set(true)
+    }
+
+    internal fun consumeClaimWriteFailureForTesting(): Boolean =
+        failNextClaimWrite.compareAndSet(true, false)
+
+    internal fun consumeMaterializationReadFailureForTesting(): Boolean =
+        failNextMaterializationRead.compareAndSet(true, false)
+
+    internal fun resetForTesting() {
+        failNextClaimWrite.set(false)
+        failNextMaterializationRead.set(false)
+        afterClaimMaterializationBeforeOwnerPublicationForTesting = null
+        afterExecutionOwnerPublicationForTesting = null
+    }
 }

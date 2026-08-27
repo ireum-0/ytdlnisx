@@ -3,6 +3,7 @@ package com.ireum.ytdl.database
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.ireum.ytdl.database.dao.DownloadClaimTestHooks
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
@@ -61,6 +62,7 @@ class FindingAProductionWiringTest {
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
         YtdlpNativeProcessBarrier.markerEnumerationFailureForTesting = false
+        DownloadClaimTestHooks.resetForTesting()
         db.close()
     }
 
@@ -156,6 +158,262 @@ class FindingAProductionWiringTest {
 
         assertEquals(DownloadRepository.RunningDownloadRequeueResult.REQUEUED, result)
         assertEquals(DownloadRepository.Status.Queued.name, db.downloadDao.getNullableDownloadById(downloadId)?.status)
+        assertEquals("", db.downloadDao.getNullableDownloadById(downloadId)?.executionId)
+    }
+
+    @Test
+    fun claimZeroRowsAndWriteFailurePublishNoExecutionOwner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Queued.name,
+                operationId = "admission-control",
+                executionId = "",
+            )
+        )
+        val candidate = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        var callbackCount = 0
+
+        assertNull(
+            claimDownloadThroughProductionAdmission(
+                context = context,
+                dbManager = db,
+                candidate = candidate.copy(operationId = "stale-operation"),
+                concurrentDownloadLimit = 1,
+                onClaimed = { callbackCount += 1 },
+            )
+        )
+        assertEquals(0, callbackCount)
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+        assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
+
+        DownloadClaimTestHooks.failNextClaimWriteForTesting()
+        val failure = try {
+            claimDownloadThroughProductionAdmission(
+                context = context,
+                dbManager = db,
+                candidate = candidate,
+                concurrentDownloadLimit = 1,
+                onClaimed = { callbackCount += 1 },
+            )
+            null
+        } catch (error: IllegalStateException) {
+            error
+        }
+
+        assertNotNull(failure)
+        assertEquals(0, callbackCount)
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+        assertEquals("", db.downloadDao.getNullableDownloadById(downloadId)?.executionId)
+        assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
+        assertNull(DownloadWorkerProcessOwners.ownerOf(downloadId))
+    }
+
+    @Test
+    fun postClaimMaterializationFailureRollsBackAndSiblingCanClaimCapacity() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val firstId = db.downloadDao.insertRaw(
+            download().copy(
+                title = "first",
+                status = DownloadRepository.Status.Queued.name,
+                operationId = "admission-first",
+                executionId = "",
+            )
+        )
+        val siblingId = db.downloadDao.insertRaw(
+            download().copy(
+                title = "sibling",
+                status = DownloadRepository.Status.Queued.name,
+                operationId = "admission-sibling",
+                retryAttempt = 3,
+                executionId = "",
+            )
+        )
+        var callbackCount = 0
+        val firstCandidate = requireNotNull(db.downloadDao.getNullableDownloadById(firstId))
+
+        DownloadClaimTestHooks.failNextMaterializationReadForTesting()
+        val failure = try {
+            claimDownloadThroughProductionAdmission(
+                context = context,
+                dbManager = db,
+                candidate = firstCandidate,
+                concurrentDownloadLimit = 1,
+                onClaimed = { callbackCount += 1 },
+            )
+            null
+        } catch (error: IllegalStateException) {
+            error
+        }
+
+        assertNotNull(failure)
+        assertEquals(0, callbackCount)
+        val rolledBack = requireNotNull(db.downloadDao.getNullableDownloadById(firstId))
+        assertEquals(DownloadRepository.Status.Queued.name, rolledBack.status)
+        assertEquals("", rolledBack.executionId)
+        assertNull(DownloadWorkerExecutionOwners.ownerOf(firstId))
+        assertNull(DownloadWorkerProcessOwners.ownerOf(firstId))
+
+        val siblingCandidate = requireNotNull(db.downloadDao.getNullableDownloadById(siblingId))
+        val siblingClaimed = try {
+            requireNotNull(
+                claimDownloadThroughProductionAdmission(
+                    context = context,
+                    dbManager = db,
+                    candidate = siblingCandidate,
+                    concurrentDownloadLimit = 1,
+                    onClaimed = { callbackCount += 1 },
+                )
+            )
+        } finally {
+            DownloadWorkerExecutionOwners.ownerOf(siblingId)?.let { executionId ->
+                DownloadWorkerExecutionOwners.release(siblingId, executionId)
+            }
+            DownloadExecutionRecovery.reconcile(context, db)
+        }
+
+        assertEquals(1, callbackCount)
+        assertEquals(siblingId, siblingClaimed.id)
+        assertEquals(siblingCandidate.url, siblingClaimed.url)
+        assertEquals(siblingCandidate.operationId, siblingClaimed.operationId)
+        assertEquals(siblingCandidate.retryAttempt, siblingClaimed.retryAttempt)
+        assertEquals(DownloadRepository.Status.Active.name, siblingClaimed.status)
+        assertTrue(siblingClaimed.executionId.isNotBlank())
+        assertEquals(
+            siblingClaimed.executionId,
+            DownloadWorkerExecutionOwners.ownerOf(siblingId),
+        )
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(firstId)?.status,
+        )
+    }
+
+    @Test
+    fun exactClaimHandoffRecoversAtProcessDeathWindows() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val beforeOwnerId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Queued.name,
+                operationId = "admission-before-owner",
+                executionId = "",
+            )
+        )
+        val beforeOwnerCandidate = requireNotNull(
+            db.downloadDao.getNullableDownloadById(beforeOwnerId),
+        )
+        DownloadClaimTestHooks.afterClaimMaterializationBeforeOwnerPublicationForTesting = {
+            throw IllegalStateException("simulated process death before owner publication")
+        }
+
+        val beforeOwnerFailure = try {
+            claimDownloadThroughProductionAdmission(
+                context = context,
+                dbManager = db,
+                candidate = beforeOwnerCandidate,
+                concurrentDownloadLimit = 1,
+            )
+            null
+        } catch (error: IllegalStateException) {
+            error
+        }
+        DownloadClaimTestHooks.afterClaimMaterializationBeforeOwnerPublicationForTesting = null
+
+        assertNotNull(beforeOwnerFailure)
+        assertNull(DownloadWorkerExecutionOwners.ownerOf(beforeOwnerId))
+        DownloadExecutionRecovery.reconcile(context, db)
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(beforeOwnerId)?.status,
+        )
+        assertEquals("", db.downloadDao.getNullableDownloadById(beforeOwnerId)?.executionId)
+
+        val afterOwnerId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Queued.name,
+                operationId = "admission-after-owner",
+                executionId = "",
+            )
+        )
+        val afterOwnerCandidate = requireNotNull(
+            db.downloadDao.getNullableDownloadById(afterOwnerId),
+        )
+        DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting = { claimed ->
+            DownloadWorkerExecutionOwners.release(claimed.id, claimed.executionId)
+            throw IllegalStateException("simulated process death after owner publication")
+        }
+
+        val afterOwnerFailure = try {
+            claimDownloadThroughProductionAdmission(
+                context = context,
+                dbManager = db,
+                candidate = afterOwnerCandidate,
+                concurrentDownloadLimit = 1,
+            )
+            null
+        } catch (error: IllegalStateException) {
+            error
+        }
+        DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting = null
+
+        assertNotNull(afterOwnerFailure)
+        assertNull(DownloadWorkerExecutionOwners.ownerOf(afterOwnerId))
+        DownloadExecutionRecovery.reconcile(context, db)
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(afterOwnerId)?.status,
+        )
+        assertEquals("", db.downloadDao.getNullableDownloadById(afterOwnerId)?.executionId)
+    }
+
+    @Test
+    fun normalClaimAttachesExactStateAndRestartRecoversAfterAttachment() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                title = "exact claimed configuration",
+                status = DownloadRepository.Status.Queued.name,
+                operationId = "admission-normal",
+                retryAttempt = 4,
+                executionId = "",
+            )
+        )
+        val candidate = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        var attached: DownloadItem? = null
+
+        val claimed = requireNotNull(
+            claimDownloadThroughProductionAdmission(
+                context = context,
+                dbManager = db,
+                candidate = candidate,
+                concurrentDownloadLimit = 1,
+                onClaimed = { attached = it },
+            )
+        )
+        assertEquals(claimed, attached)
+        assertEquals(candidate.url, claimed.url)
+        assertEquals(candidate.operationId, claimed.operationId)
+        assertEquals(candidate.retryAttempt, claimed.retryAttempt)
+        assertEquals(DownloadRepository.Status.Active.name, claimed.status)
+        assertTrue(claimed.executionId.isNotBlank())
+        assertEquals(claimed.executionId, DownloadWorkerExecutionOwners.ownerOf(downloadId))
+        assertEquals(claimed, db.downloadDao.getNullableDownloadById(downloadId))
+
+        // A process restart removes process-local ownership. Recovery must
+        // converge this exact E1 before a later claim can create another ID.
+        DownloadWorkerExecutionOwners.release(downloadId, claimed.executionId)
+        DownloadExecutionRecovery.reconcile(context, db)
+        assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
         assertEquals("", db.downloadDao.getNullableDownloadById(downloadId)?.executionId)
     }
 
