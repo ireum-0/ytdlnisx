@@ -87,7 +87,7 @@ class DownloadWorkerNativeProcessQuiescenceTest {
             process.destroyRequested.await()
 
             val e2Claimed = CompletableDeferred<Unit>()
-            val e2 = async(Dispatchers.IO) {
+            val e2LeaseJob = async(Dispatchers.IO) {
                 withDownloadWorkerExecutionSideEffectLease(downloadId, e2) {
                     e2Claimed.complete(Unit)
                     DownloadWorkerProcessOwners.claim(downloadId, e2)
@@ -100,7 +100,7 @@ class DownloadWorkerNativeProcessQuiescenceTest {
 
             process.acknowledgeTermination()
             e1Cancellation.await()
-            e2.await()
+            e2LeaseJob.await()
             assertTrue(e2Claimed.isCompleted)
             assertTrue(DownloadWorkerProcessOwners.isOwnedBy(downloadId, e2))
         } finally {

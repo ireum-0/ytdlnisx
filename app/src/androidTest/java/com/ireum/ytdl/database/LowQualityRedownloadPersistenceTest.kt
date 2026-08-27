@@ -41,6 +41,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -621,7 +622,7 @@ class LowQualityRedownloadPersistenceTest {
         val undoHandle = downloadRepository.deleteForUndo(deletedId)!!
         assertEquals(
             LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
-            repository.getItems(operation.operationId).first { it.historyId == 303 }.stateValue,
+            repository.getItems(operation.operationId).first { it.historyId == 303L }.stateValue,
         )
         repository.markDownloadState(siblingId, LowQualityRedownloadItemState.SUCCEEDED)
 
@@ -631,11 +632,11 @@ class LowQualityRedownloadPersistenceTest {
         assertEquals(issueCode, restored.lastIssueCode)
         assertEquals(
             LowQualityRedownloadItemState.FAILED,
-            repository.getItems(operation.operationId).first { it.historyId == 303 }.stateValue,
+            repository.getItems(operation.operationId).first { it.historyId == 303L }.stateValue,
         )
         assertEquals(
             LowQualityRedownloadItemState.SUCCEEDED,
-            repository.getItems(operation.operationId).first { it.historyId == 304 }.stateValue,
+            repository.getItems(operation.operationId).first { it.historyId == 304L }.stateValue,
         )
         val parentAfterUndo = repository.getOperation(operation.operationId)!!
         assertEquals(LowQualityRedownloadOperationState.PARTIAL_FAILURE, parentAfterUndo.stateValue)
@@ -2017,7 +2018,7 @@ class LowQualityRedownloadPersistenceTest {
     private suspend fun assertA11ClaimWins(
         surface: A11Surface,
         historyId: Long,
-    ) {
+    ) = coroutineScope {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val fixture = createA11Fixture(
             historyId = historyId,
@@ -2129,7 +2130,7 @@ class LowQualityRedownloadPersistenceTest {
     private suspend fun assertA11TerminalWins(
         surface: A11Surface,
         historyId: Long,
-    ) {
+    ) = coroutineScope {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val fixture = createA11Fixture(
             historyId = historyId,

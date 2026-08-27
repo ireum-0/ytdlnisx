@@ -180,7 +180,7 @@ class HistoryReplacementBarrierPersistenceTest {
         )
 
         val backupItem = DownloadRepository(db).getQueuedDownloadsForBackup().single()
-        assertTrue(DownloadRepository(db).getQueuedDownloadsList().isEmpty())
+        assertTrue(DownloadRepository(db).getQueuedDownloads().isEmpty())
         assertEquals(0, db.downloadDao.reQueueDownloadItems(listOf(item.id)))
         assertEquals(0, db.downloadDao.updateItemsToProcessing(listOf(item.id)))
         assertEquals(0, db.downloadDao.rescheduleQueuedOrScheduled(item.id, 1L))
@@ -1053,21 +1053,21 @@ class HistoryReplacementBarrierPersistenceTest {
 
     private fun repository() = HistoryKeywordAssignmentRepository(db)
 
-    private suspend fun insertHistory(): Long = repository().insertHistory(
-        HistoryItem(
-            id = 0L,
-            url = HISTORY_URL,
-            title = "Previous",
-            author = "Author",
-            duration = "1:00",
-            thumb = "",
-            type = DownloadType.video,
-            time = 1L,
-            downloadPath = listOf("/tmp/previous.mp4"),
-            website = "YouTube",
-            format = Format(),
-            downloadId = 0L,
-        )
+    private suspend fun insertHistory(): Long = repository().insertHistory(history())
+
+    private fun history() = HistoryItem(
+        id = 0L,
+        url = HISTORY_URL,
+        title = "Previous",
+        author = "Author",
+        duration = "1:00",
+        thumb = "",
+        type = DownloadType.video,
+        time = 1L,
+        downloadPath = listOf("/tmp/previous.mp4"),
+        website = "YouTube",
+        format = Format(),
+        downloadId = 0L,
     )
 
     private suspend fun insertDownload(type: DownloadType): DownloadItem {
