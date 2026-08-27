@@ -774,46 +774,90 @@ class DownloadWorker(
                                 }.getOrDefault(false)
                         )
                 },
-            ) launch@{ downloadItem ->
+            ) { downloadItem ->
                     workerDownloadIds.add(downloadItem.id)
-                    val rawTempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
-                    var ytdlpExecutionState: YtdlpExecutionState? = null
-                    var hardSubPostProcessLockHeld = false
-                    var currentIssueStage = DownloadIssueStage.PREFLIGHT
-                    var createdOutputPaths: List<String> = emptyList()
-                    var preserveQueueRecord = false
-                    val durableReplacementBarrier = withContext(Dispatchers.IO + NonCancellable) {
-                        dbManager.historyReplacementBarrierDao.getByDownloadId(downloadItem.id)
+                DownloadAttemptRunner(
+                    downloadItem = downloadItem,
+                    rawTempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString()),
+                    dbManager = dbManager,
+                    dao = dao,
+                    historyDao = historyDao,
+                    observeSourcesDao = observeSourcesDao,
+                    notificationUtil = notificationUtil,
+                    historyKeywordAssignments = historyKeywordAssignments,
+                    logRepo = logRepo,
+                    resultRepo = resultRepo,
+                    ytdlpUtil = ytdlpUtil,
+                    handler = handler,
+                    sharedPreferences = sharedPreferences,
+                    resources = resources,
+                    openDownloadQueue = openDownloadQueue,
+                ).run()
                     }
-                    val persistedHistoryRefusal = durableReplacementBarrier
-                        ?.let { HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(it.issueCode) }
-                        ?: HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(downloadItem.lastIssueCode)
-                    var historyReplacementFailureIssue: DownloadIssue? =
-                        persistedHistoryRefusal?.takeUnless {
-                            it.code == DownloadIssueCode.HISTORY_TARGET_DELETED
                         }
-                    var historyReplacementAuthoritativeIssue: DownloadIssue? = persistedHistoryRefusal
-                    historyReplacementFailureIssue?.let { issue ->
-                        workerAuthoritativeIssues[downloadItem.id] = issue
+
+        return Result.success()
                     }
-                    persistedHistoryRefusal
-                        ?.takeIf { it.code == DownloadIssueCode.HISTORY_TARGET_DELETED }
-                        ?.let { issue ->
-                            workerAuthoritativeIssues[downloadItem.id] = issue
+
+
+    private enum class AttemptControl {
+        CONTINUE,
+        STOP,
                         }
-                    var historyReplacementTerminalAction: HistoryReplacementTerminalAction? = when {
-                        persistedHistoryRefusal?.code == DownloadIssueCode.HISTORY_TARGET_DELETED ->
-                            HistoryReplacementTerminalAction.TARGET_DELETED
-                        historyReplacementFailureIssue != null ->
-                            HistoryReplacementTerminalAction.PRESERVE_FAILED
-                        else -> null
-                    }
-                    fun establishHistoryReplacementFailure(issue: DownloadIssue) {
+
+    /**
+     * Owns one claimed Download attempt.  Its mutable fields are deliberately
+     * item-local so extracted lifecycle phases cannot reconstruct authority
+     * from stale database snapshots.
+     */
+    private inner class DownloadAttemptRunner(
+        private val downloadItem: DownloadItem,
+        private val rawTempFileDir: File,
+        private val dbManager: DBManager,
+        private val dao: DownloadDao,
+        private val historyDao: com.ireum.ytdl.database.dao.HistoryDao,
+        private val observeSourcesDao: com.ireum.ytdl.database.dao.ObserveSourcesDao,
+        private val notificationUtil: NotificationUtil,
+        private val historyKeywordAssignments: HistoryKeywordAssignmentRepository,
+        private val logRepo: LogRepository,
+        private val resultRepo: ResultRepository,
+        private val ytdlpUtil: YTDLPUtil,
+        private val handler: Handler,
+        private val sharedPreferences: android.content.SharedPreferences,
+        private val resources: Resources,
+        private val openDownloadQueue: PendingIntent,
+    ) {
+        private var ytdlpExecutionState: YtdlpExecutionState? = null
+        private var hardSubPostProcessLockHeld = false
+        private var currentIssueStage = DownloadIssueStage.PREFLIGHT
+        private var createdOutputPaths: List<String> = emptyList()
+        private var preserveQueueRecord = false
+        private var historyReplacementFailureIssue: DownloadIssue? = null
+        private var historyReplacementAuthoritativeIssue: DownloadIssue? = null
+        private var historyReplacementTerminalAction: HistoryReplacementTerminalAction? = null
+        private var downloadOutcome: DownloadOutcome? = null
+        private var historyReplacementCommitted = false
+
+        private lateinit var notificationTitle: String
+        private lateinit var eventBus: EventBus
+        private lateinit var ytdlpPhase: YtdlpPhaseOutcome.Completed
+        private lateinit var tempFileDir: File
+        private var finalPaths: MutableList<String> = mutableListOf()
+        private var hardSubBurned = false
+        private var shouldBurnHardSub = false
+        private var noCache = false
+        private lateinit var downloadLocation: String
+        private var keepCache = false
+        private var noKeepSubs = false
+        private var completionIssues: MutableList<DownloadIssue> = mutableListOf()
+
+        private fun establishHistoryReplacementFailure(issue: DownloadIssue) {
                         historyReplacementFailureIssue = issue
                         historyReplacementAuthoritativeIssue = issue
                         workerAuthoritativeIssues[downloadItem.id] = issue
                     }
-                    fun establishHistoryTargetDeleted() {
+
+        private fun establishHistoryTargetDeleted() {
                         if (historyReplacementFailureIssue == null) {
                             val issue = historyReplacementRefusalIssue(
                                 HistoryReplacementAuthorization.TargetMissing
@@ -829,7 +873,8 @@ class DownloadWorker(
                                 )
                             )
                     }
-                    fun adoptHistoryReplacementAuthorization(
+
+        private fun adoptHistoryReplacementAuthorization(
                         authorization: HistoryReplacementAuthorization,
                     ) {
                         when (authorization) {
@@ -846,7 +891,8 @@ class DownloadWorker(
                                 )
                         }
                     }
-                    fun establishQualityAuthorityLoss(): DownloadIssue {
+
+        private fun establishQualityAuthorityLoss(): DownloadIssue {
                         val issue = HistoryReplacementDiagnostic.qualityAuthorityLostIssue()
                         historyReplacementTerminalAction =
                             HistoryReplacementOutcomePolicy.mergeTerminalAction(
@@ -856,7 +902,8 @@ class DownloadWorker(
                         establishHistoryReplacementFailure(issue)
                         return issue
                     }
-                    suspend fun refreshDurableHistoryReplacementBarrier() {
+
+        private suspend fun refreshDurableHistoryReplacementBarrier() {
                         val barrier = withContext(Dispatchers.IO + NonCancellable) {
                             dbManager.historyReplacementBarrierDao.getByDownloadId(downloadItem.id)
                         }
@@ -871,8 +918,8 @@ class DownloadWorker(
                                 }
                         }
                     }
-                    var downloadOutcome: DownloadOutcome? = null
-                    fun recordCreatedOutputs(paths: List<String>) {
+
+        private fun recordCreatedOutputs(paths: List<String>) {
                         createdOutputPaths = (createdOutputPaths + paths)
                             .distinct()
                             .filter { path ->
@@ -880,7 +927,8 @@ class DownloadWorker(
                                 file.exists() && file.isFile
                             }
                     }
-                    fun shouldStopForUserRequest(): Boolean {
+
+        private fun shouldStopForUserRequest(): Boolean {
                         val latest = runCatching { dao.getNullableDownloadById(downloadItem.id) }.getOrNull()
                         val lostExecutionOwnership = downloadItem.executionId.isNotBlank() &&
                             (latest == null || latest.executionId != downloadItem.executionId)
@@ -896,12 +944,40 @@ class DownloadWorker(
                                 DownloadRepository.Status.Cancelled.name,
                             )
                     }
-                    val notificationTitle = SensitiveTextRedactor.redactOutput(
+
+        suspend fun run(): Unit {
+            val durableReplacementBarrier = withContext(Dispatchers.IO + NonCancellable) {
+                dbManager.historyReplacementBarrierDao.getByDownloadId(downloadItem.id)
+            }
+            val persistedHistoryRefusal = durableReplacementBarrier
+                ?.let { HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(it.issueCode) }
+                ?: HistoryReplacementDiagnostic.persistedHistoryReplacementIssue(downloadItem.lastIssueCode)
+            historyReplacementFailureIssue = persistedHistoryRefusal?.takeUnless {
+                it.code == DownloadIssueCode.HISTORY_TARGET_DELETED
+            }
+            historyReplacementAuthoritativeIssue = persistedHistoryRefusal
+            historyReplacementFailureIssue?.let { issue ->
+                workerAuthoritativeIssues[downloadItem.id] = issue
+            }
+            persistedHistoryRefusal
+                ?.takeIf { it.code == DownloadIssueCode.HISTORY_TARGET_DELETED }
+                ?.let { issue ->
+                    workerAuthoritativeIssues[downloadItem.id] = issue
+                }
+            historyReplacementTerminalAction = when {
+                persistedHistoryRefusal?.code == DownloadIssueCode.HISTORY_TARGET_DELETED ->
+                    HistoryReplacementTerminalAction.TARGET_DELETED
+                historyReplacementFailureIssue != null ->
+                    HistoryReplacementTerminalAction.PRESERVE_FAILED
+                else -> null
+            }
+            notificationTitle = SensitiveTextRedactor.redactOutput(
                         downloadItem.title.ifEmpty { downloadItem.url }
                     )
-                    var historyReplacementCommitted = withContext(Dispatchers.IO + NonCancellable) {
+            historyReplacementCommitted = withContext(Dispatchers.IO + NonCancellable) {
                         isDurablyCommittedHistoryReplacement(dbManager, downloadItem)
                     }
+
                     try {
                     if (historyReplacementFailureIssue != null) {
                         preserveQueueRecord = true
@@ -937,7 +1013,7 @@ class DownloadWorker(
                             )
                         }
                         downloadOutcome = DownloadOutcome.completed(createdFileCount = 0)
-                        return@launch
+            return
                     }
                     if (isHardSubRedownload(downloadItem)) {
                         registerHardSubTarget(downloadItem.id)
@@ -955,7 +1031,7 @@ class DownloadWorker(
                     }
 
                     val writtenPath = downloadItem.format.format_note.contains("-P ")
-                    var shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
+        shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
                     val qualityReplacement = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
                         ?.isQualityReplacement == true
                     val requiresVerifiedQualityStaging = VideoQualityPolicy.requiresVerifiedStaging(
@@ -968,15 +1044,15 @@ class DownloadWorker(
                             downloadItem.url.isYoutubeURL() &&
                             YoutubeMediaAccessPolicy.containsRawFormatOverride(downloadItem.extraCommands)
                         )
-                    val noCache = writtenPath || (
+        noCache = writtenPath || (
                         !requiresVerifiedQualityStaging &&
                             !sharedPreferences.getBoolean("cache_downloads", true) &&
                             FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
                         )
 
-                    val downloadLocation = downloadItem.downloadPath
-                    val keepCache = sharedPreferences.getBoolean("keep_cache", false)
-                    val noKeepSubs = sharedPreferences.getBoolean("no_keep_subs", false)
+        downloadLocation = downloadItem.downloadPath
+        keepCache = sharedPreferences.getBoolean("keep_cache", false)
+        noKeepSubs = sharedPreferences.getBoolean("no_keep_subs", false)
                     val ytdlpInput = YtdlpPhaseInput(
                         downloadItem = downloadItem,
                         rawTempDirectory = rawTempFileDir,
@@ -992,8 +1068,9 @@ class DownloadWorker(
                         resources = resources,
                     )
                     val ytdlpPreparation = prepareYtdlpPhase(ytdlpInput, ytdlpServices)
-                    val eventBus = EventBus.getDefault()
+        eventBus = EventBus.getDefault()
                     val downloadStartedAt = System.currentTimeMillis()
+
                     try {
                     val ytdlpOutcome = executeYtdlpPhase(
                         input = ytdlpInput,
@@ -1004,18 +1081,40 @@ class DownloadWorker(
                     )
                     ytdlpExecutionState = ytdlpOutcome.state
                     currentIssueStage = ytdlpOutcome.state.issueStage
-                    val ytdlpPhase = when (ytdlpOutcome) {
+                    val phase = when (ytdlpOutcome) {
                         is YtdlpPhaseOutcome.Completed -> ytdlpOutcome
                         is YtdlpPhaseOutcome.Failed -> throw ytdlpOutcome.error
                         is YtdlpPhaseOutcome.Cancelled -> throw ytdlpOutcome.error
                     }
-                    val tempFileDir = ytdlpPhase.state.validatedTempDirectory ?: rawTempFileDir
+                    tempFileDir = phase.state.validatedTempDirectory ?: rawTempFileDir
+                    if (runSuccessfulDownload(phase) == AttemptControl.STOP) return
+                } catch (it: Exception) {
+                    if (handleYtdlpFailure(it) == AttemptControl.STOP) return
+                }
+            } catch (unexpected: Exception) {
+                if (handleUnexpectedFailure(unexpected) == AttemptControl.STOP) return
+            } finally {
+                cleanupAttempt()
+            }
+        }
 
+        private suspend fun runSuccessfulDownload(
+            phase: YtdlpPhaseOutcome.Completed,
+        ): AttemptControl {
+            ytdlpPhase = phase
                     persistDownloadMetadata(resultRepo, dao, downloadItem)
-                    //val wasQuickDownloaded = resultDao.getCountInt() == 0
-                    var finalPaths = mutableListOf<String>()
-                    var hardSubBurned = false
+            finalPaths = mutableListOf()
+            hardSubBurned = false
+            if (runOutputProcessing() == AttemptControl.STOP) {
+                return AttemptControl.STOP
+            }
+            if (runHistoryPersistence() == AttemptControl.STOP) {
+                return AttemptControl.STOP
+            }
+            return publishCompletion()
+        }
 
+        private suspend fun runOutputProcessing(): AttemptControl {
                         val hardSubSkipReason = if (shouldBurnHardSub) {
                             resolveHardSubSkipReason(ytdlpPhase.result.response.out)
                         } else {
@@ -1066,7 +1165,7 @@ class DownloadWorker(
                             hardSubPostProcessMutex.lock()
                             hardSubPostProcessLockHeld = true
                         }
-                        if (shouldStopForUserRequest()) return@launch
+        if (shouldStopForUserRequest()) return AttemptControl.STOP
 
                         var deferBurnUntilPostMove = false
                         val forceDeferBurn = shouldBurnHardSub && shouldForceHardSubFailpoint("force_hardsub_defer")
@@ -1183,7 +1282,7 @@ class DownloadWorker(
                                     deferBurnUntilPostMove = true
                                     Log.w(TAG, "HardSub pre-move forced defer id=${downloadItem.id} marker=force_hardsub_defer")
                                 } else {
-                                    if (shouldStopForUserRequest()) return@launch
+                    if (shouldStopForUserRequest()) return AttemptControl.STOP
                                     Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${preMoveBurnPaths.size} mode=pre-move")
                                     eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                                     currentIssueStage = DownloadIssueStage.HARD_SUB
@@ -1230,7 +1329,7 @@ class DownloadWorker(
                                 ext !in setOf("ass", "srv3", "json3", "ttml", "vtt", "srt")
                             }
                             if (lateHasMedia) {
-                                if (shouldStopForUserRequest()) return@launch
+                if (shouldStopForUserRequest()) return AttemptControl.STOP
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${latePreMoveBurnPaths.size} mode=pre-move-late")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                                 currentIssueStage = DownloadIssueStage.HARD_SUB
@@ -1516,7 +1615,7 @@ class DownloadWorker(
                                     "HardSub post-move skipped id=${downloadItem.id} reason=no-files-found-after-move destSnapshot=${describeDirectorySnapshot(File(downloadLocation))}"
                                 )
                             } else {
-                                if (shouldStopForUserRequest()) return@launch
+                if (shouldStopForUserRequest()) return AttemptControl.STOP
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${postMoveBurnPaths.size} mode=post-move")
                                 eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                                 currentIssueStage = DownloadIssueStage.HARD_SUB
@@ -1590,7 +1689,7 @@ class DownloadWorker(
                                 )
                             }
                             Log.i(TAG, "HardSub post-remap paths=${finalPaths.size}")
-                            if (shouldStopForUserRequest()) return@launch
+            if (shouldStopForUserRequest()) return AttemptControl.STOP
                             Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${finalPaths.size}")
                             eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
                             currentIssueStage = DownloadIssueStage.HARD_SUB
@@ -1678,7 +1777,7 @@ class DownloadWorker(
                             }
                         }
                         finalPaths = prioritizePrimaryMediaPath(finalPaths, downloadItem.type)
-                        if (shouldStopForUserRequest()) return@launch
+        if (shouldStopForUserRequest()) return AttemptControl.STOP
                         if (finalPaths.isNotEmpty()) {
                             val summary = finalPaths.joinToString(limit = 5) { path ->
                                 val file = File(path)
@@ -1693,7 +1792,7 @@ class DownloadWorker(
                                 }
                         }
                         recordCreatedOutputs(finalPaths)
-                        val completionIssues = mutableListOf<DownloadIssue>()
+        completionIssues = mutableListOf()
                         ytdlpPhase.result.qualityWarning?.let { mismatch ->
                             completionIssues += DownloadIssue.create(
                                 stage = DownloadIssueStage.DOWNLOAD,
@@ -1708,10 +1807,13 @@ class DownloadWorker(
                                 source = DownloadIssueSource.EXPLICIT_STATE,
                             )
                         }
+            return AttemptControl.CONTINUE
+        }
 
+        private suspend fun runHistoryPersistence(): AttemptControl {
                         //put download in history
                         currentIssueStage = DownloadIssueStage.HISTORY
-                        if (shouldStopForUserRequest()) return@launch
+        if (shouldStopForUserRequest()) return AttemptControl.STOP
                         try {
                             if (!downloadItem.incognito) {
                                 if (ytdlpPhase.state.activeRequest.hasOption("--download-archive") && finalPaths.isEmpty()) {
@@ -1825,7 +1927,7 @@ class DownloadWorker(
                                         // this point cannot undo the primary commit.
                                         historyReplacementCommitted = true
                                     }
-                                    if (!historyReplacementCommitted && shouldStopForUserRequest()) return@launch
+                    if (!historyReplacementCommitted && shouldStopForUserRequest()) return AttemptControl.STOP
                                     val persistedHistoryId = if (replacedHistoryId > 0L) {
                                         val replacement = replacementOutcome!!
                                         val replacementTerminalAction =
@@ -1866,7 +1968,7 @@ class DownloadWorker(
                                             )
                                     }
                                     if (replacedHistoryId > 0L && persistedHistoryId != null) {
-                                        if (!historyReplacementCommitted && shouldStopForUserRequest()) return@launch
+                        if (!historyReplacementCommitted && shouldStopForUserRequest()) return AttemptControl.STOP
                                         deleteReplacedHistoryMedia(
                                             previousHistoryItem =
                                                 (replacementOutcome as? HistoryReplacementOutcome.Updated)
@@ -1919,7 +2021,7 @@ class DownloadWorker(
                                         "Stale History replacement attempt stopped id=${downloadItem.id}",
                                         historyError,
                                     )
-                                    return@launch
+                    return AttemptControl.STOP
                                 }
                                 if (historyError is DownloadExecutionOwnershipLostException) {
                                     Log.w(
@@ -1927,7 +2029,7 @@ class DownloadWorker(
                                         "Stale History cleanup attempt stopped id=${downloadItem.id}",
                                         historyError,
                                     )
-                                    return@launch
+                    return AttemptControl.STOP
                                 }
                                 preserveQueueRecord = true
                                 downloadItem.status = DownloadRepository.Status.Error.toString()
@@ -1961,7 +2063,7 @@ class DownloadWorker(
                                         HistoryReplacementDiagnostic.qualityAuthorityLossOutcome(
                                             cancellationOrigin = true,
                                         )
-                                    return@launch
+                    return AttemptControl.STOP
                                 }
                                 establishQualityAuthorityLoss()
                                 } else {
@@ -2054,9 +2156,12 @@ class DownloadWorker(
                                 Log.e(TAG, "History update failed after file creation id=${downloadItem.id}", historyError)
                             }
                         }
+            return AttemptControl.CONTINUE
+        }
 
+        private suspend fun publishCompletion(): AttemptControl {
                         if (isHardSubRedownload(downloadItem)) {
-                            if (shouldStopForUserRequest()) return@launch
+            if (shouldStopForUserRequest()) return AttemptControl.STOP
                             markHardSubProcessed(downloadItem.id)
                             updateHardSubWorkerNotificationSafely(notificationUtil)
                         }
@@ -2133,7 +2238,7 @@ class DownloadWorker(
 //                        }
 
                         if (!preserveQueueRecord) {
-                            if (!historyReplacementCommitted && shouldStopForUserRequest()) return@launch
+            if (!historyReplacementCommitted && shouldStopForUserRequest()) return AttemptControl.STOP
                             val downloadRepository = DownloadRepository(dbManager)
                             val affectedOperations = if (
                                 historyReplacementTerminalAction ==
@@ -2167,8 +2272,10 @@ class DownloadWorker(
                                 true
                             )
                         }
+            return AttemptControl.CONTINUE
+        }
 
-                    } catch (it: Exception) {
+        private suspend fun handleYtdlpFailure(it: Exception): AttemptControl {
                         val failedYtdlpState = ytdlpExecutionState
                         if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
                             Log.e(TAG, "HardSub failed id=${downloadItem.id} type=${it.javaClass.simpleName}")
@@ -2212,7 +2319,7 @@ class DownloadWorker(
                                 "Stale Download execution stopped id=${downloadItem.id}",
                                 it,
                             )
-                            return@launch
+            return AttemptControl.STOP
                         }
                         cancelDownloadNotificationSafely(notificationUtil, downloadItem)
                         val latestStatus = runCatching { dao.checkStatus(downloadItem.id) }.getOrNull()
@@ -2236,7 +2343,7 @@ class DownloadWorker(
                             latestStatus == DownloadRepository.Status.Cancelled
                         ) {
                             downloadOutcome = DownloadOutcome.canceled()
-                            return@launch
+            return AttemptControl.STOP
                         }
                         val destinationWritable = if (
                             currentIssueStage == DownloadIssueStage.PREFLIGHT ||
@@ -2380,7 +2487,7 @@ class DownloadWorker(
                             }
                             if (!preserveQueueRecord) {
                                 try {
-                                    if (shouldStopForUserRequest()) return@launch
+                    if (shouldStopForUserRequest()) return AttemptControl.STOP
                                     val affectedOperations = DownloadRepository(dbManager)
                                         .let { repository ->
                                             if (targetDeleted) {
@@ -2457,7 +2564,7 @@ class DownloadWorker(
                             eventBus.post(
                                 WorkerProgress(100, warningSummary, downloadItem.id, downloadItem.logID)
                             )
-                            return@launch
+            return AttemptControl.STOP
                         }
                         val failedOutcome = DownloadOutcome.failed(primaryIssue)
                         downloadOutcome = failedOutcome
@@ -2552,7 +2659,7 @@ class DownloadWorker(
                                         downloadItem.logID
                                     )
                                 )
-                                return@launch
+                return AttemptControl.STOP
                             }
                         }
 
@@ -2606,10 +2713,10 @@ class DownloadWorker(
                             // terminal semantic; do not publish an Error
                             // notification for the racing failure.
                             downloadOutcome = DownloadOutcome.canceled()
-                            return@launch
+            return AttemptControl.STOP
                         }
                         if (isHardSubRedownload(downloadItem)) {
-                            if (shouldStopForUserRequest()) return@launch
+            if (shouldStopForUserRequest()) return AttemptControl.STOP
                             markHardSubProcessed(downloadItem.id)
                             updateHardSubWorkerNotificationSafely(notificationUtil)
                         }
@@ -2651,8 +2758,11 @@ class DownloadWorker(
                                 downloadItem.logID
                             )
                         )
+            return AttemptControl.CONTINUE
                     }
-                    } catch (unexpected: Exception) {
+
+        private suspend fun handleUnexpectedFailure(unexpected: Exception): AttemptControl {
+
                         if (unexpected is CancellationException) throw unexpected
                         if (unexpected is NativeProcessQuiescenceException) {
                             // A completed root/supervisor process is not a
@@ -2674,7 +2784,7 @@ class DownloadWorker(
                                 "Stale Download attempt stopped before terminal handling id=${downloadItem.id}",
                                 unexpected,
                             )
-                            return@launch
+            return AttemptControl.STOP
                         }
                         val committedHistoryReplacement = historyReplacementCommitted ||
                             withContext(Dispatchers.IO + NonCancellable) {
@@ -2723,7 +2833,7 @@ class DownloadWorker(
                                 "Ancillary Download work failed after committed History replacement id=${downloadItem.id}",
                                 unexpected,
                             )
-                            return@launch
+            return AttemptControl.STOP
                         }
                         when (unexpected) {
                             is HistoryReplacementAuthorizationRefusalException ->
@@ -2736,7 +2846,7 @@ class DownloadWorker(
                                         HistoryReplacementDiagnostic.qualityAuthorityLossOutcome(
                                             cancellationOrigin = true,
                                         )
-                                    return@launch
+                    return AttemptControl.STOP
                                 }
                                 establishQualityAuthorityLoss()
                             }
@@ -3054,7 +3164,11 @@ class DownloadWorker(
                             }
                         }
                         Log.e(TAG, "Unexpected download failure id=${downloadItem.id}", unexpected)
-                    } finally {
+            return AttemptControl.CONTINUE
+        }
+
+        private suspend fun cleanupAttempt() {
+
                         downloadOutcome?.let { outcome ->
                             Log.i(
                                 TAG,
@@ -3135,10 +3249,6 @@ class DownloadWorker(
                             }
                         }
                     }
-            }
-        }
-
-        return Result.success()
     }
 
     private data class YtdlpPhaseInput(
