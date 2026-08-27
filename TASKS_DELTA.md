@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **40**
-- Effective active defects: **114**
+- Delta active defects: **41**
+- Effective active defects: **115**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1714,3 +1714,60 @@ Focused verification requirements:
 - repeat with migration latched while the task is runnable but has not created its directory yet, while yt-dlp is actively writing, immediately after native completion but before `FileUtil.moveFile()` publication, and during publication;
 - cover Terminal cancellation during migration, process death/restart after an attempted conflict, migration retry, multiple Terminal siblings, an ordinary Download cache sibling as a `BUG-CACHE-01` regression, and a truly stale `TERMINAL/<id>` directory that should remain migratable only after exact non-ownership proof;
 - verification must exercise the actual Room + WorkManager + filesystem ownership wiring. Helper-only path or exclusion tests are insufficient; no such production-path race was executed in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-DOWNLOAD-01 — Do not convert an authoritative Download-row read failure into ownership loss / user stop
+
+**State:** Open  
+**Reviewed checkpoint:** `81bec633c2a8a0043b69522ba44ae97154c439e2`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** a claimed Download is already durably `Active` or `PostProcessing` under a nonblank exact `executionId`. `DownloadAttemptRunner.shouldStopForUserRequest()` is used repeatedly as the authority gate before native/post-processing, filesystem publication, History persistence, replacement cleanup, and terminal publication. The helper obtains current authority with `dao.getNullableDownloadById(downloadItem.id)`, but wraps that Room read in `runCatching { ... }.getOrNull()`. A transient SQLite/Room read exception is therefore converted to the same `null` value as a genuinely absent row. Because the in-memory attempt has a nonblank execution ID, `latest == null` makes `lostExecutionOwnership = true`, and the caller receives a normal Boolean stop rather than an exception or typed indeterminate-authority result.
+
+Callers commonly handle that Boolean by returning `AttemptControl.STOP`. That is an item-local normal return, so the exception never reaches the enclosing `DownloadWorker` exceptional-exit cleanup/recovery path. `cleanupAttempt()` then deliberately leaves an `Active`/`PostProcessing` row in place when its own fresh reread succeeds and still shows the same execution owner; the item coroutine is already finished, so the durable row can remain apparently live with no executing item attempt. If that cleanup reread also fails, ownership bookkeeping can instead be released based on another `null` observation even though the durable row may still be Active, creating a different false-owner mismatch. No durable recovery journal is created by the original STOP because the authoritative read failure was erased before terminal/recovery semantics were chosen.
+
+The behavior is not an intentional fail-closed ownership-loss rule. The same worker's `ensureExecutionOwnedBeforeAttempt()` / exact ownership helpers perform the corresponding `getNullableDownloadById()` read without collapsing Room exceptions to `null`; a real persistence exception propagates into the worker's exceptional recovery protocol, while actual row absence/execution mismatch is represented separately as ownership loss. `shouldStopForUserRequest()` therefore weakens an otherwise explicit semantic distinction at several critical boundaries.
+
+**Why this is a defect:** inability to observe the authoritative row is not proof that the row was deleted, superseded, paused, or cancelled. Converting a persistence failure into a normal user/ownership STOP can terminate the only live item actor without publishing a terminal state or durable recovery debt. The resulting stale `Active`/`PostProcessing` execution can block ordinary retry/reconfigure/resume and consume concurrency until a later unrelated process death/startup recovery happens to reclaim it. This is a substantive liveness/state-integrity defect rather than defensive hardening.
+
+This is distinct from `BUG-ADMISSION-01`, which owns a post-claim reread failure before actor/cleanup attachment. Here the attempt is already fully attached and running; the failure occurs later at repeated current-authority checks and is specifically caused by collapsing `read failed` into `row absent/ownership lost`. It is also distinct from cancellation-race findings such as `BUG-CANCEL-02`: no real user cancellation, status change, or competing owner is required.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The `runCatching(...).getOrNull()` authority collapse predates the pinned coroutine-phase refactor; the reviewed commit reorganizes `DownloadAttemptRunner` but retains the same semantic helper behavior.
+
+Required result:
+
+- represent authoritative Download-row observation as at least three states: current exact owner, proven absent/mismatched/revoked owner, and observation failure/indeterminate; never map the third state to the second;
+- propagate Room/SQLite read failure into the exact worker failure/recovery protocol or retain a durable retry/recovery owner before the item actor can stop;
+- keep true user Pause/Cancel and true execution-ownership loss as normal stop semantics only after a successful authoritative observation proves those states;
+- apply the same rule at every `shouldStopForUserRequest()` call site, including pre/post-processing, filesystem publication, History persistence, replacement cleanup, and terminal publication; an earlier successful check is not authority for a later boundary after a failed reread;
+- make cleanup/recovery preserve exact `executionId` and avoid releasing process-local execution ownership merely because cleanup's own authority reread failed;
+- preserve sibling isolation: a read failure for A must not cancel or stall independent B, while A must remain under one discoverable recovery owner until its authoritative state can be read again.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: current Room `Download` row and exact `executionId`; inject an exception from `getNullableDownloadById()` while the durable row actually remains `Active/E1` or `PostProcessing/E1`;
+- first persistence call after the failed observation: current defect path performs none before returning STOP; that absence is central. A corrected path must either persist exact recovery debt/requeue under expected E1 or propagate to an existing exceptional recovery owner. Fault-inject that first recovery write and preserve discoverability for retry;
+- recovery carrier: current STOP creates no new journal/terminal carrier. The Download row remains the only durable execution record; process-local owner bookkeeping may remain or may be released depending on whether the cleanup reread also fails;
+- durable Download state: can remain stale `Active`/`PostProcessing` under E1 after the item coroutine ends. Linked ledgers and filesystem effects remain whatever phase had been reached; no particular media mutation is required to reproduce the primary defect;
+- final Download outcome: the item attempt returns STOP rather than a typed failure/completed outcome. The enclosing Worker does not receive the erased Room exception through its outer catch; WorkManager-level processing may remain alive for other rows, but E1 no longer has a live item actor;
+- semantic downgrade: `authoritative observation failed` -> `row absent / execution ownership lost / user-stop-compatible STOP`;
+- same-settings retry/manual/raw requeue/reconfigure and notification retry/resume are not reliable recovery paths while the row still claims Active/PostProcessing E1. Same-process reconcile can also trust process-local owner state. Cold restart can clear in-memory ownership and later recover the stale row, but unrelated process death is not an acceptable semantic barrier. Restore is not a repair path;
+- no AB/BA lock inversion is required. The main concurrency invariant is exact sibling isolation and preservation of one recovery owner when the authority observation itself is indeterminate.
+
+Candidate-rejection proof:
+
+- do not reject because `getNullableDownloadById()` is nominally a simple Room read: supported SQLite/storage failures can throw, and sibling exact-ownership helpers in the same production worker deliberately allow such exceptions to propagate rather than treating them as absence;
+- do not reject because STOP is fail-closed against stale side effects: stopping privileged side effects can be conservative, but releasing the live actor without a durable recovery result is not equivalent to safely retaining unresolved authority;
+- do not reject because `cleanupAttempt()` rereads the row. If that reread succeeds and proves the same E1 is still Active/PostProcessing, cleanup intentionally preserves the durable live state while the actor has already returned; if it fails, another absent-vs-unreadable collapse can release bookkeeping without proving ownership loss;
+- do not merge into `BUG-ADMISSION-01`: that defect occurs between first Active claim and actor attachment. This defect requires an already attached running attempt and a later authority-read failure at one of many repeated stop gates;
+- do not merge into `BUG-CANCEL-02`: no real cancellation is required, and the violated invariant is preservation of persistence-observation uncertainty rather than a missing final cancel check;
+- no existing `TASKS.md` or earlier `TASKS_DELTA.md` entry owns this read-failure-to-ownership-loss semantic collapse.
+
+Focused verification requirements:
+
+- exercise the real `DownloadWorker`/Room path with an already claimed `Active/E1` item, fault the first `getNullableDownloadById()` inside `shouldStopForUserRequest()`, and prove the item does not silently return normal STOP while leaving E1 falsely live; require an explicit recoverable failure/indeterminate result under the same exact execution identity;
+- repeat at representative pre-native, PostProcessing/filesystem, History-persistence, and terminal-publication call sites so a helper-only unit test cannot mask caller-specific outcome handling;
+- inject failure into the first corrected recovery persistence write and into cleanup's subsequent authority reread, then verify exact process-local ownership is retained/released only from proven current state and restart remains convergent;
+- add controls for real row deletion, execution-ID replacement, Paused, Cancelled, low-quality cancellation request, and healthy current E1; those proven states should retain their intended stop/continue semantics;
+- exercise same-process fresh worker/reconcile plus cold restart after the fault and assert A remains exactly recoverable while independent sibling B continues. No executed production Worker + Room fault-injection test was found for this path, so verification remains `SOURCE-LEVEL ONLY`.
