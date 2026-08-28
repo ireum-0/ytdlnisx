@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **43**
-- Effective active defects: **117**
+- Delta active defects: **44**
+- Effective active defects: **118**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1883,3 +1883,53 @@ Focused verification requirements:
 - separately force the recovery `FAILED` status update to throw as a second fault and prove an exact durable recovery carrier remains discoverable, restart converges it, and the rule cannot remain indefinitely false-RUNNING;
 - repeat for baseline-only and discovery modes, terminal PARTIAL, retryable error/exhausted-attempt controls, revision supersession during recovery, process death immediately after engine commit and before terminal status, and normal no-fault success;
 - verify startup reconciliation plus WorkManager/Room wiring, not only DAO/engine helpers. Existing persistence tests exercise rule engine state but do not fault the production Worker terminal-status handoff, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-LOCALADD-05 — Make Local Add duplicate checks atomic across concurrent sessions
+
+**State:** Open  
+**Reviewed checkpoint:** `30df7058cf5232daf315813f961c6a736a75fed5`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** History Local Add persists a session and submits an ordinary one-time `LocalAddWorker` with `WorkManager.enqueue(request)`. The request is not unique, and the Fragment's `addLocalJob` guards only the short coroutine that expands/persists/enqueues the request; it is cleared while the accepted worker can still be running. A second supported Local Add action can therefore submit another independent worker concurrently. Each worker performs its duplicate authorization before the History mutation lock: it snapshots existing basenames, then checks current local-tree identity, download path, basename, and—after exact YouTube matching—`historyDao.getItem(match.item.url)`. Only after all of those checks have returned “absent” does it call `HistoryKeywordAssignmentRepository.insertHistory(item)`.
+
+`insertHistory()` serializes the actual History insertion with `HistoryReferenceMutationCoordinator` and a Room transaction, but it does not repeat the Local Add duplicate predicate inside that serialized boundary. A concrete interleaving is A checks exact local/tree/path/URL and sees no row -> B checks the same semantic file/URL and also sees no row -> A acquires the coordinator and inserts History ID 1 -> B later acquires the coordinator and inserts History ID 2 from its already-authorized stale observation. `HistoryItem` has only an auto-generated primary key; the URL index is non-unique and there is no unique local-tree/path identity constraint, so `OnConflictStrategy.REPLACE` does not collapse the two `id=0` inserts. Both workers can return `Result.success()` and the duplicate History rows survive restart.
+
+**Why this is a defect:** duplicate prevention is intended to preserve one durable History identity for an already-known local media/source identity. The current lock serializes writes but not the authority decision that makes the write legal, so two normal concurrent Local Add sessions can commit two distinct persistent rows for the same exact semantic media. Those rows can carry the same URI/path and URL while later deletion/reference/keyword/playlist logic treats them as independent History identities. No exception, process death, malformed provider state, low-probability kernel race, or unsupported input is required. This is distinct from `BUG-LOCALADD-01` (coarse basename checks can wrongly skip distinct files) and `BUG-LOCALADD-04` (one entry failure strands siblings/remainder); this defect is the opposite false-negative uniqueness failure across independently accepted sessions.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The Local Add worker implementation at the synchronized baseline has the same production blob, including the pre-insert duplicate checks and insertion path, and baseline History UI also uses independently enqueueable one-time Local Add work.
+
+Required result:
+
+- make semantic duplicate authorization and History insertion one atomic/serialized decision for all Local Add workers that can target the same identity; after acquiring the canonical History mutation boundary, re-read the exact current local-tree/path/source identity and insert only if it is still absent;
+- alternatively or additionally enforce a database uniqueness model that actually represents the authoritative Local Add identity, with explicit handling for local-tree document identity, URI/path fallbacks, and exact matched source URL without broadening identity to basename/title;
+- preserve `BUG-LOCALADD-01`: two distinct files with the same basename must remain distinct, while two concurrent sessions for the same exact media must converge to one History row;
+- make same-session retry and independent-session concurrency idempotent across process death/restart, and ensure keyword-assignment materialization is attached exactly once to the surviving History identity;
+- if duplicate detection and insertion require external exact-match lookup, treat the lookup result as input only; revalidate its durable target identity at the serialized insert boundary rather than holding a stale “absent” decision across the external call.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative observation is the exact current History identity query for the Local Add entry. The carrier-creation gap is the period after the final “not found” result and before `insertHistory()` acquires `HistoryReferenceMutationCoordinator`;
+- first persistence in the concrete race is A's successful History insert. A first-write failure is fail-safe for this duplicate invariant because no competing row has yet been published; the substantive defect is B's later successful stale insert after A committed;
+- recovery carrier is the History table itself. After both successful inserts there is no operation/session ledger that records they represent one semantic source, so restart preserves two independent IDs and cannot deterministically coalesce them without a new destructive duplicate-identity decision;
+- durable Download state, Download-linked ledgers, media filesystem publication, `DownloadOutcome`, and a Download WorkManager result are not applicable. Each Local Add WorkRequest can independently finish with `Result.success()`;
+- cross-attempt matrix: same-session retry must remain idempotent; manual reselection/new Local Add while the first worker is active is currently unsafe and is the primary path; process restart after both inserts preserves duplicates; cancellation of one worker before its insert may avoid the race but is not a semantic barrier; a later provider-access retry/new scan is another independent session and must revalidate current identity atomically. Download retry/reconfigure/notification paths and backup restore are not semantic repair paths for this Local Add race;
+- lock order is `LocalAdd Room reads/external match -> HistoryReferenceMutationCoordinator -> Room insert transaction` for each worker. There is no AB/BA cycle; the correctness failure is that the mutex is acquired too late to protect the check-and-insert invariant.
+
+Candidate-rejection proof:
+
+- `dedupedEntries.distinctBy(localEntryIdentity)` does not close the path because it deduplicates only entries inside one worker's input and creates no cross-session authority;
+- `HistoryReferenceMutationCoordinator` does not close the path because the relevant existence/identity reads happen before the mutex and are not repeated inside its transaction;
+- `OnConflictStrategy.REPLACE` does not close the path because both inserts use `id=0` auto-generated primary keys, `HistoryItem.url` is indexed but not unique, and local tree/path/downloadPath have no unique constraint;
+- this is not `BUG-LOCALADD-01`: that item is false-positive deduplication by basename and can skip distinct files; this candidate creates duplicate rows for the same exact identity;
+- this is not `BUG-LOCALADD-04`: no per-entry exception, failed batch, or orphaned same-session remainder is required; two normal independently accepted workers are sufficient;
+- low probability is not rejection proof. WorkManager requests are explicitly non-unique and the production UI can submit another session after its enqueue coroutine finishes while the first worker remains active.
+
+Focused verification requirements:
+
+- exercise the real `HistoryFragment -> LocalAddStorage -> WorkManager -> two LocalAddWorker instances -> HistoryKeywordAssignmentRepository -> Room` wiring with two independent sessions containing the same exact local URI/tree identity; latch both workers after their final duplicate read, release both, and assert exactly one History row is created;
+- repeat the race through the exact-match URL branch, proving two workers that resolve the same source URL cannot create separate auto-generated History rows;
+- add distinct-same-basename controls for `BUG-LOCALADD-01`, same-session duplicate-input controls, normal sequential re-add, cancellation of one contender, first insert failure, second insert failure, process death after the first commit, and restart/retry;
+- verify keyword assignments/derived local metadata attach once to the surviving History identity and no rejected contender deletes or overwrites it;
+- verification must exercise concurrent production workers plus the real Room/coordinator boundary. No executed concurrency/wiring test for this cross-session check-and-insert race was found, so verification remains `SOURCE-LEVEL ONLY`.
