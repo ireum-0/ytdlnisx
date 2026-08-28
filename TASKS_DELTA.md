@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **46**
-- Effective active defects: **120**
+- Delta active defects: **47**
+- Effective active defects: **121**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -2040,3 +2040,62 @@ Focused verification requirements:
 - after restart, enumerate/open A and B without manually knowing their opaque UUIDs, process one, restart again, and prove the unconsumed sibling remains discoverable while the consumed session cannot be reopened accidentally;
 - include `savePending`/open-pointer write-failure controls for `BUG-LOCALADD-03`, per-entry failure controls for `BUG-LOCALADD-04`, and concurrent same-media insertion controls for `BUG-LOCALADD-05` so the new carrier model does not weaken those invariants;
 - verification must cover actual WorkManager + SharedPreferences/session storage + notification + Activity/Fragment re-entry wiring. No executed production-path multi-session continuation test was found in this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-PAUSE-02 — Do not expose a paused Download as resumable before exact native quiescence is proven
+
+**State:** Open  
+**Reviewed checkpoint:** `30df7058cf5232daf315813f961c6a736a75fed5`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the running-download notification Pause action enters `PauseDownloadNotificationReceiver` with exact Download ID D and `executionId=E1`. Under the per-Download side-effect lease and worker execution lock, the receiver rereads the current row, verifies the same execution, and calls `DownloadRepository.setDownloadStatus(..., Paused, expectedExecutionId=E1)`. Assume that exact persistence succeeds, so the durable row is correctly `Paused/E1`. The receiver then calls `DownloadWorker.cancelProcessesForExecution(D,E1)` while retaining the per-ID lease, but it discards the returned Boolean. At this checkpoint that Boolean is an exact quiescence contract: `false` means yt-dlp descendant or post-processing authority for E1 has not been proven gone and the caller must keep the execution/resources recovery-owned.
+
+Even after a `false` result, the receiver cancels the running notification, releases its execution/side-effect lease, and posts `NotificationUtil.createResumeDownload(...)` carrying the same E1 capability. `ResumeActivity` consumes that notification through `resumePausedDownloadAndWait(D,E1)`, so this is a real re-entry capability rather than cosmetic UI. No pause-specific recovery-pending state or same-process reconciliation debt is created from the failed quiescence result before the receiver advertises the attempt as fully paused/resumable. A surviving E1 native/post-processing actor can therefore continue touching attempt-owned files while the application has already exposed Resume for the same generation.
+
+Cold-start native reconciliation can later discover surviving `download:` marker debt, but restart is delayed recovery, not the semantic completion barrier for the current Pause operation. The exact per-ID lease also does not close the invariant: it correctly serializes the durable Pause write and termination attempt, then is released after the failed quiescence result without attaching a durable recovery owner. A subsequent Resume/re-entry path can therefore reach the same Paused/E1 row while old external authority remains unresolved, or another admission fence may block later; either way, the Pause operation has already published stronger success semantics than it proved.
+
+**Why this is a defect:** Paused is deliberately nonterminal state that preserves explicit Resume authority. Once Pause publishes a Resume affordance, it asserts not only that Room contains `Paused`, but that the previous execution has surrendered the authority that makes resuming/re-entering safe. `cancelProcessesForExecution()==false` explicitly contradicts that assertion. The current receiver therefore downgrades unresolved exact external execution into fully paused/resumable state and releases the only synchronous operation owner. This is a substantive execution/re-entry correctness defect rather than cleanup latency.
+
+This is distinct from baseline `BUG-PAUSE-01`, whose failure path is the **first Pause persistence write itself failing** while Resume was nevertheless exposed; the primary reproduction here assumes that write succeeds and finds a later post-commit quiescence failure. It is also distinct from `BUG-CANCEL-03`, which owns explicit terminal `Cancelled` semantics after the same strengthened helper returns false. Pause retains a specific Resume capability and has a different cross-attempt/re-entry contract. No later worker success publication, identifier reuse, or process-death-only path is required.
+
+**Ownership / attribution:** remediation regression / incomplete closure of the native-quiescence remediation. The Pause caller predates the strengthened fail-closed Boolean contract and was not adapted to consume it when descendant/post-processing quiescence became part of execution release.
+
+Required result:
+
+- make Pause semantic completion dependent on exact native/post-processing quiescence for D/E1, or persist an explicit durable `pause recovery pending` state/carrier that retains E1 authority until quiescence is proven;
+- do not remove the running/recovery affordance and publish a normal Resume capability while `cancelProcessesForExecution(D,E1)` is false. If UI exposes a pending Pause state, it must be backed by the exact durable recovery owner rather than imply that E1 is already safely resumable;
+- before releasing the per-Download side-effect lease on failed quiescence, retain/schedule same-process convergence for E1 and make every Resume/Resume All/re-entry path fence on that unresolved debt;
+- keep the successful durable Pause intent authoritative during recovery; quiescence retry must never restore Active or silently reinterpret Pause as Error/Cancelled/success;
+- preserve `BUG-PAUSE-01`: if the initial Pause persistence fails, do not terminate the native process or expose Resume. Preserve `BUG-CANCEL-03` separately for terminal cancellation;
+- apply the same strengthened quiescence result consistently to every production Pause entrypoint that can release execution or publish Resume authority.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: exact Pause of D/E1 after current-row/execution revalidation;
+- first persistence call: `setDownloadStatus(... Paused,E1)` succeeds. First-write failure is the `BUG-PAUSE-01` control and must not authorize native termination or Resume;
+- post-commit barrier: force `cancelProcessesForExecution(D,E1)==false` from yt-dlp, post-processing, or both. Current code discards the result;
+- recovery carrier/recovery-write failure: durable `Paused/E1` plus any native marker can survive, but the Pause caller creates no pause-specific recovery-pending carrier and schedules no same-process convergence from false. A corrected recovery-write failure must leave E1 discoverably unresolved and must not publish normal Resume;
+- durable Download state is `Paused/E1`; linked ledgers remain whatever state was current; filesystem effects may continue because old E1 native/post-processing authority can still read/write attempt-owned files. No History success or terminal `DownloadOutcome` is required;
+- final operation result: the BroadcastReceiver completes normally, removes the running notification, and publishes Resume. WorkManager/native quiescence is not proven. Stale Active/PostProcessing is not required; the semantic downgrade is **unresolved external execution -> fully paused/resumable**;
+- cross-attempt matrix: notification Resume and in-app Resume All are direct semantic re-entry paths and must fence on unresolved E1. Repeated Pause must retain the same exact pending owner rather than multiply generations. Same-settings/manual/raw requeue and reconfigure are not repair barriers. Restart/reconcile may eventually converge the marker but cannot retroactively justify earlier Resume publication. Restore is not a semantic repair path for app-owned native authority;
+- concurrency/lock order is per-Download side-effect lease -> process-global worker execution lock for the durable Pause write; the global lock is released, exact native cancellation occurs while the per-ID lease is still held, then the per-ID lease is released. No AB/BA cycle is required. The defect is releasing exact ownership after a false quiescence result with no attached recovery owner.
+
+Candidate-rejection proof:
+
+- do not reject as `BUG-PAUSE-01`: that item is a pre-commit failure and is satisfied in this reproduction because the exact Pause write succeeds. The new violation is downstream of the successful write;
+- do not reject as `BUG-CANCEL-03`: Cancelled is terminal and intentionally has no Resume capability, while Paused exists specifically to authorize future continuation. A false quiescence result therefore violates a distinct re-entry invariant;
+- do not reject because a cold restart can later recover a native marker. Process restart is delayed repair, not a current Pause completion barrier, and the old actor may continue touching resources before restart;
+- do not reject because the per-ID lease serializes Pause. The lease is released after false without durable pending recovery semantics; serialization of a wrong release decision does not make it safe;
+- do not reject because the exact E1 is retained in the Paused row/Resume notification. Exact identity is necessary for safety but does not itself prove that E1's external actor has surrendered authority;
+- no executed production test was found that forces exact quiescence failure after a successful Pause write and verifies that Resume remains withheld behind durable recovery ownership. Verification therefore remains `SOURCE-LEVEL ONLY`.
+
+Focused verification requirements:
+
+- exercise the real `NotificationUtil -> PauseDownloadNotificationReceiver -> DownloadRepository/Room -> DownloadWorker.cancelProcessesForExecution()` wiring with `Active/E1`; let the exact Pause write succeed, force yt-dlp quiescence false, and assert no normal Resume notification/fully-paused completion is published until an exact durable recovery carrier exists and quiescence succeeds;
+- repeat with post-processing false and both false, plus a true-quiescence control;
+- inject initial Pause-write failure as a `BUG-PAUSE-01` control and prove native authority is not terminated/released and Resume is not published;
+- inject failure of the corrected pause-recovery write, plus process death immediately after Pause persistence and after failed quiescence; restart must recover E1 exactly once without exposing unsafe Resume authority;
+- cover STARTING/RUNNING/PostProcessing, repeated Pause delivery, notification Resume, Resume All/in-app resume, same-process reconciliation, cold restart, and later reconfigure/manual requeue attempts;
+- assert sibling isolation and exact lock/lease order: D/E1 recovery cannot kill/release another generation or sibling, and no newer D generation may acquire execution while E1 Pause-quiescence debt remains;
+- verification must cover actual notification + Room + Worker/native barrier + Resume re-entry wiring. Helper-only quiescence tests are insufficient for PASS.
