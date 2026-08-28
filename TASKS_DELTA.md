@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **47**
-- Effective active defects: **121**
+- Delta active defects: **48**
+- Effective active defects: **122**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -2099,3 +2099,54 @@ Focused verification requirements:
 - cover STARTING/RUNNING/PostProcessing, repeated Pause delivery, notification Resume, Resume All/in-app resume, same-process reconciliation, cold restart, and later reconfigure/manual requeue attempts;
 - assert sibling isolation and exact lock/lease order: D/E1 recovery cannot kill/release another generation or sibling, and no newer D generation may acquire execution while E1 Pause-quiescence debt remains;
 - verification must cover actual notification + Room + Worker/native barrier + Resume re-entry wiring. Helper-only quiescence tests are insufficient for PASS.
+
+## P2 — continued
+
+### BUG-CANCEL-04 — Preserve user stop semantics in pre-write recovery carriers
+
+**State:** Open  
+**Reviewed checkpoint:** `5b9a3da4906eefa4fc67f82d8bbbad63019f1f5b`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the current cancellation/pause quiescence remediation deliberately calls `DownloadExecutionRecovery.recordPending()` before the first semantic stop write so that exact native ownership cannot be lost if a later step fails. For an ordinary user Cancel of Active/PostProcessing Download D/E1, the receiver/ViewModel first durably commits that recovery journal and only then calls `DownloadRepository.cancelByUser(D,E1)`. The journal records the execution identity, native-generation/quiescence observation, and optional History-replacement issue, but it does **not** record that this carrier was created for a user Cancel (the same generic carrier is also used by Pause and exceptional worker cleanup).
+
+If the recovery-journal commit succeeds and the subsequent first authoritative cancellation Room write throws, the durable Download remains `Active/E1` or `PostProcessing/E1`; no `Cancelled` semantic was committed. The cancellation caller catches the failure and calls `retainRecoveryResponsibility()`, so the generic E1 journal remains an intentional same-process/startup recovery carrier. Recovery can later prove/quiesce the exact E1 native generation successfully. Once it reaches ordinary stopped-execution cleanup, however, the generic carrier has no surviving information that the initiating authority was user Cancel. `cleanupStoppedDownloadExecution()` can therefore take its normal `REQUEUED` result and move the still-running row back to `Queued`, making the Download runnable again. The exact same carrier-shape problem exists for Pause: a failed first `Paused` write can later be recovered as a generic interrupted execution instead of preserving the requested pause disposition.
+
+This is not the old terminate-before-write defect. In this first-write failure window the new code correctly avoids immediate native termination because the semantic Cancel/Pause write did not succeed. The defect is that the **pre-write durable recovery carrier itself outlives that failed semantic write and later has authority to mutate the Download without retaining the operation/disposition that justified creation of the carrier**. Same-process scheduled recovery and cold-start reconciliation both consume the same journal, so process death does not restore the missing semantic identity. A later manual/raw requeue, retry, reconfigure, or resume can act on the requeued result but cannot reconstruct the user's lost Cancel/Pause decision.
+
+**Why this is a defect:** a durable carrier created before an operation's first semantic persistence is not semantically neutral if recovery can later publish a new Download state. User Cancel and Pause are authoritative dispositions, while generic exceptional-exit recovery is allowed to requeue abandoned work. Collapsing those operations into one carrier with no operation identity allows a persistence failure to transform an explicit stop request into future runnable work. Exact execution identity and exact native quiescence can both be perfectly correct and the semantic result is still wrong. This is a substantive state-integrity/recovery defect, not defensive hardening.
+
+**Ownership / attribution:** remediation regression / incomplete closure introduced by the pinned cancellation/pause quiescence remediation. Correctness is distinct from baseline `BUG-CANCEL-01`, which owns native termination before cancellation persistence; from `BUG-CANCEL-03`, which assumes the Cancelled write succeeds and then owns failed post-commit quiescence; and from `BUG-PAUSE-02`, which likewise assumes the Paused write succeeds before quiescence fails.
+
+Required result:
+
+- if a recovery/journal carrier is persisted before the first Cancel/Pause semantic write, bind it durably to the exact requested operation/disposition and execution generation, or restrict that pre-write carrier so it cannot later publish a conflicting semantic state;
+- when the first cancellation persistence call fails after carrier creation, recovery must never reinterpret that carrier as generic abandoned-execution authority and requeue the Download unless a newer explicit user/system authority durably abandons the cancellation intent;
+- apply the equivalent rule to Pause: a failed first Paused write must not later become generic Queued recovery merely because the shared carrier lacks pause identity;
+- preserve `BUG-CANCEL-01` ordering by never terminating native authority before the semantic stop write succeeds, while preserving `BUG-CANCEL-03`/`BUG-PAUSE-02` post-commit quiescence ownership once that write has succeeded;
+- retain exact execution/native-generation identity and sibling isolation throughout recovery; adding semantic disposition must not weaken stale-owner or native-quiescence checks.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: exact user Cancel (or Pause) for D/E1; first durable call is the generic recovery-journal `RECORD`, followed by the first semantic Room write `cancelByUser(...)/setDownloadStatus(Paused,...)`;
+- inject journal success followed by semantic-write failure. Durable Download remains Active/PostProcessing E1 while the journal survives; no terminal Cancelled/Paused write has committed and no immediate native termination is authorized;
+- recovery carrier: current journal retains E1/native observation but not stop disposition. Inject recovery write/quiescence failure and require exact debt to stay discoverable; on later successful recovery, the original stop semantic must remain distinguishable rather than falling into generic `REQUEUED` cleanup;
+- durable linked ledgers/filesystem effects remain whatever E1 owned before the failed semantic write; no History success is required. The later current recovery may quiesce E1 and produce `Queued`, which is the confirmed semantic downgrade `user Cancel/Pause -> generic interrupted execution -> runnable work`;
+- the initiating receiver/ViewModel catches the persistence exception and returns/finishes without a successfully committed user-stop state, while scheduled/startup recovery continues independently from the generic journal. A newer WorkManager attempt can later run if recovery requeues the row;
+- cross-attempt matrix: same-process recovery and cold restart both reproduce the semantic loss; same-settings retry, manual/raw requeue, reconfigure, notification retry/resume, and later explicit queue actions cannot retroactively prove that the original stop request was intentionally abandoned. Restore is not a semantic repair path for the live recovery journal;
+- concurrency/lock order can remain correct throughout. No AB/BA inversion, stale E2 owner, or sibling race is needed: the defect is the carrier schema and recovery semantic identity after a first-write fault.
+
+Candidate-rejection proof:
+
+- not `BUG-CANCEL-01`: immediate native termination is correctly withheld when the Cancel write throws; the wrong mutation occurs later through the newly persisted recovery journal;
+- not `BUG-CANCEL-03`: that finding starts from a successfully committed `Cancelled/E1` row and a later quiescence failure. Here the first cancellation write itself fails and the row never becomes Cancelled before recovery acts;
+- not `BUG-PAUSE-02`: that finding assumes `Paused/E1` committed successfully before quiescence failure. The shared pre-write-carrier defect exists before either semantic state is durable;
+- not a `BUG-NATIVE-*` identity defect: exact E1 generation observation and quiescence may both succeed. The violated invariant is preservation of operation/disposition identity across durable recovery;
+- the candidate is not rejected because the caller catches the original persistence failure or because the journal remains durable. Those facts create the later recovery path; neither journal schema nor caller catch durably abandons the user's stop intent or prevents generic requeue.
+
+Focused verification requirements:
+
+- exercise the real notification Cancel -> `recordPending()` -> `DownloadRepository.cancelByUser()` -> `retainRecoveryResponsibility()` -> `DownloadExecutionRecovery` -> `cleanupStoppedDownloadExecution()` wiring; commit the journal, force the first cancellation Room write to throw, then let recovery run and assert the Download cannot become `Queued`/runnable from that carrier without a new explicit authority;
+- repeat through the in-app Cancel path and the corresponding Pause path, including journal success + first semantic-write failure, journal-write failure control, successful semantic write + quiescence failure controls for `BUG-CANCEL-03`/`BUG-PAUSE-02`, and normal success;
+- inject process death after journal commit but before the semantic write, after the semantic-write failure, and during the first recovery write; restart must preserve exact operation/disposition identity and converge without generic requeue;
+- cover repeated Cancel/Pause delivery, same-process reconcile, cold restart, later manual/raw requeue/reconfigure/notification re-entry, and an independent sibling Download. Verification must use actual Room + receiver/ViewModel + recovery + worker/admission wiring; helper-only journal tests are insufficient for PASS.
