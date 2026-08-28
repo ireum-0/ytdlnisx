@@ -27,6 +27,8 @@ import com.ireum.ytdl.work.observeQueuedDownloadsAfterRecovery
 import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -40,6 +42,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
@@ -757,6 +761,421 @@ class FindingAProductionWiringTest {
             assertNull(DownloadWorkerExecutionOwners.ownerOf(staleId))
         } finally {
             DownloadExecutionRecovery.reconcile(context, db)
+        }
+    }
+
+    @Test
+    fun liveActiveWorkerExecutionSurvivesRecoveryReconciliation() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "live-recovery-active-E2"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = executionId,
+            )
+        )
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+
+        try {
+            val recovery = DownloadExecutionRecovery.reconcile(context, db)
+
+            assertTrue(recovery.completedCleanly)
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                executionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
+    fun livePostProcessingWorkerExecutionSurvivesRecoveryReconciliation() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "live-recovery-post-E2"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.PostProcessing.name,
+                executionId = executionId,
+            )
+        )
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+
+        try {
+            val recovery = DownloadExecutionRecovery.reconcile(context, db)
+
+            assertTrue(recovery.completedCleanly)
+            assertEquals(
+                DownloadRepository.Status.PostProcessing.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                executionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
+    fun liveWorkerExecutionPreservesCurrentRecoveryJournalUntilOwnerRelease() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "live-recovery-journal-E2"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = executionId,
+            )
+        )
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        assertTrue(
+            DownloadExecutionRecovery.recordPending(
+                context,
+                requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)),
+            )
+        )
+
+        try {
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                executionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId))
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+
+            // The retry owner may have been scheduled by the durable debt
+            // pass. Remove only that test-owned retry coroutine before
+            // releasing the worker token and making the next recovery pass
+            // deterministic.
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals("", db.downloadDao.getNullableDownloadById(downloadId)?.executionId)
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
+    fun staleRecoveryJournalCannotTouchLiveCurrentWorkerExecution() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val staleExecutionId = "stale-recovery-journal-E1"
+        val liveExecutionId = "live-recovery-after-journal-E2"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = staleExecutionId,
+            )
+        )
+        assertTrue(
+            DownloadExecutionRecovery.recordPending(
+                context,
+                requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)),
+            )
+        )
+        db.downloadDao.updateRaw(
+            requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)).copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = liveExecutionId,
+            )
+        )
+        DownloadWorkerExecutionOwners.claim(downloadId, liveExecutionId)
+
+        try {
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                liveExecutionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, liveExecutionId))
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, liveExecutionId)
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals("", db.downloadDao.getNullableDownloadById(downloadId)?.executionId)
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, liveExecutionId)
+        }
+    }
+
+    @Test
+    fun liveWorkerExecutionPreservesCurrentNativeMarkerDebt() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "live-recovery-marker-E2"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = executionId,
+            )
+        )
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = YtdlpProcessIdentity.download(downloadId, executionId),
+            state = "RUNNING",
+            generationToken = "live-recovery-marker-${UUID.randomUUID()}",
+        )
+
+        try {
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                executionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId))
+            assertTrue(marker.exists())
+
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertFalse(marker.exists())
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+            marker.delete()
+        }
+    }
+
+    @Test
+    fun recoveryDiscoveryRaceDoesNotRequeueNewlyClaimedLiveExecution() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val staleExecutionId = "discovery-race-E1"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = staleExecutionId,
+            )
+        )
+        val discovered = CountDownLatch(1)
+        val proceed = CountDownLatch(1)
+        DownloadExecutionRecovery.beforeCandidateRecoveryLeaseForTesting = { candidateId ->
+            if (candidateId == downloadId) {
+                discovered.countDown()
+                check(proceed.await(5L, TimeUnit.SECONDS)) {
+                    "Timed out waiting to release recovery discovery race"
+                }
+            }
+        }
+        val recovery = async(Dispatchers.IO) {
+            DownloadExecutionRecovery.reconcile(context, db)
+        }
+
+        var claimed: DownloadItem? = null
+        try {
+            assertTrue(discovered.await(5L, TimeUnit.SECONDS))
+            val queuedCandidate = requireNotNull(
+                db.downloadDao.getNullableDownloadById(downloadId),
+            ).copy(
+                status = DownloadRepository.Status.Queued.name,
+                executionId = "",
+            )
+            db.downloadDao.updateRaw(queuedCandidate)
+
+            val claimedItem = requireNotNull(
+                claimDownloadThroughProductionAdmission(
+                    context = context,
+                    dbManager = db,
+                    candidate = queuedCandidate,
+                    concurrentDownloadLimit = 1,
+                )
+            )
+            claimed = claimedItem
+            assertNotEquals(staleExecutionId, claimedItem.executionId)
+            proceed.countDown()
+            recovery.await()
+
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                claimedItem.executionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertTrue(
+                DownloadWorkerExecutionOwners.isOwnedBy(
+                    downloadId,
+                    claimedItem.executionId,
+                )
+            )
+
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, claimedItem.executionId)
+            DownloadExecutionRecovery.reconcile(context, db)
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            proceed.countDown()
+            DownloadExecutionRecovery.beforeCandidateRecoveryLeaseForTesting = null
+            recovery.cancel()
+            claimed?.let { item ->
+                DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+                DownloadWorkerExecutionOwners.release(downloadId, item.executionId)
+            }
+        }
+    }
+
+    @Test
+    fun liveWorkerExecutionDoesNotBlockUnrelatedAbandonedSiblingRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val liveExecutionId = "live-sibling-A-E2"
+        val abandonedExecutionId = "abandoned-sibling-B-E2"
+        val liveId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = liveExecutionId,
+            )
+        )
+        val abandonedId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = abandonedExecutionId,
+            )
+        )
+        DownloadWorkerExecutionOwners.claim(liveId, liveExecutionId)
+
+        try {
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(liveId)?.status,
+            )
+            assertEquals(
+                liveExecutionId,
+                db.downloadDao.getNullableDownloadById(liveId)?.executionId,
+            )
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(liveId, liveExecutionId))
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(abandonedId)?.status,
+            )
+            assertEquals("", db.downloadDao.getNullableDownloadById(abandonedId)?.executionId)
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(liveId)
+            DownloadWorkerExecutionOwners.release(liveId, liveExecutionId)
+        }
+    }
+
+    @Test
+    fun liveCommittedHistoryRowIsNotFinalizedAsAbandoned() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val historyId = db.historyDao.insertAndGetIdRaw(history())
+        val executionId = "live-committed-history-E2"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                playlistURL = "history-redownload:$historyId",
+                status = DownloadRepository.Status.Active.name,
+                executionId = executionId,
+            )
+        )
+        db.historyDao.updateRaw(db.historyDao.getItem(historyId).copy(downloadId = downloadId))
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+
+        try {
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                executionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertEquals(downloadId, db.historyDao.getItem(historyId).downloadId)
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
+    fun productionClaimCannotCreateE3WhileLiveE2RowRemainsActive() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "live-claim-fence-E2"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                status = DownloadRepository.Status.Active.name,
+                executionId = executionId,
+            )
+        )
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+
+        try {
+            val current = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertNull(
+                claimDownloadThroughProductionAdmission(
+                    context = context,
+                    dbManager = db,
+                    candidate = current.copy(
+                        status = DownloadRepository.Status.Queued.name,
+                        executionId = "",
+                    ),
+                    // Leave capacity for the CAS to demonstrate that the
+                    // durable Active/E2 row itself fences a fresh claim.
+                    concurrentDownloadLimit = 2,
+                )
+            )
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                executionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId))
+        } finally {
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
         }
     }
 

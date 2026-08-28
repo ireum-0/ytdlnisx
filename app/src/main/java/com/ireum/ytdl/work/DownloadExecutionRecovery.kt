@@ -73,6 +73,15 @@ internal object DownloadExecutionRecovery {
     @Volatile
     internal var failCommittedHistoryFinalizationForTesting: Boolean = false
 
+    /**
+     * Test-only boundary hook between recovery discovery and candidate
+     * mutation.  It is intentionally outside the per-Download lease so a
+     * production admission can win this race and the candidate's exact
+     * reread remains the authority.
+     */
+    @Volatile
+    internal var beforeCandidateRecoveryLeaseForTesting: ((Long) -> Unit)? = null
+
     internal var recoveryReadFailureCountForTesting: Int
         get() = recoveryReadFailureCount.get()
         set(value) {
@@ -658,6 +667,7 @@ internal object DownloadExecutionRecovery {
 
         candidates.forEach { snapshot ->
             try {
+                beforeCandidateRecoveryLeaseForTesting?.invoke(snapshot.id)
                 withDownloadWorkerExecutionSideEffectLease(
                     downloadId = snapshot.id,
                     executionId = snapshot.executionId,
@@ -939,6 +949,17 @@ internal object DownloadExecutionRecovery {
                                     current.id,
                                     current.executionId,
                                 )
+                            if (owned) {
+                                // Exact process-local worker ownership is
+                                // positive liveness evidence.  Recovery may
+                                // not reinterpret this row as abandoned,
+                                // even when discovery included it because a
+                                // journal, marker, or committed History row
+                                // also exists.  Leave all current/stale debt
+                                // for a later pass after the worker releases
+                                // this exact execution token.
+                                return@withDownloadWorkerExecutionSideEffectLease
+                            }
                             val anotherExecutionOwnsTheRow =
                                 DownloadWorkerExecutionOwners.ownerOf(current.id)?.let {
                                     it != current.executionId
@@ -1423,6 +1444,7 @@ internal object DownloadExecutionRecovery {
 
     /** Test-only teardown for the durable recovery carrier. */
     internal fun clearForTesting(context: Context) {
+        beforeCandidateRecoveryLeaseForTesting = null
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .clear()
