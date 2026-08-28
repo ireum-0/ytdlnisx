@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **45**
-- Effective active defects: **119**
+- Delta active defects: **46**
+- Effective active defects: **120**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1989,3 +1989,54 @@ Focused verification requirements:
 - cover quiescence success, yt-dlp false, post-processing false, both false, cancellation while native execution is STARTING/RUNNING/PostProcessing, process death after cancellation persistence and after failed quiescence, repeated Cancel delivery, same-process reconciliation, cold restart, and later retry/reconfigure attempts;
 - assert sibling isolation and lock order: cancellation of D/E1 cannot release/kill another Download generation, and a newer D generation cannot acquire execution while E1 cancellation-quiescence debt remains;
 - verification must cover actual Room + notification/ViewModel + Worker/native barrier wiring. Helper-only cancellation tests are insufficient for PASS.
+
+## P2 — continued
+
+### BUG-LOCALADD-06 — Preserve every concurrent unresolved Local Add continuation
+
+**State:** Open  
+**Reviewed checkpoint:** `30df7058cf5232daf315813f961c6a736a75fed5`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** Local Add sessions are independently enqueueable one-time workers. Two normal workers A and B can therefore both complete scanning with unresolved candidates. Each worker creates a unique UUID and durably stores its candidates under `local_add_pending_<sessionId>`, but continuation publication is not per-session: `LocalAddStorage.setOpenSession()` writes one global `local_add_open_session` slot, and every pending-result notification is posted with the same `LocalAddWorker.NOTIFICATION_ID = 93500`. If A finishes first, it can persist payload A, set the global open-session pointer to A, post notification 93500 carrying A's exact PendingIntent, and return toward success. B can then persist payload B, overwrite the same global pointer with B, and post notification 93500 again, replacing A's notification. Both workers still return `Result.success()`.
+
+After that fully successful ordering, payload A remains present under its opaque UUID, but the application has lost every discoverable handle to that UUID: `consumeOpenSession()` can return only B, the system notification now carries only B, the completed WorkRequest A is no longer a continuation owner, and `LocalAddStorage` has no durable pending-session index/enumerator. `HistoryFragment` can open a pending session only when it already has a concrete session ID, while startup/re-entry consumes the singleton open-session pointer. Process restart therefore preserves A's bytes but not a production path that can discover/open them. Processing B does not expose A, and a later Local Add session can overwrite the singleton again.
+
+**Why this is a defect:** every unresolved Local Add result represents user-selected media that the worker could not automatically commit and intentionally hands back for manual resolution. Two independently successful sibling workers can currently make the earlier continuation unreachable solely because the later sibling completed second. This is durable continuation/data loss despite all persistence and notification calls succeeding; manual reselection creates a new attempt and is not recovery of the already-produced unresolved result. It is distinct from `BUG-LOCALADD-03`, which owns normal-completion durability failure when asynchronous SharedPreferences publication itself is not yet durable, `BUG-LOCALADD-04`, which owns a per-entry exception aborting a batch/remainder, and `BUG-LOCALADD-05`, which owns concurrent duplicate History insertion. This path assumes all writes succeed, no entry throws, and no duplicate History target exists.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The synchronized baseline has the same singleton `local_add_open_session` carrier and the same shared Local Add notification ID 93500, including unique per-session payloads/PendingIntent request codes that are nevertheless hidden when the singleton pointer and notification are overwritten.
+
+Required result:
+
+- replace singleton pending-result publication authority with a durable enumerable collection/queue/index keyed by exact Local Add session UUID, or another carrier model in which every successfully persisted unresolved session remains independently discoverable until consumed or explicitly abandoned;
+- make notification identity per-session, or otherwise ensure notification replacement cannot remove the only discoverable handle for an unconsumed successful session; notifications must be convenience entrypoints rather than the sole surviving index;
+- make pending-session consumption exact and atomic so consuming A cannot clear B and a stale/open pointer cannot cause one session to delete or adopt another session's payload;
+- on startup/re-entry, enumerate/reconcile every unconsumed pending session and clean stale payloads only under exact session ownership rather than last-writer-wins singleton state;
+- preserve `BUG-LOCALADD-02/03` input/output durability and scheduler-handoff invariants and `BUG-LOCALADD-04/05` batch/sibling/idempotency invariants while adding multi-session discoverability.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: each worker's final unresolved `pending` list and its freshly created immutable session UUID; A and B are independent semantic outputs;
+- first persistence call: `savePending(A)` and `savePending(B)`. The primary defect assumes both writes succeed and become durable. First-write failure belongs to `BUG-LOCALADD-03` and is a regression control, not the trigger here;
+- recovery carrier: the per-session payload remains durable, but its UUID is not present in any enumerable durable index after a later sibling overwrites `local_add_open_session`; the only notification carrying A is likewise replaced because NotificationManager identity is the shared integer 93500;
+- durable Download state, linked Download ledgers, media filesystem publication, and `DownloadOutcome` are not applicable. Each Local Add WorkRequest can finish with `Result.success()` while one successful unresolved result becomes undiscoverable;
+- semantic downgrade: successful unresolved continuation A -> opaque orphan payload after sibling B's successful post-commit publication. No exception, persistence failure, or process death is required; restart merely makes the loss of any ephemeral reference definitive;
+- same-session WorkManager retry is not automatically scheduled after success; manual reselection/new Local Add creates a new session rather than recovering A; another new session can overwrite the singleton again; notification re-entry reaches only the latest surviving notification; restart can recover only the one session ID retained by the singleton pointer; backup restore and Download retry/reconfigure/notification paths are not semantic recovery mechanisms for this Local Add result;
+- concurrency/sibling isolation: no AB/BA lock cycle is required. The collision is a direct many-producer -> one-slot last-writer-wins publication order. Both `A -> B` and `B -> A` must preserve both outputs under the corrected contract.
+
+Candidate-rejection proof:
+
+- do not merge into `BUG-LOCALADD-03`: that defect concerns whether one worker's pending payload/open pointer is durably persisted before normal success. Here every SharedPreferences write is assumed successful and durable; the loss arises later when another valid session overwrites the only discovery pointer;
+- do not merge into `BUG-LOCALADD-04`: no entry-local exception, partial batch, or stranded suffix is required. Both workers reach their normal successful pending-publication path;
+- do not merge into `BUG-LOCALADD-05`: that defect establishes that concurrent workers are production-reachable but owns check-then-insert duplicate History identity. This finding concerns distinct unresolved-session continuation carriers after successful worker completion;
+- the unique PendingIntent request code does not close the invariant: the PendingIntent inside A's notification is distinct, but the notification itself is replaced because both calls use notification ID 93500;
+- the existence of `local_add_pending_<sessionId>` is not recovery proof because the UUID is opaque and there is no production enumeration/index once both the singleton pointer and notification carrying that UUID are superseded;
+- a product model that intentionally supersedes an older unresolved session would need to revoke/replace it explicitly before reporting that older worker as successful and retain intentional provenance. No such abandonment/supersession contract exists in the reviewed production path.
+
+Focused verification requirements:
+
+- exercise the real `HistoryFragment -> LocalAddStorage -> WorkManager -> two LocalAddWorker instances -> NotificationUtil -> HistoryFragment/MainActivity` wiring with two independent sessions that both produce unresolved candidates; latch both immediately before pending publication, release A then B, and assert both exact session UUIDs remain independently discoverable/openable exactly once after both workers return success;
+- repeat B then A, three concurrent sessions, one session consumed before another publishes, repeated later Local Add, notification replacement, disabled notification permission, and process restart after each publication boundary;
+- after restart, enumerate/open A and B without manually knowing their opaque UUIDs, process one, restart again, and prove the unconsumed sibling remains discoverable while the consumed session cannot be reopened accidentally;
+- include `savePending`/open-pointer write-failure controls for `BUG-LOCALADD-03`, per-entry failure controls for `BUG-LOCALADD-04`, and concurrent same-media insertion controls for `BUG-LOCALADD-05` so the new carrier model does not weaken those invariants;
+- verification must cover actual WorkManager + SharedPreferences/session storage + notification + Activity/Fragment re-entry wiring. No executed production-path multi-session continuation test was found in this review, so verification remains `SOURCE-LEVEL ONLY`.
