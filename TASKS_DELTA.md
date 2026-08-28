@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **42**
-- Effective active defects: **116**
+- Delta active defects: **43**
+- Effective active defects: **117**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1828,3 +1828,58 @@ Focused verification requirements:
 - add controls for unchanged due Scheduled row, future reschedule before discovery, reschedule to `0`/Run Now, operation/retry identity change, status change to Processing/Cancelled, priority items, multiple siblings, and low-quality/history/native-debt blockers;
 - inject failure of the future-reschedule write and failure of the first corrected claim/revalidation write, plus process death after reschedule but before claim; every path must preserve the latest durable schedule semantics and exact identity;
 - verification must use actual Fragment/ViewModel/Room/DownloadWorker/WorkManager admission wiring. No executed production-path schedule-revision-vs-stale-claim test was found during this review, so verification remains `SOURCE-LEVEL ONLY`.
+
+## P2 — continued
+
+### BUG-KEYWORD-05 — Make automatic-keyword terminal status converge without reinterpreting committed sync semantics
+
+**State:** Open  
+**Reviewed checkpoint:** `b1b64d986cc9ee074f4d507c47af9770288eb018`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** an enabled automatic-keyword rule can be queued by Sync Now/save and accepted by `AutomaticKeywordRuleSyncWorker`. The worker writes `RUNNING`, fetches/revalidates the exact current rule revision, and then calls `AutomaticKeywordRuleEngine.applyFullSync()`, `recordBaseline()`, or `recordDiscovery()`. Those engine paths can already commit rule/video-match/assignment side effects; for an apply-existing or baseline generation, `completeScheduledSyncIfCurrent()` can also durably clear `pendingApplyToExisting` / mark the baseline complete. Only after those semantic mutations return does the worker persist manual terminal status `SUCCESS` or `PARTIAL` with `updateManualSyncStatusIfRevision()`.
+
+If that first terminal-status Room write throws, the worker's broad catch treats the **status-persistence exception** as though the synchronization operation itself failed. It classifies the exception, attempts to write `FAILED`, and—when the classified error is retryable and attempts remain—can return `Result.retry()` even though the underlying rule assignments/baseline transition already committed successfully. On that retry the same semantic operation is not necessarily replayed: because the prior engine commit may already have cleared the apply-existing/baseline flags, the new attempt can enter `recordDiscovery()` instead. If the catch's recovery `FAILED` write also throws, that second exception escapes the worker before any application `Result` is returned; the durable rule can remain `manualSyncStatus=RUNNING` even though the WorkManager attempt has terminated and the semantic side effects may already be committed.
+
+No current startup owner repairs that mismatch. `App` runs `AutomaticKeywordObservationCoverage.reconcile()`, but that reconciler manages Observe Source coverage for enabled keyword rules, not manual-sync `RUNNING`/WorkManager state. `AutomaticKeywordRuleRepository.syncNow()`, editing, or enable/disable can create a new revision and schedule a fresh sync, but those are explicit user/reconfiguration actions rather than automatic convergence of the failed exact attempt. The stale RUNNING status can therefore survive restart, and a successful semantic sync can be represented as FAILED/retried or as indefinitely RUNNING solely because ancillary terminal bookkeeping failed.
+
+**Why this is a defect:** the rule-assignment/baseline mutation is the semantic operation, while `manualSyncStatus` is its durable terminal report/re-entry carrier. Once the semantic mutation commits, a later status write failure must not be caught and reinterpreted as failure of the already committed operation, nor may failure of both terminal-status writes strand a false RUNNING state with no recovery owner. The current ordering can produce dishonest durable status, non-identical retry semantics, or permanent false activity after a supported Room persistence failure. This is a substantive state-integrity/liveness defect rather than defensive hardening.
+
+This is distinct from baseline `BUG-KEYWORD-03`, which owns the **pre-worker** handoff where a durable QUEUED keyword-sync intent can lose its WorkManager enqueue carrier. `BUG-KEYWORD-05` starts after the carrier was accepted and the worker/engine performed semantic work, and owns the post-commit terminal-status convergence boundary. `BUG-KEYWORD-01/02/04` respectively govern authoritative baseline observation, Undo assignment recomputation, and History source-identity revalidation; none owns this terminal persistence/recovery invariant.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The reviewed `AutomaticKeywordRuleSyncWorker.kt` is identical to the synchronized baseline implementation for this path.
+
+Required result:
+
+- separate the authoritative engine outcome from failure to persist its terminal reporting state; a post-commit status-write exception must not be reclassified as failure of a semantic sync that already committed;
+- persist terminal status through a fault-safe protocol, transaction/journal, or convergent recovery carrier that keeps the exact rule revision/operation identity discoverable until terminal reporting is durably complete;
+- if terminal status persistence cannot complete, retain explicit recovery debt rather than leaving `RUNNING` as if a worker were still active, and make startup reconciliation compare that exact debt with current WorkManager/rule state;
+- preserve semantic retry identity: if the underlying apply-existing/baseline operation already committed and cleared its mode flags, a retry caused only by terminal bookkeeping must converge the terminal report rather than silently switching to a different discovery operation;
+- retain revision CAS protection so a later user edit/new rule revision cannot be overwritten by recovery for the superseded generation;
+- ensure a failed first terminal write and a failed recovery write cannot lose the only convergence owner or require an unrelated user Sync Now/edit/restart sequence to repair status.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: successful completion of the exact-revision `AutomaticKeywordRuleEngine` operation and its committed assignment/video-match/baseline state;
+- first terminal persistence call: `updateManualSyncStatusIfRevision(... SUCCESS/PARTIAL ...)`; inject failure after engine commit. Current code enters the generic catch and semantically downgrades the persistence failure into operation failure;
+- recovery carrier/write: the catch attempts `updateManualSyncStatusIfRevision(... FAILED ...)`. If it succeeds, durable status can say FAILED and WorkManager may retry despite committed semantic success. If that recovery write also fails, the exception escapes and durable status can remain RUNNING with no application terminal result;
+- durable Download state, Download-linked ledgers, media filesystem effects, and `DownloadOutcome` are not applicable. The relevant durable domains are the automatic-keyword rule/manual status, rule-video observation/baseline state, and History keyword assignments;
+- WorkManager result: when the recovery FAILED write succeeds, the current classifier can return retry for retryable/unknown errors while attempts remain or a terminal result at exhaustion; when the recovery write itself throws, the worker exits exceptionally without returning an application `Result`. No source-level assumption about the framework's final persisted WorkInfo repairs the separate stale rule status;
+- semantic downgrade/reinterpretation: committed SUCCESS/PARTIAL -> FAILED/retry, and a retry may enter a different engine mode because apply-existing/baseline flags were already cleared; double status-write failure can leave false RUNNING;
+- same-settings WorkManager retry is therefore not guaranteed to be the same semantic operation; manual Sync Now/edit/enable can create a new revision and may repair UI state but are new explicit authority, not recovery of the old exact generation; restart runs Observe Source coverage reconciliation only and does not reconcile manual sync status; restore and Download retry/requeue/reconfigure/notification paths are not semantic recovery paths for this rule-sync attempt;
+- no AB/BA lock ordering or sibling interleaving is required. The primary failure occurs on one exact rule revision after its semantic commit; the expected revision predicate remains necessary to isolate a concurrent newer revision.
+
+Candidate-rejection proof:
+
+- do not reject this as `BUG-KEYWORD-03`: that defect ends at `QUEUED` intent before scheduler acceptance and has no committed engine side effects. This path requires an accepted/running worker and a post-engine terminal persistence failure;
+- do not reject because explicit Sync Now/edit can repair the rule: those actions create new user authority/revisions and do not make the prior committed generation's terminal handoff correct;
+- do not reject because assignment writes are idempotent or because a retry can later succeed: the current retry can have a different semantic mode after `pendingApplyToExisting`/baseline state was already committed, and durable status can falsely report FAILED/RUNNING in the interim or indefinitely after second-write failure;
+- do not treat `AutomaticKeywordObservationCoverage.reconcile()` as a manual-sync recovery barrier; it reconciles Observe Source coverage and never compares `manualSyncStatus=RUNNING` with the WorkManager carrier/terminal state;
+- no existing `TASKS.md` or `TASKS_DELTA.md` entry owns the `engine semantic commit -> SUCCESS/PARTIAL status write failure -> FAILED recovery write failure/non-identical retry` invariant.
+
+Focused verification requirements:
+
+- exercise the real repository/scheduler -> `AutomaticKeywordRuleSyncWorker` -> `AutomaticKeywordRuleEngine` -> Room rule/video-match/assignment wiring with a successful apply-existing generation, then force the first terminal `SUCCESS/PARTIAL` status update to throw; assert committed assignments/baseline semantics are not reclassified as a failed semantic operation or replayed under a different mode;
+- separately force the recovery `FAILED` status update to throw as a second fault and prove an exact durable recovery carrier remains discoverable, restart converges it, and the rule cannot remain indefinitely false-RUNNING;
+- repeat for baseline-only and discovery modes, terminal PARTIAL, retryable error/exhausted-attempt controls, revision supersession during recovery, process death immediately after engine commit and before terminal status, and normal no-fault success;
+- verify startup reconciliation plus WorkManager/Room wiring, not only DAO/engine helpers. Existing persistence tests exercise rule engine state but do not fault the production Worker terminal-status handoff, so verification remains `SOURCE-LEVEL ONLY`.
