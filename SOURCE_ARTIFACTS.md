@@ -16,6 +16,18 @@ The correctness-remediation project uses the following documents as governing re
 - Adoption commit: `e00600e846fe9967aa3619ba193ff509aced4e60`
 - SHA-256: `654b7698737f861f8c7133788d6524cfcc6661b4ee714bdcf42d73ae35beabd6`
 
+## Current Status Authority
+
+- File: `CURRENT_STATUS.md`
+- Role: current ledger status overlay applied on top of the historical `TASKS.md` baseline and append-only `TASKS_DELTA.md` finding records.
+- Initial status-overlay commit: `67e5b971e3291e21337dffd2fba180f0addb212f`.
+- Current Finding-A semantic-clean checkpoint recorded by the overlay: `checkpoint/pre-baseline-review@648d2c8044e9d67f8a7367c54e3185f28206b636`.
+- Current Finding-A closure evidence: `evidence/FINDING_A_CLOSURE_2026-08-28_648D2C80.md`.
+
+`CURRENT_STATUS.md` is intentionally a mutable ledger-status index rather than a frozen governing artifact. It may record only status/closure decisions already established by exact review evidence; it must not originate new blocker-impacting classifications, attributions, waivers, or semantic findings.
+
+At the Finding-A closure represented by the current overlay, `BUG-ADMISSION-01` is explicitly superseded from its historical Open finding record to **CLOSED**. No other baseline/post-split defect is closed or reclassified by that status overlay.
+
 ## Historical Review Checklist — v4
 
 - File: `remediation-review-checklist-v4.md`
@@ -28,3 +40,5 @@ The correctness-remediation project uses the following documents as governing re
 The Master Plan and historical uploaded v4 artifact retain their recorded identities and must not be silently rewritten. If either uploaded source is copied into this branch, copy it byte-for-byte and verify the recorded SHA-256.
 
 `REVIEW_CHECKLIST_V5_OPERATIONAL.md` is an explicitly adopted semantic revision, not a byte-for-byte copy of v4. Future semantic checklist changes require a separate review and explicit decision, must preserve historical checklist identities, and must not create, close, waive, reclassify, or reattribute production defects merely by changing review methodology.
+
+Status updates are separate from checklist revisions. Current status must be derived from `CURRENT_STATUS.md` plus the exact cited review/closure evidence, while historical `TASKS.md`, `TASKS_DELTA.md`, and evidence snapshots remain preserved for auditability.
