@@ -23,14 +23,29 @@ The effective active-defect registry is therefore:
 
 Do not rely on a defect count copied into this README. Fresh-read both registry files when an exact current count or status is needed.
 
+Historical status overlays inside the synchronized `TASKS.md` baseline are not rewritten merely to reflect later remediation progress. For Finding-level current closure status, use the latest explicit closure/re-review evidence listed below together with the exact reviewed checkpoint SHA.
+
+## Current remediation closure
+
+- Finding A: **CLOSED / independently CLEAN**.
+- Semantic-clean reviewed checkpoint: `checkpoint/pre-baseline-review@648d2c8044e9d67f8a7367c54e3185f28206b636`.
+- Governing checklist for the closure review: `REVIEW_CHECKLIST_V5_OPERATIONAL.md`.
+- Closure evidence: `evidence/FINDING_A_CLOSURE_2026-08-28_648D2C80.md`.
+- Finding-A current-change P1/P2 blockers at closure: **0**.
+- Waivers: **none**.
+- Finding B has not been started by the closure record.
+
+This closure records an already-established independent review decision. It does not close or reclassify separately owned baseline/post-split defects in `TASKS.md` or `TASKS_DELTA.md`.
+
 ## Files
 
-- `TASKS.md` — synchronized baseline defect/status registry from the pinned checkpoint.
+- `TASKS.md` — synchronized baseline defect/status registry from the pinned checkpoint. Historical remediation overlays in this synchronized snapshot may be superseded by later explicit evidence records.
 - `TASKS_DELTA.md` — append-only post-ledger-split active findings confirmed against exact checkpoint SHAs.
 - `REVIEW_LESSONS.md` — append-only meta-review log. Every newly confirmed defect records why earlier reviews missed it and proposes a generalizable Review Checklist improvement. Proposals do not automatically change the checklist; v5 was adopted through a separate explicit revision decision.
 - `REVIEW_CHECKLIST_V5_OPERATIONAL.md` — current governing operational checklist. It preserves v4's mandatory semantic/evidence gates and adds generalized positive-live-authority, mutation-boundary revalidation, async-completion, recovery-discovery, strengthened-contract, identity/provenance, and sequential-batch rules plus triggered conditional modules.
 - `REVIEW_CHECKLIST_V4_OPERATIONAL.md` — preserved historical operational mirror for reproducing reviews performed under Review Checklist v4.
 - `SOURCE_ARTIFACTS.md` — exact governing/historical checklist identities and the Master Plan identity, including the v5 adoption commit and SHA-256.
+- `evidence/FINDING_A_CLOSURE_2026-08-28_648D2C80.md` — metadata-only closure record for the independently CLEAN Finding-A checkpoint `648d2c8044e9d67f8a7367c54e3185f28206b636` and its accepted execution evidence.
 - `evidence/FINDING_A_REMAINING.md` — preserved Finding A review evidence from `review/finding-a-consolidation`; it remains historical/frozen evidence and is not silently reinterpreted here.
 - `evidence/CHECKPOINT_REVIEW_2026-08-23_DFA40697.md` — review evidence for the pinned checkpoint run that established `BUG-SCHEDULER-05` and revalidated selected historical Finding A blockers.
 - `evidence/FINDING_A_REREVIEW_2026-08-24_AD1A8F02.md` — independent full-scope Finding A re-review at `checkpoint/pre-baseline-review@ad1a8f026a7a05f3e1489775a74d8106dbfa510e`; verdict `NOT CLEAN`, with residual A2, A8, and A9/A12 blocker groups recorded without creating new defect IDs.
