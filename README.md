@@ -21,7 +21,7 @@ The effective active-defect registry is therefore:
 
 `TASKS.md` baseline + `TASKS_DELTA.md` post-split findings.
 
-At the current ledger state, `TASKS.md` is synchronized from `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15` and contains 74 active defects. `TASKS_DELTA.md` contains 12 additional active defects, for an effective total of 86.
+Do not rely on a defect count copied into this README. Fresh-read both registry files when an exact current count or status is needed.
 
 ## Files
 
