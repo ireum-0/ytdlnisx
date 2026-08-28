@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **44**
-- Effective active defects: **118**
+- Delta active defects: **45**
+- Effective active defects: **119**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -1933,3 +1933,59 @@ Focused verification requirements:
 - add distinct-same-basename controls for `BUG-LOCALADD-01`, same-session duplicate-input controls, normal sequential re-add, cancellation of one contender, first insert failure, second insert failure, process death after the first commit, and restart/retry;
 - verify keyword assignments/derived local metadata attach once to the surviving History identity and no rejected contender deletes or overwrites it;
 - verification must exercise concurrent production workers plus the real Room/coordinator boundary. No executed concurrency/wiring test for this cross-session check-and-insert race was found, so verification remains `SOURCE-LEVEL ONLY`.
+
+### BUG-CANCEL-03 — Do not complete Download cancellation before exact native quiescence is proven
+
+**State:** Open  
+**Reviewed checkpoint:** `30df7058cf5232daf315813f961c6a736a75fed5`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the running-download notification Cancel action enters `CancelDownloadNotificationReceiver` with the exact `itemID` and `executionId`. Under the per-Download side-effect lease and worker execution lock, the receiver rereads the current row, verifies the same execution, and calls `DownloadRepository.cancelByUser()`. That path correctly commits the user cancellation first, leaving the exact row durably `Cancelled` under the same execution identity and publishing the cancellation signal. Only after the durable cancellation write does the receiver call `DownloadWorker.cancelProcessesForExecution(id, expectedExecutionId)`.
+
+At the reviewed checkpoint that helper has a stronger semantic contract than the legacy best-effort process destroy: it returns `false` when yt-dlp descendant or post-processing quiescence for the exact execution cannot be proven, and worker-owned exceptional cleanup paths use `check(cancelProcessesForExecution(...))` because a false result means native/resource authority must remain recovery-owned. `CancelDownloadNotificationReceiver`, however, discards the Boolean. Even when the exact quiescence call returns `false`, it cancels the running notification and completes the broadcast normally. The same omission exists in user-cancel ViewModel paths, which call the helper after a committed cancellation but ignore its result before returning success/clearing UI state.
+
+The durable `Cancelled` row and surviving native marker prevent this from being an unowned-permanent-loss claim: cold-start `DownloadExecutionRecovery` can discover a `download:` marker while the matching Download row still exists and can later attempt exact quiescence. That delayed repair does not restore the current cancellation barrier. In the same process there is no cancellation-specific recovery write or scheduled reconciliation attached to the failed quiescence result before the receiver releases its side-effect lease and removes the notification. An exact old native descendant can therefore continue touching attempt-owned staging/output resources after the application has represented cancellation as complete. If the worker later reaches its own exceptional/quiescence path it may create recovery debt, but that is contingent on the still-running actor progressing; the notification/user cancellation operation itself has already lost the unresolved result.
+
+**Why this is a defect:** `Cancelled` plus removal of the running affordance is the terminal user-visible result of the cancellation operation, while `cancelProcessesForExecution()==false` explicitly means the exact external execution has not yet surrendered authority. The cancellation path therefore weakens the strengthened native contract at the precise release boundary, allowing a terminal application state to coexist with an unresolved actor that can still mutate resources. This is substantive cancellation/reliability correctness, not merely cleanup latency.
+
+This is distinct from baseline `BUG-CANCEL-01`, which requires the opposite ordering failure—terminating live work before the durable cancellation intent succeeds. The confirmed path assumes that first write succeeds and then finds a **post-write quiescence failure** that is ignored. It is also distinct from `BUG-CANCEL-02`, which owns stale worker success publication after cancellation; no later worker success is needed here. `BUG-NATIVE-03` owns normal Download success while a descendant barrier remains unresolved, whereas this finding owns explicit user cancellation. `BUG-DATE-04` is the analogous strengthened-contract propagation gap for the separate History date-fetch operation and does not own Download cancellation state.
+
+**Ownership / attribution:** remediation regression / incomplete closure of the native-quiescence remediation. The notification/ViewModel callers existed at the synchronized baseline, but the reviewed checkpoint strengthened `cancelProcessesForExecution()` into a fail-closed exact descendant-quiescence contract without making these Download cancellation callers consume its Boolean result.
+
+Required result:
+
+- make exact native/post-processing quiescence part of Download cancellation completion. A committed cancellation request may remain the authoritative user intent, but the cancellation operation must not release its exact execution/resource owner or present quiescence-dependent cleanup as complete while `cancelProcessesForExecution()` is false;
+- persist or retain an exact cancellation-recovery carrier before releasing the side-effect lease when quiescence cannot be proven, and schedule/attach same-process convergence rather than relying on eventual worker progress or unrelated process restart;
+- keep the durable user cancellation authoritative throughout recovery; quiescence retry must never resurrect `Active`, reinterpret cancellation as ordinary Error/success, or authorize a newer generation before the old external authority is fenced;
+- do not remove the only running/recovery affordance as though termination succeeded unless the UI instead explicitly represents “cancelling/recovery pending” and that state is backed by the same durable exact recovery owner;
+- apply the strengthened result consistently to notification Cancel, in-app single cancel, bulk/queue cancellation paths that invoke exact process termination, and any other production caller that releases Download execution/resources after `cancelProcessesForExecution()`;
+- preserve `BUG-CANCEL-01` ordering: if the first durable cancellation write fails, do not terminate the native process; this defect begins only after that write succeeds.
+
+Terminal fault matrix / cross-attempt requirements:
+
+- authoritative decision: exact user cancellation for Download D/E1; current-state/execution revalidation succeeds before mutation;
+- first persistence call: `cancelByUser(D,E1)` commits `Cancelled/E1`. First-write failure is already fail-closed for this candidate because the process-cancel step is not authorized when the write does not commit;
+- native barrier: inject `cancelProcessesForExecution(D,E1) == false` from unresolved yt-dlp descendant or post-processing authority. Current callers discard that result;
+- recovery carrier: the `Cancelled/E1` row and any durable native marker may survive, and cold-start recovery can discover them. The cancellation caller itself creates no new pending-recovery journal/state and does not schedule immediate convergence from the false result. A corrected recovery-write failure must remain fail-closed with the exact row/marker discoverable;
+- durable Download state: `Cancelled/E1`. Linked cancellation/low-quality ledgers may also reflect cancellation. Filesystem effect can remain in progress because the old native/post-processing generation may still read/write attempt-owned files. No new History success is required;
+- final application result: the notification receiver completes normally and removes the running notification; ViewModel cancel helpers can return successful cancellation semantics. WorkManager/native termination is not proven at that point. Stale `Active/PostProcessing` is not required; the semantic downgrade is **unresolved external execution -> completed cancellation**;
+- same-settings/manual/raw retry or reconfigure must not create a new executable generation from the cancelled row while E1 quiescence debt exists; notification Resume/Retry is not a repair path for a Cancelled row; restart/reconcile can eventually repair the marker but is delayed recovery, not proof that current cancellation completed safely; restore is not a semantic recovery path for app-owned native authority;
+- concurrency/lock order is per-Download side-effect lease -> worker execution lock for the receiver's durable cancel, then exact native termination while retaining the per-Download lease. No AB/BA inversion is required. The defect occurs when that lease is released after a false quiescence result without an attached recovery owner.
+
+Candidate-rejection proof:
+
+- do not reject as `BUG-CANCEL-01`: that item is satisfied in the primary reproduction because cancellation is persisted **before** termination is attempted; the new violation is failure to preserve authority after the post-write termination attempt returns false;
+- do not reject as `BUG-CANCEL-02`: no stale worker completion or missing final cancellation reread is needed. The receiver itself converts an unresolved exact quiescence result into completed user cancellation;
+- do not reject as `BUG-NATIVE-03`: that defect requires normal Download success/root-success publication and possible row deletion. This path requires explicit cancellation, keeps the Cancelled row, and violates a different terminal invariant;
+- do not reject because startup recovery can later adopt the marker. A process restart is not a semantic barrier for a current user cancellation, and the old actor may continue mutating resources in the meantime. The current receiver also does not trigger same-process recovery from the failed result;
+- do not reject because the cancellation publication registry can make the worker notice the user intent. That process-local signal is not evidence that native descendants or post-processing processes have stopped, which is exactly what the Boolean helper reports;
+- source-level tests or helper existence do not establish production wiring. No executed notification/ViewModel cancellation test was found that forces exact quiescence failure and verifies a durable pending-cancellation owner, so verification remains `SOURCE-LEVEL ONLY`.
+
+Focused verification requirements:
+
+- exercise the real `NotificationUtil -> CancelDownloadNotificationReceiver -> DownloadRepository/Room -> DownloadWorker.cancelProcessesForExecution()` wiring with Active/E1, let the durable cancellation write succeed, force exact yt-dlp quiescence to return false, and assert the cancellation remains explicitly recovery-pending with an exact durable owner rather than being presented/released as fully complete;
+- repeat through in-app single-cancel and bulk/queue cancellation callers that reach exact process termination, proving every caller consumes the Boolean contract consistently;
+- inject first cancellation-write failure as a `BUG-CANCEL-01` control and prove no native termination occurs; inject failure of the corrected recovery-debt write and prove the exact cancellation/marker remains fail-closed and discoverable;
+- cover quiescence success, yt-dlp false, post-processing false, both false, cancellation while native execution is STARTING/RUNNING/PostProcessing, process death after cancellation persistence and after failed quiescence, repeated Cancel delivery, same-process reconciliation, cold restart, and later retry/reconfigure attempts;
+- assert sibling isolation and lock order: cancellation of D/E1 cannot release/kill another Download generation, and a newer D generation cannot acquire execution while E1 cancellation-quiescence debt remains;
+- verification must cover actual Room + notification/ViewModel + Worker/native barrier wiring. Helper-only cancellation tests are insufficient for PASS.
