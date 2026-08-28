@@ -27,13 +27,14 @@ At the current ledger state, `TASKS.md` is synchronized from `checkpoint/pre-bas
 
 - `TASKS.md` — synchronized baseline defect/status registry from the pinned checkpoint.
 - `TASKS_DELTA.md` — append-only post-ledger-split active findings confirmed against exact checkpoint SHAs.
-- `REVIEW_LESSONS.md` — append-only meta-review log. Every newly confirmed defect records why earlier reviews missed it and proposes a generalizable Review Checklist improvement. Proposals do not automatically change the checklist.
-- `REVIEW_CHECKLIST_V4_OPERATIONAL.md` — operational mirror used by scheduled review to apply Review Checklist v4 directly from GitHub, including mandatory terminal/cross-attempt matrices, candidate-rejection discipline, evidence hierarchy, and CLEAN gate.
-- `SOURCE_ARTIFACTS.md` — exact names and SHA-256 identities of the governing Master Plan and original Review Checklist v4 supplied to the remediation project.
+- `REVIEW_LESSONS.md` — append-only meta-review log. Every newly confirmed defect records why earlier reviews missed it and proposes a generalizable Review Checklist improvement. Proposals do not automatically change the checklist; v5 was adopted through a separate explicit revision decision.
+- `REVIEW_CHECKLIST_V5_OPERATIONAL.md` — current governing operational checklist. It preserves v4's mandatory semantic/evidence gates and adds generalized positive-live-authority, mutation-boundary revalidation, async-completion, recovery-discovery, strengthened-contract, identity/provenance, and sequential-batch rules plus triggered conditional modules.
+- `REVIEW_CHECKLIST_V4_OPERATIONAL.md` — preserved historical operational mirror for reproducing reviews performed under Review Checklist v4.
+- `SOURCE_ARTIFACTS.md` — exact governing/historical checklist identities and the Master Plan identity, including the v5 adoption commit and SHA-256.
 - `evidence/FINDING_A_REMAINING.md` — preserved Finding A review evidence from `review/finding-a-consolidation`; it remains historical/frozen evidence and is not silently reinterpreted here.
 - `evidence/CHECKPOINT_REVIEW_2026-08-23_DFA40697.md` — review evidence for the pinned checkpoint run that established `BUG-SCHEDULER-05` and revalidated selected historical Finding A blockers.
 - `evidence/FINDING_A_REREVIEW_2026-08-24_AD1A8F02.md` — independent full-scope Finding A re-review at `checkpoint/pre-baseline-review@ad1a8f026a7a05f3e1489775a74d8106dbfa510e`; verdict `NOT CLEAN`, with residual A2, A8, and A9/A12 blocker groups recorded without creating new defect IDs.
 
-The original Review Checklist v4 remains the governing source artifact identified in `SOURCE_ARTIFACTS.md`. `REVIEW_CHECKLIST_V4_OPERATIONAL.md` is an operational mirror for automated execution and must not be silently weakened or treated as permission to relax the original checklist. Any semantic checklist revision requires separate review and an explicit decision.
+`REVIEW_CHECKLIST_V5_OPERATIONAL.md` governs reviews after its adoption commit. The original uploaded v4 checklist and `REVIEW_CHECKLIST_V4_OPERATIONAL.md` remain preserved for historical reproducibility. Checklist methodology changes do not themselves create, close, waive, reclassify, or reattribute production defects.
 
 This branch intentionally contains no Android production source, tests, Gradle files, assets, or other application files.
