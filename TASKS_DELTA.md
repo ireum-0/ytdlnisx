@@ -5,8 +5,8 @@ This file is the append-only delta for correctness defects confirmed after revie
 - Baseline registry: `TASKS.md`
 - Baseline registry synchronized from: `checkpoint/pre-baseline-review@dfa40697434b7d041bb0bc4f3d9cf2586dfb6d15`
 - Baseline active defects: **74**
-- Delta active defects: **48**
-- Effective active defects: **122**
+- Delta active defects: **49**
+- Effective active defects: **123**
 
 Production truth always comes from the exact reviewed checkpoint SHA. This file records reviewed findings; it is not permission to implement or to modify the checkpoint branch.
 
@@ -2150,3 +2150,58 @@ Focused verification requirements:
 - repeat through the in-app Cancel path and the corresponding Pause path, including journal success + first semantic-write failure, journal-write failure control, successful semantic write + quiescence failure controls for `BUG-CANCEL-03`/`BUG-PAUSE-02`, and normal success;
 - inject process death after journal commit but before the semantic write, after the semantic-write failure, and during the first recovery write; restart must preserve exact operation/disposition identity and converge without generic requeue;
 - cover repeated Cancel/Pause delivery, same-process reconcile, cold restart, later manual/raw requeue/reconfigure/notification re-entry, and an independent sibling Download. Verification must use actual Room + receiver/ViewModel + recovery + worker/admission wiring; helper-only journal tests are insufficient for PASS.
+
+## P2 — continued
+
+### BUG-PAUSE-03 — Scope Pause All transport cancellation to the Downloads durably paused
+
+**State:** Open  
+**Reviewed checkpoint:** `5b9a3da4906eefa4fc67f82d8bbbad63019f1f5b`  
+**Verification:** `SOURCE-LEVEL ONLY`
+
+**Failure path:** the in-app Pause All action enters `DownloadViewModel.pauseAllDownloads()`. It first snapshots `getActiveAndPostProcessingDownloads()` while holding the process-global Download worker execution lock, then releases that lock and processes only the fixed snapshot. Each snapshotted row is re-read under its per-Download side-effect lease plus the global execution lock, journaled, durably changed to `Paused`, and then exactly quiesced. After the snapshot loop completes, however, `pauseAllDownloads()` unconditionally calls `WorkManager.cancelAllWorkByTag("download")` without holding an operation-wide execution/admission lease or re-reading the current active set.
+
+A valid sibling B can become active after the initial snapshot but before that final tag cancellation. For example, A is Active when Pause All takes snapshot `[A]`; A is successfully paused/quiesced; meanwhile an already accepted Download worker or another runnable worker claims queued B as `Active/E2` after the snapshot's global lock was released. B is not in the saved list, so Pause All never creates a pause journal for B and never writes `Paused/E2`. The final broad WorkManager cancellation nevertheless cancels B's tagged execution carrier. `DownloadWorker` stopped-execution cleanup treats B as a generically interrupted exact owner, quiesces E2, and can persist `Active/PostProcessing -> Queued`; it does not synthesize the missing Pause disposition. The same cleanup/recovery path does not create a replacement WorkManager carrier for that newly queued B.
+
+The mismatch survives the user-facing re-entry contract. `resumeAllDownloads()` selects only rows that are durably `Paused`, resets those rows to Queued, and starts work for that paused set. B is instead Queued because it was never semantically paused, so Resume All does not include B in the set it explicitly restarts. Process restart/reconciliation likewise has no Pause-All generation saying that B was intentionally interrupted or that its generic Queued row needs a successor solely because the previous carrier was cancelled by a stale bulk side effect. At minimum B is incorrectly interrupted and reclassified without any Pause authority; in the ordinary cleanup ordering it can also be left as durable Queued intent after its current tagged carrier has been cancelled.
+
+**Why this is a defect:** Pause All forms semantic authority from one exact observed execution set, but later expands transport revocation to a newer/coarser set without extending the durable Pause decision to those newly included executions. A sibling that was not part of the Pause transaction can therefore lose its execution carrier and be generically requeued rather than paused. This is a concrete sibling-isolation and durable-carrier correctness failure, not merely a cosmetic mismatch or low-probability race. No Room failure, native-quiescence failure, process death, stale notification, or malformed row is required.
+
+This is distinct from `BUG-PAUSE-01`, which owns failure of the first Pause persistence write for an intended target, and `BUG-PAUSE-02`, which assumes the intended Paused write succeeds but exact quiescence later fails. The victim here receives **no Pause write at all** because it became active after the batch snapshot; all operations on the original snapshot may succeed. It is also distinct from `BUG-CANCEL-03/04`, whose semantic authority is user cancellation, and from `BUG-QUEUE-05`, which concerns an already-paused row being omitted by Clear Queue.
+
+**Ownership / attribution:** pre-existing baseline defect discovered post ledger split; not a remediation regression. The synchronized baseline `DownloadViewModel.pauseAllDownloads()` already used the same fixed Active/PostProcessing snapshot followed by unconditional `cancelAllWorkByTag("download")`; the current cancellation/quiescence remediation retains that inherited batch-authority mismatch.
+
+Required result:
+
+- make the set of Download executions whose WorkManager/native transport is revoked by Pause All match the set that has durably acquired Pause semantics under exact current ownership;
+- either hold an operation-wide admission barrier from authoritative target selection through final transport cancellation, or replace broad tag cancellation with exact work/execution cancellation for only the rows whose Paused transition was successfully committed and whose identities remain current;
+- if Pause All intentionally means “include executions that become active while the operation is in progress,” re-read and durably pause each newly included exact generation before cancelling its carrier; do not acquire Pause authority merely from tag membership at a later time;
+- preserve per-item failure isolation and `BUG-PAUSE-01/02` ordering: a failed first Paused write must not authorize termination, and a successful write with failed quiescence must retain exact recovery responsibility;
+- ensure generic stopped-worker cleanup cannot reinterpret an unrecorded bulk Pause side effect as ordinary `Queued` recovery with no matching successor carrier;
+- keep unrelated independent Downloads outside the committed Pause target running, and preserve exact execution/native-generation sibling isolation.
+
+Terminal fault / cross-attempt requirements:
+
+- authoritative decision: the initial Pause All target snapshot plus each exact current execution that is actually durably changed to `Paused`; B/E2 becomes authoritative only after the snapshot and therefore has no Pause decision in the current implementation;
+- first persistence for B under the confirmed path: there is no Pause persistence call. The first material state mutation caused by the stale bulk side effect can instead be B's stopped-worker recovery write from `Active/PostProcessing` to `Queued` after WorkManager cancellation. Successful generic requeue is already semantically wrong because no user/system authority selected B for that disposition;
+- recovery carrier: B's WorkManager carrier is cancelled globally and its Download row can remain/revert to `Queued`. There is no Pause-All generation or journal identifying why B stopped, and no corrected recovery write is attempted because the current code views the stop as generic worker cancellation;
+- durable Download state can therefore be `Queued` rather than `Paused`; linked ledgers remain whatever B's attempt owned; native/post-processing effects are quiesced/cleaned by the normal stopped-worker path. No History completion or terminal `DownloadOutcome` is required for reproduction;
+- final Pause All result can complete normally because B was not in the per-item snapshot and therefore contributed no recorded failure. WorkManager cancellation of B is a transport side effect outside the batch's semantic result accounting;
+- same-settings retry is not automatically materialized from the lost carrier; manual/raw requeue or reconfigure may later create a new explicit carrier but are new authority, not recovery of the Pause All mismatch; notification Resume and Resume All operate on Paused rows and therefore do not represent B; cold restart preserves the semantic mismatch and has no original Pause-All target carrier to reconstruct; restore is not a repair path;
+- lock/lease order is `snapshot under global execution lock -> release -> per-A side-effect lease -> global execution lock -> release -> later broad WorkManager tag cancellation with no Download lease`. B can claim under normal admission after the snapshot/global lock is released and before the final tag cancellation. There is no AB/BA deadlock requirement; the defect is stale batch authority plus a later broadened side effect.
+
+Candidate-rejection proof:
+
+- do not reject because the command is named Pause All. The implementation's durable semantic mutations are performed only for the fixed snapshotted exact executions. If the intended authority is truly global until completion, newly active B must be re-observed and durably transitioned to Paused before its carrier is revoked; the current tag cancellation skips that semantic boundary;
+- do not reject because WorkManager cancellation is only transport cleanup: transport cleanup is the destructive effect that stops B's valid execution, and B has no matching durable Pause disposition. Stopped-worker cleanup can then publish a different generic Queued state and does not recover the missing Pause authority;
+- do not reject because B may later be manually restarted. Later user requeue/reconfigure is new authority and does not make the earlier unrelated sibling interruption correct;
+- do not merge into `BUG-PAUSE-01`: no first Pause write is attempted for B. Do not merge into `BUG-PAUSE-02`: no Paused write or quiescence failure is required for B. Do not merge into `BUG-CANCEL-03/04`: no Cancel semantic is involved. Do not merge into `BUG-QUEUE-05`: the victim is newly Active after the Pause All snapshot, not an already-Paused row omitted from Clear Queue;
+- the same fixed-snapshot plus global tag-cancellation ordering is present at the synchronized baseline, so this is not attributed to the pinned quiescence remediation despite being exposed while reviewing that change.
+
+Focused verification requirements:
+
+- exercise the real in-app Pause All -> `DownloadViewModel.pauseAllDownloads()` -> Room/leases -> WorkManager -> `DownloadWorker` wiring. Latch Pause All after it snapshots/finishes A but before the final `cancelAllWorkByTag("download")`, claim/start independent B/E2, then release Pause All. Assert B is either durably included in the Pause operation before its carrier is cancelled or remains running; it must never be stopped and generically requeued solely because it appeared after the snapshot;
+- verify the stopped-worker cleanup path after the race and then invoke Resume All; B must not become an unowned Queued intent omitted from the paused-set restart;
+- cover B claiming before snapshot (must be an ordinary intended Pause target), B remaining Queued until after Pause All completes (must be unaffected), B claiming in the gap, multiple late siblings, successful and failed A quiescence, B native/post-processing execution, and an unrelated worker sharing the tag only if production wiring permits it;
+- inject process death after B's carrier cancellation and after its generic requeue, then restart and prove exact Pause semantics/carrier ownership converge without requiring a manual requeue;
+- include regression controls for `BUG-PAUSE-01`, `BUG-PAUSE-02`, exact notification Pause, and per-item sibling isolation. Verification must use actual Room + ViewModel + WorkManager + Worker cleanup/admission wiring; no executed production-path race test for this batch-set expansion was found, so verification remains `SOURCE-LEVEL ONLY`.
