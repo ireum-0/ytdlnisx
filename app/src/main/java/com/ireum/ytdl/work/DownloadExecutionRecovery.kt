@@ -133,12 +133,21 @@ internal object DownloadExecutionRecovery {
             return false
         }
         val id = item.id.toString()
+        val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val existingExecutionId = preferences.getString(id, null)
+        if (existingExecutionId != null && existingExecutionId != item.executionId) {
+            // This single-entry carrier cannot represent two execution
+            // identities.  Refuse an E2 overwrite while stale E1 recovery is
+            // still discoverable; losing E1 here would make its native
+            // authority unrecoverable and would let a newer action revoke the
+            // old proof obligation.
+            return false
+        }
         val nativeGenerationObservation = YtdlpNativeProcessBarrier.observeDownloadExecution(
             downloadId = item.id,
             executionId = item.executionId,
         )
-        val editor = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
+        val editor = preferences.edit()
             .putString(id, item.executionId)
             .putBoolean(
                 id + NATIVE_QUIESCENCE_SUFFIX,
@@ -246,6 +255,105 @@ internal object DownloadExecutionRecovery {
             preferences.edit()
                 .putBoolean(id + NATIVE_QUIESCENCE_SUFFIX, false)
         )
+    }
+
+    /**
+     * Consumes the strengthened native-quiescence contract for a user stop.
+     * The journal must already have been recorded before this is called.  A
+     * false result or exception retains the exact Download/execution carrier
+     * and installs the same-process retry owner; neither is normal stop
+     * completion.
+     */
+    internal fun quiesceAfterDurableStop(
+        context: Context,
+        downloadId: Long,
+        executionId: String,
+        dbManager: DBManager = DBManager.getInstance(context),
+    ): Boolean {
+        return try {
+            if (!DownloadWorker.cancelProcessesForExecution(downloadId, executionId)) {
+                retainRecoveryResponsibility(
+                    context = context,
+                    downloadId = downloadId,
+                    dbManager = dbManager,
+                    failure = IllegalStateException(
+                        "Native quiescence was not proven for download $downloadId " +
+                            "executionId=$executionId",
+                    ),
+                )
+                false
+            } else if (!markNativeQuiescent(
+                    context = context,
+                    downloadId = downloadId,
+                    executionId = executionId,
+                    exactGenerationProof = true,
+                )
+            ) {
+                retainRecoveryResponsibility(
+                    context = context,
+                    downloadId = downloadId,
+                    dbManager = dbManager,
+                    failure = IllegalStateException(
+                        "Native quiescence carrier could not be acknowledged for download $downloadId " +
+                            "executionId=$executionId",
+                    ),
+                )
+                false
+            } else if (
+                clearPending(
+                    context = context,
+                    id = downloadId,
+                    expectedExecutionId = executionId,
+                )
+            ) {
+                true
+            } else {
+                retainRecoveryResponsibility(
+                    context = context,
+                    downloadId = downloadId,
+                    dbManager = dbManager,
+                    failure = IllegalStateException(
+                        "Native quiescence carrier could not be cleared for download $downloadId " +
+                            "executionId=$executionId",
+                    ),
+                )
+                false
+            }
+        } catch (cancelled: CancellationException) {
+            retainRecoveryResponsibility(
+                context = context,
+                downloadId = downloadId,
+                dbManager = dbManager,
+                failure = cancelled,
+            )
+            throw cancelled
+        } catch (failure: Exception) {
+            retainRecoveryResponsibility(
+                context = context,
+                downloadId = downloadId,
+                dbManager = dbManager,
+                failure = failure,
+            )
+            false
+        }
+    }
+
+    /** Installs the live retry owner without making it the restart carrier. */
+    internal fun retainRecoveryResponsibility(
+        context: Context,
+        downloadId: Long,
+        dbManager: DBManager = DBManager.getInstance(context),
+        failure: Throwable? = null,
+    ) {
+        runCatching { scheduleRecovery(context, downloadId, dbManager) }
+            .onFailure { schedulingFailure ->
+                failure?.addSuppressed(schedulingFailure)
+                android.util.Log.e(
+                    "DownloadExecutionRecovery",
+                    "Could not install recovery owner for download $downloadId; durable carrier remains required",
+                    schedulingFailure,
+                )
+            }
     }
 
     /**
@@ -402,6 +510,21 @@ internal object DownloadExecutionRecovery {
         .keys
         .mapNotNull { it.toLongOrNull() }
         .toSet()
+
+    /**
+     * Resume admission must also honor process-local native ownership.  A
+     * process-owner-only debt can exist before the journal is written (for
+     * example during an interrupted pause handoff), so the journal alone is
+     * not a complete barrier.
+     */
+    internal fun hasPendingRecovery(
+        context: Context,
+        downloadId: Long,
+    ): Boolean {
+        YtdlpNativeProcessBarrier.configure(context)
+        return pendingDownloadIds(context).contains(downloadId) ||
+            DownloadWorker.hasAnyRegisteredNativeProcess(downloadId)
+    }
 
     /**
      * Current queue-worker liveness proof.  This is intentionally evaluated

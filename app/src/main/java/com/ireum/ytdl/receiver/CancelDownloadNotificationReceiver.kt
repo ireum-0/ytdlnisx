@@ -6,31 +6,69 @@ import android.content.Intent
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.NotificationUtil
-import com.ireum.ytdl.work.DownloadWorker
+import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
-class CancelDownloadNotificationReceiver : BroadcastReceiver() {
+class CancelDownloadNotificationReceiver private constructor(
+    private val databaseOverride: DBManager?,
+    @Suppress("UNUSED_PARAMETER") testOnly: Boolean,
+) : BroadcastReceiver() {
+    companion object {
+        /** Deterministic seam for a failure raised inside the launched body. */
+        @Volatile
+        internal var beforeAsyncBodyForTesting: (() -> Unit)? = null
+
+        /** Deterministic PendingResult completion observation for wiring tests. */
+        @Volatile
+        internal var finishObserverForTesting: (() -> Unit)? = null
+    }
+
+    constructor() : this(null, false)
+
+    /** Test-only constructor; the manifest continues to use the no-arg form. */
+    internal constructor(database: DBManager) : this(database, true)
+
     override fun onReceive(c: Context, intent: Intent) {
         val id = intent.getIntExtra("itemID", 0)
         if (id > 0) {
             val result = goAsync()
+            val finished = AtomicBoolean(false)
+            fun finishOnce() {
+                if (finished.compareAndSet(false, true)) {
+                    result.finish()
+                    finishObserverForTesting?.invoke()
+                }
+            }
             runCatching {
                 val notificationUtil = NotificationUtil(c)
-                val dbManager = DBManager.getInstance(c)
+                val dbManager = databaseOverride ?: DBManager.getInstance(c)
                 CoroutineScope(Dispatchers.IO).launch{
+                    val expectedExecutionId = intent.getStringExtra("executionId").orEmpty()
                     try {
-                        val expectedExecutionId = intent.getStringExtra("executionId").orEmpty()
+                        val injectedFailure = beforeAsyncBodyForTesting
+                        beforeAsyncBodyForTesting = null
+                        injectedFailure?.invoke()
                         if (expectedExecutionId.isBlank()) return@launch
                         withDownloadWorkerExecutionSideEffectLease(id.toLong(), expectedExecutionId) {
                             val affectedOperationIds = withDownloadWorkerExecutionLock {
                                 val item = dbManager.downloadDao.getNullableDownloadById(id.toLong())
                                 if (item?.executionId != expectedExecutionId) {
                                     return@withDownloadWorkerExecutionLock null
+                                }
+                                check(
+                                    DownloadExecutionRecovery.recordPending(
+                                        context = c,
+                                        item = item,
+                                    )
+                                ) {
+                                    "Could not persist cancellation recovery responsibility for ${item.id}"
                                 }
                                 val affected = DownloadRepository(dbManager).cancelByUser(
                                     id.toLong(),
@@ -50,20 +88,39 @@ class CancelDownloadNotificationReceiver : BroadcastReceiver() {
                                 // per-Download lease prevents a newer attempt
                                 // from starting while this exact process is
                                 // being stopped.
-                                DownloadWorker.cancelProcessesForExecution(
-                                    id.toLong(),
-                                    expectedExecutionId,
-                                )
-                                LowQualityRedownloadLedger.refresh(c, affectedOperationIds)
-                                notificationUtil.cancelRunningDownloadNotification(id)
+                                if (
+                                    DownloadExecutionRecovery.quiesceAfterDurableStop(
+                                        context = c,
+                                        downloadId = id.toLong(),
+                                        executionId = expectedExecutionId,
+                                        dbManager = dbManager,
+                                    )
+                                ) {
+                                    LowQualityRedownloadLedger.refresh(c, affectedOperationIds)
+                                    notificationUtil.cancelRunningDownloadNotification(id)
+                                }
                             }
                         }
+                    } catch (cancelled: CancellationException) {
+                        DownloadExecutionRecovery.retainRecoveryResponsibility(
+                            context = c,
+                            downloadId = id.toLong(),
+                            dbManager = dbManager,
+                            failure = cancelled,
+                        )
+                    } catch (failure: Exception) {
+                        DownloadExecutionRecovery.retainRecoveryResponsibility(
+                            context = c,
+                            downloadId = id.toLong(),
+                            dbManager = dbManager,
+                            failure = failure,
+                        )
                     } finally {
-                        result.finish()
+                        finishOnce()
                     }
                 }
             }.onFailure {
-                result.finish()
+                finishOnce()
             }
 
         }

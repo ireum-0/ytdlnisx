@@ -34,6 +34,7 @@ import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.DownloadCancellationRegistry
+import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
@@ -1861,7 +1862,9 @@ class DownloadRepository(private val database: DBManager) {
      * re-read inside its own transaction, so a Queued -> Active claim that
      * wins the race is canceled through that exact current execution token.
      */
-    internal suspend fun cancelActiveQueuedWithResult(): BulkCancellationResult {
+    internal suspend fun cancelActiveQueuedWithResult(
+        recoveryContext: Context? = null,
+    ): BulkCancellationResult {
         val snapshots = downloadDao.getActiveAndQueuedDownloadsList()
             .distinctBy(DownloadItem::id)
             .sortedBy(DownloadItem::id)
@@ -1875,6 +1878,22 @@ class DownloadRepository(private val database: DBManager) {
                     downloadId = snapshot.id,
                     executionId = snapshot.executionId,
                 ) {
+                    if (recoveryContext != null) {
+                        withDownloadWorkerExecutionLock {
+                            downloadDao.getNullableDownloadById(snapshot.id)
+                                ?.takeIf { it.executionId.isNotBlank() }
+                                ?.let { current ->
+                                    check(
+                                        DownloadExecutionRecovery.recordPending(
+                                            context = recoveryContext,
+                                            item = current,
+                                        )
+                                    ) {
+                                        "Could not persist cancellation recovery responsibility for ${current.id}"
+                                    }
+                                }
+                        }
+                    }
                     withDownloadWorkerExecutionLock {
                         cancelActiveQueuedFailureForTesting?.invoke(snapshot.id)?.let { throw it }
                         cancelByUserWithPublication(
@@ -1895,10 +1914,26 @@ class DownloadRepository(private val database: DBManager) {
                     DownloadCancellationRegistry.publish(listOf(publication))
                 }
             } catch (cancelled: CancellationException) {
+                recoveryContext?.let {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = it,
+                        downloadId = snapshot.id,
+                        dbManager = database,
+                        failure = cancelled,
+                    )
+                }
                 firstFailure = firstFailure?.also {
                     if (it !== cancelled) it.addSuppressed(cancelled)
                 } ?: cancelled
             } catch (failure: Exception) {
+                recoveryContext?.let {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = it,
+                        downloadId = snapshot.id,
+                        dbManager = database,
+                        failure = failure,
+                    )
+                }
                 firstFailure = firstFailure?.also {
                     if (it !== failure) it.addSuppressed(failure)
                 } ?: failure

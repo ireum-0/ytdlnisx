@@ -20,6 +20,7 @@ enum class DownloadRetryBlockReason {
     ATTEMPT_LIMIT,
     SETTINGS_CONFIRMATION_REQUIRED,
     HISTORY_REPLACEMENT_MISMATCH,
+    NATIVE_RECOVERY_PENDING,
 }
 
 data class DownloadRetryMetadata(

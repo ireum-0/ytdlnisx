@@ -3,6 +3,7 @@ package com.ireum.ytdl.database
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.core.content.ContextCompat
 import com.ireum.ytdl.database.dao.DownloadClaimTestHooks
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
@@ -16,6 +17,9 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
+import com.ireum.ytdl.database.viewmodel.DownloadViewModel
+import com.ireum.ytdl.receiver.CancelDownloadNotificationReceiver
+import com.ireum.ytdl.receiver.PauseDownloadNotificationReceiver
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorkerAdmissionResult
@@ -26,6 +30,7 @@ import com.ireum.ytdl.work.admitQueuedDownloadsThroughProductionPath
 import com.ireum.ytdl.work.observeQueuedDownloadsAfterRecovery
 import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -44,7 +49,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.UUID
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.io.OutputStream
+import java.lang.Process
 
 @RunWith(AndroidJUnit4::class)
 class FindingAProductionWiringTest {
@@ -58,6 +69,11 @@ class FindingAProductionWiringTest {
         DownloadExecutionRecovery.clearForTesting(context)
         DownloadWorkerExecutionOwners.clearForTesting()
         DownloadWorkerProcessOwners.clearForTesting()
+        CancelDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
+        CancelDownloadNotificationReceiver.finishObserverForTesting = null
+        PauseDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
+        PauseDownloadNotificationReceiver.finishObserverForTesting = null
+        PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
             DBManager::class.java,
@@ -72,6 +88,11 @@ class FindingAProductionWiringTest {
         DownloadExecutionRecovery.clearForTesting(ApplicationProvider.getApplicationContext())
         DownloadWorkerExecutionOwners.clearForTesting()
         DownloadWorkerProcessOwners.clearForTesting()
+        CancelDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
+        CancelDownloadNotificationReceiver.finishObserverForTesting = null
+        PauseDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
+        PauseDownloadNotificationReceiver.finishObserverForTesting = null
+        PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
@@ -1458,6 +1479,641 @@ class FindingAProductionWiringTest {
     }
 
     @Test
+    fun userStopQuiescenceSuccessAcknowledgesAndClearsExactRecoveryCarrier() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = "stop-E1")
+        )
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+
+        assertTrue(DownloadExecutionRecovery.recordPending(context, item))
+        assertTrue(
+            DownloadExecutionRecovery.quiesceAfterDurableStop(
+                context = context,
+                downloadId = downloadId,
+                executionId = "stop-E1",
+                dbManager = db,
+            )
+        )
+        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+    }
+
+    @Test
+    fun userStopQuiescenceFalseRetainsE1CarrierWhenE2OwnsNativeDomain() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = "stop-E1")
+        )
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertTrue(DownloadExecutionRecovery.recordPending(context, item))
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "stop-E2"))
+
+        assertFalse(
+            DownloadExecutionRecovery.quiesceAfterDurableStop(
+                context = context,
+                downloadId = downloadId,
+                executionId = "stop-E1",
+                dbManager = db,
+            )
+        )
+        assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        assertEquals("stop-E2", DownloadWorkerProcessOwners.ownerOf(downloadId))
+        DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+    }
+
+    @Test
+    fun userStopQuiescenceExceptionRetainsE1CarrierAndProcessOwner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = "stop-E1")
+        )
+        val processId = YtdlpProcessIdentity.download(downloadId, "stop-E1")
+        val process = NeverQuiescingProcess()
+        DownloadWorkerExecutionOwners.claim(downloadId, "stop-E1")
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "stop-E1"))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+
+        try {
+            assertTrue(DownloadExecutionRecovery.recordPending(context, item))
+            assertFalse(
+                DownloadExecutionRecovery.quiesceAfterDurableStop(
+                    context = context,
+                    downloadId = downloadId,
+                    executionId = "stop-E1",
+                    dbManager = db,
+                )
+            )
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            assertEquals("stop-E1", DownloadWorkerProcessOwners.ownerOf(downloadId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(downloadId, "stop-E1")
+            DownloadWorkerExecutionOwners.release(downloadId, "stop-E1")
+        }
+    }
+
+    @Test
+    fun pausedExecutionRecoveryCarrierRemainsDiscoverableUntilQuiescenceIsProven() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                executionId = "pause-E1",
+                status = DownloadRepository.Status.Paused.name,
+            )
+        )
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+
+        assertTrue(DownloadExecutionRecovery.recordPending(context, item))
+        assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        // The same durable carrier is what resume admission consults; a
+        // Paused row alone is not evidence that E1 has surrendered authority.
+        assertEquals(DownloadRepository.Status.Paused.name, item.status)
+    }
+
+    @Test
+    fun notificationCancelTrueCompletesAfterNativeQuiescence() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-cancel-true-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val receiver = CancelDownloadNotificationReceiver(db)
+
+        sendReceiverAndAwait(
+            context = context,
+            receiver = receiver,
+            intent = receiverIntent(
+                action = "cancel-true",
+                downloadId = downloadId,
+                executionId = executionId,
+            ),
+        ) {
+            db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                DownloadRepository.Status.Cancelled.name &&
+                !DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId)
+        }
+
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+    }
+
+    @Test
+    fun notificationCancelFalseKeepsPendingRecoveryInsteadOfCompletingNormally() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-cancel-false-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "receiver-cancel-false-E2"))
+        val receiver = CancelDownloadNotificationReceiver(db)
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = receiver,
+                intent = receiverIntent(
+                    action = "cancel-false",
+                    downloadId = downloadId,
+                    executionId = executionId,
+                ),
+            ) {
+                db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                    DownloadRepository.Status.Cancelled.name &&
+                    DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId)
+            }
+
+            assertEquals(
+                "receiver-cancel-false-E2",
+                DownloadWorkerProcessOwners.ownerOf(downloadId),
+            )
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerProcessOwners.release(downloadId, "receiver-cancel-false-E2")
+        }
+    }
+
+    @Test
+    fun notificationCancelExceptionKeepsPendingRecoveryInsteadOfCompletingNormally() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-cancel-exception-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val process = NeverQuiescingProcess()
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, executionId))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+        val receiver = CancelDownloadNotificationReceiver(db)
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = receiver,
+                intent = receiverIntent(
+                    action = "cancel-exception",
+                    downloadId = downloadId,
+                    executionId = executionId,
+                ),
+            ) {
+                db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                    DownloadRepository.Status.Cancelled.name &&
+                    DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId)
+            }
+
+            assertEquals(executionId, DownloadWorkerProcessOwners.ownerOf(downloadId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(downloadId, executionId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
+    fun notificationPauseTruePublishesResumeOnlyAfterNativeQuiescence() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-pause-true-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val resumePublicationCount = AtomicInteger(0)
+        PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = {
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            resumePublicationCount.incrementAndGet()
+        }
+        val receiver = PauseDownloadNotificationReceiver(db)
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = receiver,
+                intent = receiverIntent(
+                    action = "pause-true",
+                    downloadId = downloadId,
+                    executionId = executionId,
+                ),
+            ) {
+                db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                    DownloadRepository.Status.Paused.name &&
+                    !DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId) &&
+                    resumePublicationCount.get() == 1
+            }
+
+            assertEquals(1, resumePublicationCount.get())
+        } finally {
+            PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
+        }
+
+        assertEquals(
+            DownloadRepository.Status.Paused.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+    }
+
+    @Test
+    fun notificationPauseFalseWithholdsResumePublication() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-pause-false-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val resumePublicationCount = AtomicInteger(0)
+        PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = {
+            resumePublicationCount.incrementAndGet()
+        }
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "receiver-pause-false-E2"))
+        val receiver = PauseDownloadNotificationReceiver(db)
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = receiver,
+                intent = receiverIntent(
+                    action = "pause-false",
+                    downloadId = downloadId,
+                    executionId = executionId,
+                ),
+            ) {
+                db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                    DownloadRepository.Status.Paused.name &&
+                    DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId)
+            }
+
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(0, resumePublicationCount.get())
+        } finally {
+            PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerProcessOwners.release(downloadId, "receiver-pause-false-E2")
+        }
+    }
+
+    @Test
+    fun notificationPauseExceptionWithholdsResumePublication() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-pause-exception-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val resumePublicationCount = AtomicInteger(0)
+        PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = {
+            resumePublicationCount.incrementAndGet()
+        }
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val process = NeverQuiescingProcess()
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, executionId))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+        val receiver = PauseDownloadNotificationReceiver(db)
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = receiver,
+                intent = receiverIntent(
+                    action = "pause-exception",
+                    downloadId = downloadId,
+                    executionId = executionId,
+                ),
+            ) {
+                db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                    DownloadRepository.Status.Paused.name &&
+                    DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId)
+            }
+
+            assertEquals(executionId, DownloadWorkerProcessOwners.ownerOf(downloadId))
+            assertEquals(0, resumePublicationCount.get())
+        } finally {
+            PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(downloadId, executionId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
+    fun launchedReceiverBodyFailureFinishesPendingResultExactlyOnce() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = "receiver-body-failure-E1")
+        )
+        val finishCount = AtomicInteger(0)
+        CancelDownloadNotificationReceiver.beforeAsyncBodyForTesting = {
+            throw IllegalStateException("injected receiver body failure")
+        }
+        CancelDownloadNotificationReceiver.finishObserverForTesting = {
+            finishCount.incrementAndGet()
+        }
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = CancelDownloadNotificationReceiver(db),
+                intent = receiverIntent(
+                    action = "body-failure",
+                    downloadId = downloadId,
+                    executionId = "receiver-body-failure-E1",
+                ),
+            ) { finishCount.get() == 1 }
+
+            assertEquals(1, finishCount.get())
+        } finally {
+            CancelDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
+            CancelDownloadNotificationReceiver.finishObserverForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+        }
+    }
+
+    @Test
+    fun viewModelCancelFalseKeepsCancelledE1CarrierAndForeignE2Owner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = "cancel-E1")
+        )
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "cancel-E2"))
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            assertTrue(runCatching { viewModel.cancelDownload(downloadId) }.isFailure)
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            assertEquals("cancel-E2", DownloadWorkerProcessOwners.ownerOf(downloadId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerProcessOwners.release(downloadId, "cancel-E2")
+        }
+    }
+
+    @Test
+    fun viewModelCancelExceptionKeepsCancelledE1CarrierAndExactProcessOwner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = "cancel-exception-E1")
+        )
+        val processId = YtdlpProcessIdentity.download(downloadId, "cancel-exception-E1")
+        val process = NeverQuiescingProcess()
+        DownloadWorkerExecutionOwners.claim(downloadId, "cancel-exception-E1")
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "cancel-exception-E1"))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            assertTrue(runCatching { viewModel.cancelDownload(downloadId) }.isFailure)
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            assertEquals(
+                "cancel-exception-E1",
+                DownloadWorkerProcessOwners.ownerOf(downloadId),
+            )
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(downloadId, "cancel-exception-E1")
+            DownloadWorkerExecutionOwners.release(downloadId, "cancel-exception-E1")
+        }
+    }
+
+    @Test
+    fun viewModelIncognitoCancelDoesNotDeleteUnresolvedE1Row() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val preferences = androidx.preference.PreferenceManager
+            .getDefaultSharedPreferences(context)
+        val previousIncognito = preferences.getBoolean("incognito", false)
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = "incognito-E1")
+        )
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "incognito-E2"))
+        preferences.edit().putBoolean("incognito", true).commit()
+        val viewModel = DownloadViewModel(context, db, true)
+        try {
+            val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertTrue(runCatching { viewModel.updateDownload(item.copy(status = DownloadRepository.Status.Cancelled.name)) }.isFailure)
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            preferences.edit().putBoolean("incognito", previousIncognito).commit()
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerProcessOwners.release(downloadId, "incognito-E2")
+        }
+    }
+
+    @Test
+    fun viewModelPauseFalseWithholdsResumeAndPreservesPausedE1Barrier() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = "pause-E1")
+        )
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "pause-E2"))
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            assertTrue(runCatching { viewModel.pauseDownload(downloadId) }.isFailure)
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            assertFalse(viewModel.resumePausedDownloadAndWait(downloadId, "pause-E1"))
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerProcessOwners.release(downloadId, "pause-E2")
+        }
+    }
+
+    @Test
+    fun bulkRequeueRefusesAnExecutionWithPendingNativeRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                executionId = "requeue-barrier-E1",
+                status = DownloadRepository.Status.Cancelled.name,
+            )
+        )
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            assertTrue(
+                DownloadExecutionRecovery.recordPending(
+                    context,
+                    requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)),
+                )
+            )
+            viewModel.reQueueDownloadItemsAndWait(listOf(downloadId))
+
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                "requeue-barrier-E1",
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+        }
+    }
+
+    @Test
+    fun processOwnerOnlyPausedE1IsAResumeBarrierWithoutJournal() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                executionId = "owner-only-E1",
+                status = DownloadRepository.Status.Paused.name,
+            )
+        )
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, "owner-only-E1"))
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            assertTrue(DownloadExecutionRecovery.hasPendingRecovery(context, downloadId))
+            assertFalse(viewModel.resumePausedDownloadAndWait(downloadId, "owner-only-E1"))
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            DownloadWorkerProcessOwners.release(downloadId, "owner-only-E1")
+        }
+    }
+
+    @Test
+    fun viewModelPauseAllIsolatesOneQuiescenceFailureFromHealthySibling() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val failingId = db.downloadDao.insertRaw(
+            download().copy(executionId = "pause-all-fail-E1")
+        )
+        val siblingId = db.downloadDao.insertRaw(
+            download().copy(executionId = "pause-all-sibling-E1")
+        )
+        assertTrue(DownloadWorkerProcessOwners.claim(failingId, "pause-all-fail-E2"))
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            viewModel.pauseAllDownloads()
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(failingId)?.status,
+            )
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(siblingId)?.status,
+            )
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(failingId))
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(siblingId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(failingId)
+            DownloadWorkerProcessOwners.release(failingId, "pause-all-fail-E2")
+        }
+    }
+
+    @Test
+    fun newerExecutionCannotReplaceUnresolvedStaleRecoveryCarrier() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val staleExecutionId = "carrier-stale-E1"
+        val currentExecutionId = "carrier-current-E2"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = staleExecutionId)
+        )
+        val marker = YtdlpNativeProcessBarrier.writeMarkerForTesting(
+            processId = YtdlpProcessIdentity.download(downloadId, staleExecutionId),
+            state = "RUNNING",
+            generationToken = "carrier-stale-generation-${UUID.randomUUID()}",
+        )
+
+        try {
+            assertTrue(
+                DownloadExecutionRecovery.recordPending(
+                    context,
+                    requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)),
+                )
+            )
+            db.downloadDao.updateRaw(
+                requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)).copy(
+                    executionId = currentExecutionId,
+                )
+            )
+            DownloadWorkerExecutionOwners.claim(downloadId, currentExecutionId)
+
+            assertFalse(
+                DownloadExecutionRecovery.recordPending(
+                    context,
+                    requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)),
+                )
+            )
+            assertTrue(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            assertEquals(
+                currentExecutionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertTrue(marker.exists())
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadWorkerExecutionOwners.release(downloadId, currentExecutionId)
+            marker.delete()
+        }
+    }
+
+    @Test
+    fun cancelledE1RecoveryCarrierIsRediscoveredAfterProcessDeath() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "cancelled-process-death-E1"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                executionId = executionId,
+                status = DownloadRepository.Status.Cancelled.name,
+            )
+        )
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val process = NeverQuiescingProcess()
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, executionId))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+
+        try {
+            val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertTrue(DownloadExecutionRecovery.recordPending(context, item))
+            assertFalse(
+                DownloadExecutionRecovery.quiesceAfterDurableStop(
+                    context = context,
+                    downloadId = downloadId,
+                    executionId = executionId,
+                    dbManager = db,
+                )
+            )
+
+            // Model the app process dying: process-local owners and the
+            // registered Process disappear, while the journal remains.
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(downloadId, executionId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(downloadId, executionId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
     fun applicationRecoveryFinalizesCommittedDebtIdempotently() = runBlocking {
         val historyId = db.historyDao.insertAndGetIdRaw(history())
         val downloadId = db.downloadDao.insertRaw(
@@ -1600,4 +2256,50 @@ class FindingAProductionWiringTest {
         logID = null,
         playlistURL = "",
     )
+
+    private fun receiverIntent(
+        action: String,
+        downloadId: Long,
+        executionId: String,
+    ) = android.content.Intent("com.ireum.ytdl.test.$action.${UUID.randomUUID()}")
+        .putExtra("itemID", downloadId.toInt())
+        .putExtra("executionId", executionId)
+        .putExtra("title", "test")
+
+    private suspend fun sendReceiverAndAwait(
+        context: android.content.Context,
+        receiver: android.content.BroadcastReceiver,
+        intent: android.content.Intent,
+        completed: () -> Boolean,
+    ) {
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            android.content.IntentFilter(requireNotNull(intent.action)),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        try {
+            context.sendBroadcast(intent.setPackage(context.packageName))
+            withTimeout(5_000L) {
+                while (!completed()) delay(25L)
+            }
+            // Allow the launched receiver body to reach its finally block
+            // before unregistering the dynamically registered receiver.
+            delay(100L)
+        } finally {
+            context.unregisterReceiver(receiver)
+        }
+    }
+
+    private class NeverQuiescingProcess : Process() {
+        override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+        override fun getInputStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+        override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+        override fun waitFor(): Int = 1
+        override fun waitFor(timeout: Long, unit: TimeUnit): Boolean = false
+        override fun exitValue(): Int = throw IllegalThreadStateException("still running")
+        override fun destroy() = Unit
+        override fun destroyForcibly(): Process = this
+        override fun isAlive(): Boolean = true
+    }
 }
