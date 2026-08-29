@@ -386,6 +386,11 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
             operationId = operationId,
             beforeAction = {
                 if (context != null) {
+                    val recoveryDisposition = if (dao.getOperation(operationId)?.cancelRequested == true) {
+                        DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+                    } else {
+                        DownloadExecutionRecovery.RecoveryDisposition.GENERIC
+                    }
                     val ids = dao.getNonterminalDownloadIds(operationId)
                     database.downloadDao.getDownloadsByIdsSuspend(ids)
                         .filter {
@@ -401,7 +406,13 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                             // treated as success.  Do not terminalize the
                             // operation until the carrier is durable; the
                             // convergence owner will retry this phase.
-                            check(DownloadExecutionRecovery.recordPending(context, item)) {
+                            check(
+                                DownloadExecutionRecovery.recordPending(
+                                    context = context,
+                                    item = item,
+                                    disposition = recoveryDisposition,
+                                )
+                            ) {
                                 "Could not publish native cancellation recovery for ${item.id}"
                             }
                         }
@@ -471,6 +482,11 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
             operationId = operationId,
             beforeAction = {
                 if (context != null) {
+                    val recoveryDisposition = if (dao.getOperation(operationId)?.cancelRequested == true) {
+                        DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+                    } else {
+                        DownloadExecutionRecovery.RecoveryDisposition.GENERIC
+                    }
                     val ids = dao.getNonterminalDownloadIds(operationId)
                     database.downloadDao.getDownloadsByIdsSuspend(ids)
                         .filter {
@@ -481,7 +497,13 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                                 )
                         }
                         .forEach { item ->
-                            check(DownloadExecutionRecovery.recordPending(context, item)) {
+                            check(
+                                DownloadExecutionRecovery.recordPending(
+                                    context = context,
+                                    item = item,
+                                    disposition = recoveryDisposition,
+                                )
+                            ) {
                                 "Could not publish native cancellation recovery for ${item.id}"
                             }
                         }

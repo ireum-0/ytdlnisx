@@ -91,29 +91,84 @@ class LowQualityRedownloadWorker(
                     context = context,
                 )
                 DownloadCancellationRegistry.publish(result.publications)
+                val userCancellation = repository.getOperation(operationId)?.cancelRequested == true
                 result.publications.forEach { publication ->
                     withDownloadWorkerExecutionSideEffectLease(
                         publication.downloadId,
                         publication.executionId,
                     ) {
-                        check(
-                            DownloadWorker.cancelProcessesForExecution(
-                                publication.downloadId,
-                                publication.executionId,
-                            )
-                        ) {
-                            "Native cancellation was not acknowledged for ${publication.downloadId}"
-                        }
-                        check(
-                            DownloadExecutionRecovery.markNativeQuiescent(
+                        val existingUserStopConverged = if (!userCancellation) {
+                            DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
                                 context = context,
+                                dbManager = database,
                                 downloadId = publication.downloadId,
                                 executionId = publication.executionId,
-                                exactGenerationProof = true,
                             )
-                        ) {
-                            "Native cancellation recovery carrier was not acknowledged for " +
-                                publication.downloadId
+                        } else {
+                            false
+                        }
+                        if (existingUserStopConverged) {
+                            Unit
+                        } else if (userCancellation) {
+                            val current = database.downloadDao
+                                .getNullableDownloadById(publication.downloadId)
+                                ?.takeIf { it.executionId == publication.executionId }
+                            check(current != null) {
+                                "Cancellation semantic carrier lost exact execution for " +
+                                    publication.downloadId
+                            }
+                            check(
+                                DownloadExecutionRecovery.recordPending(
+                                    context = context,
+                                    item = current,
+                                    disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                    phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+                                )
+                            ) {
+                                "Could not upgrade cancellation recovery carrier for " +
+                                    publication.downloadId
+                            }
+                            check(
+                                DownloadExecutionRecovery.markUserStopSemanticCommitted(
+                                    context = context,
+                                    downloadId = publication.downloadId,
+                                    executionId = publication.executionId,
+                                    disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                )
+                            ) {
+                                "Cancellation semantic carrier was not acknowledged for " +
+                                    publication.downloadId
+                            }
+                            check(
+                                DownloadExecutionRecovery.quiesceAfterDurableStop(
+                                    context = context,
+                                    downloadId = publication.downloadId,
+                                    executionId = publication.executionId,
+                                    dbManager = database,
+                                )
+                            ) {
+                                "Native cancellation was not acknowledged for ${publication.downloadId}"
+                            }
+                        } else {
+                            check(
+                                DownloadWorker.cancelProcessesForExecution(
+                                    publication.downloadId,
+                                    publication.executionId,
+                                )
+                            ) {
+                                "Native cancellation was not acknowledged for ${publication.downloadId}"
+                            }
+                            check(
+                                DownloadExecutionRecovery.markNativeQuiescent(
+                                    context = context,
+                                    downloadId = publication.downloadId,
+                                    executionId = publication.executionId,
+                                    exactGenerationProof = true,
+                                )
+                            ) {
+                                "Native cancellation recovery carrier was not acknowledged for " +
+                                    publication.downloadId
+                            }
                         }
                     }
                 }

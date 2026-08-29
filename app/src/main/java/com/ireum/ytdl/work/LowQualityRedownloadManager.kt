@@ -114,23 +114,25 @@ class LowQualityRedownloadManager private constructor(context: Context) {
                     publication.executionId,
                 ) {
                     check(
-                        DownloadWorker.cancelProcessesForExecution(
-                            publication.downloadId,
-                            publication.executionId,
-                        )
-                    ) {
-                        "Native cancellation was not acknowledged for ${publication.downloadId}"
-                    }
-                    check(
-                        DownloadExecutionRecovery.markNativeQuiescent(
+                        DownloadExecutionRecovery.markUserStopSemanticCommitted(
                             context = appContext,
                             downloadId = publication.downloadId,
                             executionId = publication.executionId,
-                            exactGenerationProof = true,
+                            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
                         )
                     ) {
-                        "Native cancellation recovery carrier was not acknowledged for " +
+                        "Cancellation semantic carrier was not acknowledged for " +
                             publication.downloadId
+                    }
+                    check(
+                        DownloadExecutionRecovery.quiesceAfterDurableStop(
+                            context = appContext,
+                            downloadId = publication.downloadId,
+                            executionId = publication.executionId,
+                            dbManager = database,
+                        )
+                    ) {
+                        "Native cancellation was not acknowledged for ${publication.downloadId}"
                     }
                 }
             }
@@ -422,23 +424,25 @@ object LowQualityRedownloadLedger {
                                         publication.executionId,
                                     ) {
                                         check(
-                                            DownloadWorker.cancelProcessesForExecution(
-                                                publication.downloadId,
-                                                publication.executionId,
-                                            )
-                                        ) {
-                                            "Native cancellation was not acknowledged for " +
-                                                publication.downloadId
-                                        }
-                                        check(
-                                            DownloadExecutionRecovery.markNativeQuiescent(
+                                            DownloadExecutionRecovery.markUserStopSemanticCommitted(
                                                 context = appContext,
                                                 downloadId = publication.downloadId,
                                                 executionId = publication.executionId,
-                                                exactGenerationProof = true,
+                                                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
                                             )
                                         ) {
-                                            "Native cancellation recovery carrier was not acknowledged for " +
+                                            "Cancellation semantic carrier was not acknowledged for " +
+                                                publication.downloadId
+                                        }
+                                        check(
+                                            DownloadExecutionRecovery.quiesceAfterDurableStop(
+                                                context = appContext,
+                                                downloadId = publication.downloadId,
+                                                executionId = publication.executionId,
+                                                dbManager = dbManager,
+                                            )
+                                        ) {
+                                            "Native cancellation was not acknowledged for " +
                                                 publication.downloadId
                                         }
                                     }

@@ -66,7 +66,7 @@ class PauseDownloadNotificationReceiver private constructor(
                     injectedFailure?.invoke()
                     if (expectedExecutionId.isNotBlank()) {
                         withDownloadWorkerExecutionSideEffectLease(id.toLong(), expectedExecutionId) {
-                            val didPause = withDownloadWorkerExecutionLock {
+                            withDownloadWorkerExecutionLock {
                                 val item = dbManager.downloadDao.getDownloadById(id.toLong())
                                 if (item.executionId != expectedExecutionId) {
                                     return@withDownloadWorkerExecutionLock false
@@ -75,6 +75,8 @@ class PauseDownloadNotificationReceiver private constructor(
                                     DownloadExecutionRecovery.recordPending(
                                         context = c,
                                         item = item,
+                                        disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                                        phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
                                     )
                                 ) {
                                     "Could not persist pause recovery responsibility for ${item.id}"
@@ -85,24 +87,44 @@ class PauseDownloadNotificationReceiver private constructor(
                                     expectedExecutionId,
                                 )
                             }
-                            paused = didPause
-                            if (didPause) {
-                                // The durable pause won before the native
-                                // process cancellation.  The per-Download
-                                // lease prevents a newer attempt from starting
-                                // until this exact E1 is quiesced.
-                                if (
-                                    DownloadExecutionRecovery.quiesceAfterDurableStop(
-                                        context = c,
-                                        downloadId = id.toLong(),
-                                        executionId = expectedExecutionId,
-                                        dbManager = dbManager,
-                                    )
-                                ) {
-                                    notificationUtil.cancelRunningDownloadNotification(id)
-                                } else {
-                                    paused = false
-                                }
+                            val committed = dbManager.downloadDao
+                                .getNullableDownloadById(id.toLong())
+                                ?.let {
+                                    it.executionId == expectedExecutionId &&
+                                        it.status == DownloadRepository.Status.Paused.name
+                                } == true
+                            check(committed) {
+                                "Pause semantic state was not committed for $id"
+                            }
+                            paused = true
+                            check(
+                                DownloadExecutionRecovery.markUserStopSemanticCommitted(
+                                    context = c,
+                                    downloadId = id.toLong(),
+                                    executionId = expectedExecutionId,
+                                    disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                                )
+                            ) {
+                                "Pause semantic carrier was not acknowledged for $id"
+                            }
+                            // The durable pause won before the native
+                            // process cancellation.  The per-Download
+                            // lease prevents a newer attempt from starting
+                            // until this exact E1 is quiesced.  This also
+                            // handles an idempotent repeated Pause: an
+                            // unchanged Paused row is not proof that E1 is
+                            // already quiescent.
+                            if (
+                                DownloadExecutionRecovery.quiesceAfterDurableStop(
+                                    context = c,
+                                    downloadId = id.toLong(),
+                                    executionId = expectedExecutionId,
+                                    dbManager = dbManager,
+                                )
+                            ) {
+                                notificationUtil.cancelRunningDownloadNotification(id)
+                            } else {
+                                paused = false
                             }
                         }
                     }

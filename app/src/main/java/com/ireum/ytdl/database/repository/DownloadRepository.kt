@@ -110,6 +110,7 @@ class DownloadRepository(private val database: DBManager) {
     /** Result of the single authority for reclassifying a running Download. */
     enum class RunningDownloadRequeueResult {
         REQUEUED,
+        USER_STOP_CONVERGED,
         REFUSAL_CONVERGED,
         AUTHORITATIVE_ISSUE_CONVERGED,
         COMMITTED_HISTORY_FINALIZATION_DEBT,
@@ -964,6 +965,8 @@ class DownloadRepository(private val database: DBManager) {
         status: Status,
         expectedExecutionId: String? = null,
     ): Boolean {
+        userStopWriteFailureForTesting?.invoke(id, status)?.let { throw it }
+        if (userStopWriteNoOpForTesting?.invoke(id, status) == true) return false
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         val changed = database.withTransaction {
             val current = downloadDao.getNullableDownloadById(id)
@@ -1321,6 +1324,10 @@ class DownloadRepository(private val database: DBManager) {
         id: Long,
         expectedExecutionId: String? = null,
     ): UserCancellationResult {
+        userStopWriteFailureForTesting?.invoke(id, Status.Cancelled)?.let { throw it }
+        if (userStopWriteNoOpForTesting?.invoke(id, Status.Cancelled) == true) {
+            return UserCancellationResult()
+        }
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         val affectedOperationIds = database.withTransaction {
             val item = downloadDao.getNullableDownloadById(id)
@@ -1337,7 +1344,7 @@ class DownloadRepository(private val database: DBManager) {
             } else {
                 downloadDao.cancelIfExecutionOwned(item.id, item.executionId) == 1
             }
-            if (changed) {
+            if (changed && item.executionId.isNotBlank()) {
                 publications += DownloadCancellationRegistry.Publication(
                     downloadId = item.id,
                     executionId = item.executionId,
@@ -1864,6 +1871,8 @@ class DownloadRepository(private val database: DBManager) {
      */
     internal suspend fun cancelActiveQueuedWithResult(
         recoveryContext: Context? = null,
+        recoveryDisposition: DownloadExecutionRecovery.RecoveryDisposition =
+            DownloadExecutionRecovery.RecoveryDisposition.GENERIC,
     ): BulkCancellationResult {
         val snapshots = downloadDao.getActiveAndQueuedDownloadsList()
             .distinctBy(DownloadItem::id)
@@ -1878,25 +1887,26 @@ class DownloadRepository(private val database: DBManager) {
                     downloadId = snapshot.id,
                     executionId = snapshot.executionId,
                 ) {
-                    if (recoveryContext != null) {
-                        withDownloadWorkerExecutionLock {
-                            downloadDao.getNullableDownloadById(snapshot.id)
+                    withDownloadWorkerExecutionLock {
+                        val currentBeforeCancellation = downloadDao
+                            .getNullableDownloadById(snapshot.id)
+                        if (recoveryContext != null) {
+                            currentBeforeCancellation
                                 ?.takeIf { it.executionId.isNotBlank() }
                                 ?.let { current ->
                                     check(
                                         DownloadExecutionRecovery.recordPending(
                                             context = recoveryContext,
                                             item = current,
+                                            disposition = recoveryDisposition,
                                         )
                                     ) {
                                         "Could not persist cancellation recovery responsibility for ${current.id}"
                                     }
                                 }
                         }
-                    }
-                    withDownloadWorkerExecutionLock {
                         cancelActiveQueuedFailureForTesting?.invoke(snapshot.id)?.let { throw it }
-                        cancelByUserWithPublication(
+                        val result = cancelByUserWithPublication(
                             id = snapshot.id,
                             // Clear Queue owns the current queue intent, not
                             // the stale execution token from the observation
@@ -1904,6 +1914,45 @@ class DownloadRepository(private val database: DBManager) {
                             // that current token.
                             expectedExecutionId = null,
                         )
+                        if (
+                            recoveryContext != null &&
+                                recoveryDisposition ==
+                                    DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL &&
+                                currentBeforeCancellation != null
+                        ) {
+                            val currentAfterCancellation = downloadDao
+                                .getNullableDownloadById(snapshot.id)
+                            check(
+                                currentAfterCancellation != null &&
+                                    currentAfterCancellation.status == Status.Cancelled.name &&
+                                    currentAfterCancellation.executionId ==
+                                        currentBeforeCancellation.executionId
+                            ) {
+                                "Cancellation semantic state was not committed for ${snapshot.id}"
+                            }
+                            if (
+                                result.publication == null &&
+                                    currentAfterCancellation.executionId.isNotBlank()
+                            ) {
+                                // A concurrent/replayed Cancel may have
+                                // already committed the row.  Return an
+                                // execution-scoped publication anyway so the
+                                // caller still consumes the native proof
+                                // obligation instead of treating the empty
+                                // result as completed work.
+                                result.copy(
+                                    publication = DownloadCancellationRegistry.Publication(
+                                        downloadId = snapshot.id,
+                                        executionId = currentAfterCancellation.executionId,
+                                        reason = DownloadCancellationRegistry.Reason.CANCELLED,
+                                    ),
+                                )
+                            } else {
+                                result
+                            }
+                        } else {
+                            result
+                        }
                     }
                 }
                 affectedOperationIds += result.affectedOperationIds
@@ -2063,6 +2112,14 @@ class DownloadRepository(private val database: DBManager) {
         const val PENDING_REMOVAL_TOKEN_PREFIX = "PENDING_USER_REMOVAL:"
         private val pendingRemovalSnapshots = ConcurrentHashMap<String, DownloadRemovalSnapshot>()
         private val livePendingRemovalTokens = ConcurrentHashMap.newKeySet<String>()
+
+        /** Test seam for the first semantic user-stop Room write. */
+        @Volatile
+        internal var userStopWriteFailureForTesting: ((Long, Status) -> Exception?)? = null
+
+        /** Test seam for a semantic user-stop write that commits no transition. */
+        @Volatile
+        internal var userStopWriteNoOpForTesting: ((Long, Status) -> Boolean)? = null
 
         internal fun isLivePendingRemovalToken(token: String): Boolean =
             livePendingRemovalTokens.contains(token)

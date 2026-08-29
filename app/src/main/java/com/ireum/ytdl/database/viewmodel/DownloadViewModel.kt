@@ -315,45 +315,75 @@ class DownloadViewModel private constructor(
         if (item.status == DownloadRepository.Status.Cancelled.name) {
             withContext(Dispatchers.IO) {
                 val expectedExecutionId = dao.getNullableDownloadById(item.id)?.executionId.orEmpty()
-                withDownloadWorkerExecutionSideEffectLease(item.id, expectedExecutionId) {
-                    val affected = withDownloadWorkerExecutionLock {
-                        val current = dao.getNullableDownloadById(item.id)
-                        if (current == null || current.executionId != expectedExecutionId) {
-                            return@withDownloadWorkerExecutionLock null
-                        }
-                        check(
-                            DownloadExecutionRecovery.recordPending(
-                                context = application,
-                                item = current,
+                var recoveryRecorded = false
+                try {
+                    withDownloadWorkerExecutionSideEffectLease(item.id, expectedExecutionId) {
+                        val affected = withDownloadWorkerExecutionLock {
+                            val current = dao.getNullableDownloadById(item.id)
+                            if (current == null || current.executionId != expectedExecutionId) {
+                                return@withDownloadWorkerExecutionLock null
+                            }
+                            check(
+                                DownloadExecutionRecovery.recordPending(
+                                    context = application,
+                                    item = current,
+                                    disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                    phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+                                )
+                            ) {
+                                "Could not persist cancellation recovery responsibility for ${current.id}"
+                            }
+                            recoveryRecorded = true
+                            val operationIds = repository.cancelByUser(
+                                item.id,
+                                expectedExecutionId,
                             )
-                        ) {
-                            "Could not persist cancellation recovery responsibility for ${current.id}"
+                            val committed = dao.getNullableDownloadById(item.id)?.let {
+                                it.status == DownloadRepository.Status.Cancelled.name &&
+                                    it.executionId == expectedExecutionId
+                            } == true
+                            check(committed) {
+                                "Cancellation semantic state was not committed for ${item.id}"
+                            }
+                            operationIds
                         }
-                        val operationIds = repository.cancelByUser(
-                            item.id,
-                            expectedExecutionId,
-                        )
-                        val committed = dao.getNullableDownloadById(item.id)?.let {
-                            it.status == DownloadRepository.Status.Cancelled.name &&
-                                it.executionId == expectedExecutionId
-                        } == true
-                        if (!committed) null else operationIds
+                        if (affected != null) {
+                            val operationIds = affected.toMutableSet()
+                            val quiesced = cancelDownloadOnlyOwned(
+                                id = item.id,
+                                expectedExecutionId = expectedExecutionId,
+                                recoveryRecorded = true,
+                                stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                            )
+                            if (sharedPreferences.getBoolean("incognito", false) && quiesced) {
+                                operationIds += repository.delete(item.id)
+                            }
+                            check(quiesced) {
+                                "Native quiescence remained unresolved for cancelled download ${item.id}"
+                            }
+                            LowQualityRedownloadLedger.refresh(application, operationIds)
+                        }
                     }
-                    if (affected != null) {
-                        val operationIds = affected.toMutableSet()
-                        val quiesced = cancelDownloadOnlyOwned(
-                            id = item.id,
-                            expectedExecutionId = expectedExecutionId,
-                            recoveryRecorded = true,
+                } catch (cancelled: CancellationException) {
+                    if (recoveryRecorded) {
+                        DownloadExecutionRecovery.retainRecoveryResponsibility(
+                            context = application,
+                            downloadId = item.id,
+                            dbManager = dbManager,
+                            failure = cancelled,
                         )
-                        if (sharedPreferences.getBoolean("incognito", false) && quiesced) {
-                            operationIds += repository.delete(item.id)
-                        }
-                        check(quiesced) {
-                            "Native quiescence remained unresolved for cancelled download ${item.id}"
-                        }
-                        LowQualityRedownloadLedger.refresh(application, operationIds)
                     }
+                    throw cancelled
+                } catch (failure: Exception) {
+                    if (recoveryRecorded) {
+                        DownloadExecutionRecovery.retainRecoveryResponsibility(
+                            context = application,
+                            downloadId = item.id,
+                            dbManager = dbManager,
+                            failure = failure,
+                        )
+                    }
+                    throw failure
                 }
             }
             return
@@ -1178,7 +1208,10 @@ class DownloadViewModel private constructor(
 
     private suspend fun cancelActiveQueued(): List<com.ireum.ytdl.work.DownloadCancellationRegistry.Publication> = withContext(Dispatchers.IO) {
         processingItemsJob?.apply { cancel(CancellationException()) }
-        val result = repository.cancelActiveQueuedWithResult(application)
+        val result = repository.cancelActiveQueuedWithResult(
+            recoveryContext = application,
+            recoveryDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+        )
         var firstFailure = result.failure
         result.publications.forEach { publication ->
             try {
@@ -1196,6 +1229,7 @@ class DownloadViewModel private constructor(
                             // overwrite a still-live generation observation
                             // after a worker has started quiescing.
                             recoveryRecorded = publication.executionId.isNotBlank(),
+                            stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
                         )
                     ) {
                         "Native quiescence remained unresolved for cancelled download ${publication.downloadId}"
@@ -1307,53 +1341,82 @@ class DownloadViewModel private constructor(
                         ) {
                             "Could not persist exit recovery responsibility for ${current.id}"
                         }
-                        check(
-                            DownloadWorker.cancelProcessesForExecution(
-                                current.id,
-                                current.executionId,
-                            )
-                        ) {
-                            "Native process did not quiesce while exiting ${current.id}"
-                        }
-                        check(
-                            DownloadExecutionRecovery.markNativeQuiescent(
+                        val userStopPreparation =
+                            DownloadExecutionRecovery.prepareUserStopBeforeNative(
                                 context = application,
+                                dbManager = dbManager,
                                 downloadId = current.id,
                                 executionId = current.executionId,
-                                exactGenerationProof = true,
                             )
+                        check(
+                            userStopPreparation !=
+                                DownloadExecutionRecovery.UserStopPreparation.BLOCKED
                         ) {
-                            "Exit recovery carrier was not acknowledged for ${current.id}"
+                            "User-stop semantic recovery remained unresolved for ${current.id}"
                         }
-
-                        val requeueResult = withDownloadWorkerExecutionLock {
-                            val latest = dao.getNullableDownloadById(current.id)
-                                ?.takeIf {
-                                    it.status in setOf(
-                                        DownloadRepository.Status.Active.name,
-                                        DownloadRepository.Status.PostProcessing.name,
-                                    ) && it.executionId == current.executionId
-                                }
-                            latest?.let {
-                                // One repository primitive owns both the
-                                // modern exact-token and legacy blank-token
-                                // transitions. A committed History replacement
-                                // is finalization debt, never runnable work.
-                                repository.requeueRunningDownload(it.id, it.executionId)
-                            }
-                        } ?: return@withDownloadWorkerExecutionSideEffectLease
-
-                        // Keep completeAndDelete outside the global claim lock.
-                        // It may perform cache/reference cleanup, while this
-                        // exact Download lease still prevents resource reuse.
                         if (
-                            requeueResult ==
-                                DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT
+                            userStopPreparation ==
+                                DownloadExecutionRecovery.UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE
                         ) {
-                            repository.completeAndDelete(
-                                id = current.id,
-                                expectedExecutionId = current.executionId,
-                            )
+                            check(
+                                DownloadExecutionRecovery.quiesceAfterDurableStop(
+                                    context = application,
+                                    downloadId = current.id,
+                                    executionId = current.executionId,
+                                    dbManager = dbManager,
+                                )
+                            ) {
+                                "User-stop native quiescence remained unresolved for ${current.id}"
+                            }
+                        } else {
+                            check(
+                                DownloadWorker.cancelProcessesForExecution(
+                                    current.id,
+                                    current.executionId,
+                                )
+                            ) {
+                                "Native process did not quiesce while exiting ${current.id}"
+                            }
+                            check(
+                                DownloadExecutionRecovery.markNativeQuiescent(
+                                    context = application,
+                                    downloadId = current.id,
+                                    executionId = current.executionId,
+                                    exactGenerationProof = true,
+                                )
+                            ) {
+                                "Exit recovery carrier was not acknowledged for ${current.id}"
+                            }
+
+                            val requeueResult = withDownloadWorkerExecutionLock {
+                                val latest = dao.getNullableDownloadById(current.id)
+                                    ?.takeIf {
+                                        it.status in setOf(
+                                            DownloadRepository.Status.Active.name,
+                                            DownloadRepository.Status.PostProcessing.name,
+                                        ) && it.executionId == current.executionId
+                                    }
+                                latest?.let {
+                                    // One repository primitive owns both the
+                                    // modern exact-token and legacy blank-token
+                                    // transitions. A committed History replacement
+                                    // is finalization debt, never runnable work.
+                                    repository.requeueRunningDownload(it.id, it.executionId)
+                                }
+                            } ?: return@withDownloadWorkerExecutionSideEffectLease
+
+                            // Keep completeAndDelete outside the global claim lock.
+                            // It may perform cache/reference cleanup, while this
+                            // exact Download lease still prevents resource reuse.
+                            if (
+                                requeueResult ==
+                                    DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT
+                            ) {
+                                repository.completeAndDelete(
+                                    id = current.id,
+                                    expectedExecutionId = current.executionId,
+                                )
+                            }
                         }
 
                         // Leave the exact carrier for the next lifecycle pass.
@@ -2608,10 +2671,62 @@ class DownloadViewModel private constructor(
     ) {
         withContext(Dispatchers.IO) {
             val expected = expectedExecutionId.orEmpty()
-            withDownloadWorkerExecutionSideEffectLease(id, expected) {
-                check(cancelDownloadOnlyOwned(id, expected)) {
-                    "Native quiescence remained unresolved for cancelled download $id"
+            var recoveryRecorded = false
+            try {
+                withDownloadWorkerExecutionSideEffectLease(id, expected) {
+                    val committed = withDownloadWorkerExecutionLock {
+                        val current = dao.getNullableDownloadById(id)
+                            ?.takeIf { expected.isBlank() || it.executionId == expected }
+                            ?: return@withDownloadWorkerExecutionLock false
+                        check(
+                            DownloadExecutionRecovery.recordPending(
+                                context = application,
+                                item = current,
+                                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+                            )
+                        ) {
+                            "Could not persist cancellation recovery responsibility for ${current.id}"
+                        }
+                        recoveryRecorded = true
+                        repository.cancelByUser(id, expected)
+                        dao.getNullableDownloadById(id)?.let {
+                            it.executionId == current.executionId &&
+                                it.status == DownloadRepository.Status.Cancelled.name
+                        } == true
+                    }
+                    check(committed) {
+                        "Cancellation semantic state was not committed for $id"
+                    }
+                    check(cancelDownloadOnlyOwned(
+                        id = id,
+                        expectedExecutionId = expected,
+                        recoveryRecorded = true,
+                        stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                    )) {
+                        "Native quiescence remained unresolved for cancelled download $id"
+                    }
                 }
+            } catch (cancelled: CancellationException) {
+                if (recoveryRecorded) {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = application,
+                        downloadId = id,
+                        dbManager = dbManager,
+                        failure = cancelled,
+                    )
+                }
+                throw cancelled
+            } catch (failure: Exception) {
+                if (recoveryRecorded) {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = application,
+                        downloadId = id,
+                        dbManager = dbManager,
+                        failure = failure,
+                    )
+                }
+                throw failure
             }
         }
     }
@@ -2620,6 +2735,7 @@ class DownloadViewModel private constructor(
         id: Long,
         expectedExecutionId: String,
         recoveryRecorded: Boolean = false,
+        stopDisposition: DownloadExecutionRecovery.RecoveryDisposition? = null,
     ): Boolean {
         val current = withDownloadWorkerExecutionLock {
             val current = dao.getNullableDownloadById(id)
@@ -2628,13 +2744,38 @@ class DownloadViewModel private constructor(
             }
         }
         if (current == null) return false
-        if (!recoveryRecorded && !DownloadExecutionRecovery.recordPending(application, current)) {
+        if (
+            !recoveryRecorded &&
+                !DownloadExecutionRecovery.recordPending(
+                    context = application,
+                    item = current,
+                    disposition = stopDisposition
+                        ?: DownloadExecutionRecovery.RecoveryDisposition.GENERIC,
+                )
+        ) {
             DownloadExecutionRecovery.retainRecoveryResponsibility(
                 context = application,
                 downloadId = id,
                 dbManager = dbManager,
                 failure = IllegalStateException(
                     "Could not persist cancellation recovery responsibility for $id",
+                ),
+            )
+            return false
+        }
+        if (stopDisposition != null && !DownloadExecutionRecovery.markUserStopSemanticCommitted(
+                context = application,
+                downloadId = id,
+                executionId = current.executionId,
+                disposition = stopDisposition,
+            )
+        ) {
+            DownloadExecutionRecovery.retainRecoveryResponsibility(
+                context = application,
+                downloadId = id,
+                dbManager = dbManager,
+                failure = IllegalStateException(
+                    "Could not persist user-stop semantic completion for $id",
                 ),
             )
             return false
@@ -2657,34 +2798,70 @@ class DownloadViewModel private constructor(
     suspend fun cancelDownload(id: Long) {
         withContext(Dispatchers.IO) {
             val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
-            withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
-                val affected = withDownloadWorkerExecutionLock {
-                    val current = dao.getNullableDownloadById(id)
-                    if (current == null || current.executionId != expectedExecutionId) {
-                        return@withDownloadWorkerExecutionLock null
+            var recoveryRecorded = false
+            try {
+                withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
+                    val affected = withDownloadWorkerExecutionLock {
+                        val current = dao.getNullableDownloadById(id)
+                        if (current == null || current.executionId != expectedExecutionId) {
+                            return@withDownloadWorkerExecutionLock null
+                        }
+                        check(
+                            DownloadExecutionRecovery.recordPending(
+                                context = application,
+                                item = current,
+                                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+                            )
+                        ) {
+                            "Could not persist cancellation recovery responsibility for ${current.id}"
+                        }
+                        recoveryRecorded = true
+                        val affectedOperationIds = repository.cancelByUser(id, expectedExecutionId)
+                        if (
+                            dao.getNullableDownloadById(id)?.let {
+                                it.executionId == expectedExecutionId &&
+                                    it.status == DownloadRepository.Status.Cancelled.name
+                            } != true
+                        ) {
+                            error("Cancellation semantic state was not committed for $id")
+                        }
+                        affectedOperationIds
                     }
-                    check(
-                        DownloadExecutionRecovery.recordPending(
-                            context = application,
-                            item = current,
-                        )
-                    ) {
-                        "Could not persist cancellation recovery responsibility for ${current.id}"
+                    if (affected != null) {
+                        check(
+                            cancelDownloadOnlyOwned(
+                                id,
+                                expectedExecutionId,
+                                recoveryRecorded = true,
+                                stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                            )
+                        ) {
+                            "Native quiescence remained unresolved for cancelled download $id"
+                        }
+                        LowQualityRedownloadLedger.refresh(application, affected)
                     }
-                    repository.cancelByUser(id, expectedExecutionId)
                 }
-                if (affected != null) {
-                    check(
-                        cancelDownloadOnlyOwned(
-                            id,
-                            expectedExecutionId,
-                            recoveryRecorded = true,
-                        )
-                    ) {
-                        "Native quiescence remained unresolved for cancelled download $id"
-                    }
-                    LowQualityRedownloadLedger.refresh(application, affected)
+            } catch (cancelled: CancellationException) {
+                if (recoveryRecorded) {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = application,
+                        downloadId = id,
+                        dbManager = dbManager,
+                        failure = cancelled,
+                    )
                 }
+                throw cancelled
+            } catch (failure: Exception) {
+                if (recoveryRecorded) {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = application,
+                        downloadId = id,
+                        dbManager = dbManager,
+                        failure = failure,
+                    )
+                }
+                throw failure
             }
         }
     }
@@ -2692,37 +2869,89 @@ class DownloadViewModel private constructor(
     suspend fun beginUndoableCancellation(id: Long): String? {
         return withContext(Dispatchers.IO) {
             val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
-            withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
-                val outcome = withDownloadWorkerExecutionLock {
-                    val current = dao.getNullableDownloadById(id)
-                    if (current == null || current.executionId != expectedExecutionId) {
-                        return@withDownloadWorkerExecutionLock null
+            var recoveryRecorded = false
+            try {
+                withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
+                    val outcome = withDownloadWorkerExecutionLock {
+                        val current = dao.getNullableDownloadById(id)
+                        if (current == null || current.executionId != expectedExecutionId) {
+                            return@withDownloadWorkerExecutionLock null
+                        }
+                        if (current.executionId.isNotBlank()) {
+                            check(
+                                DownloadExecutionRecovery.recordPending(
+                                    context = application,
+                                    item = current,
+                                    disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                    phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+                                )
+                            ) {
+                                "Could not persist cancellation recovery responsibility for ${current.id}"
+                            }
+                            recoveryRecorded = true
+                        }
+                        repository.beginUndoableCancellation(id, expectedExecutionId)
                     }
-                    check(
-                        DownloadExecutionRecovery.recordPending(
-                            context = application,
-                            item = current,
+                    if (outcome == null || !outcome.changed) {
+                        if (recoveryRecorded) {
+                            val failure = IllegalStateException(
+                                "Cancellation semantic state was not committed for $id",
+                            )
+                            DownloadExecutionRecovery.retainRecoveryResponsibility(
+                                context = application,
+                                downloadId = id,
+                                dbManager = dbManager,
+                                failure = failure,
+                            )
+                            throw failure
+                        }
+                        null
+                    } else if (!recoveryRecorded) {
+                        // Queued rows without an execution owner have no
+                        // exact native authority to recover.  Keep the
+                        // existing undoable cancellation protocol, but do
+                        // not manufacture a blank-execution recovery carrier
+                        // that would block the later Undo publication.
+                        LowQualityRedownloadLedger.refresh(
+                            application,
+                            outcome.affectedOperationIds,
                         )
-                    ) {
-                        "Could not persist cancellation recovery responsibility for ${current.id}"
+                        outcome.pendingToken
+                    } else {
+                        check(
+                            cancelDownloadOnlyOwned(
+                                id,
+                                expectedExecutionId,
+                                recoveryRecorded = true,
+                                stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                            )
+                        ) {
+                            "Native quiescence remained unresolved for cancelled download $id"
+                        }
+                        LowQualityRedownloadLedger.refresh(application, outcome.affectedOperationIds)
+                        outcome.pendingToken
                     }
-                    repository.beginUndoableCancellation(id, expectedExecutionId)
                 }
-                if (outcome == null || !outcome.changed) {
-                    null
-                } else {
-                    check(
-                        cancelDownloadOnlyOwned(
-                            id,
-                            expectedExecutionId,
-                            recoveryRecorded = true,
-                        )
-                    ) {
-                        "Native quiescence remained unresolved for cancelled download $id"
-                    }
-                    LowQualityRedownloadLedger.refresh(application, outcome.affectedOperationIds)
-                    outcome.pendingToken
+            } catch (cancelled: CancellationException) {
+                if (recoveryRecorded) {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = application,
+                        downloadId = id,
+                        dbManager = dbManager,
+                        failure = cancelled,
+                    )
                 }
+                throw cancelled
+            } catch (failure: Exception) {
+                if (recoveryRecorded) {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = application,
+                        downloadId = id,
+                        dbManager = dbManager,
+                        failure = failure,
+                    )
+                }
+                throw failure
             }
         }
     }
@@ -2843,37 +3072,69 @@ class DownloadViewModel private constructor(
     suspend fun pauseDownload(id: Long)  {
         withContext(Dispatchers.IO) {
             val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
-            withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
-                val changed = withDownloadWorkerExecutionLock {
-                    val current = dao.getNullableDownloadById(id)
-                    if (current == null || current.executionId != expectedExecutionId) {
-                        return@withDownloadWorkerExecutionLock false
-                    }
-                    check(
-                        DownloadExecutionRecovery.recordPending(
-                            context = application,
-                            item = current,
+            var recoveryRecorded = false
+            try {
+                withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
+                    val committed = withDownloadWorkerExecutionLock {
+                        val current = dao.getNullableDownloadById(id)
+                        if (current == null || current.executionId != expectedExecutionId) {
+                            return@withDownloadWorkerExecutionLock false
+                        }
+                        check(
+                            DownloadExecutionRecovery.recordPending(
+                                context = application,
+                                item = current,
+                                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                                phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+                            )
+                        ) {
+                            "Could not persist pause recovery responsibility for ${current.id}"
+                        }
+                        recoveryRecorded = true
+                        updateToStatus(
+                            id,
+                            DownloadRepository.Status.Paused,
+                            expectedExecutionId,
                         )
-                    ) {
-                        "Could not persist pause recovery responsibility for ${current.id}"
+                        dao.getNullableDownloadById(id)?.let {
+                            it.executionId == expectedExecutionId &&
+                                it.status == DownloadRepository.Status.Paused.name
+                        } == true
                     }
-                    updateToStatus(
-                        id,
-                        DownloadRepository.Status.Paused,
-                        expectedExecutionId,
-                    )
-                }
-                if (changed) {
+                    check(committed) {
+                        "Pause semantic state was not committed for $id"
+                    }
                     check(
                         cancelDownloadOnlyOwned(
                             id,
                             expectedExecutionId,
                             recoveryRecorded = true,
+                            stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
                         )
                     ) {
                         "Native quiescence remained unresolved for paused download $id"
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                if (recoveryRecorded) {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = application,
+                        downloadId = id,
+                        dbManager = dbManager,
+                        failure = cancelled,
+                    )
+                }
+                throw cancelled
+            } catch (failure: Exception) {
+                if (recoveryRecorded) {
+                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                        context = application,
+                        downloadId = id,
+                        dbManager = dbManager,
+                        failure = failure,
+                    )
+                }
+                throw failure
             }
         }
     }
@@ -2892,7 +3153,7 @@ class DownloadViewModel private constructor(
                 activeDownloadsList.forEach { item ->
                     try {
                         withDownloadWorkerExecutionSideEffectLease(item.id, item.executionId) {
-                            val changed = withDownloadWorkerExecutionLock {
+                            val committed = withDownloadWorkerExecutionLock {
                                 val current = dao.getNullableDownloadById(item.id)
                                 if (current?.executionId != item.executionId) {
                                     return@withDownloadWorkerExecutionLock false
@@ -2901,6 +3162,8 @@ class DownloadViewModel private constructor(
                                     DownloadExecutionRecovery.recordPending(
                                         context = application,
                                         item = current,
+                                        disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                                        phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
                                     )
                                 ) {
                                     "Could not persist pause recovery responsibility for ${current.id}"
@@ -2910,17 +3173,23 @@ class DownloadViewModel private constructor(
                                     DownloadRepository.Status.Paused,
                                     item.executionId,
                                 )
+                                dao.getNullableDownloadById(item.id)?.let {
+                                    it.executionId == item.executionId &&
+                                        it.status == DownloadRepository.Status.Paused.name
+                                } == true
                             }
-                            if (changed) {
-                                check(
-                                    cancelDownloadOnlyOwned(
-                                        item.id,
-                                        item.executionId,
-                                        recoveryRecorded = true,
-                                    )
-                                ) {
-                                    "Native quiescence remained unresolved for paused download ${item.id}"
-                                }
+                            check(committed) {
+                                "Pause semantic state was not committed for ${item.id}"
+                            }
+                            check(
+                                cancelDownloadOnlyOwned(
+                                    item.id,
+                                    item.executionId,
+                                    recoveryRecorded = true,
+                                    stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                                )
+                            ) {
+                                "Native quiescence remained unresolved for paused download ${item.id}"
                             }
                         }
                     } catch (cancelled: CancellationException) {

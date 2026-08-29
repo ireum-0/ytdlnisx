@@ -57,8 +57,13 @@ class DownloadWorkerCleanupProductionWiringTest {
 
     @Before
     fun createDb() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
+        DownloadExecutionRecovery.clearForTesting(context)
+        DownloadWorkerExecutionOwners.clearForTesting()
+        DownloadWorkerProcessOwners.clearForTesting()
         db = Room.inMemoryDatabaseBuilder(
-            ApplicationProvider.getApplicationContext(),
+            context,
             DBManager::class.java,
         ).addTypeConverter(Converters()).allowMainThreadQueries().build()
     }
@@ -66,6 +71,9 @@ class DownloadWorkerCleanupProductionWiringTest {
     @After
     fun closeDb() {
         DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
+        DownloadExecutionRecovery.clearForTesting(ApplicationProvider.getApplicationContext())
+        DownloadWorkerExecutionOwners.clearForTesting()
+        DownloadWorkerProcessOwners.clearForTesting()
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         DownloadExecutionRecovery.commitOverride = null

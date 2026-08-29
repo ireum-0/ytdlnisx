@@ -74,6 +74,8 @@ class FindingAProductionWiringTest {
         PauseDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
         PauseDownloadNotificationReceiver.finishObserverForTesting = null
         PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
+        DownloadRepository.userStopWriteFailureForTesting = null
+        DownloadRepository.userStopWriteNoOpForTesting = null
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
             DBManager::class.java,
@@ -93,6 +95,8 @@ class FindingAProductionWiringTest {
         PauseDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
         PauseDownloadNotificationReceiver.finishObserverForTesting = null
         PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
+        DownloadRepository.userStopWriteFailureForTesting = null
+        DownloadRepository.userStopWriteNoOpForTesting = null
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
@@ -1669,6 +1673,463 @@ class FindingAProductionWiringTest {
     }
 
     @Test
+    fun notificationCancelSemanticWriteExceptionRetainsUserDispositionUntilRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-cancel-write-exception-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        DownloadRepository.userStopWriteFailureForTesting = { targetId, status ->
+            if (targetId == downloadId && status == DownloadRepository.Status.Cancelled) {
+                IllegalStateException("injected Cancelled write failure")
+            } else {
+                null
+            }
+        }
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = CancelDownloadNotificationReceiver(db),
+                intent = receiverIntent(
+                    action = "cancel-write-exception",
+                    downloadId = downloadId,
+                    executionId = executionId,
+                ),
+            ) {
+                db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                    DownloadRepository.Status.Active.name &&
+                    DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId) ==
+                        DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL &&
+                    DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId) ==
+                        DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING
+            }
+
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+        }
+    }
+
+    @Test
+    fun notificationCancelSemanticWriteNoOpRetainsUserDispositionUntilRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-cancel-write-noop-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        DownloadRepository.userStopWriteNoOpForTesting = { targetId, status ->
+            targetId == downloadId && status == DownloadRepository.Status.Cancelled
+        }
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = CancelDownloadNotificationReceiver(db),
+                intent = receiverIntent(
+                    action = "cancel-write-noop",
+                    downloadId = downloadId,
+                    executionId = executionId,
+                ),
+            ) {
+                db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                    DownloadRepository.Status.Active.name &&
+                    DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId) ==
+                        DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL &&
+                    DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId) ==
+                        DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING
+            }
+
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadRepository.userStopWriteNoOpForTesting = null
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadRepository.userStopWriteNoOpForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+        }
+    }
+
+    @Test
+    fun viewModelCancelSemanticWriteExceptionInstallsSameProcessRecoveryOwner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val executionId = "viewmodel-cancel-write-exception-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        DownloadRepository.userStopWriteFailureForTesting = { targetId, status ->
+            if (targetId == downloadId && status == DownloadRepository.Status.Cancelled) {
+                IllegalStateException("injected ViewModel Cancelled write failure")
+            } else {
+                null
+            }
+        }
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            assertTrue(runCatching { viewModel.cancelDownload(downloadId) }.isFailure)
+            awaitRecoveryJobActive(downloadId)
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId),
+            )
+            assertEquals(
+                DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+                DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId),
+            )
+
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.reconcile(context, db)
+            assertEquals(
+                DownloadRepository.Status.Cancelled.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+        }
+    }
+
+    @Test
+    fun notificationPauseSemanticWriteExceptionWithholdsResumeUntilRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-pause-write-exception-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val resumePublicationCount = AtomicInteger(0)
+        PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = {
+            resumePublicationCount.incrementAndGet()
+        }
+        DownloadRepository.userStopWriteFailureForTesting = { targetId, status ->
+            if (targetId == downloadId && status == DownloadRepository.Status.Paused) {
+                IllegalStateException("injected Paused write failure")
+            } else {
+                null
+            }
+        }
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = PauseDownloadNotificationReceiver(db),
+                intent = receiverIntent(
+                    action = "pause-write-exception",
+                    downloadId = downloadId,
+                    executionId = executionId,
+                ),
+            ) {
+                db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                    DownloadRepository.Status.Active.name &&
+                    DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId) ==
+                        DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE &&
+                    DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId) ==
+                        DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING
+            }
+
+            assertEquals(0, resumePublicationCount.get())
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            assertEquals(0, resumePublicationCount.get())
+        } finally {
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
+        }
+    }
+
+    @Test
+    fun notificationPauseSemanticWriteNoOpWithholdsResumeUntilRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "receiver-pause-write-noop-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val resumePublicationCount = AtomicInteger(0)
+        PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = {
+            resumePublicationCount.incrementAndGet()
+        }
+        DownloadRepository.userStopWriteNoOpForTesting = { targetId, status ->
+            targetId == downloadId && status == DownloadRepository.Status.Paused
+        }
+
+        try {
+            sendReceiverAndAwait(
+                context = context,
+                receiver = PauseDownloadNotificationReceiver(db),
+                intent = receiverIntent(
+                    action = "pause-write-noop",
+                    downloadId = downloadId,
+                    executionId = executionId,
+                ),
+            ) {
+                db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                    DownloadRepository.Status.Active.name &&
+                    DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId) ==
+                        DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE &&
+                    DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId) ==
+                        DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING
+            }
+
+            assertEquals(0, resumePublicationCount.get())
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadRepository.userStopWriteNoOpForTesting = null
+            DownloadExecutionRecovery.reconcile(context, db)
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadRepository.userStopWriteNoOpForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
+        }
+    }
+
+    @Test
+    fun viewModelPauseSemanticWriteExceptionInstallsSameProcessRecoveryOwner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val executionId = "viewmodel-pause-write-exception-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        DownloadRepository.userStopWriteFailureForTesting = { targetId, status ->
+            if (targetId == downloadId && status == DownloadRepository.Status.Paused) {
+                IllegalStateException("injected ViewModel Paused write failure")
+            } else {
+                null
+            }
+        }
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            assertTrue(runCatching { viewModel.pauseDownload(downloadId) }.isFailure)
+            awaitRecoveryJobActive(downloadId)
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId),
+            )
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.reconcile(context, db)
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+        }
+    }
+
+    @Test
+    fun incognitoCancelSemanticWriteFailureKeepsPrimaryRecoveryCarrier() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val preferences = androidx.preference.PreferenceManager
+            .getDefaultSharedPreferences(context)
+        val previousIncognito = preferences.getBoolean("incognito", false)
+        val executionId = "incognito-write-failure-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        preferences.edit().putBoolean("incognito", true).commit()
+        DownloadRepository.userStopWriteFailureForTesting = { targetId, status ->
+            if (targetId == downloadId && status == DownloadRepository.Status.Cancelled) {
+                IllegalStateException("injected incognito Cancelled write failure")
+            } else {
+                null
+            }
+        }
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertTrue(
+                runCatching {
+                    viewModel.updateDownload(item.copy(status = DownloadRepository.Status.Cancelled.name))
+                }.isFailure
+            )
+            awaitRecoveryJobActive(downloadId)
+            assertNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId),
+            )
+        } finally {
+            preferences.edit().putBoolean("incognito", previousIncognito).commit()
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+        }
+    }
+
+    @Test
+    fun pauseAllSemanticWriteFailureLeavesSiblingIndependent() = runBlocking(Dispatchers.Main) {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val failingId = db.downloadDao.insertRaw(
+            download().copy(executionId = "pause-all-write-failure-E1")
+        )
+        val siblingId = db.downloadDao.insertRaw(
+            download().copy(executionId = "pause-all-write-sibling-E1")
+        )
+        DownloadRepository.userStopWriteFailureForTesting = { targetId, status ->
+            if (targetId == failingId && status == DownloadRepository.Status.Paused) {
+                IllegalStateException("injected Pause All write failure")
+            } else {
+                null
+            }
+        }
+        val viewModel = DownloadViewModel(context, db, true)
+
+        try {
+            viewModel.pauseAllDownloads()
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(failingId)?.status,
+            )
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(siblingId)?.status,
+            )
+            assertEquals(
+                DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                DownloadExecutionRecovery.pendingDispositionForExecution(context, failingId),
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(siblingId))
+        } finally {
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(failingId)
+        }
+    }
+
+    @Test
+    fun explicitCancelSupersedesPauseWithoutAllowingPauseDowngrade() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(executionId = "disposition-replacement-E1")
+        )
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+
+        assertTrue(
+            DownloadExecutionRecovery.recordPending(
+                context = context,
+                item = item,
+                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+            )
+        )
+        assertTrue(
+            DownloadExecutionRecovery.recordPending(
+                context = context,
+                item = item,
+                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+            )
+        )
+        assertFalse(
+            DownloadExecutionRecovery.recordPending(
+                context = context,
+                item = item,
+                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+            )
+        )
+        assertEquals(
+            DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId),
+        )
+        assertEquals(
+            DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+            DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId),
+        )
+    }
+
+    @Test
+    fun legacyGenericRecoveryCarrierRetainsGenericRequeueSemantics() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "legacy-generic-carrier-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        context.getSharedPreferences("download-execution-recovery", android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putString(downloadId.toString(), executionId)
+            .putBoolean("$downloadId:native-quiescence", false)
+            .commit()
+
+        DownloadExecutionRecovery.reconcile(context, db)
+
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            db.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+    }
+
+    @Test
+    fun provenUserStopCarrierForDeletedRowUsesOperationSpecificClear() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "deleted-user-stop-carrier-E1"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                executionId = executionId,
+                status = DownloadRepository.Status.Cancelled.name,
+            )
+        )
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+
+        assertTrue(
+            DownloadExecutionRecovery.recordPending(
+                context = context,
+                item = item,
+                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+            )
+        )
+        assertTrue(
+            DownloadExecutionRecovery.markUserStopSemanticCommitted(
+                context = context,
+                downloadId = downloadId,
+                executionId = executionId,
+                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            )
+        )
+        assertTrue(
+            DownloadExecutionRecovery.markNativeQuiescent(
+                context = context,
+                downloadId = downloadId,
+                executionId = executionId,
+                exactGenerationProof = true,
+            )
+        )
+        db.downloadDao.delete(downloadId)
+
+        DownloadExecutionRecovery.reconcile(context, db)
+
+        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+    }
+
+    @Test
     fun notificationPauseTruePublishesResumeOnlyAfterNativeQuiescence() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val executionId = "receiver-pause-true-E1"
@@ -1989,7 +2450,7 @@ class FindingAProductionWiringTest {
     }
 
     @Test
-    fun viewModelPauseAllIsolatesOneQuiescenceFailureFromHealthySibling() = runBlocking {
+    fun viewModelPauseAllIsolatesOneQuiescenceFailureFromHealthySibling() = runBlocking(Dispatchers.Main) {
         val context = ApplicationProvider.getApplicationContext<android.app.Application>()
         val failingId = db.downloadDao.insertRaw(
             download().copy(executionId = "pause-all-fail-E1")
@@ -2062,6 +2523,81 @@ class FindingAProductionWiringTest {
             DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
             DownloadWorkerExecutionOwners.release(downloadId, currentExecutionId)
             marker.delete()
+        }
+    }
+
+    @Test
+    fun staleUserStopCarrierCannotMutateCurrentExecution() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val staleExecutionId = "user-carrier-stale-E1"
+        val currentExecutionId = "user-carrier-current-E2"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                executionId = staleExecutionId,
+                status = DownloadRepository.Status.Cancelled.name,
+            )
+        )
+        val staleItem = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        assertTrue(
+            DownloadExecutionRecovery.recordPending(
+                context = context,
+                item = staleItem,
+                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+            )
+        )
+        assertTrue(
+            DownloadExecutionRecovery.markUserStopSemanticCommitted(
+                context = context,
+                downloadId = downloadId,
+                executionId = staleExecutionId,
+                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            )
+        )
+        db.downloadDao.updateRaw(
+            staleItem.copy(
+                executionId = currentExecutionId,
+                status = DownloadRepository.Status.Active.name,
+            )
+        )
+        DownloadExecutionRecovery.commitOverride = { operation, _ ->
+            operation != DownloadExecutionRecovery.JournalCommitOperation.CLEAR
+        }
+
+        try {
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                currentExecutionId,
+                db.downloadDao.getNullableDownloadById(downloadId)?.executionId,
+            )
+            assertEquals(
+                staleExecutionId,
+                context.getSharedPreferences(
+                    "download-execution-recovery",
+                    android.content.Context.MODE_PRIVATE,
+                ).getString(downloadId.toString(), null),
+            )
+            assertEquals(
+                DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId),
+            )
+
+            DownloadExecutionRecovery.commitOverride = null
+            DownloadExecutionRecovery.reconcile(context, db)
+
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        } finally {
+            DownloadExecutionRecovery.commitOverride = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
         }
     }
 

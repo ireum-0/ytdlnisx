@@ -39,6 +39,37 @@ internal object DownloadExecutionRecovery {
     private const val ISSUE_STAGE_SUFFIX = ":issue-stage"
     private const val TERMINAL_ISSUE_CODE_SUFFIX = ":terminal-issue-code"
     private const val TERMINAL_ISSUE_STAGE_SUFFIX = ":terminal-issue-stage"
+    private const val DISPOSITION_SUFFIX = ":disposition"
+    private const val PHASE_SUFFIX = ":phase"
+
+    /**
+     * The reason a recovery carrier owns an exact Download execution.  The
+     * GENERIC value is also the compatibility interpretation for journals
+     * written before operation identity was persisted.
+     */
+    internal enum class RecoveryDisposition {
+        GENERIC,
+        USER_CANCEL,
+        USER_PAUSE,
+    }
+
+    /**
+     * User-stop carriers record the semantic Room decision separately from
+     * the native quiescence obligation.  The distinction is durable because
+     * a mutable Download row cannot tell whether an earlier stop write ever
+     * committed after the process died.
+     */
+    internal enum class RecoveryPhase {
+        SEMANTIC_STOP_PENDING,
+        NATIVE_QUIESCENCE_PENDING,
+        NATIVE_QUIESCENT,
+    }
+
+    internal enum class UserStopPreparation {
+        NOT_PENDING,
+        READY_FOR_NATIVE_QUIESCENCE,
+        BLOCKED,
+    }
 
     internal enum class JournalCommitOperation {
         RECORD,
@@ -96,10 +127,16 @@ internal object DownloadExecutionRecovery {
         val nativeQuiescencePending: Boolean,
         val nativeGenerationObservation: YtdlpNativeProcessBarrier.GenerationObservation,
         val authoritativeIssue: DownloadIssue?,
+        val disposition: RecoveryDisposition,
+        val phase: RecoveryPhase,
     ) {
         val nativeGenerationToken: String?
             get() = (nativeGenerationObservation as?
                 YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION)?.token
+
+        val isUserStop: Boolean
+            get() = disposition == RecoveryDisposition.USER_CANCEL ||
+                disposition == RecoveryDisposition.USER_PAUSE
     }
 
     private fun commit(
@@ -119,8 +156,33 @@ internal object DownloadExecutionRecovery {
         context: Context,
         item: DownloadItem,
         authoritativeIssue: DownloadIssue? = null,
+        disposition: RecoveryDisposition = RecoveryDisposition.GENERIC,
+        phase: RecoveryPhase? = null,
     ): Boolean {
         YtdlpNativeProcessBarrier.configure(context)
+        val requestedPhase = phase ?: if (
+            disposition == RecoveryDisposition.GENERIC
+        ) {
+            RecoveryPhase.NATIVE_QUIESCENCE_PENDING
+        } else {
+            RecoveryPhase.SEMANTIC_STOP_PENDING
+        }
+        if (
+            disposition == RecoveryDisposition.GENERIC &&
+                requestedPhase != RecoveryPhase.NATIVE_QUIESCENCE_PENDING
+        ) {
+            return false
+        }
+        if (
+            disposition != RecoveryDisposition.GENERIC &&
+                phase != null &&
+                phase != RecoveryPhase.SEMANTIC_STOP_PENDING
+        ) {
+            // User operations enter through the semantic phase only.  The
+            // native-pending and proven phases can be reached only by their
+            // proof-producing transition methods below.
+            return false
+        }
         val refusal = authoritativeIssue?.let(HistoryReplacementRefusal::from)
         val terminalIssue = authoritativeIssue?.takeUnless { refusal != null }
         if (
@@ -135,6 +197,18 @@ internal object DownloadExecutionRecovery {
         val id = item.id.toString()
         val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val existingExecutionId = preferences.getString(id, null)
+        if (
+            existingExecutionId == null &&
+                (
+                    preferences.contains(id + DISPOSITION_SUFFIX) ||
+                        preferences.contains(id + PHASE_SUFFIX)
+                    )
+        ) {
+            // Do not overwrite a partially written operation-aware carrier.
+            // It is safer to leave the malformed durable authority for the
+            // recovery owner to report than to reinterpret it as a new stop.
+            return false
+        }
         if (existingExecutionId != null && existingExecutionId != item.executionId) {
             // This single-entry carrier cannot represent two execution
             // identities.  Refuse an E2 overwrite while stale E1 recovery is
@@ -143,30 +217,137 @@ internal object DownloadExecutionRecovery {
             // old proof obligation.
             return false
         }
+        val existingDisposition = if (existingExecutionId == null) {
+            null
+        } else {
+            val raw = preferences.getString(id + DISPOSITION_SUFFIX, null)
+            val rawPhase = preferences.getString(id + PHASE_SUFFIX, null)
+            if ((raw == null) != (rawPhase == null)) return false
+            raw?.let { runCatching { RecoveryDisposition.valueOf(it) }.getOrNull() }
+                ?: if (raw == null) RecoveryDisposition.GENERIC else return false
+        }
+        val existingPhase = if (existingExecutionId == null) {
+            null
+        } else {
+            val raw = preferences.getString(id + PHASE_SUFFIX, null)
+            raw?.let { runCatching { RecoveryPhase.valueOf(it) }.getOrNull() }
+                ?: when {
+                    raw == null && existingDisposition == RecoveryDisposition.GENERIC ->
+                        // Journals from the pre-disposition schema were
+                        // written after the worker had already decided to
+                        // stop. Preserve their established generic behavior.
+                        RecoveryPhase.NATIVE_QUIESCENCE_PENDING
+                    raw == null -> return false
+                    else -> return false
+                }
+        }
+        if (
+            existingDisposition == RecoveryDisposition.USER_CANCEL &&
+                disposition == RecoveryDisposition.USER_PAUSE
+        ) {
+            // A replayed/weaker Pause may never downgrade an authoritative
+            // Cancel for the same exact execution.
+            return false
+        }
+        val effectiveDisposition = when {
+            existingDisposition == RecoveryDisposition.USER_CANCEL ->
+                RecoveryDisposition.USER_CANCEL
+            disposition == RecoveryDisposition.USER_CANCEL ->
+                RecoveryDisposition.USER_CANCEL
+            existingDisposition == RecoveryDisposition.USER_PAUSE ->
+                RecoveryDisposition.USER_PAUSE
+            disposition == RecoveryDisposition.USER_PAUSE ->
+                RecoveryDisposition.USER_PAUSE
+            else -> RecoveryDisposition.GENERIC
+        }
+        val effectivePhase = when {
+            // An explicit Cancel superseding Pause must revisit the semantic
+            // Cancel write before native termination, even when Pause had
+            // already reached its native-pending phase.
+            disposition == RecoveryDisposition.USER_CANCEL &&
+                existingDisposition == RecoveryDisposition.USER_PAUSE -> requestedPhase
+            disposition != RecoveryDisposition.GENERIC &&
+                existingDisposition == RecoveryDisposition.GENERIC -> requestedPhase
+            disposition == RecoveryDisposition.GENERIC &&
+                existingDisposition != null &&
+                existingDisposition != RecoveryDisposition.GENERIC ->
+                requireNotNull(existingPhase)
+            existingPhase == RecoveryPhase.NATIVE_QUIESCENT ->
+                RecoveryPhase.NATIVE_QUIESCENT
+            existingPhase == RecoveryPhase.NATIVE_QUIESCENCE_PENDING ->
+                RecoveryPhase.NATIVE_QUIESCENCE_PENDING
+            else -> requestedPhase
+        }
         val nativeGenerationObservation = YtdlpNativeProcessBarrier.observeDownloadExecution(
             downloadId = item.id,
             executionId = item.executionId,
         )
+        val existingGenerationKind = preferences
+            .getString(id + NATIVE_GENERATION_KIND_SUFFIX, null)
+            ?.uppercase()
+        val existingGenerationToken = preferences.getString(
+            id + NATIVE_GENERATION_SUFFIX,
+            null,
+        )
+        val durableNativeGenerationObservation = when {
+            existingGenerationKind == "EXACT_GENERATION" &&
+                !existingGenerationToken.isNullOrBlank() -> {
+                if (
+                    nativeGenerationObservation is
+                        YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION &&
+                        nativeGenerationObservation.token != existingGenerationToken
+                ) {
+                    // Never replace an exact E1 generation with a newer
+                    // same-execution marker. The old proof obligation must be
+                    // recovered independently.
+                    return false
+                }
+                YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION(
+                    existingGenerationToken,
+                )
+            }
+            existingGenerationKind == "LEGACY_IDENTITY" &&
+                !existingGenerationToken.isNullOrBlank() ->
+                YtdlpNativeProcessBarrier.GenerationObservation.LEGACY_IDENTITY(
+                    existingGenerationToken,
+                )
+            existingGenerationKind == "UNKNOWN" &&
+                nativeGenerationObservation is
+                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT ->
+                YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN
+            else -> nativeGenerationObservation
+        }
+        val nativeQuiescencePending = if (
+            effectivePhase == RecoveryPhase.NATIVE_QUIESCENT &&
+                nativeGenerationObservation is
+                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
+        ) {
+            false
+        } else {
+            durableNativeGenerationObservation !is
+                YtdlpNativeProcessBarrier.GenerationObservation.ABSENT
+        }
         val editor = preferences.edit()
             .putString(id, item.executionId)
             .putBoolean(
                 id + NATIVE_QUIESCENCE_SUFFIX,
-                nativeGenerationObservation !is
-                    YtdlpNativeProcessBarrier.GenerationObservation.ABSENT,
+                nativeQuiescencePending,
             )
+            .putString(id + DISPOSITION_SUFFIX, effectiveDisposition.name)
+            .putString(id + PHASE_SUFFIX, effectivePhase.name)
         editor.putString(
             id + NATIVE_GENERATION_KIND_SUFFIX,
-            nativeGenerationObservation.kindName(),
+            durableNativeGenerationObservation.kindName(),
         )
-        when (nativeGenerationObservation) {
+        when (durableNativeGenerationObservation) {
             YtdlpNativeProcessBarrier.GenerationObservation.ABSENT ->
                 editor.remove(id + NATIVE_GENERATION_SUFFIX)
             is YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION ->
-                editor.putString(id + NATIVE_GENERATION_SUFFIX, nativeGenerationObservation.token)
+                editor.putString(id + NATIVE_GENERATION_SUFFIX, durableNativeGenerationObservation.token)
             is YtdlpNativeProcessBarrier.GenerationObservation.LEGACY_IDENTITY ->
                 editor.putString(
                     id + NATIVE_GENERATION_SUFFIX,
-                    nativeGenerationObservation.processId,
+                    durableNativeGenerationObservation.processId,
                 )
             YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN ->
                 editor.remove(id + NATIVE_GENERATION_SUFFIX)
@@ -254,7 +435,251 @@ internal object DownloadExecutionRecovery {
             JournalCommitOperation.MARK_NATIVE_QUIESCENT,
             preferences.edit()
                 .putBoolean(id + NATIVE_QUIESCENCE_SUFFIX, false)
+                .putString(id + PHASE_SUFFIX, RecoveryPhase.NATIVE_QUIESCENT.name)
         )
+    }
+
+    /**
+     * Advances an exact user-stop carrier only after the caller has verified
+     * the matching durable Cancelled/Paused Room state.  This is deliberately
+     * separate from markNativeQuiescent: a Room status write is not native
+     * quiescence proof, and native cleanup may not begin while this phase is
+     * still pending.
+     */
+    internal fun markUserStopSemanticCommitted(
+        context: Context,
+        downloadId: Long,
+        executionId: String,
+        disposition: RecoveryDisposition,
+    ): Boolean {
+        if (
+            disposition != RecoveryDisposition.USER_CANCEL &&
+                disposition != RecoveryDisposition.USER_PAUSE
+        ) {
+            return false
+        }
+        val id = downloadId.toString()
+        val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (preferences.getString(id, null) != executionId) return false
+        val recordedDisposition = preferences
+            .getString(id + DISPOSITION_SUFFIX, null)
+            ?.let { runCatching { RecoveryDisposition.valueOf(it) }.getOrNull() }
+            ?: return false
+        if (recordedDisposition != disposition) return false
+        val rawPhase = preferences.getString(id + PHASE_SUFFIX, null)
+            ?: return false
+        val recordedPhase = runCatching { RecoveryPhase.valueOf(rawPhase) }.getOrNull()
+            ?: return false
+        if (
+            recordedPhase == RecoveryPhase.NATIVE_QUIESCENCE_PENDING ||
+                recordedPhase == RecoveryPhase.NATIVE_QUIESCENT
+        ) return true
+        if (recordedPhase != RecoveryPhase.SEMANTIC_STOP_PENDING) return false
+        return commit(
+            JournalCommitOperation.RECORD,
+            preferences.edit().putString(
+                id + PHASE_SUFFIX,
+                RecoveryPhase.NATIVE_QUIESCENCE_PENDING.name,
+            ),
+        )
+    }
+
+    /**
+     * Reconciles the semantic half of a user stop while the exact
+     * per-Download side-effect lease is held.  No native/process operation is
+     * attempted until the exact Cancelled/Paused CAS is observable and the
+     * phase transition itself is durable.
+     */
+    internal suspend fun prepareUserStopBeforeNative(
+        context: Context,
+        dbManager: DBManager,
+        downloadId: Long,
+        executionId: String,
+    ): UserStopPreparation {
+        val pending = readPending(context, downloadId) ?: return UserStopPreparation.NOT_PENDING
+        if (!pending.isUserStop) return UserStopPreparation.NOT_PENDING
+        if (pending.executionId != executionId) {
+            retainRecoveryResponsibility(
+                context = context,
+                downloadId = downloadId,
+                dbManager = dbManager,
+                failure = IllegalStateException(
+                    "User-stop recovery execution mismatch for $downloadId: " +
+                        "carrier=${pending.executionId}, caller=$executionId",
+                ),
+            )
+            return UserStopPreparation.BLOCKED
+        }
+
+        return try {
+            val desiredStatus = if (
+                pending.disposition == RecoveryDisposition.USER_CANCEL
+            ) {
+                DownloadRepository.Status.Cancelled
+            } else {
+                DownloadRepository.Status.Paused
+            }
+            val current = withDownloadWorkerExecutionLock {
+                dbManager.downloadDao.getNullableDownloadById(downloadId)
+            }
+            if (current == null || current.executionId != executionId) {
+                retainRecoveryResponsibility(
+                    context = context,
+                    downloadId = downloadId,
+                    dbManager = dbManager,
+                    failure = IllegalStateException(
+                        "User-stop recovery lost exact execution $downloadId/$executionId",
+                    ),
+                )
+                return UserStopPreparation.BLOCKED
+            }
+
+            val semanticCommitted = when {
+                current.status == desiredStatus.name -> true
+                pending.disposition == RecoveryDisposition.USER_CANCEL &&
+                    current.status in setOf(
+                        DownloadRepository.Status.Active.name,
+                        DownloadRepository.Status.PostProcessing.name,
+                        DownloadRepository.Status.Paused.name,
+                        DownloadRepository.Status.Queued.name,
+                        DownloadRepository.Status.WaitingForMembership.name,
+                        DownloadRepository.Status.Scheduled.name,
+                    ) -> {
+                    DownloadRepository(dbManager).cancelByUser(
+                        id = downloadId,
+                        expectedExecutionId = executionId,
+                    )
+                    dbManager.downloadDao.getNullableDownloadById(downloadId)?.let {
+                        it.executionId == executionId && it.status == desiredStatus.name
+                    } == true
+                }
+                pending.disposition == RecoveryDisposition.USER_PAUSE &&
+                    current.status in setOf(
+                        DownloadRepository.Status.Active.name,
+                        DownloadRepository.Status.PostProcessing.name,
+                    ) -> {
+                    DownloadRepository(dbManager).setDownloadStatus(
+                        id = downloadId,
+                        status = desiredStatus,
+                        expectedExecutionId = executionId,
+                    )
+                    dbManager.downloadDao.getNullableDownloadById(downloadId)?.let {
+                        it.executionId == executionId && it.status == desiredStatus.name
+                    } == true
+                }
+                else -> false
+            }
+            if (!semanticCommitted || !markUserStopSemanticCommitted(
+                    context = context,
+                    downloadId = downloadId,
+                    executionId = executionId,
+                    disposition = pending.disposition,
+                )
+            ) {
+                retainRecoveryResponsibility(
+                    context = context,
+                    downloadId = downloadId,
+                    dbManager = dbManager,
+                    failure = IllegalStateException(
+                        "User-stop semantic state was not durably converged for " +
+                            "$downloadId/$executionId",
+                    ),
+                )
+                UserStopPreparation.BLOCKED
+            } else {
+                UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE
+            }
+        } catch (cancelled: CancellationException) {
+            retainRecoveryResponsibility(
+                context = context,
+                downloadId = downloadId,
+                dbManager = dbManager,
+                failure = cancelled,
+            )
+            throw cancelled
+        } catch (failure: Exception) {
+            retainRecoveryResponsibility(
+                context = context,
+                downloadId = downloadId,
+                dbManager = dbManager,
+                failure = failure,
+            )
+            UserStopPreparation.BLOCKED
+        }
+    }
+
+    /**
+     * Completes a user-stop carrier for callers that previously performed a
+     * generic native cleanup attempt.  A durable native-quiescent phase may
+     * be cleared directly; otherwise the strengthened helper is consumed here
+     * only after prepareUserStopBeforeNative has established semantic intent.
+     */
+    internal suspend fun convergeUserStopBeforeGenericCleanup(
+        context: Context,
+        dbManager: DBManager,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean {
+        val pending = readPending(context, downloadId) ?: return false
+        if (!pending.isUserStop) return false
+        if (pending.executionId != executionId) {
+            throw NativeProcessQuiescenceException(downloadId, executionId)
+        }
+        when (
+            prepareUserStopBeforeNative(
+                context = context,
+                dbManager = dbManager,
+                downloadId = downloadId,
+                executionId = executionId,
+            )
+        ) {
+            UserStopPreparation.NOT_PENDING -> return false
+            UserStopPreparation.BLOCKED -> {
+                throw NativeProcessQuiescenceException(
+                    downloadId,
+                    executionId,
+                )
+            }
+            UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE -> Unit
+        }
+        val afterPreparation = readPending(context, downloadId)
+            ?.takeIf { it.executionId == executionId }
+            ?: return false
+        val expectedStatus = if (
+            afterPreparation.disposition == RecoveryDisposition.USER_CANCEL
+        ) {
+            DownloadRepository.Status.Cancelled.name
+        } else {
+            DownloadRepository.Status.Paused.name
+        }
+        val semanticStillCommitted = dbManager.downloadDao
+            .getNullableDownloadById(downloadId)
+            ?.let {
+                it.executionId == executionId && it.status == expectedStatus
+            } == true
+        if (
+            afterPreparation.phase == RecoveryPhase.NATIVE_QUIESCENT &&
+                !afterPreparation.nativeQuiescencePending &&
+                semanticStillCommitted &&
+                clearAfterProvenUserStop(
+                    context = context,
+                    downloadId = downloadId,
+                    executionId = executionId,
+                )
+        ) {
+            return true
+        }
+        check(
+            quiesceAfterDurableStop(
+                context = context,
+                downloadId = downloadId,
+                executionId = executionId,
+                dbManager = dbManager,
+            )
+        ) {
+            "User-stop native quiescence remained unresolved for $downloadId"
+        }
+        return true
     }
 
     /**
@@ -271,7 +696,23 @@ internal object DownloadExecutionRecovery {
         dbManager: DBManager = DBManager.getInstance(context),
     ): Boolean {
         return try {
-            if (!DownloadWorker.cancelProcessesForExecution(downloadId, executionId)) {
+            val pending = readPending(context, downloadId)
+                ?.takeIf { it.executionId == executionId }
+            if (
+                pending?.isUserStop == true &&
+                pending.phase == RecoveryPhase.SEMANTIC_STOP_PENDING
+            ) {
+                retainRecoveryResponsibility(
+                    context = context,
+                    downloadId = downloadId,
+                    dbManager = dbManager,
+                    failure = IllegalStateException(
+                        "Native quiescence was attempted before user-stop semantic commit for " +
+                            "$downloadId/$executionId",
+                    ),
+                )
+                false
+            } else if (!DownloadWorker.cancelProcessesForExecution(downloadId, executionId)) {
                 retainRecoveryResponsibility(
                     context = context,
                     downloadId = downloadId,
@@ -300,11 +741,29 @@ internal object DownloadExecutionRecovery {
                 )
                 false
             } else if (
-                clearPending(
-                    context = context,
-                    id = downloadId,
-                    expectedExecutionId = executionId,
-                )
+                if (pending?.isUserStop == true) {
+                    val expectedStatus = if (
+                        pending.disposition == RecoveryDisposition.USER_CANCEL
+                    ) {
+                        DownloadRepository.Status.Cancelled.name
+                    } else {
+                        DownloadRepository.Status.Paused.name
+                    }
+                    val current = dbManager.downloadDao.getNullableDownloadById(downloadId)
+                    current?.executionId == executionId &&
+                        current.status == expectedStatus &&
+                        clearAfterProvenUserStop(
+                            context = context,
+                            downloadId = downloadId,
+                            executionId = executionId,
+                        )
+                } else {
+                    clearPending(
+                        context = context,
+                        id = downloadId,
+                        expectedExecutionId = executionId,
+                    )
+                }
             ) {
                 true
             } else {
@@ -403,7 +862,31 @@ internal object DownloadExecutionRecovery {
             .remove(id.toString() + ISSUE_STAGE_SUFFIX)
             .remove(id.toString() + TERMINAL_ISSUE_CODE_SUFFIX)
             .remove(id.toString() + TERMINAL_ISSUE_STAGE_SUFFIX)
+            .remove(id.toString() + DISPOSITION_SUFFIX)
+            .remove(id.toString() + PHASE_SUFFIX)
         return commit(JournalCommitOperation.CLEAR, editor)
+    }
+
+    internal fun clearAfterProvenUserStop(
+        context: Context,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean {
+        val pending = readPending(context, downloadId)
+            ?.takeIf { it.executionId == executionId }
+            ?: return false
+        if (
+            !pending.isUserStop ||
+                pending.phase != RecoveryPhase.NATIVE_QUIESCENT ||
+                pending.nativeQuiescencePending
+        ) {
+            return false
+        }
+        return clearPending(
+            context = context,
+            id = downloadId,
+            expectedExecutionId = executionId,
+        )
     }
 
     private fun readPending(
@@ -462,6 +945,31 @@ internal object DownloadExecutionRecovery {
             }
             parsed
         }
+        val rawDisposition = preferences.getString(id + DISPOSITION_SUFFIX, null)
+        val rawPhase = preferences.getString(id + PHASE_SUFFIX, null)
+        check((rawDisposition == null) == (rawPhase == null)) {
+            "Incomplete recovery disposition/phase carrier for download $downloadId"
+        }
+        val disposition = rawDisposition?.let {
+            runCatching { RecoveryDisposition.valueOf(it) }.getOrNull()
+        } ?: if (rawDisposition == null) {
+            // Compatibility for the original generic worker-cleanup carrier.
+            // Missing operation identity is never inferred as a user action.
+            RecoveryDisposition.GENERIC
+        } else {
+            error("Unknown recovery disposition $rawDisposition for download $downloadId")
+        }
+        val phase = rawPhase?.let {
+            runCatching { RecoveryPhase.valueOf(it) }.getOrNull()
+        } ?: when {
+            rawPhase == null && disposition == RecoveryDisposition.GENERIC ->
+                // A legacy carrier was created after generic stop ownership
+                // was established; retain its old generic interpretation.
+                RecoveryPhase.NATIVE_QUIESCENCE_PENDING
+            rawPhase == null ->
+                error("Incomplete user-stop recovery phase for download $downloadId")
+            else -> error("Unknown recovery phase $rawPhase for download $downloadId")
+        }
         val nativeGenerationToken = preferences.getString(
             id + NATIVE_GENERATION_SUFFIX,
             null,
@@ -501,8 +1009,20 @@ internal object DownloadExecutionRecovery {
             ),
             nativeGenerationObservation = nativeGenerationObservation,
             authoritativeIssue = issue ?: terminalIssue,
+            disposition = disposition,
+            phase = phase,
         )
     }
+
+    internal fun pendingDispositionForExecution(
+        context: Context,
+        downloadId: Long,
+    ): RecoveryDisposition? = readPending(context, downloadId)?.disposition
+
+    internal fun pendingPhaseForTesting(
+        context: Context,
+        downloadId: Long,
+    ): RecoveryPhase? = readPending(context, downloadId)?.phase
 
     internal fun pendingDownloadIds(context: Context): Set<Long> = context
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -646,6 +1166,25 @@ internal object DownloadExecutionRecovery {
                     // this path never invents a replacement row.
                     return@withDownloadWorkerExecutionSideEffectLease
                 }
+                if (
+                    pending?.let {
+                        it.executionId == executionId &&
+                            it.isUserStop &&
+                            it.phase == RecoveryPhase.SEMANTIC_STOP_PENDING
+                    } == true
+                ) {
+                    check(
+                        convergeUserStopBeforeGenericCleanup(
+                            context = context,
+                            dbManager = dbManager,
+                            downloadId = downloadId,
+                            executionId = executionId,
+                        )
+                    ) {
+                        "User-stop semantic recovery did not converge for download $downloadId"
+                    }
+                    return@withDownloadWorkerExecutionSideEffectLease
+                }
                 val processId = if (executionId.isBlank()) null else
                     YtdlpProcessIdentity.download(downloadId, executionId)
                 val currentObservation = YtdlpNativeProcessBarrier.observeDownloadExecution(
@@ -775,12 +1314,21 @@ internal object DownloadExecutionRecovery {
                 }
                 DownloadWorkerExecutionOwners.release(downloadId, executionId)
                 if (pending?.executionId == executionId) {
-                    check(
+                    val cleared = if (pending?.isUserStop == true) {
+                        clearAfterProvenUserStop(
+                            context = context,
+                            downloadId = downloadId,
+                            executionId = executionId,
+                        )
+                    } else {
                         clearPending(
                             context = context,
                             id = downloadId,
                             expectedExecutionId = executionId,
                         )
+                    }
+                    check(
+                        cleared
                     ) {
                         "Orphan Download recovery journal could not be cleared for $downloadId"
                     }
@@ -807,7 +1355,19 @@ internal object DownloadExecutionRecovery {
                         nativeGenerationToken: String? = pending
                             ?.takeIf { it.executionId == executionId }
                             ?.nativeGenerationToken,
-                    ) {
+                    ): Boolean {
+                        if (
+                            pending?.let {
+                                it.executionId == executionId &&
+                                    it.isUserStop &&
+                                    it.phase == RecoveryPhase.SEMANTIC_STOP_PENDING
+                            } == true
+                        ) {
+                            throw NativeProcessQuiescenceException(
+                                snapshot.id,
+                                executionId,
+                            )
+                        }
                         if (
                             DownloadWorkerExecutionOwners.ownerOf(snapshot.id)?.let {
                                 it != executionId
@@ -971,6 +1531,7 @@ internal object DownloadExecutionRecovery {
                         ) {
                             throw NativeProcessQuiescenceException(snapshot.id, executionId)
                         }
+                        return exactGenerationProof
                     }
 
                     if (current == null) {
@@ -990,12 +1551,21 @@ internal object DownloadExecutionRecovery {
                             )
                             DownloadWorkerExecutionOwners.release(snapshot.id, executionId)
                             if (pending?.executionId == executionId) {
-                                check(
+                                val cleared = if (pending?.isUserStop == true) {
+                                    clearAfterProvenUserStop(
+                                        context = context,
+                                        downloadId = snapshot.id,
+                                        executionId = executionId,
+                                    )
+                                } else {
                                     clearPending(
                                         context = context,
                                         id = snapshot.id,
                                         expectedExecutionId = executionId,
                                     )
+                                }
+                                check(
+                                    cleared
                                 ) {
                                     "Download recovery journal could not be cleared for ${snapshot.id}"
                                 }
@@ -1012,6 +1582,18 @@ internal object DownloadExecutionRecovery {
                         // never passes E1's token to an E2 DB mutation.
                         val stalePending = pending?.takeUnless {
                             it.executionId == currentSnapshot.executionId
+                        }
+                        if (
+                            stalePending?.let {
+                                it.isUserStop &&
+                                    it.phase == RecoveryPhase.SEMANTIC_STOP_PENDING
+                            } == true
+                        ) {
+                            // The semantic stop belongs to stale E1.  Until
+                            // that exact Room decision is durable, neither
+                            // native E1 nor the current E2 may be mutated or
+                            // reclassified by generic recovery.
+                            return@withDownloadWorkerExecutionSideEffectLease
                         }
                         val staleNativeExecutionIds = YtdlpNativeProcessBarrier
                             .downloadProcesses(context)
@@ -1033,7 +1615,10 @@ internal object DownloadExecutionRecovery {
                                 currentProcessOwner == currentSnapshot.executionId
                             if (!currentIsLive) {
                                 staleExecutionIds.forEach { staleExecutionId ->
-                                    quiesceExactExecution(
+                                    val staleCarrier = pending?.takeIf {
+                                        it.executionId == staleExecutionId
+                                    }
+                                    val exactGenerationProof = quiesceExactExecution(
                                         executionId = staleExecutionId,
                                         nativePending = stalePending?.let {
                                             it.executionId == staleExecutionId &&
@@ -1045,14 +1630,45 @@ internal object DownloadExecutionRecovery {
                                         staleExecutionId,
                                     )
                                     if (pending?.executionId == staleExecutionId) {
-                                        check(
+                                        if (staleCarrier?.isUserStop == true) {
+                                            check(
+                                                markNativeQuiescent(
+                                                    context = context,
+                                                    downloadId = snapshot.id,
+                                                    executionId = staleExecutionId,
+                                                    expectedGenerationToken = staleCarrier.nativeGenerationToken,
+                                                    exactGenerationProof = exactGenerationProof,
+                                                )
+                                            ) {
+                                                "Stale user-stop native carrier could not be acknowledged for " +
+                                                    "${snapshot.id}"
+                                            }
+                                        }
+                                        val cleared = if (staleCarrier?.isUserStop == true) {
+                                            clearAfterProvenUserStop(
+                                                context = context,
+                                                downloadId = snapshot.id,
+                                                executionId = staleExecutionId,
+                                            )
+                                        } else {
                                             clearPending(
                                                 context = context,
                                                 id = snapshot.id,
                                                 expectedExecutionId = staleExecutionId,
                                             )
-                                        ) {
-                                            "Stale Download recovery journal could not be cleared for ${snapshot.id}"
+                                        }
+                                        if (!cleared) {
+                                            // Exact stale E1 quiescence has
+                                            // already been proven.  A failed
+                                            // carrier deletion must remain
+                                            // discoverable, but it must not
+                                            // suppress independent recovery
+                                            // of the current E2.
+                                            android.util.Log.w(
+                                                "DownloadExecutionRecovery",
+                                                "Retaining stale recovery carrier after clear failure " +
+                                                    "id=${snapshot.id} executionId=$staleExecutionId",
+                                            )
                                         }
                                     }
                                 }
@@ -1092,11 +1708,37 @@ internal object DownloadExecutionRecovery {
                                     current.id,
                                     current.executionId,
                                 )
+                            val userStopPendingForCurrent = pendingForCurrent?.isUserStop == true
+                            if (
+                                userStopPendingForCurrent &&
+                                    (
+                                        anotherExecutionOwnsTheRow ||
+                                            anotherExecutionHasNativeProcess
+                                        )
+                            ) {
+                                throw NativeProcessQuiescenceException(
+                                    current.id,
+                                    current.executionId,
+                                )
+                            }
                             if (
                                 !owned &&
                                     !anotherExecutionOwnsTheRow &&
                                     !anotherExecutionHasNativeProcess
                             ) {
+                                if (userStopPendingForCurrent) {
+                                    check(
+                                        convergeUserStopBeforeGenericCleanup(
+                                            context = context,
+                                            dbManager = dbManager,
+                                            downloadId = current.id,
+                                            executionId = current.executionId,
+                                        )
+                                    ) {
+                                        "User-stop recovery did not converge for download ${current.id}"
+                                    }
+                                    return@withDownloadWorkerExecutionSideEffectLease
+                                }
                                 val currentProcessId = current.executionId
                                     .takeIf { it.isNotBlank() }
                                     ?.let { YtdlpProcessIdentity.download(current.id, it) }
@@ -1287,7 +1929,25 @@ internal object DownloadExecutionRecovery {
                                 val latest = withDownloadWorkerExecutionLock {
                                     dbManager.downloadDao.getNullableDownloadById(current.id)
                                 }
-                                if (latest == null) {
+                                if (pendingForCurrent?.isUserStop == true) {
+                                    // A user-stop carrier is operation-specific
+                                    // authority.  It may not be cleared by a
+                                    // generic non-running branch; re-read and
+                                    // converge the exact semantic/native
+                                    // protocol first.
+                                    check(
+                                        convergeUserStopBeforeGenericCleanup(
+                                            context = context,
+                                            dbManager = dbManager,
+                                            downloadId = current.id,
+                                            executionId = current.executionId,
+                                        )
+                                    ) {
+                                        "User-stop recovery did not converge for download ${current.id}"
+                                    }
+                                    pending = readPending(context, current.id)
+                                    clearJournal = pending != null
+                                } else if (latest == null) {
                                     clearJournal = pending != null
                                 } else if (latest.executionId != current.executionId) {
                                     // The exact lease and reread prevent a
@@ -1314,12 +1974,18 @@ internal object DownloadExecutionRecovery {
                                             downloadId = latest.id,
                                             executionId = latest.executionId,
                                             authoritativeIssue = pendingForCurrent?.authoritativeIssue,
+                                            recoveryContext = context,
+                                            dbManager = dbManager,
                                         )
                                     ) {
                                         DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
                                         DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
                                         DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED,
                                         DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> {
+                                            clearJournal = pending != null
+                                        }
+                                        DownloadRepository.RunningDownloadRequeueResult.USER_STOP_CONVERGED -> {
+                                            pending = readPending(context, latest.id)
                                             clearJournal = pending != null
                                         }
                                         DownloadRepository.RunningDownloadRequeueResult.OWNERSHIP_LOST -> Unit
@@ -1362,13 +2028,22 @@ internal object DownloadExecutionRecovery {
                     if (clearJournal) {
                         val expectedJournalExecutionId = pending?.executionId
                             ?: snapshot.executionId
-                        check(
+                        val carrier = readPending(context, snapshot.id)
+                            ?.takeIf { it.executionId == expectedJournalExecutionId }
+                        val cleared = if (carrier?.isUserStop == true) {
+                            clearAfterProvenUserStop(
+                                context = context,
+                                downloadId = snapshot.id,
+                                executionId = expectedJournalExecutionId,
+                            )
+                        } else {
                             clearPending(
                                 context = context,
                                 id = snapshot.id,
                                 expectedExecutionId = expectedJournalExecutionId,
                             )
-                        ) {
+                        }
+                        check(cleared) {
                             "Download recovery journal could not be cleared for ${snapshot.id}"
                         }
                     }

@@ -1,11 +1,13 @@
 package com.ireum.ytdl.work
 
+import android.content.Context
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
+import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementRefusal
 import kotlinx.coroutines.CancellationException
@@ -238,7 +240,31 @@ internal suspend fun cleanupStoppedDownloadExecution(
     downloadId: Long,
     executionId: String,
     authoritativeIssue: DownloadIssue? = null,
+    recoveryContext: Context? = null,
+    dbManager: DBManager? = null,
 ): DownloadRepository.RunningDownloadRequeueResult {
+    if (
+        recoveryContext != null &&
+            DownloadExecutionRecovery.pendingDispositionForExecution(
+                recoveryContext,
+                downloadId,
+            )?.let {
+                it == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL ||
+                    it == DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE
+            } == true
+    ) {
+        check(
+            DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                context = recoveryContext,
+                dbManager = dbManager ?: DBManager.getInstance(recoveryContext),
+                downloadId = downloadId,
+                executionId = executionId,
+            )
+        ) {
+            "User-stop recovery did not converge for download $downloadId"
+        }
+        return DownloadRepository.RunningDownloadRequeueResult.USER_STOP_CONVERGED
+    }
     val refusal = authoritativeIssue?.let { HistoryReplacementRefusal.from(it) }
     if (
         authoritativeIssue != null &&

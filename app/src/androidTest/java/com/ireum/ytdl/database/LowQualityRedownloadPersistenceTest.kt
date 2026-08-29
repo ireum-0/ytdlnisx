@@ -72,6 +72,10 @@ class LowQualityRedownloadPersistenceTest {
     @Before
     fun createDatabase() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
+        DownloadExecutionRecovery.clearForTesting(context)
+        DownloadWorkerExecutionOwners.clearForTesting()
+        DownloadWorkerProcessOwners.clearForTesting()
         database = Room.inMemoryDatabaseBuilder(context, DBManager::class.java)
             .addTypeConverter(Converters())
             .allowMainThreadQueries()
@@ -85,6 +89,9 @@ class LowQualityRedownloadPersistenceTest {
         LowQualityRedownloadLedger.cancelAllCancellationConvergenceJobsForTesting()
         LowQualityRedownloadRepository.getItemsFailureCountForTesting = 0
         DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
+        DownloadExecutionRecovery.clearForTesting(ApplicationProvider.getApplicationContext())
+        DownloadWorkerExecutionOwners.clearForTesting()
+        DownloadWorkerProcessOwners.clearForTesting()
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         DownloadExecutionRecovery.commitOverride = null

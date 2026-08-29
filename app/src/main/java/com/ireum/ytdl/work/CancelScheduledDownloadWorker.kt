@@ -50,6 +50,16 @@ class CancelScheduledDownloadWorker(
             runningDownloads.forEach { snapshot ->
                 try {
                     suspend fun cancelAndRequeue(latest: com.ireum.ytdl.database.models.DownloadItem) {
+                        if (
+                            DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                                context = context,
+                                dbManager = dbManager,
+                                downloadId = latest.id,
+                                executionId = latest.executionId,
+                            )
+                        ) {
+                            return
+                        }
                         check(
                             DownloadWorker.cancelProcessesForExecution(
                                 latest.id,
@@ -60,6 +70,7 @@ class CancelScheduledDownloadWorker(
                         }
                         when (repository.requeueRunningDownload(latest.id, latest.executionId)) {
                             DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
+                            DownloadRepository.RunningDownloadRequeueResult.USER_STOP_CONVERGED,
                             DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
                             DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED,
                             DownloadRepository.RunningDownloadRequeueResult.NOT_RUNNING -> Unit

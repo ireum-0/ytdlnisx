@@ -268,6 +268,7 @@ class DownloadWorker(
         val releasedIds = linkedSetOf<Long>()
         val recoveryEligibleIds = linkedSetOf<Long>()
         val nativeQuiescenceBlockedIds = linkedSetOf<Long>()
+        val userStopConvergedIds = linkedSetOf<Long>()
         val recoveryPublicationFailedIds = linkedSetOf<Long>()
         var firstCleanupFailure: Exception? = null
 
@@ -366,25 +367,57 @@ class DownloadWorker(
                             )
                         )
                     }
-                    check(
-                        cancelProcessesForExecution(downloadId, expectedExecutionId)
+                    val userStopPreparation =
+                        DownloadExecutionRecovery.prepareUserStopBeforeNative(
+                            context = context,
+                            dbManager = dbManager,
+                            downloadId = downloadId,
+                            executionId = expectedExecutionId,
+                        )
+                    if (
+                        userStopPreparation ==
+                            DownloadExecutionRecovery.UserStopPreparation.BLOCKED
                     ) {
-                        "Native process owner changed while cleaning download $downloadId"
-                    }
-                    if (recoveryRecorded) {
-                        check(
-                            DownloadExecutionRecovery.markNativeQuiescent(
-                                context = context,
-                                downloadId = downloadId,
-                                executionId = expectedExecutionId,
-                                exactGenerationProof = true,
-                            )
+                        nativeQuiescenceBlockedIds += downloadId
+                        recoveryEligibleIds += downloadId
+                    } else {
+                        if (
+                            userStopPreparation ==
+                                DownloadExecutionRecovery.UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE
                         ) {
-                            "Native quiescence recovery carrier was not durable for download $downloadId"
+                            check(
+                                DownloadExecutionRecovery.quiesceAfterDurableStop(
+                                    context = context,
+                                    downloadId = downloadId,
+                                    executionId = expectedExecutionId,
+                                    dbManager = dbManager,
+                                )
+                            ) {
+                                "User-stop native quiescence remained unresolved for download $downloadId"
+                            }
+                            userStopConvergedIds += downloadId
+                        } else {
+                            check(
+                                cancelProcessesForExecution(downloadId, expectedExecutionId)
+                            ) {
+                                "Native process owner changed while cleaning download $downloadId"
+                            }
+                            if (recoveryRecorded) {
+                                check(
+                                    DownloadExecutionRecovery.markNativeQuiescent(
+                                        context = context,
+                                        downloadId = downloadId,
+                                        executionId = expectedExecutionId,
+                                        exactGenerationProof = true,
+                                    )
+                                ) {
+                                    "Native quiescence recovery carrier was not durable for download $downloadId"
+                                }
+                            }
                         }
-                    }
-                    runCatching {
-                        NotificationUtil(context).cancelRunningDownloadNotification(downloadId.toInt())
+                        runCatching {
+                            NotificationUtil(context).cancelRunningDownloadNotification(downloadId.toInt())
+                        }
                     }
                 }
                 if (!cleaned) {
@@ -403,7 +436,10 @@ class DownloadWorker(
 
         val refusalRepository = DownloadRepository(dbManager)
         snapshot.activeIds.forEach { downloadId ->
-            if (downloadId in nativeQuiescenceBlockedIds) return@forEach
+            if (
+                downloadId in nativeQuiescenceBlockedIds ||
+                    downloadId in userStopConvergedIds
+            ) return@forEach
             try {
                 val issue = snapshot.authoritativeIssues[downloadId]
                 var released = false
@@ -417,9 +453,12 @@ class DownloadWorker(
                             downloadId = downloadId,
                             executionId = executionId,
                             authoritativeIssue = issue,
+                            recoveryContext = context,
+                            dbManager = dbManager,
                         )
                     ) {
                         DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
+                        DownloadRepository.RunningDownloadRequeueResult.USER_STOP_CONVERGED,
                         DownloadRepository.RunningDownloadRequeueResult.REFUSAL_CONVERGED,
                         DownloadRepository.RunningDownloadRequeueResult.AUTHORITATIVE_ISSUE_CONVERGED -> 1
                         DownloadRepository.RunningDownloadRequeueResult.COMMITTED_HISTORY_FINALIZATION_DEBT -> 1
@@ -7303,6 +7342,4 @@ class DownloadWorker(
     )
 
 }
-
-
 

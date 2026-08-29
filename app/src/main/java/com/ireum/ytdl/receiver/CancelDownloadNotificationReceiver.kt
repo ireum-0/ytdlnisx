@@ -66,6 +66,8 @@ class CancelDownloadNotificationReceiver private constructor(
                                     DownloadExecutionRecovery.recordPending(
                                         context = c,
                                         item = item,
+                                        disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                        phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
                                     )
                                 ) {
                                     "Could not persist cancellation recovery responsibility for ${item.id}"
@@ -80,9 +82,22 @@ class CancelDownloadNotificationReceiver private constructor(
                                         it.status == DownloadRepository.Status.Cancelled.name &&
                                             it.executionId == expectedExecutionId
                                     } == true
-                                if (!committed) null else affected
+                                check(committed) {
+                                    "Cancellation semantic state was not committed for $id"
+                                }
+                                affected
                             }
                             if (affectedOperationIds != null) {
+                                check(
+                                    DownloadExecutionRecovery.markUserStopSemanticCommitted(
+                                        context = c,
+                                        downloadId = id.toLong(),
+                                        executionId = expectedExecutionId,
+                                        disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                    )
+                                ) {
+                                    "Cancellation semantic carrier was not acknowledged for $id"
+                                }
                                 // Durable cancellation committed before any
                                 // process-local/native side effect.  The
                                 // per-Download lease prevents a newer attempt
