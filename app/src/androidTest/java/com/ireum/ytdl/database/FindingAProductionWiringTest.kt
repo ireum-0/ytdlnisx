@@ -23,21 +23,28 @@ import com.ireum.ytdl.receiver.PauseDownloadNotificationReceiver
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorkerAdmissionResult
+import com.ireum.ytdl.work.DownloadWorkerEffectTestHooks
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
 import com.ireum.ytdl.work.claimDownloadThroughProductionAdmission
 import com.ireum.ytdl.work.admitQueuedDownloadsThroughProductionPath
 import com.ireum.ytdl.work.hasDurableUserStopRevokedAuthority
 import com.ireum.ytdl.work.observeQueuedDownloadsAfterRecovery
+import com.ireum.ytdl.work.publishNoCacheMediaWithOwnedExecution
+import com.ireum.ytdl.work.publishTerminalWorkerProgressWithOwnedExecution
 import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.greenrobot.eventbus.EventBus
+import org.greenrobot.eventbus.Subscribe
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -78,6 +85,10 @@ class FindingAProductionWiringTest {
         PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
         DownloadRepository.userStopWriteFailureForTesting = null
         DownloadRepository.userStopWriteNoOpForTesting = null
+        DownloadWorkerEffectTestHooks.beforeNoCacheMediaPublicationForTesting = null
+        DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
+        DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting = null
+        DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting = null
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
             DBManager::class.java,
@@ -99,6 +110,10 @@ class FindingAProductionWiringTest {
         PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
         DownloadRepository.userStopWriteFailureForTesting = null
         DownloadRepository.userStopWriteNoOpForTesting = null
+        DownloadWorkerEffectTestHooks.beforeNoCacheMediaPublicationForTesting = null
+        DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
+        DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting = null
+        DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting = null
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
@@ -2325,6 +2340,130 @@ class FindingAProductionWiringTest {
         }
 
     @Test
+    fun liveWorkerNoCacheMediaScanDoesNotRunAfterCancelFirstWriteException() = runBlocking {
+        exerciseLiveWorkerEffectBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            effect = WorkerEffectBoundary.NO_CACHE_MEDIA,
+            noOp = false,
+        )
+    }
+
+    @Test
+    fun liveWorkerNoCacheMediaScanDoesNotRunAfterCancelFirstWriteNoOp() = runBlocking {
+        exerciseLiveWorkerEffectBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            effect = WorkerEffectBoundary.NO_CACHE_MEDIA,
+            noOp = true,
+        )
+    }
+
+    @Test
+    fun liveWorkerNoCacheMediaScanDoesNotRunAfterPauseFirstWriteException() = runBlocking {
+        exerciseLiveWorkerEffectBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+            effect = WorkerEffectBoundary.NO_CACHE_MEDIA,
+            noOp = false,
+        )
+    }
+
+    @Test
+    fun liveWorkerNoCacheMediaScanDoesNotRunAfterPauseFirstWriteNoOp() = runBlocking {
+        exerciseLiveWorkerEffectBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+            effect = WorkerEffectBoundary.NO_CACHE_MEDIA,
+            noOp = true,
+        )
+    }
+
+    @Test
+    fun liveWorkerTerminalProgressDoesNotPublishAfterCancelFirstWriteException() = runBlocking {
+        exerciseLiveWorkerEffectBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            effect = WorkerEffectBoundary.TERMINAL_PROGRESS,
+            noOp = false,
+        )
+    }
+
+    @Test
+    fun liveWorkerTerminalProgressDoesNotPublishAfterCancelFirstWriteNoOp() = runBlocking {
+        exerciseLiveWorkerEffectBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            effect = WorkerEffectBoundary.TERMINAL_PROGRESS,
+            noOp = true,
+        )
+    }
+
+    @Test
+    fun liveWorkerTerminalProgressDoesNotPublishAfterPauseFirstWriteException() = runBlocking {
+        exerciseLiveWorkerEffectBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+            effect = WorkerEffectBoundary.TERMINAL_PROGRESS,
+            noOp = false,
+        )
+    }
+
+    @Test
+    fun liveWorkerTerminalProgressDoesNotPublishAfterPauseFirstWriteNoOp() = runBlocking {
+        exerciseLiveWorkerEffectBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+            effect = WorkerEffectBoundary.TERMINAL_PROGRESS,
+            noOp = true,
+        )
+    }
+
+    @Test
+    fun ownedNoCacheMediaScanPublishesWithExactLiveWorkerAuthority() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "owned-no-cache-control-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val scanCount = AtomicInteger(0)
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = {
+            scanCount.incrementAndGet()
+        }
+
+        try {
+            publishNoCacheMediaWithOwnedExecution(
+                context = context,
+                dbManager = db,
+                downloadItem = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)),
+                finalPaths = emptyList(),
+                eventBus = EventBus(),
+            )
+            assertEquals(1, scanCount.get())
+        } finally {
+            DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
+    fun terminalProgressPublishesWithExactLiveWorkerAuthority() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "owned-terminal-progress-control-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val progressCount = AtomicInteger(0)
+        val eventBus = EventBus()
+        val subscriber = WorkerProgressSubscriber(downloadId, "terminal-summary", progressCount)
+        eventBus.register(subscriber)
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+
+        try {
+            publishTerminalWorkerProgressWithOwnedExecution(
+                context = context,
+                dbManager = db,
+                downloadItem = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)),
+                eventBus = eventBus,
+                summary = "terminal-summary",
+            )
+            assertEquals(1, progressCount.get())
+        } finally {
+            eventBus.unregister(subscriber)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
     fun committedHistoryWinsLateCancelAndFinalizesExactlyOnce() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val historyId = db.historyDao.insertAndGetIdRaw(history())
@@ -2662,6 +2801,194 @@ class FindingAProductionWiringTest {
             DownloadWorkerExecutionOwners.release(downloadId, executionId)
             CancelDownloadNotificationReceiver.finishObserverForTesting = null
             PauseDownloadNotificationReceiver.finishObserverForTesting = null
+        }
+    }
+
+    private enum class WorkerEffectBoundary {
+        NO_CACHE_MEDIA,
+        TERMINAL_PROGRESS,
+    }
+
+    private suspend fun exerciseLiveWorkerEffectBoundary(
+        disposition: DownloadExecutionRecovery.RecoveryDisposition,
+        effect: WorkerEffectBoundary,
+        noOp: Boolean,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val expectedStatus = if (
+            disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+        ) {
+            DownloadRepository.Status.Cancelled
+        } else {
+            DownloadRepository.Status.Paused
+        }
+        val executionId =
+            "worker-effect-${disposition.name.lowercase()}-${effect.name.lowercase()}-${if (noOp) "noop" else "exception"}-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val process = QuiescingProcess()
+        val boundaryEntered = CountDownLatch(1)
+        val boundaryRelease = CountDownLatch(1)
+        val mediaScanCount = AtomicInteger(0)
+        val terminalProgressCount = AtomicInteger(0)
+        val terminalPostCount = AtomicInteger(0)
+        val eventBus = EventBus()
+        val subscriber = WorkerProgressSubscriber(
+            downloadId = downloadId,
+            output = "terminal-summary",
+            count = terminalProgressCount,
+        )
+        if (effect == WorkerEffectBoundary.TERMINAL_PROGRESS) {
+            eventBus.register(subscriber)
+        }
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, executionId))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+        if (effect == WorkerEffectBoundary.NO_CACHE_MEDIA) {
+            DownloadWorkerEffectTestHooks.beforeNoCacheMediaPublicationForTesting = {
+                boundaryEntered.countDown()
+                check(boundaryRelease.await(5_000L, TimeUnit.MILLISECONDS)) {
+                    "Timed out waiting to release no-cache media boundary"
+                }
+            }
+            DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = {
+                mediaScanCount.incrementAndGet()
+            }
+        } else {
+            DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting = {
+                boundaryEntered.countDown()
+                check(boundaryRelease.await(5_000L, TimeUnit.MILLISECONDS)) {
+                    "Timed out waiting to release terminal progress boundary"
+                }
+            }
+            DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting = {
+                terminalPostCount.incrementAndGet()
+            }
+        }
+        if (noOp) {
+            DownloadRepository.userStopWriteNoOpForTesting = { targetId, status ->
+                targetId == downloadId && status == expectedStatus
+            }
+        } else {
+            DownloadRepository.userStopWriteFailureForTesting = { targetId, status ->
+                if (targetId == downloadId && status == expectedStatus) {
+                    IllegalStateException("injected first ${expectedStatus.name} write failure")
+                } else {
+                    null
+                }
+            }
+        }
+
+        coroutineScope {
+            val effectResult = async(Dispatchers.IO) {
+                runCatching {
+                    val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+                    when (effect) {
+                        WorkerEffectBoundary.NO_CACHE_MEDIA ->
+                            publishNoCacheMediaWithOwnedExecution(
+                                context = context,
+                                dbManager = db,
+                                downloadItem = item,
+                                finalPaths = emptyList(),
+                                eventBus = eventBus,
+                            )
+                        WorkerEffectBoundary.TERMINAL_PROGRESS ->
+                            publishTerminalWorkerProgressWithOwnedExecution(
+                                context = context,
+                                dbManager = db,
+                                downloadItem = item,
+                                eventBus = eventBus,
+                                summary = "terminal-summary",
+                            )
+                    }
+                }
+            }
+
+            try {
+                assertTrue(boundaryEntered.await(5_000L, TimeUnit.MILLISECONDS))
+                sendReceiverAndAwait(
+                    context = context,
+                    receiver = if (
+                        disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+                    ) {
+                        CancelDownloadNotificationReceiver(db)
+                    } else {
+                        PauseDownloadNotificationReceiver(db)
+                    },
+                    intent = receiverIntent(
+                        action = "worker-effect-stop-${UUID.randomUUID()}",
+                        downloadId = downloadId,
+                        executionId = executionId,
+                    ),
+                ) {
+                    db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                        DownloadRepository.Status.Active.name &&
+                        DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId) ==
+                            disposition &&
+                        DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId) ==
+                            DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING
+                }
+                DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+
+                boundaryRelease.countDown()
+                val result = effectResult.await()
+                assertTrue(result.isFailure)
+                assertTrue(result.exceptionOrNull() is CancellationException)
+                assertEquals(0, mediaScanCount.get())
+                assertEquals(0, terminalProgressCount.get())
+                assertEquals(0, terminalPostCount.get())
+                assertEquals(0, process.destroyCount.get())
+                assertTrue(process.isAlive)
+                assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId))
+
+                DownloadRepository.userStopWriteFailureForTesting = null
+                DownloadRepository.userStopWriteNoOpForTesting = null
+                assertTrue(
+                    DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                        context = context,
+                        dbManager = db,
+                        downloadId = downloadId,
+                        executionId = executionId,
+                    )
+                )
+                assertEquals(expectedStatus.name, db.downloadDao.getNullableDownloadById(downloadId)?.status)
+                assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+                assertEquals(1, process.destroyCount.get())
+                assertFalse(process.isAlive)
+                assertNull(DownloadWorkerProcessOwners.ownerOf(downloadId))
+            } finally {
+                boundaryRelease.countDown()
+                DownloadRepository.userStopWriteFailureForTesting = null
+                DownloadRepository.userStopWriteNoOpForTesting = null
+                DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+                DownloadWorkerEffectTestHooks.beforeNoCacheMediaPublicationForTesting = null
+                DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
+                DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting = null
+                DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting = null
+                if (effect == WorkerEffectBoundary.TERMINAL_PROGRESS) {
+                    eventBus.unregister(subscriber)
+                }
+                YoutubeDLCompat.clearProcessForTesting(processId)
+                DownloadWorkerProcessOwners.release(downloadId, executionId)
+                DownloadWorkerExecutionOwners.release(downloadId, executionId)
+            }
+        }
+    }
+
+    private class WorkerProgressSubscriber(
+        private val downloadId: Long,
+        private val output: String,
+        private val count: AtomicInteger,
+    ) {
+        @Subscribe
+        fun onWorkerProgress(progress: com.ireum.ytdl.work.DownloadWorker.WorkerProgress) {
+            if (
+                progress.downloadItemID == downloadId &&
+                    progress.progress == 100 &&
+                    progress.output == output
+            ) {
+                count.incrementAndGet()
+            }
         }
     }
 

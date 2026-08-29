@@ -205,6 +205,150 @@ internal fun hasDurableUserStopRevokedAuthority(
         )
 }
 
+/**
+ * Test-only observation points around the two worker effects whose exact
+ * publication boundary is deliberately exercised by production-wiring tests.
+ * The hooks do not replace the effect; they run immediately before the
+ * production lease is acquired or immediately before the real effect call.
+ */
+internal object DownloadWorkerEffectTestHooks {
+    @Volatile
+    internal var beforeNoCacheMediaPublicationForTesting: (() -> Unit)? = null
+
+    @Volatile
+    internal var beforeNoCacheMediaScanForTesting: (() -> Unit)? = null
+
+    @Volatile
+    internal var beforeTerminalProgressPublicationForTesting: (() -> Unit)? = null
+
+    @Volatile
+    internal var beforeTerminalProgressPostForTesting: (() -> Unit)? = null
+}
+
+/**
+ * The exact worker side-effect authority boundary shared by the real worker
+ * and deterministic production-wiring tests.  The per-Download lease is
+ * acquired before the short global execution lock; the global lock is never
+ * held while the effect itself runs.
+ */
+internal suspend fun <T> withOwnedDownloadWorkerSideEffect(
+    context: Context,
+    dbManager: DBManager,
+    downloadItem: DownloadItem,
+    sideEffect: suspend () -> T,
+): T = withDownloadWorkerExecutionSideEffectLease(
+    downloadId = downloadItem.id,
+    executionId = downloadItem.executionId,
+) {
+    withDownloadWorkerExecutionLock {
+        assertDownloadWorkerExecutionOwnedBeforeSideEffect(
+            context = context,
+            dbManager = dbManager,
+            downloadItem = downloadItem,
+        )
+    }
+    sideEffect()
+}
+
+internal fun assertDownloadWorkerExecutionOwnedBeforeSideEffect(
+    context: Context,
+    dbManager: DBManager,
+    downloadItem: DownloadItem,
+) {
+    val current = dbManager.downloadDao.getNullableDownloadById(downloadItem.id)
+    if (current != null && hasDurableUserStopRevokedAuthority(context, dbManager, current)) {
+        throw CancellationException(
+            "Durable user stop revoked Download side-effect authority " +
+                "id=${downloadItem.id} executionId=${downloadItem.executionId}",
+        )
+    }
+    if (dbManager.lowQualityRedownloadDao.hasCancellationRequestedByDownload(downloadItem.id)) {
+        throw CancellationException(
+            "Low-quality cancellation was committed before download side effect " +
+                "id=${downloadItem.id}"
+        )
+    }
+    if (
+        current == null ||
+            current.executionId != downloadItem.executionId ||
+            current.status !in setOf(
+                DownloadRepository.Status.Active.name,
+                DownloadRepository.Status.PostProcessing.name,
+            ) ||
+            !DownloadWorkerExecutionOwners.isOwnedBy(
+                downloadItem.id,
+                downloadItem.executionId,
+            )
+    ) {
+        throw DownloadExecutionOwnershipLostException(
+            downloadId = downloadItem.id,
+            expectedExecutionId = downloadItem.executionId,
+            actualExecutionId = current?.executionId,
+        )
+    }
+}
+
+/**
+ * Protects the no-cache media publication itself, not just the preceding
+ * point-in-time stop check.  Path discovery remains outside the boundary;
+ * the progress publication and MediaScanner call are one exact-authority
+ * side-effect unit.
+ */
+internal suspend fun publishNoCacheMediaWithOwnedExecution(
+    context: Context,
+    dbManager: DBManager,
+    downloadItem: DownloadItem,
+    finalPaths: List<String>,
+    eventBus: EventBus,
+) {
+    DownloadWorkerEffectTestHooks.beforeNoCacheMediaPublicationForTesting?.invoke()
+    withOwnedDownloadWorkerSideEffect(
+        context = context,
+        dbManager = dbManager,
+        downloadItem = downloadItem,
+    ) {
+        eventBus.post(
+            DownloadWorker.WorkerProgress(
+                100,
+                "Scanning Files",
+                downloadItem.id,
+                downloadItem.logID,
+            )
+        )
+        DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting?.invoke()
+        FileUtil.scanMedia(finalPaths, context)
+    }
+}
+
+/**
+ * Protects the terminal WorkerProgress publication with the same exact
+ * execution authority as the terminal notification and row mutation.
+ */
+internal suspend fun publishTerminalWorkerProgressWithOwnedExecution(
+    context: Context,
+    dbManager: DBManager,
+    downloadItem: DownloadItem,
+    eventBus: EventBus,
+    summary: String,
+) {
+    DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting?.invoke()
+    withOwnedDownloadWorkerSideEffect(
+        context = context,
+        dbManager = dbManager,
+        downloadItem = downloadItem,
+    ) {
+        DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting?.invoke()
+        eventBus.post(
+            DownloadWorker.WorkerProgress(
+                100,
+                summary,
+                downloadItem.id,
+                downloadItem.logID,
+            )
+        )
+    }
+}
+
 
 class DownloadWorker(
     private val context: Context,
@@ -1190,8 +1334,10 @@ class DownloadWorker(
             return
                     }
                     if (isHardSubRedownload(downloadItem)) {
-                        registerHardSubTarget(downloadItem.id)
-                        updateHardSubWorkerNotificationSafely(notificationUtil)
+                        withOwnedExecutionSideEffect(downloadItem) {
+                            registerHardSubTarget(downloadItem.id)
+                            updateHardSubWorkerNotificationSafely(notificationUtil)
+                        }
                     }
                     withOwnedExecutionSideEffect(downloadItem) {
                         val notification = notificationUtil.createDownloadServiceNotification(
@@ -1299,7 +1445,9 @@ class DownloadWorker(
                         if (hardSubSkipReason != null) {
                             shouldBurnHardSub = false
                             Log.w(TAG, "HardSub skipped id=${downloadItem.id} reason=$hardSubSkipReason")
-                            eventBus.post(WorkerProgress(100, hardSubSkipReason, downloadItem.id, downloadItem.logID))
+                            withOwnedExecutionSideEffect(downloadItem) {
+                                eventBus.post(WorkerProgress(100, hardSubSkipReason, downloadItem.id, downloadItem.logID))
+                            }
                         }
                         if (shouldBurnHardSub && sharedPreferences.getBoolean("parallel_hardsub_postprocessing", false)) {
                             withOwnedExecutionSideEffect(downloadItem) {
@@ -1462,7 +1610,9 @@ class DownloadWorker(
                                 } else {
                     if (shouldStopForUserRequest()) return AttemptControl.STOP
                                     Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${preMoveBurnPaths.size} mode=pre-move")
-                                    eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                    withOwnedExecutionSideEffect(downloadItem) {
+                                        eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                    }
                                     currentIssueStage = DownloadIssueStage.HARD_SUB
                                     val burned = withOwnedExecutionLease(downloadItem) {
                                         burnSubtitlesInPlace(
@@ -1476,7 +1626,9 @@ class DownloadWorker(
                                     }
                                     hardSubBurned = hardSubBurned || burned
                                     if (burned) {
-                                        eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
+                                        withOwnedExecutionSideEffect(downloadItem) {
+                                            eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
+                                        }
                                         Log.i(TAG, "HardSub completed id=${downloadItem.id} mode=pre-move")
                                     } else {
                                         Log.w(TAG, "HardSub pre-move produced no burned media id=${downloadItem.id}")
@@ -1509,7 +1661,9 @@ class DownloadWorker(
                             if (lateHasMedia) {
                 if (shouldStopForUserRequest()) return AttemptControl.STOP
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${latePreMoveBurnPaths.size} mode=pre-move-late")
-                                eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                withOwnedExecutionSideEffect(downloadItem) {
+                                    eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                }
                                 currentIssueStage = DownloadIssueStage.HARD_SUB
                                 val burned = withOwnedExecutionLease(downloadItem) {
                                     burnSubtitlesInPlace(
@@ -1524,7 +1678,9 @@ class DownloadWorker(
                                 hardSubBurned = hardSubBurned || burned
                                 if (burned) {
                                     deferBurnUntilPostMove = false
-                                    eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
+                                    withOwnedExecutionSideEffect(downloadItem) {
+                                        eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
+                                    }
                                     Log.i(TAG, "HardSub completed id=${downloadItem.id} mode=pre-move-late")
                                 } else {
                                     Log.w(TAG, "HardSub pre-move-late produced no burned media id=${downloadItem.id}")
@@ -1535,7 +1691,6 @@ class DownloadWorker(
                         }
 
                             if (noCache){
-                            eventBus.post(WorkerProgress(100, "Scanning Files", downloadItem.id, downloadItem.logID))
                             finalPaths = extractPathsFromYtdlpOutput(ytdlpPhase.result.response.out).toMutableList()
                             logPathCandidates("HardSub no-cache parsed", downloadItem.id, finalPaths)
 
@@ -1558,11 +1713,19 @@ class DownloadWorker(
                                     finalPaths.joinToString(limit = 3)
                                 }"
                             )
-                            FileUtil.scanMedia(finalPaths, context)
+                            publishNoCacheMediaWithOwnedExecution(
+                                context = context,
+                                dbManager = dbManager,
+                                downloadItem = downloadItem,
+                                finalPaths = finalPaths,
+                                eventBus = eventBus,
+                            )
                         }else{
                             //move file from internal to set download directory
                             currentIssueStage = DownloadIssueStage.MOVE
-                            eventBus.post(WorkerProgress(100, "Moving file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
+                            withOwnedExecutionSideEffect(downloadItem) {
+                                eventBus.post(WorkerProgress(100, "Moving file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
+                            }
                             Log.i(
                                 TAG,
                                 "HardSub move start id=${downloadItem.id} from=${tempFileDir.absolutePath} to=${FileUtil.formatPath(downloadLocation)} tempSnapshot=${describeDirectorySnapshot(tempFileDir)}"
@@ -1594,7 +1757,9 @@ class DownloadWorker(
                                 logPathCandidates("HardSub move returned", downloadItem.id, finalPaths)
 
                                 if (finalPaths.isNotEmpty()){
-                                    eventBus.post(WorkerProgress(100, "Moved file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
+                                    withOwnedExecutionSideEffect(downloadItem) {
+                                        eventBus.post(WorkerProgress(100, "Moved file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
+                                    }
                                     Log.i(
                                         TAG,
                                         "HardSub move done id=${downloadItem.id} count=${finalPaths.size} sample=${
@@ -1795,7 +1960,9 @@ class DownloadWorker(
                             } else {
                 if (shouldStopForUserRequest()) return AttemptControl.STOP
                                 Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${postMoveBurnPaths.size} mode=post-move")
-                                eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                withOwnedExecutionSideEffect(downloadItem) {
+                                    eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                                }
                                 currentIssueStage = DownloadIssueStage.HARD_SUB
                                 val burned = withOwnedExecutionLease(downloadItem) {
                                     burnSubtitlesInPlace(
@@ -1812,7 +1979,9 @@ class DownloadWorker(
                                     throw IOException("HardSub aborted: no media was burned in post-move stage")
                                 }
                                 if (burned) {
-                                    eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
+                                    withOwnedExecutionSideEffect(downloadItem) {
+                                        eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
+                                    }
                                     Log.i(TAG, "HardSub completed id=${downloadItem.id} mode=post-move")
                                 } else {
                                     Log.w(TAG, "HardSub post-move produced no burned media id=${downloadItem.id}")
@@ -1869,7 +2038,9 @@ class DownloadWorker(
                             Log.i(TAG, "HardSub post-remap paths=${finalPaths.size}")
             if (shouldStopForUserRequest()) return AttemptControl.STOP
                             Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${finalPaths.size}")
-                            eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                            withOwnedExecutionSideEffect(downloadItem) {
+                                eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
+                            }
                             currentIssueStage = DownloadIssueStage.HARD_SUB
                             val burned = withOwnedExecutionLease(downloadItem) {
                                 burnSubtitlesInPlace(
@@ -1886,7 +2057,9 @@ class DownloadWorker(
                                 throw IOException("HardSub aborted: no media was burned")
                             }
                             if (burned) {
-                                eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
+                                withOwnedExecutionSideEffect(downloadItem) {
+                                    eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
+                                }
                                 Log.i(TAG, "HardSub completed id=${downloadItem.id}")
                             } else {
                                 Log.w(TAG, "HardSub produced no burned media id=${downloadItem.id}")
@@ -2343,9 +2516,10 @@ class DownloadWorker(
 
         private suspend fun publishCompletion(): AttemptControl {
                         if (isHardSubRedownload(downloadItem)) {
-            if (shouldStopForUserRequest()) return AttemptControl.STOP
-                            markHardSubProcessed(downloadItem.id)
-                            updateHardSubWorkerNotificationSafely(notificationUtil)
+                            withOwnedExecutionSideEffect(downloadItem) {
+                                markHardSubProcessed(downloadItem.id)
+                                updateHardSubWorkerNotificationSafely(notificationUtil)
+                            }
                         }
                         currentIssueStage = DownloadIssueStage.NOTIFICATION
                         val notificationIssue = historyReplacementFailureIssue
@@ -2408,8 +2582,12 @@ class DownloadWorker(
                             }
                             .takeIf { it.isNotBlank() }
                         outcomeSummary?.let { summary ->
-                            eventBus.post(
-                                WorkerProgress(100, summary, downloadItem.id, downloadItem.logID)
+                            publishTerminalWorkerProgressWithOwnedExecution(
+                                context = context,
+                                dbManager = dbManager,
+                                downloadItem = downloadItem,
+                                eventBus = eventBus,
+                                summary = summary,
                             )
                         }
 
@@ -2854,38 +3032,43 @@ class DownloadWorker(
                             primaryIssue.code == DownloadIssueCode.MEMBERSHIP_REQUIRED &&
                             membershipDecision.waitForAutomaticRetry
                         ) {
-                            val parked = observeSourcesDao.parkDownloadForMembership(
-                                downloadId = downloadItem.id,
-                                sourceId = downloadItem.observeSourceId,
-                                expectedStatus = DownloadRepository.Status.Active.toString(),
-                                issueCode = primaryIssue.code.name,
-                                issueStage = primaryIssue.stage.name,
-                                expectedExecutionId = downloadItem.executionId,
-                            ) > 0
-                            if (parked) {
-                                downloadOutcome = DownloadOutcome(
-                                    status = com.ireum.ytdl.util.download.DownloadOutcomeStatus.WAITING_FOR_ACCESS,
-                                    issues = listOf(primaryIssue)
-                                )
-                                downloadItem.status =
-                                    DownloadRepository.Status.WaitingForMembership.toString()
-                                downloadItem.lastIssueCode = primaryIssue.code.name
-                                downloadItem.lastIssueStage = primaryIssue.stage.name
-                                if (membershipDecision.showFirstWaitingNotification) {
-                                    notificationUtil.createMembershipWaiting(
-                                        downloadItem.id,
-                                        notificationTitle,
-                                        resources
+                            val parked = withOwnedExecutionSideEffect(downloadItem) {
+                                val changed = observeSourcesDao.parkDownloadForMembership(
+                                    downloadId = downloadItem.id,
+                                    sourceId = downloadItem.observeSourceId,
+                                    expectedStatus = DownloadRepository.Status.Active.toString(),
+                                    issueCode = primaryIssue.code.name,
+                                    issueStage = primaryIssue.stage.name,
+                                    expectedExecutionId = downloadItem.executionId,
+                                ) > 0
+                                if (changed) {
+                                    downloadOutcome = DownloadOutcome(
+                                        status = com.ireum.ytdl.util.download.DownloadOutcomeStatus.WAITING_FOR_ACCESS,
+                                        issues = listOf(primaryIssue)
+                                    )
+                                    downloadItem.status =
+                                        DownloadRepository.Status.WaitingForMembership.toString()
+                                    downloadItem.lastIssueCode = primaryIssue.code.name
+                                    downloadItem.lastIssueStage = primaryIssue.stage.name
+                                    if (membershipDecision.showFirstWaitingNotification) {
+                                        notificationUtil.createMembershipWaiting(
+                                            downloadItem.id,
+                                            notificationTitle,
+                                            resources
+                                        )
+                                    }
+                                    eventBus.post(
+                                        WorkerProgress(
+                                            100,
+                                            resources.getString(R.string.membership_waiting_auto),
+                                            downloadItem.id,
+                                            downloadItem.logID
+                                        )
                                     )
                                 }
-                                eventBus.post(
-                                    WorkerProgress(
-                                        100,
-                                        resources.getString(R.string.membership_waiting_auto),
-                                        downloadItem.id,
-                                        downloadItem.logID
-                                    )
-                                )
+                                changed
+                            }
+                            if (parked) {
                 return AttemptControl.STOP
                             }
                         }
@@ -2943,9 +3126,10 @@ class DownloadWorker(
             return AttemptControl.STOP
                         }
                         if (isHardSubRedownload(downloadItem)) {
-            if (shouldStopForUserRequest()) return AttemptControl.STOP
-                            markHardSubProcessed(downloadItem.id)
-                            updateHardSubWorkerNotificationSafely(notificationUtil)
+                            withOwnedExecutionSideEffect(downloadItem) {
+                                markHardSubProcessed(downloadItem.id)
+                                updateHardSubWorkerNotificationSafely(notificationUtil)
+                            }
                         }
 
                         val retryMetadata = DownloadRetryMetadata(
@@ -4727,65 +4911,29 @@ class DownloadWorker(
     private suspend fun <T> withOwnedExecutionSideEffect(
         downloadItem: DownloadItem,
         sideEffect: suspend () -> T,
-    ): T = withDownloadWorkerExecutionSideEffectLease(
-        downloadId = downloadItem.id,
-        executionId = downloadItem.executionId,
-    ) {
-        withDownloadWorkerExecutionLock {
-            assertExecutionOwnedBeforeAttemptLocked(downloadItem)
-        }
-        sideEffect()
-    }
+    ): T = withOwnedDownloadWorkerSideEffect(
+        context = context,
+        dbManager = DBManager.getInstance(context),
+        downloadItem = downloadItem,
+        sideEffect = sideEffect,
+    )
 
     private suspend fun <T> withOwnedExecutionLease(
         downloadItem: DownloadItem,
         sideEffect: suspend () -> T,
-    ): T = withDownloadWorkerExecutionSideEffectLease(
-        downloadId = downloadItem.id,
-        executionId = downloadItem.executionId,
-    ) {
-        withDownloadWorkerExecutionLock {
-            assertExecutionOwnedBeforeAttemptLocked(downloadItem)
-        }
-        sideEffect()
-    }
+    ): T = withOwnedDownloadWorkerSideEffect(
+        context = context,
+        dbManager = DBManager.getInstance(context),
+        downloadItem = downloadItem,
+        sideEffect = sideEffect,
+    )
 
     private suspend fun assertExecutionOwnedBeforeAttemptLocked(downloadItem: DownloadItem) {
-        val current = DBManager.getInstance(context).downloadDao
-            .getNullableDownloadById(downloadItem.id)
-        if (current != null && hasDurableUserStopRevokedAuthority(context, DBManager.getInstance(context), current)) {
-            throw CancellationException(
-                "Durable user stop revoked Download side-effect authority " +
-                    "id=${downloadItem.id} executionId=${downloadItem.executionId}",
-            )
-        }
-        if (
-            DBManager.getInstance(context).lowQualityRedownloadDao
-                .hasCancellationRequestedByDownload(downloadItem.id)
-        ) {
-            throw CancellationException(
-                "Low-quality cancellation was committed before download side effect " +
-                    "id=${downloadItem.id}"
-            )
-        }
-        if (
-            current == null ||
-                current.executionId != downloadItem.executionId ||
-                current.status !in setOf(
-                    DownloadRepository.Status.Active.name,
-                    DownloadRepository.Status.PostProcessing.name,
-                ) ||
-                !DownloadWorkerExecutionOwners.isOwnedBy(
-                    downloadItem.id,
-                    downloadItem.executionId,
-                )
-        ) {
-            throw DownloadExecutionOwnershipLostException(
-                downloadId = downloadItem.id,
-                expectedExecutionId = downloadItem.executionId,
-                actualExecutionId = current?.executionId,
-            )
-        }
+        assertDownloadWorkerExecutionOwnedBeforeSideEffect(
+            context = context,
+            dbManager = DBManager.getInstance(context),
+            downloadItem = downloadItem,
+        )
     }
 
     private suspend fun ensureExecutionOwnedBeforeAttempt(downloadItem: DownloadItem) {
