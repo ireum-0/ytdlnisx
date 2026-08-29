@@ -50,15 +50,41 @@ class CancelScheduledDownloadWorker(
             runningDownloads.forEach { snapshot ->
                 try {
                     suspend fun cancelAndRequeue(latest: com.ireum.ytdl.database.models.DownloadItem) {
-                        if (
-                            DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
-                                context = context,
-                                dbManager = dbManager,
-                                downloadId = latest.id,
-                                executionId = latest.executionId,
+                        when (
+                            DownloadExecutionRecovery.pendingDispositionForExecution(
+                                context,
+                                latest.id,
                             )
                         ) {
-                            return
+                            DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                            DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE -> {
+                                check(
+                                    DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                                        context = context,
+                                        dbManager = dbManager,
+                                        downloadId = latest.id,
+                                        executionId = latest.executionId,
+                                    )
+                                ) {
+                                    "User-stop recovery did not converge for ${latest.id}"
+                                }
+                                return
+                            }
+                            DownloadExecutionRecovery.RecoveryDisposition.HISTORY_FINALIZATION -> {
+                                check(
+                                    DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                        context = context,
+                                        dbManager = dbManager,
+                                        downloadId = latest.id,
+                                        executionId = latest.executionId,
+                                    )
+                                ) {
+                                    "Committed History finalization did not converge for ${latest.id}"
+                                }
+                                return
+                            }
+                            DownloadExecutionRecovery.RecoveryDisposition.GENERIC,
+                            null -> Unit
                         }
                         check(
                             DownloadWorker.cancelProcessesForExecution(

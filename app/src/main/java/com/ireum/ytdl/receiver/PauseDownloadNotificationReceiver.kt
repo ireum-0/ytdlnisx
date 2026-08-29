@@ -66,10 +66,10 @@ class PauseDownloadNotificationReceiver private constructor(
                     injectedFailure?.invoke()
                     if (expectedExecutionId.isNotBlank()) {
                         withDownloadWorkerExecutionSideEffectLease(id.toLong(), expectedExecutionId) {
-                            withDownloadWorkerExecutionLock {
+                            val semanticResult = withDownloadWorkerExecutionLock {
                                 val item = dbManager.downloadDao.getDownloadById(id.toLong())
                                 if (item.executionId != expectedExecutionId) {
-                                    return@withDownloadWorkerExecutionLock false
+                                    return@withDownloadWorkerExecutionLock null
                                 }
                                 check(
                                     DownloadExecutionRecovery.recordPending(
@@ -81,50 +81,77 @@ class PauseDownloadNotificationReceiver private constructor(
                                 ) {
                                     "Could not persist pause recovery responsibility for ${item.id}"
                                 }
-                                DownloadRepository(dbManager).setDownloadStatus(
-                                    item.id,
-                                    DownloadRepository.Status.Paused,
-                                    expectedExecutionId,
-                                )
-                            }
-                            val committed = dbManager.downloadDao
-                                .getNullableDownloadById(id.toLong())
-                                ?.let {
-                                    it.executionId == expectedExecutionId &&
-                                        it.status == DownloadRepository.Status.Paused.name
-                                } == true
-                            check(committed) {
-                                "Pause semantic state was not committed for $id"
-                            }
-                            paused = true
-                            check(
-                                DownloadExecutionRecovery.markUserStopSemanticCommitted(
-                                    context = c,
-                                    downloadId = id.toLong(),
-                                    executionId = expectedExecutionId,
+                                DownloadRepository(dbManager).convergeUserStopSemantic(
+                                    id = item.id,
+                                    expectedExecutionId = expectedExecutionId,
                                     disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
                                 )
-                            ) {
-                                "Pause semantic carrier was not acknowledged for $id"
                             }
-                            // The durable pause won before the native
-                            // process cancellation.  The per-Download
-                            // lease prevents a newer attempt from starting
-                            // until this exact E1 is quiesced.  This also
-                            // handles an idempotent repeated Pause: an
-                            // unchanged Paused row is not proof that E1 is
-                            // already quiescent.
-                            if (
-                                DownloadExecutionRecovery.quiesceAfterDurableStop(
-                                    context = c,
-                                    downloadId = id.toLong(),
-                                    executionId = expectedExecutionId,
-                                    dbManager = dbManager,
-                                )
-                            ) {
-                                notificationUtil.cancelRunningDownloadNotification(id)
-                            } else {
-                                paused = false
+                            if (semanticResult != null) {
+                                when (val outcome = semanticResult.outcome) {
+                                    DownloadRepository.UserStopSemanticOutcome.USER_STOP_COMMITTED,
+                                    DownloadRepository.UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED -> {
+                                        paused = true
+                                        check(
+                                            DownloadExecutionRecovery.markUserStopSemanticCommitted(
+                                                context = c,
+                                                downloadId = id.toLong(),
+                                                executionId = expectedExecutionId,
+                                                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                                            )
+                                        ) {
+                                            "Pause semantic carrier was not acknowledged for $id"
+                                        }
+                                        // The durable pause won before the native
+                                        // process cancellation.  The per-Download
+                                        // lease prevents a newer attempt from starting
+                                        // until this exact E1 is quiesced.
+                                        if (
+                                            DownloadExecutionRecovery.quiesceAfterDurableStop(
+                                                context = c,
+                                                downloadId = id.toLong(),
+                                                executionId = expectedExecutionId,
+                                                dbManager = dbManager,
+                                            )
+                                        ) {
+                                            notificationUtil.cancelRunningDownloadNotification(id)
+                                        } else {
+                                            paused = false
+                                        }
+                                    }
+                                    DownloadRepository.UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON -> {
+                                        paused = false
+                                        check(
+                                            DownloadExecutionRecovery
+                                                .convergeUserStopBeforeGenericCleanup(
+                                                    context = c,
+                                                    dbManager = dbManager,
+                                                    downloadId = id.toLong(),
+                                                    executionId = expectedExecutionId,
+                                                )
+                                        ) {
+                                            "Committed History finalization remained unresolved for $id"
+                                        }
+                                    }
+                                    DownloadRepository.UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON -> {
+                                        paused = false
+                                        check(
+                                            DownloadExecutionRecovery
+                                                .convergeUserStopBeforeGenericCleanup(
+                                                    context = c,
+                                                    dbManager = dbManager,
+                                                    downloadId = id.toLong(),
+                                                    executionId = expectedExecutionId,
+                                                )
+                                        ) {
+                                            "Stronger Cancel convergence remained unresolved for $id"
+                                        }
+                                    }
+                                    DownloadRepository.UserStopSemanticOutcome.OWNERSHIP_LOST -> Unit
+                                    is DownloadRepository.UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE -> {
+                                        throw outcome.error
+                                    }
+                                }
                             }
                         }
                     }

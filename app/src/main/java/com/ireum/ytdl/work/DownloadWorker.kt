@@ -168,6 +168,43 @@ internal suspend fun observeQueuedDownloadsAfterRecovery(
     return DownloadQueueAdmission(recovery, queuedItems)
 }
 
+/**
+ * Returns the committed primary History authority for this exact Download
+ * row.  The caller supplies the row it has just read; worker side-effect
+ * gates call this only after taking the per-Download lease and the short
+ * execution lock, so a stale generation cannot inherit E1's authority.
+ */
+internal fun isDurablyCommittedHistoryReplacementForExecution(
+    dbManager: DBManager,
+    downloadItem: DownloadItem,
+): Boolean {
+    val current = dbManager.downloadDao.getNullableDownloadById(downloadItem.id) ?: return false
+    if (downloadItem.executionId.isNotBlank() && current.executionId != downloadItem.executionId) {
+        return false
+    }
+    val marker = HistoryRedownloadMarker.parse(current.playlistURL) ?: return false
+    return dbManager.historyDao.getNullableItem(marker.historyId)?.downloadId == downloadItem.id
+}
+
+/**
+ * Exact live-worker revocation barrier for a durable user stop.  A committed
+ * History replacement is the stronger primary result and is therefore not a
+ * user-stop revocation; its dedicated finalization path owns the row instead.
+ */
+internal fun hasDurableUserStopRevokedAuthority(
+    context: Context,
+    dbManager: DBManager,
+    current: DownloadItem,
+): Boolean {
+    return current.executionId.isNotBlank() &&
+        !isDurablyCommittedHistoryReplacementForExecution(dbManager, current) &&
+        DownloadExecutionRecovery.hasPendingUserStopForExecution(
+            context = context,
+            downloadId = current.id,
+            executionId = current.executionId,
+        )
+}
+
 
 class DownloadWorker(
     private val context: Context,
@@ -203,7 +240,7 @@ class DownloadWorker(
     private suspend fun cleanupStoppedWorker(
         includeStaleRows: Boolean = true,
         propagateRequeueFailure: Boolean = false,
-    ) = withContext(Dispatchers.IO + NonCancellable) {
+    ): Unit = withContext(Dispatchers.IO + NonCancellable) {
         val dbManager = DBManager.getInstance(context)
         val dao = dbManager.downloadDao
         val snapshot = withDownloadWorkerExecutionLock {
@@ -358,6 +395,11 @@ class DownloadWorker(
                         context = context,
                         item = current,
                         authoritativeIssue = snapshot.authoritativeIssues[downloadId],
+                        disposition = if (downloadId in snapshot.committedHistoryReplacementIds) {
+                            DownloadExecutionRecovery.RecoveryDisposition.HISTORY_FINALIZATION
+                        } else {
+                            DownloadExecutionRecovery.RecoveryDisposition.GENERIC
+                        },
                     )
                     if (!recoveryRecorded) {
                         recoveryPublicationFailedIds += downloadId
@@ -367,51 +409,88 @@ class DownloadWorker(
                             )
                         )
                     }
-                    val userStopPreparation =
-                        DownloadExecutionRecovery.prepareUserStopBeforeNative(
+                    val historyFinalizationPending =
+                        DownloadExecutionRecovery.hasPendingHistoryFinalizationForExecution(
                             context = context,
-                            dbManager = dbManager,
                             downloadId = downloadId,
                             executionId = expectedExecutionId,
                         )
-                    if (
-                        userStopPreparation ==
-                            DownloadExecutionRecovery.UserStopPreparation.BLOCKED
-                    ) {
-                        nativeQuiescenceBlockedIds += downloadId
-                        recoveryEligibleIds += downloadId
+                    if (historyFinalizationPending) {
+                        check(
+                            DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                context = context,
+                                dbManager = dbManager,
+                                downloadId = downloadId,
+                                executionId = expectedExecutionId,
+                            )
+                        ) {
+                            "Committed History finalization remained unresolved for download $downloadId"
+                        }
+                        userStopConvergedIds += downloadId
                     } else {
+                        val userStopPreparation =
+                            DownloadExecutionRecovery.prepareUserStopBeforeNative(
+                                context = context,
+                                dbManager = dbManager,
+                                downloadId = downloadId,
+                                executionId = expectedExecutionId,
+                            )
                         if (
                             userStopPreparation ==
-                                DownloadExecutionRecovery.UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE
+                                DownloadExecutionRecovery.UserStopPreparation.BLOCKED
                         ) {
-                            check(
-                                DownloadExecutionRecovery.quiesceAfterDurableStop(
-                                    context = context,
-                                    downloadId = downloadId,
-                                    executionId = expectedExecutionId,
-                                    dbManager = dbManager,
-                                )
-                            ) {
-                                "User-stop native quiescence remained unresolved for download $downloadId"
-                            }
-                            userStopConvergedIds += downloadId
+                        nativeQuiescenceBlockedIds += downloadId
+                        recoveryEligibleIds += downloadId
                         } else {
-                            check(
-                                cancelProcessesForExecution(downloadId, expectedExecutionId)
+                            if (
+                                userStopPreparation ==
+                                    DownloadExecutionRecovery.UserStopPreparation.COMMITTED_HISTORY_ALREADY_WON
                             ) {
-                                "Native process owner changed while cleaning download $downloadId"
-                            }
-                            if (recoveryRecorded) {
                                 check(
-                                    DownloadExecutionRecovery.markNativeQuiescent(
+                                    DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
                                         context = context,
+                                        dbManager = dbManager,
                                         downloadId = downloadId,
                                         executionId = expectedExecutionId,
-                                        exactGenerationProof = true,
                                     )
                                 ) {
-                                    "Native quiescence recovery carrier was not durable for download $downloadId"
+                                    "Committed History finalization remained unresolved for download $downloadId"
+                                }
+                                userStopConvergedIds += downloadId
+                            } else {
+                                if (
+                                    userStopPreparation ==
+                                        DownloadExecutionRecovery.UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE
+                                ) {
+                                    check(
+                                        DownloadExecutionRecovery.quiesceAfterDurableStop(
+                                            context = context,
+                                            downloadId = downloadId,
+                                            executionId = expectedExecutionId,
+                                            dbManager = dbManager,
+                                        )
+                                    ) {
+                                        "User-stop native quiescence remained unresolved for download $downloadId"
+                                    }
+                                    userStopConvergedIds += downloadId
+                                } else {
+                                    check(
+                                        cancelProcessesForExecution(downloadId, expectedExecutionId)
+                                    ) {
+                                        "Native process owner changed while cleaning download $downloadId"
+                                    }
+                                    if (recoveryRecorded) {
+                                        check(
+                                            DownloadExecutionRecovery.markNativeQuiescent(
+                                                context = context,
+                                                downloadId = downloadId,
+                                                executionId = expectedExecutionId,
+                                                exactGenerationProof = true,
+                                            )
+                                        ) {
+                                            "Native quiescence recovery carrier was not durable for download $downloadId"
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -807,6 +886,11 @@ class DownloadWorker(
                     !this@DownloadWorker.isStopped &&
                         (
                             DownloadCancellationRegistry.belongsTo(item.id, item.executionId) ||
+                                DownloadExecutionRecovery.hasPendingUserStopForExecution(
+                                    context = context,
+                                    downloadId = item.id,
+                                    executionId = item.executionId,
+                                ) ||
                                 runCatching {
                                     dbManager.lowQualityRedownloadDao
                                         .hasCancellationRequestedByDownload(item.id)
@@ -971,12 +1055,20 @@ class DownloadWorker(
                         val latest = runCatching { dao.getNullableDownloadById(downloadItem.id) }.getOrNull()
                         val lostExecutionOwnership = downloadItem.executionId.isNotBlank() &&
                             (latest == null || latest.executionId != downloadItem.executionId)
+                        val durableUserStop = latest?.let {
+                            hasDurableUserStopRevokedAuthority(
+                                context = context,
+                                dbManager = dbManager,
+                                current = it,
+                            )
+                        } == true
                         val lowQualityCancellationRequested = runCatching {
                             dbManager.lowQualityRedownloadDao
                                 .hasCancellationRequestedByDownload(downloadItem.id)
                         }.getOrDefault(false)
                         return this@DownloadWorker.isStopped ||
                             lostExecutionOwnership ||
+                            durableUserStop ||
                             lowQualityCancellationRequested ||
                             latest?.status in setOf(
                                 DownloadRepository.Status.Paused.name,
@@ -1025,11 +1117,54 @@ class DownloadWorker(
                         )
                     }
                     if (historyReplacementCommitted) {
-                        val affectedOperations = DownloadRepository(dbManager)
-                            .completeAndDelete(
-                                id = downloadItem.id,
-                                expectedExecutionId = downloadItem.executionId,
-                            )
+                        val affectedOperations =
+                            withDownloadWorkerExecutionSideEffectLease(
+                                downloadId = downloadItem.id,
+                                executionId = downloadItem.executionId,
+                            ) {
+                                withDownloadWorkerExecutionLock {
+                                    val current = dbManager.downloadDao
+                                        .getNullableDownloadById(downloadItem.id)
+                                    check(
+                                        current == null ||
+                                            current.executionId == downloadItem.executionId
+                                    ) {
+                                        "Committed History finalization lost execution ownership for " +
+                                            "download ${downloadItem.id}"
+                                    }
+                                }
+                                check(
+                                    DownloadExecutionRecovery.prepareCommittedHistoryFinalization(
+                                        context = context,
+                                        dbManager = dbManager,
+                                        downloadId = downloadItem.id,
+                                        executionId = downloadItem.executionId,
+                                    )
+                                ) {
+                                    "Committed History finalization remained unresolved for download ${downloadItem.id}"
+                                }
+                                val current = withDownloadWorkerExecutionLock {
+                                    dbManager.downloadDao.getNullableDownloadById(downloadItem.id)
+                                }
+                                val affected = if (current == null) {
+                                    emptySet()
+                                } else {
+                                    DownloadRepository(dbManager).completeAndDelete(
+                                        id = downloadItem.id,
+                                        expectedExecutionId = downloadItem.executionId,
+                                    )
+                                }
+                                check(
+                                    DownloadExecutionRecovery.clearAfterCommittedHistoryFinalization(
+                                        context = context,
+                                        downloadId = downloadItem.id,
+                                        executionId = downloadItem.executionId,
+                                    )
+                                ) {
+                                    "Committed History recovery carrier could not be cleared for download ${downloadItem.id}"
+                                }
+                                affected
+                            }
                         runCatching {
                             LowQualityRedownloadLedger.refresh(context, affectedOperations)
                         }
@@ -1141,7 +1276,9 @@ class DownloadWorker(
             phase: YtdlpPhaseOutcome.Completed,
         ): AttemptControl {
             ytdlpPhase = phase
-                    persistDownloadMetadata(resultRepo, dao, downloadItem)
+            withOwnedExecutionSideEffect(downloadItem) {
+                persistDownloadMetadata(resultRepo, dao, downloadItem)
+            }
             finalPaths = mutableListOf()
             hardSubBurned = false
             if (runOutputProcessing() == AttemptControl.STOP) {
@@ -1165,14 +1302,16 @@ class DownloadWorker(
                             eventBus.post(WorkerProgress(100, hardSubSkipReason, downloadItem.id, downloadItem.logID))
                         }
                         if (shouldBurnHardSub && sharedPreferences.getBoolean("parallel_hardsub_postprocessing", false)) {
-                            downloadItem.status = DownloadRepository.Status.PostProcessing.toString()
-                            check(
-                                dao.updateIfExecutionOwnedAndRunning(
-                                    downloadItem,
-                                    downloadItem.executionId,
-                                )
-                            ) {
-                                "Post-processing ownership lost for download ${downloadItem.id}"
+                            withOwnedExecutionSideEffect(downloadItem) {
+                                downloadItem.status = DownloadRepository.Status.PostProcessing.toString()
+                                check(
+                                    dao.updateIfExecutionOwnedAndRunning(
+                                        downloadItem,
+                                        downloadItem.executionId,
+                                    )
+                                ) {
+                                    "Post-processing ownership lost for download ${downloadItem.id}"
+                                }
                             }
                             if (DownloadWorkerExecutionOwners.isOwnedBy(downloadItem.id, downloadItem.executionId)) {
                                 runningYTDLInstances.remove(downloadItem.id)
@@ -1918,46 +2057,48 @@ class DownloadWorker(
                                         mediaPublishedAt = downloadItem.mediaPublishedAt.takeIf(MediaPublishedDate::isPresent)
                                             ?: 0L
                                     )
-                                    val replacementOutcome = if (replacedHistoryId > 0L) {
-                                        historyKeywordAssignments
-                                            .replaceHistoryPreservingAssignmentsAuthorizedBlocking(
-                                                historyId = replacedHistoryId,
-                                                expectedSourceUrl = downloadItem.url,
-                                                expectedType = downloadItem.type,
-                                                replacementDownloadId = downloadItem.id,
-                                                replacementOperationId = downloadItem.operationId,
-                                                expectedExecutionId = downloadItem.executionId,
-                                            ) { previous ->
-                                                historyItem.copy(
-                                                    id = previous.id,
-                                                    artist = previous.artist,
-                                                    lastWatched = previous.lastWatched,
-                                                    playbackPositionMs = if (completedHardSub) {
-                                                        0L
-                                                    } else {
-                                                        previous.playbackPositionMs
-                                                    },
-                                                    localTreeUri = "",
-                                                    localTreePath = "",
-                                                    keywords = previous.keywords,
-                                                    customThumb = previous.customThumb,
-                                                    hardSubScanRemoved = if (completedHardSub) {
-                                                        true
-                                                    } else {
-                                                        previous.hardSubScanRemoved
-                                                    },
-                                                    hardSubDone = if (completedHardSub) {
-                                                        true
-                                                    } else {
-                                                        previous.hardSubDone
-                                                    },
-                                                    mediaPublishedAt = downloadItem.mediaPublishedAt
-                                                        .takeIf(MediaPublishedDate::isPresent)
-                                                        ?: previous.mediaPublishedAt
-                                                )
-                                            }
-                                    } else {
-                                        null
+                                    val replacementOutcome = withOwnedExecutionSideEffect(downloadItem) {
+                                        if (replacedHistoryId > 0L) {
+                                            historyKeywordAssignments
+                                                .replaceHistoryPreservingAssignmentsAuthorizedBlocking(
+                                                    historyId = replacedHistoryId,
+                                                    expectedSourceUrl = downloadItem.url,
+                                                    expectedType = downloadItem.type,
+                                                    replacementDownloadId = downloadItem.id,
+                                                    replacementOperationId = downloadItem.operationId,
+                                                    expectedExecutionId = downloadItem.executionId,
+                                                ) { previous ->
+                                                    historyItem.copy(
+                                                        id = previous.id,
+                                                        artist = previous.artist,
+                                                        lastWatched = previous.lastWatched,
+                                                        playbackPositionMs = if (completedHardSub) {
+                                                            0L
+                                                        } else {
+                                                            previous.playbackPositionMs
+                                                        },
+                                                        localTreeUri = "",
+                                                        localTreePath = "",
+                                                        keywords = previous.keywords,
+                                                        customThumb = previous.customThumb,
+                                                        hardSubScanRemoved = if (completedHardSub) {
+                                                            true
+                                                        } else {
+                                                            previous.hardSubScanRemoved
+                                                        },
+                                                        hardSubDone = if (completedHardSub) {
+                                                            true
+                                                        } else {
+                                                            previous.hardSubDone
+                                                        },
+                                                        mediaPublishedAt = downloadItem.mediaPublishedAt
+                                                            .takeIf(MediaPublishedDate::isPresent)
+                                                            ?: previous.mediaPublishedAt
+                                                    )
+                                                }
+                                        } else {
+                                            null
+                                        }
                                     }
                                     if (replacementOutcome is HistoryReplacementOutcome.Updated) {
                                         // The replacement transaction also records
@@ -1995,7 +2136,9 @@ class DownloadWorker(
                                             }
                                         }
                                     } else {
-                                        historyKeywordAssignments.insertHistory(historyItem)
+                                        withOwnedExecutionSideEffect(downloadItem) {
+                                            historyKeywordAssignments.insertHistory(historyItem)
+                                        }
                                     }
                                     persistedHistoryId?.let { historyId ->
                                         com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(dbManager)
@@ -2211,27 +2354,34 @@ class DownloadWorker(
                             DownloadIssueText.formatted(resources, issue)
                         }
                         try {
-                            withContext(Dispatchers.Main) {
-                                notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
-                                if (historyReplacementFailureIssue == null) {
-                                    notificationUtil.createDownloadFinished(
-                                        downloadItem.id,
-                                        notificationTitle,
-                                        downloadItem.type,
-                                        if (finalPaths.isEmpty()) null else finalPaths,
-                                        resources,
-                                        notificationMessage
-                                    )
-                                } else {
-                                    notificationUtil.createDownloadErrored(
-                                        downloadItem.id,
-                                        notificationTitle,
-                                        notificationMessage.orEmpty(),
-                                        downloadItem.logID,
-                                        resources,
-                                        retryable = false,
-                                        allowReconfigure = false
-                                    )
+                            // The notification is an ordinary terminal
+                            // publication, so take the same exact side-effect
+                            // lease as the terminal Room mutation.  A durable
+                            // USER_STOP carrier that wins first therefore
+                            // prevents a stale success/error publication.
+                            withOwnedExecutionSideEffect(downloadItem) {
+                                withContext(Dispatchers.Main) {
+                                    notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
+                                    if (historyReplacementFailureIssue == null) {
+                                        notificationUtil.createDownloadFinished(
+                                            downloadItem.id,
+                                            notificationTitle,
+                                            downloadItem.type,
+                                            if (finalPaths.isEmpty()) null else finalPaths,
+                                            resources,
+                                            notificationMessage
+                                        )
+                                    } else {
+                                        notificationUtil.createDownloadErrored(
+                                            downloadItem.id,
+                                            notificationTitle,
+                                            notificationMessage.orEmpty(),
+                                            downloadItem.logID,
+                                            resources,
+                                            retryable = false,
+                                            allowReconfigure = false
+                                        )
+                                    }
                                 }
                             }
                         } catch (notificationError: Exception) {
@@ -2277,25 +2427,55 @@ class DownloadWorker(
 //                        }
 
                         if (!preserveQueueRecord) {
-            if (!historyReplacementCommitted && shouldStopForUserRequest()) return AttemptControl.STOP
-                            val downloadRepository = DownloadRepository(dbManager)
-                            val affectedOperations = if (
-                                historyReplacementTerminalAction ==
-                                    HistoryReplacementTerminalAction.TARGET_DELETED
-                            ) {
-                                downloadRepository.completeHistoryTargetDeletedAndDelete(
-                                    id = downloadItem.id,
-                                    expectedExecutionId = downloadItem.executionId,
-                                )
-                            } else {
-                                downloadRepository.completeAndDelete(
-                                    id = downloadItem.id,
-                                    expectedExecutionId = downloadItem.executionId,
-                                )
+                            val terminalization = withOwnedExecutionSideEffect(downloadItem) {
+                                if (!historyReplacementCommitted && shouldStopForUserRequest()) {
+                                    AttemptControl.STOP
+                                } else {
+                                    val downloadRepository = DownloadRepository(dbManager)
+                                    if (historyReplacementCommitted) {
+                                        check(
+                                            DownloadExecutionRecovery.prepareCommittedHistoryFinalization(
+                                                context = context,
+                                                dbManager = dbManager,
+                                                downloadId = downloadItem.id,
+                                                executionId = downloadItem.executionId,
+                                            )
+                                        ) {
+                                            "Committed History finalization preparation remained unresolved for ${downloadItem.id}"
+                                        }
+                                    }
+                                    val affectedOperations = if (
+                                        historyReplacementTerminalAction ==
+                                            HistoryReplacementTerminalAction.TARGET_DELETED
+                                    ) {
+                                        downloadRepository.completeHistoryTargetDeletedAndDelete(
+                                            id = downloadItem.id,
+                                            expectedExecutionId = downloadItem.executionId,
+                                        )
+                                    } else {
+                                        downloadRepository.completeAndDelete(
+                                            id = downloadItem.id,
+                                            expectedExecutionId = downloadItem.executionId,
+                                        )
+                                    }
+                                    if (historyReplacementCommitted) {
+                                        check(
+                                            DownloadExecutionRecovery.clearAfterCommittedHistoryFinalization(
+                                                context = context,
+                                                downloadId = downloadItem.id,
+                                                executionId = downloadItem.executionId,
+                                            )
+                                        ) {
+                                            "Committed History recovery carrier could not be cleared for ${downloadItem.id}"
+                                        }
+                                    }
+                                    runCatching {
+                                        LowQualityRedownloadLedger.refresh(context, affectedOperations)
+                                    }
+                                    AttemptControl.CONTINUE
+                                }
                             }
-                            runCatching {
-                                LowQualityRedownloadLedger.refresh(context, affectedOperations)
-                            }
+                            if (terminalization == AttemptControl.STOP) return AttemptControl.STOP
                         }
 
                         if (ytdlpPhase.state.logging.enabled){
@@ -2358,6 +2538,10 @@ class DownloadWorker(
                                 "Stale Download execution stopped id=${downloadItem.id}",
                                 it,
                             )
+            return AttemptControl.STOP
+                        }
+                        if (shouldStopForUserRequest()) {
+                            downloadOutcome = DownloadOutcome.canceled()
             return AttemptControl.STOP
                         }
                         cancelDownloadNotificationSafely(notificationUtil, downloadItem)
@@ -2526,9 +2710,11 @@ class DownloadWorker(
                             }
                             if (!preserveQueueRecord) {
                                 try {
-                    if (shouldStopForUserRequest()) return AttemptControl.STOP
-                                    val affectedOperations = DownloadRepository(dbManager)
-                                        .let { repository ->
+                                    val affectedOperations = withOwnedExecutionSideEffect(downloadItem) {
+                                        if (shouldStopForUserRequest()) {
+                                            return@withOwnedExecutionSideEffect null
+                                        }
+                                        DownloadRepository(dbManager).let { repository ->
                                             if (targetDeleted) {
                                                 repository.completeHistoryTargetDeletedAndDelete(
                                                     id = downloadItem.id,
@@ -2542,6 +2728,8 @@ class DownloadWorker(
                                                 )
                                             }
                                         }
+                                    }
+                                    if (affectedOperations == null) return AttemptControl.STOP
                                     runCatching {
                                         LowQualityRedownloadLedger.refresh(
                                             context,
@@ -2768,35 +2956,36 @@ class DownloadWorker(
                             }.getOrDefault(DownloadRetryStrategy.ORIGINAL)
                         )
 
-                        notificationUtil.createDownloadErrored(
-                            downloadItem.id,
-                            notificationTitle,
-                            structuredFailureSummary,
-                            downloadItem.logID,
-                            resources,
-                            retryable = DownloadRetryPolicy.canOffer(
-                                retryMetadata,
-                                DownloadRetryStrategy.SAME_SETTINGS,
-                                primaryIssue.retryable
-                            ),
-                            allowReconfigure =
-                                DownloadSuggestedAction.RECONFIGURE in primaryIssue.suggestedActions &&
-                                    DownloadRetryPolicy.canOffer(
-                                        retryMetadata,
-                                        DownloadRetryStrategy.RECONFIGURED
-                                    ),
-                            retryCapabilityOperationId = downloadItem.operationId,
-                            retryCapabilityAttempt = downloadItem.retryAttempt,
-                        )
-
-                        eventBus.post(
-                            WorkerProgress(
-                                100,
-                                structuredFailureSummary,
+                        withOwnedExecutionSideEffect(downloadItem) {
+                            notificationUtil.createDownloadErrored(
                                 downloadItem.id,
-                                downloadItem.logID
+                                notificationTitle,
+                                structuredFailureSummary,
+                                downloadItem.logID,
+                                resources,
+                                retryable = DownloadRetryPolicy.canOffer(
+                                    retryMetadata,
+                                    DownloadRetryStrategy.SAME_SETTINGS,
+                                    primaryIssue.retryable
+                                ),
+                                allowReconfigure =
+                                    DownloadSuggestedAction.RECONFIGURE in primaryIssue.suggestedActions &&
+                                        DownloadRetryPolicy.canOffer(
+                                            retryMetadata,
+                                            DownloadRetryStrategy.RECONFIGURED
+                                        ),
+                                retryCapabilityOperationId = downloadItem.operationId,
+                                retryCapabilityAttempt = downloadItem.retryAttempt,
                             )
-                        )
+                            eventBus.post(
+                                WorkerProgress(
+                                    100,
+                                    structuredFailureSummary,
+                                    downloadItem.id,
+                                    downloadItem.logID
+                                )
+                            )
+                        }
             return AttemptControl.CONTINUE
                     }
 
@@ -2836,11 +3025,55 @@ class DownloadWorker(
                             }
                             if (current != null) {
                                 try {
-                                    val affectedOperations = DownloadRepository(dbManager)
-                                        .completeAndDelete(
-                                            id = downloadItem.id,
-                                            expectedExecutionId = downloadItem.executionId,
-                                        )
+                                    val affectedOperations =
+                                        withDownloadWorkerExecutionSideEffectLease(
+                                            downloadId = downloadItem.id,
+                                            executionId = downloadItem.executionId,
+                                        ) {
+                                            withDownloadWorkerExecutionLock {
+                                                val latest = dao.getNullableDownloadById(downloadItem.id)
+                                                check(
+                                                    latest == null ||
+                                                        latest.executionId == downloadItem.executionId
+                                                ) {
+                                                    "Committed History finalization lost execution ownership for " +
+                                                        "download ${downloadItem.id}"
+                                                }
+                                            }
+                                            check(
+                                                DownloadExecutionRecovery.prepareCommittedHistoryFinalization(
+                                                    context = context,
+                                                    dbManager = dbManager,
+                                                    downloadId = downloadItem.id,
+                                                    executionId = downloadItem.executionId,
+                                                )
+                                            ) {
+                                                "Committed History finalization remained unresolved for " +
+                                                    "download ${downloadItem.id}"
+                                            }
+                                            val latest = withDownloadWorkerExecutionLock {
+                                                dao.getNullableDownloadById(downloadItem.id)
+                                            }
+                                            if (latest == null) {
+                                                emptySet()
+                                            } else {
+                                                DownloadRepository(dbManager).completeAndDelete(
+                                                    id = downloadItem.id,
+                                                    expectedExecutionId = downloadItem.executionId,
+                                                )
+                                            }.also {
+                                                check(
+                                                    DownloadExecutionRecovery.clearAfterCommittedHistoryFinalization(
+                                                        context = context,
+                                                        downloadId = downloadItem.id,
+                                                        executionId = downloadItem.executionId,
+                                                    )
+                                                ) {
+                                                    "Committed History recovery carrier could not be cleared for " +
+                                                        "download ${downloadItem.id}"
+                                                }
+                                            }
+                                        }
                                     runCatching {
                                         LowQualityRedownloadLedger.refresh(context, affectedOperations)
                                     }
@@ -3208,6 +3441,66 @@ class DownloadWorker(
 
         private suspend fun cleanupAttempt() {
 
+                        /*
+                         * A durable user stop can arrive after the last
+                         * ordinary checkpoint but before this attempt's
+                         * finally block.  Consume it while the exact
+                         * per-Download lease is held.  If semantic or native
+                         * convergence is still unresolved, release only this
+                         * worker owner and leave the journal/process owner to
+                         * recovery; never fall through to generic requeue.
+                         */
+                        var durableStopPending = false
+                        withContext(Dispatchers.IO + NonCancellable) {
+                            val userStopPending =
+                                DownloadExecutionRecovery.hasPendingUserStopForExecution(
+                                    context = context,
+                                    downloadId = downloadItem.id,
+                                    executionId = downloadItem.executionId,
+                                )
+                            val historyFinalizationPending =
+                                DownloadExecutionRecovery.hasPendingHistoryFinalizationForExecution(
+                                    context = context,
+                                    downloadId = downloadItem.id,
+                                    executionId = downloadItem.executionId,
+                                )
+                            if (userStopPending || historyFinalizationPending) {
+                                val converged = runCatching {
+                                    withDownloadWorkerExecutionSideEffectLease(
+                                        downloadId = downloadItem.id,
+                                        executionId = downloadItem.executionId,
+                                    ) {
+                                        if (historyFinalizationPending) {
+                                            DownloadExecutionRecovery
+                                                .convergeCommittedHistoryFinalization(
+                                                    context = context,
+                                                    dbManager = dbManager,
+                                                    downloadId = downloadItem.id,
+                                                    executionId = downloadItem.executionId,
+                                                )
+                                        } else {
+                                            DownloadExecutionRecovery
+                                                .convergeUserStopBeforeGenericCleanup(
+                                                    context = context,
+                                                    dbManager = dbManager,
+                                                    downloadId = downloadItem.id,
+                                                    executionId = downloadItem.executionId,
+                                                )
+                                        }
+                                    }
+                                }.getOrElse { failure ->
+                                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                                        context = context,
+                                        downloadId = downloadItem.id,
+                                        dbManager = dbManager,
+                                        failure = failure,
+                                    )
+                                    false
+                                }
+                                durableStopPending = !converged
+                            }
+                        }
+
                         downloadOutcome?.let { outcome ->
                             Log.i(
                                 TAG,
@@ -3235,7 +3528,23 @@ class DownloadWorker(
                             if (workerEntryMatches) {
                                 workerDownloadIds.remove(downloadItem.id)
                             }
-                            if (
+                            if (durableStopPending) {
+                                expectedExecutionId?.let {
+                                    DownloadWorkerExecutionOwners.release(downloadItem.id, it)
+                                    if (!hasNativeProcessRegistryEntry(downloadItem.id, it)) {
+                                        DownloadWorkerProcessOwners.release(downloadItem.id, it)
+                                    }
+                                }
+                                if (workerEntryMatches) {
+                                    workerCleanupDownloadIds.remove(downloadItem.id)
+                                    workerAuthoritativeIssues.remove(downloadItem.id)
+                                    if (expectedExecutionId != null) {
+                                        workerExecutionIds.remove(downloadItem.id, expectedExecutionId)
+                                    } else {
+                                        workerExecutionIds.remove(downloadItem.id)
+                                    }
+                                }
+                            } else if (
                                 latestStatus == null ||
                                     latestStatus.status !in setOf(
                                         DownloadRepository.Status.Active.name,
@@ -3574,13 +3883,15 @@ class DownloadWorker(
                 downloadItem.logID = null
                 null
             }
-            check(
-                services.downloadDao.updateIfExecutionOwnedAndRunning(
-                    downloadItem,
-                    downloadItem.executionId,
-                )
-            ) {
-                "Download ownership lost before yt-dlp execution ${downloadItem.id}"
+            withOwnedExecutionSideEffect(downloadItem) {
+                check(
+                    services.downloadDao.updateIfExecutionOwnedAndRunning(
+                        downloadItem,
+                        downloadItem.executionId,
+                    )
+                ) {
+                    "Download ownership lost before yt-dlp execution ${downloadItem.id}"
+                }
             }
             YtdlpPhasePreparation(
                 initialAttempt = initialAttempt,
@@ -3756,7 +4067,17 @@ class DownloadWorker(
         )
         return coroutineScope {
             val processRegistered = CompletableDeferred<Unit>()
-            val execution = async(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            // A WorkManager cancellation must not interrupt the exact native
+            // execution while a durable user-stop carrier is still in its
+            // semantic phase.  The carrier is the handoff: recovery first
+            // establishes Cancelled/Paused, then the exact native quiescence
+            // protocol is allowed to terminate the process.  The marker and
+            // process owner remain durable/process-local recovery evidence if
+            // this worker is destroyed before that handoff completes.
+            val execution = async(
+                Dispatchers.IO + NonCancellable,
+                start = CoroutineStart.LAZY,
+            ) {
                 try {
                     YoutubeDLCompat.executeWithQuiescence(
                         applicationContext,
@@ -3869,7 +4190,13 @@ class DownloadWorker(
                             !execution.isCompleted ||
                                 YoutubeDLCompat.hasProcessById(processId)
                         }
-                        if (shouldCancel) {
+                        val semanticUserStopPending =
+                            DownloadExecutionRecovery.hasPendingUserStopSemanticForExecution(
+                                context = context,
+                                downloadId = input.downloadItem.id,
+                                executionId = input.downloadItem.executionId,
+                            )
+                        if (shouldCancel && !semanticUserStopPending) {
                             val quiesced = runCatching {
                                 cancelYtdlpProcess(
                                     input.downloadItem.id,
@@ -3887,6 +4214,20 @@ class DownloadWorker(
                                     }
                                 }
                             } else if (nativeRecoveryFailure == null) {
+                                nativeRecoveryFailure = NativeProcessQuiescenceException(
+                                    downloadId = input.downloadItem.id,
+                                    executionId = input.downloadItem.executionId,
+                                    originalFailure = pendingFailure,
+                                )
+                                pendingFailure = null
+                            }
+                        } else if (shouldCancel && semanticUserStopPending) {
+                            // Do not turn a worker cancellation into
+                            // terminate-before-semantic-write.  The durable
+                            // USER_CANCEL/USER_PAUSE carrier remains the
+                            // recovery owner and cleanupAttempt will retry the
+                            // semantic CAS before it invokes native quiescence.
+                            if (nativeRecoveryFailure == null) {
                                 nativeRecoveryFailure = NativeProcessQuiescenceException(
                                     downloadId = input.downloadItem.id,
                                     executionId = input.downloadItem.executionId,
@@ -4410,6 +4751,14 @@ class DownloadWorker(
     }
 
     private suspend fun assertExecutionOwnedBeforeAttemptLocked(downloadItem: DownloadItem) {
+        val current = DBManager.getInstance(context).downloadDao
+            .getNullableDownloadById(downloadItem.id)
+        if (current != null && hasDurableUserStopRevokedAuthority(context, DBManager.getInstance(context), current)) {
+            throw CancellationException(
+                "Durable user stop revoked Download side-effect authority " +
+                    "id=${downloadItem.id} executionId=${downloadItem.executionId}",
+            )
+        }
         if (
             DBManager.getInstance(context).lowQualityRedownloadDao
                 .hasCancellationRequestedByDownload(downloadItem.id)
@@ -4419,8 +4768,6 @@ class DownloadWorker(
                     "id=${downloadItem.id}"
             )
         }
-        val current = DBManager.getInstance(context).downloadDao
-            .getNullableDownloadById(downloadItem.id)
         if (
             current == null ||
                 current.executionId != downloadItem.executionId ||
@@ -4451,6 +4798,11 @@ class DownloadWorker(
                         downloadItem.id,
                         downloadItem.executionId,
                     ) ||
+                    (current != null && hasDurableUserStopRevokedAuthority(
+                        context = context,
+                        dbManager = DBManager.getInstance(context),
+                        current = current,
+                    )) ||
                     current?.status in setOf(
                         DownloadRepository.Status.Paused.name,
                         DownloadRepository.Status.Cancelled.name,
@@ -4978,10 +5330,7 @@ class DownloadWorker(
     private fun isDurablyCommittedHistoryReplacement(
         dbManager: DBManager,
         downloadItem: DownloadItem,
-    ): Boolean {
-        val marker = HistoryRedownloadMarker.parse(downloadItem.playlistURL) ?: return false
-        return dbManager.historyDao.getNullableItem(marker.historyId)?.downloadId == downloadItem.id
-    }
+    ): Boolean = isDurablyCommittedHistoryReplacementForExecution(dbManager, downloadItem)
 
     private fun buildYtdlpRetryProbeText(error: Exception, recentOutput: List<String>): String {
         return buildString {
@@ -7342,4 +7691,3 @@ class DownloadWorker(
     )
 
 }
-

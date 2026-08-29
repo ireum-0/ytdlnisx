@@ -243,27 +243,43 @@ internal suspend fun cleanupStoppedDownloadExecution(
     recoveryContext: Context? = null,
     dbManager: DBManager? = null,
 ): DownloadRepository.RunningDownloadRequeueResult {
-    if (
-        recoveryContext != null &&
+    if (recoveryContext != null) {
+        when (
             DownloadExecutionRecovery.pendingDispositionForExecution(
                 recoveryContext,
                 downloadId,
-            )?.let {
-                it == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL ||
-                    it == DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE
-            } == true
-    ) {
-        check(
-            DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
-                context = recoveryContext,
-                dbManager = dbManager ?: DBManager.getInstance(recoveryContext),
-                downloadId = downloadId,
-                executionId = executionId,
             )
         ) {
-            "User-stop recovery did not converge for download $downloadId"
+            DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE -> {
+                check(
+                    DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                        context = recoveryContext,
+                        dbManager = dbManager ?: DBManager.getInstance(recoveryContext),
+                        downloadId = downloadId,
+                        executionId = executionId,
+                    )
+                ) {
+                    "User-stop recovery did not converge for download $downloadId"
+                }
+                return DownloadRepository.RunningDownloadRequeueResult.USER_STOP_CONVERGED
+            }
+            DownloadExecutionRecovery.RecoveryDisposition.HISTORY_FINALIZATION -> {
+                check(
+                    DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                        context = recoveryContext,
+                        dbManager = dbManager ?: DBManager.getInstance(recoveryContext),
+                        downloadId = downloadId,
+                        executionId = executionId,
+                    )
+                ) {
+                    "Committed History finalization did not converge for download $downloadId"
+                }
+                return DownloadRepository.RunningDownloadRequeueResult.USER_STOP_CONVERGED
+            }
+            DownloadExecutionRecovery.RecoveryDisposition.GENERIC,
+            null -> Unit
         }
-        return DownloadRepository.RunningDownloadRequeueResult.USER_STOP_CONVERGED
     }
     val refusal = authoritativeIssue?.let { HistoryReplacementRefusal.from(it) }
     if (

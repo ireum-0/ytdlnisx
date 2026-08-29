@@ -14,6 +14,7 @@ import com.ireum.ytdl.util.LowQualityRedownloadProgress
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
+import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
@@ -382,7 +383,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         operationId: String,
         context: Context? = null,
     ): CancellationCommitResult {
-        return withCurrentLinkedExecutionLeases(
+        val result = withCurrentLinkedExecutionLeases(
             operationId = operationId,
             beforeAction = {
                 if (context != null) {
@@ -461,6 +462,8 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
             }
             CancellationCommitResult(linkedDownloadIds, publications)
         }
+        scheduleUnpublishedUserStopRecovery(context, result)
+        return result
     }
 
     suspend fun failCoordinator(
@@ -478,7 +481,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         reason: String = REASON_COORDINATOR_FAILURE,
         context: Context? = null,
     ): CancellationCommitResult {
-        return withCurrentLinkedExecutionLeases(
+        val result = withCurrentLinkedExecutionLeases(
             operationId = operationId,
             beforeAction = {
                 if (context != null) {
@@ -562,6 +565,47 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
             }
             CancellationCommitResult(linkedDownloadIds, publications)
         }
+        scheduleUnpublishedUserStopRecovery(context, result)
+        return result
+    }
+
+    /**
+     * A committed low-quality cancellation normally returns a publication so
+     * its caller can consume native quiescence immediately.  A committed
+     * History replacement intentionally has no Download cancellation
+     * publication, however; its exact user-stop carrier still needs a live
+     * recovery owner so it is converted to History finalization in this
+     * process instead of waiting for an unrelated restart.
+     */
+    private fun scheduleUnpublishedUserStopRecovery(
+        context: Context?,
+        result: CancellationCommitResult,
+    ) {
+        if (context == null) return
+        val publishedIds = result.publications.mapTo(mutableSetOf()) { it.downloadId }
+        result.downloadIds.distinct().forEach { downloadId ->
+            if (
+                downloadId !in publishedIds &&
+                    DownloadExecutionRecovery.pendingDispositionForExecution(
+                        context,
+                        downloadId,
+                    ) == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+            ) {
+                runCatching {
+                    DownloadExecutionRecovery.scheduleRecovery(
+                        context = context,
+                        downloadId = downloadId,
+                        dbManager = database,
+                    )
+                }.onFailure { schedulingFailure ->
+                    android.util.Log.e(
+                        "LowQualityRedownload",
+                        "Could not schedule unpublished user-stop recovery for $downloadId",
+                        schedulingFailure,
+                    )
+                }
+            }
+        }
     }
 
     /**
@@ -635,6 +679,16 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     ) {
         ids.forEach { id ->
             val item = database.downloadDao.getNullableDownloadById(id) ?: return@forEach
+            val historyReplacementCommitted = HistoryRedownloadMarker.parse(item.playlistURL)?.let {
+                database.historyDao.getNullableItem(it.historyId)?.downloadId == item.id
+            } == true
+            if (historyReplacementCommitted) {
+                // The committed History replacement is the stronger primary
+                // result. A late coordinator cancellation may terminalize its
+                // own ledger, but it must not rewrite the Download row that
+                // still carries post-commit finalization debt.
+                return@forEach
+            }
             val changed = if (item.executionId.isBlank()) {
                 database.downloadDao.cancelByUser(item.id)
             } else {

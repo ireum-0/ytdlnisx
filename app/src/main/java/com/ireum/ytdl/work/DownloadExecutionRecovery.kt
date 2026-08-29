@@ -51,6 +51,7 @@ internal object DownloadExecutionRecovery {
         GENERIC,
         USER_CANCEL,
         USER_PAUSE,
+        HISTORY_FINALIZATION,
     }
 
     /**
@@ -68,6 +69,7 @@ internal object DownloadExecutionRecovery {
     internal enum class UserStopPreparation {
         NOT_PENDING,
         READY_FOR_NATIVE_QUIESCENCE,
+        COMMITTED_HISTORY_ALREADY_WON,
         BLOCKED,
     }
 
@@ -137,6 +139,9 @@ internal object DownloadExecutionRecovery {
         val isUserStop: Boolean
             get() = disposition == RecoveryDisposition.USER_CANCEL ||
                 disposition == RecoveryDisposition.USER_PAUSE
+
+        val isHistoryFinalization: Boolean
+            get() = disposition == RecoveryDisposition.HISTORY_FINALIZATION
     }
 
     private fun commit(
@@ -160,21 +165,35 @@ internal object DownloadExecutionRecovery {
         phase: RecoveryPhase? = null,
     ): Boolean {
         YtdlpNativeProcessBarrier.configure(context)
+        if (
+            disposition == RecoveryDisposition.USER_PAUSE &&
+                item.status == DownloadRepository.Status.Cancelled.name
+        ) {
+            // A Pause request cannot downgrade a stronger already-committed
+            // Cancel decision into a resumable state.  Do not create a new
+            // Pause carrier for a terminal Cancelled row.
+            return false
+        }
         val requestedPhase = phase ?: if (
-            disposition == RecoveryDisposition.GENERIC
+            disposition == RecoveryDisposition.GENERIC ||
+                disposition == RecoveryDisposition.HISTORY_FINALIZATION
         ) {
             RecoveryPhase.NATIVE_QUIESCENCE_PENDING
         } else {
             RecoveryPhase.SEMANTIC_STOP_PENDING
         }
         if (
-            disposition == RecoveryDisposition.GENERIC &&
+            (
+                disposition == RecoveryDisposition.GENERIC ||
+                    disposition == RecoveryDisposition.HISTORY_FINALIZATION
+                ) &&
                 requestedPhase != RecoveryPhase.NATIVE_QUIESCENCE_PENDING
         ) {
             return false
         }
         if (
             disposition != RecoveryDisposition.GENERIC &&
+                disposition != RecoveryDisposition.HISTORY_FINALIZATION &&
                 phase != null &&
                 phase != RecoveryPhase.SEMANTIC_STOP_PENDING
         ) {
@@ -250,6 +269,10 @@ internal object DownloadExecutionRecovery {
             return false
         }
         val effectiveDisposition = when {
+            existingDisposition == RecoveryDisposition.HISTORY_FINALIZATION ->
+                RecoveryDisposition.HISTORY_FINALIZATION
+            disposition == RecoveryDisposition.HISTORY_FINALIZATION ->
+                RecoveryDisposition.HISTORY_FINALIZATION
             existingDisposition == RecoveryDisposition.USER_CANCEL ->
                 RecoveryDisposition.USER_CANCEL
             disposition == RecoveryDisposition.USER_CANCEL ->
@@ -261,6 +284,9 @@ internal object DownloadExecutionRecovery {
             else -> RecoveryDisposition.GENERIC
         }
         val effectivePhase = when {
+            disposition == RecoveryDisposition.HISTORY_FINALIZATION -> requestedPhase
+            existingDisposition == RecoveryDisposition.HISTORY_FINALIZATION ->
+                requireNotNull(existingPhase)
             // An explicit Cancel superseding Pause must revisit the semantic
             // Cancel write before native termination, even when Pause had
             // already reached its native-pending phase.
@@ -485,6 +511,91 @@ internal object DownloadExecutionRecovery {
     }
 
     /**
+     * Exact worker-side revocation visibility.  This is intentionally a
+     * synchronous journal read: a worker authority gate must not wait for a
+     * recovery coroutine to publish the same decision.
+     */
+    internal fun hasPendingUserStopForExecution(
+        context: Context,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean = readPending(context, downloadId)?.let {
+        it.isUserStop && it.executionId == executionId
+    } == true
+
+    internal fun hasPendingUserStopSemanticForExecution(
+        context: Context,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean = readPending(context, downloadId)?.let {
+        it.isUserStop &&
+            it.executionId == executionId &&
+            it.phase == RecoveryPhase.SEMANTIC_STOP_PENDING
+    } == true
+
+    internal fun hasPendingHistoryFinalizationForExecution(
+        context: Context,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean = readPending(context, downloadId)?.let {
+        it.isHistoryFinalization && it.executionId == executionId
+    } == true
+
+    /**
+     * A committed History replacement outranks a later speculative user
+     * stop.  Preserve the exact native observation, but change the carrier's
+     * durable disposition so recovery performs History finalization rather
+     * than retrying a semantic Cancel/Pause that can no longer win.
+     */
+    internal suspend fun supersedeUserStopForCommittedHistory(
+        context: Context,
+        dbManager: DBManager,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean {
+        val pending = readPending(context, downloadId)
+            ?.takeIf { it.executionId == executionId && it.isUserStop }
+            ?: return false
+        val committed = withDownloadWorkerExecutionLock {
+            dbManager.downloadDao.getNullableDownloadById(downloadId)?.let { current ->
+                current.executionId == executionId &&
+                    HistoryRedownloadMarker.parse(current.playlistURL)?.let { marker ->
+                        dbManager.historyDao.getNullableItem(marker.historyId)?.downloadId ==
+                            downloadId
+                    } == true
+            } ?: run {
+                // The worker may have completed the authoritative History
+                // result and deleted the replacement Download before this
+                // late user-stop carrier was consumed.  In that durable
+                // process-death window the carrier's exact E1 token and the
+                // History row keyed to this replacement are the remaining
+                // operation identity.  Only accept the row-absent form; a
+                // present row with another execution must never be treated
+                // as E1's History authority.
+                dbManager.historyDao.getItemByDownloadId(downloadId) != null
+            }
+        }
+        if (!committed) return false
+        val id = downloadId.toString()
+        val nextPhase = if (pending.phase == RecoveryPhase.NATIVE_QUIESCENT) {
+            RecoveryPhase.NATIVE_QUIESCENT
+        } else {
+            RecoveryPhase.NATIVE_QUIESCENCE_PENDING
+        }
+        return commit(
+            JournalCommitOperation.RECORD,
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(id + DISPOSITION_SUFFIX, RecoveryDisposition.HISTORY_FINALIZATION.name)
+                .putString(id + PHASE_SUFFIX, nextPhase.name)
+                .putBoolean(
+                    id + NATIVE_QUIESCENCE_SUFFIX,
+                    nextPhase != RecoveryPhase.NATIVE_QUIESCENT,
+                ),
+        )
+    }
+
+    /**
      * Reconciles the semantic half of a user stop while the exact
      * per-Download side-effect lease is held.  No native/process operation is
      * attempted until the exact Cancelled/Paused CAS is observable and the
@@ -512,82 +623,116 @@ internal object DownloadExecutionRecovery {
         }
 
         return try {
-            val desiredStatus = if (
-                pending.disposition == RecoveryDisposition.USER_CANCEL
-            ) {
-                DownloadRepository.Status.Cancelled
-            } else {
-                DownloadRepository.Status.Paused
-            }
-            val current = withDownloadWorkerExecutionLock {
-                dbManager.downloadDao.getNullableDownloadById(downloadId)
-            }
-            if (current == null || current.executionId != executionId) {
-                retainRecoveryResponsibility(
-                    context = context,
-                    downloadId = downloadId,
-                    dbManager = dbManager,
-                    failure = IllegalStateException(
-                        "User-stop recovery lost exact execution $downloadId/$executionId",
-                    ),
-                )
-                return UserStopPreparation.BLOCKED
-            }
-
-            val semanticCommitted = when {
-                current.status == desiredStatus.name -> true
-                pending.disposition == RecoveryDisposition.USER_CANCEL &&
-                    current.status in setOf(
-                        DownloadRepository.Status.Active.name,
-                        DownloadRepository.Status.PostProcessing.name,
-                        DownloadRepository.Status.Paused.name,
-                        DownloadRepository.Status.Queued.name,
-                        DownloadRepository.Status.WaitingForMembership.name,
-                        DownloadRepository.Status.Scheduled.name,
-                    ) -> {
-                    DownloadRepository(dbManager).cancelByUser(
-                        id = downloadId,
-                        expectedExecutionId = executionId,
-                    )
-                    dbManager.downloadDao.getNullableDownloadById(downloadId)?.let {
-                        it.executionId == executionId && it.status == desiredStatus.name
-                    } == true
+            val semanticResult = DownloadRepository(dbManager).convergeUserStopSemantic(
+                id = downloadId,
+                expectedExecutionId = executionId,
+                disposition = pending.disposition,
+            )
+            when (val outcome = semanticResult.outcome) {
+                DownloadRepository.UserStopSemanticOutcome.USER_STOP_COMMITTED,
+                DownloadRepository.UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED -> {
+                    if (!markUserStopSemanticCommitted(
+                            context = context,
+                            downloadId = downloadId,
+                            executionId = executionId,
+                            disposition = pending.disposition,
+                        )
+                    ) {
+                        retainRecoveryResponsibility(
+                            context = context,
+                            downloadId = downloadId,
+                            dbManager = dbManager,
+                            failure = IllegalStateException(
+                                "User-stop semantic phase could not be durably advanced for " +
+                                    "$downloadId/$executionId",
+                            ),
+                        )
+                        UserStopPreparation.BLOCKED
+                    } else {
+                        UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE
+                    }
                 }
-                pending.disposition == RecoveryDisposition.USER_PAUSE &&
-                    current.status in setOf(
-                        DownloadRepository.Status.Active.name,
-                        DownloadRepository.Status.PostProcessing.name,
-                    ) -> {
-                    DownloadRepository(dbManager).setDownloadStatus(
-                        id = downloadId,
-                        status = desiredStatus,
-                        expectedExecutionId = executionId,
-                    )
-                    dbManager.downloadDao.getNullableDownloadById(downloadId)?.let {
-                        it.executionId == executionId && it.status == desiredStatus.name
-                    } == true
+                DownloadRepository.UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON -> {
+                    // A Cancel committed after an earlier Pause carrier is a
+                    // stronger same-execution decision. Promote the durable
+                    // carrier to USER_CANCEL before quiescing; never rewrite
+                    // the terminal Cancelled row back to Paused.
+                    val current = withDownloadWorkerExecutionLock {
+                        dbManager.downloadDao.getNullableDownloadById(downloadId)
+                    }
+                    if (
+                        current == null ||
+                            current.executionId != executionId ||
+                            current.status != DownloadRepository.Status.Cancelled.name ||
+                            !recordPending(
+                                context = context,
+                                item = current,
+                                disposition = RecoveryDisposition.USER_CANCEL,
+                                phase = RecoveryPhase.SEMANTIC_STOP_PENDING,
+                            ) ||
+                            !markUserStopSemanticCommitted(
+                                context = context,
+                                downloadId = downloadId,
+                                executionId = executionId,
+                                disposition = RecoveryDisposition.USER_CANCEL,
+                            )
+                    ) {
+                        retainRecoveryResponsibility(
+                            context = context,
+                            downloadId = downloadId,
+                            dbManager = dbManager,
+                            failure = IllegalStateException(
+                                "Stronger Cancel could not supersede Pause for " +
+                                    "$downloadId/$executionId",
+                            ),
+                        )
+                        UserStopPreparation.BLOCKED
+                    } else {
+                        UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE
+                    }
                 }
-                else -> false
-            }
-            if (!semanticCommitted || !markUserStopSemanticCommitted(
-                    context = context,
-                    downloadId = downloadId,
-                    executionId = executionId,
-                    disposition = pending.disposition,
-                )
-            ) {
-                retainRecoveryResponsibility(
-                    context = context,
-                    downloadId = downloadId,
-                    dbManager = dbManager,
-                    failure = IllegalStateException(
-                        "User-stop semantic state was not durably converged for " +
-                            "$downloadId/$executionId",
-                    ),
-                )
-                UserStopPreparation.BLOCKED
-            } else {
-                UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE
+                DownloadRepository.UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON -> {
+                    if (supersedeUserStopForCommittedHistory(
+                            context = context,
+                            dbManager = dbManager,
+                            downloadId = downloadId,
+                            executionId = executionId,
+                        )
+                    ) {
+                        UserStopPreparation.COMMITTED_HISTORY_ALREADY_WON
+                    } else {
+                        retainRecoveryResponsibility(
+                            context = context,
+                            downloadId = downloadId,
+                            dbManager = dbManager,
+                            failure = IllegalStateException(
+                                "Committed History authority could not supersede user stop for " +
+                                    "$downloadId/$executionId",
+                            ),
+                        )
+                        UserStopPreparation.BLOCKED
+                    }
+                }
+                DownloadRepository.UserStopSemanticOutcome.OWNERSHIP_LOST -> {
+                    retainRecoveryResponsibility(
+                        context = context,
+                        downloadId = downloadId,
+                        dbManager = dbManager,
+                        failure = IllegalStateException(
+                            "User-stop recovery lost exact execution $downloadId/$executionId",
+                        ),
+                    )
+                    UserStopPreparation.BLOCKED
+                }
+                is DownloadRepository.UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE -> {
+                    retainRecoveryResponsibility(
+                        context = context,
+                        downloadId = downloadId,
+                        dbManager = dbManager,
+                        failure = outcome.error,
+                    )
+                    UserStopPreparation.BLOCKED
+                }
             }
         } catch (cancelled: CancellationException) {
             retainRecoveryResponsibility(
@@ -606,6 +751,124 @@ internal object DownloadExecutionRecovery {
             )
             UserStopPreparation.BLOCKED
         }
+    }
+
+    /**
+     * Finishes a committed History replacement after a late user stop lost
+     * the semantic race. The carrier is first converted to the dedicated
+     * History-finalization disposition; it is cleared only after exact native
+     * quiescence and Download-row finalization are both proven.
+     */
+    internal suspend fun prepareCommittedHistoryFinalization(
+        context: Context,
+        dbManager: DBManager,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean {
+        var pending = readPending(context, downloadId)
+            ?.takeIf { it.executionId == executionId }
+            ?: return true
+        if (pending.isUserStop) {
+            check(
+                supersedeUserStopForCommittedHistory(
+                    context = context,
+                    dbManager = dbManager,
+                    downloadId = downloadId,
+                    executionId = executionId,
+                )
+            ) {
+                "Late user stop could not be superseded by committed History for $downloadId"
+            }
+            pending = readPending(context, downloadId)
+                ?.takeIf { it.executionId == executionId }
+                ?: return false
+        }
+        if (!pending.isHistoryFinalization) return true
+        val current = withDownloadWorkerExecutionLock {
+            dbManager.downloadDao.getNullableDownloadById(downloadId)
+        }
+        val repository = DownloadRepository(dbManager)
+        val committedHistoryStillPresent = if (current != null) {
+            repository.isCommittedHistoryReplacement(
+                id = downloadId,
+                expectedExecutionId = executionId,
+            )
+        } else {
+            // Once finalization has deleted the Download row, the committed
+            // History row keyed by this exact replacement Download is the
+            // remaining durable proof that this carrier still names a real
+            // History-finalization operation.  Do not clear a converted
+            // user-stop carrier merely because its mutable row disappeared.
+            withDownloadWorkerExecutionLock {
+                dbManager.historyDao.getItemByDownloadId(downloadId) != null
+            }
+        }
+        if (!committedHistoryStillPresent) {
+            retainRecoveryResponsibility(
+                context = context,
+                downloadId = downloadId,
+                dbManager = dbManager,
+                failure = IllegalStateException(
+                    "History-finalization carrier lost its committed History authority for " +
+                        "$downloadId/$executionId",
+                ),
+            )
+            return false
+        }
+        if (
+            pending.phase != RecoveryPhase.NATIVE_QUIESCENT ||
+                pending.nativeQuiescencePending
+        ) {
+            check(
+                quiesceAfterDurableStop(
+                    context = context,
+                    downloadId = downloadId,
+                    executionId = executionId,
+                    dbManager = dbManager,
+                    clearCarrierAfterNativeQuiescence = false,
+                )
+            ) {
+                "Committed History native quiescence remained unresolved for $downloadId"
+            }
+            pending = readPending(context, downloadId)
+                ?.takeIf { it.executionId == executionId && it.isHistoryFinalization }
+                ?: return false
+        }
+        return true
+    }
+
+    internal suspend fun convergeCommittedHistoryFinalization(
+        context: Context,
+        dbManager: DBManager,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean {
+        if (!prepareCommittedHistoryFinalization(context, dbManager, downloadId, executionId)) {
+            return false
+        }
+        val repository = DownloadRepository(dbManager)
+        val latest = withDownloadWorkerExecutionLock {
+            dbManager.downloadDao.getNullableDownloadById(downloadId)
+        }
+        if (latest != null) {
+            check(
+                repository.isCommittedHistoryReplacement(
+                    id = downloadId,
+                    expectedExecutionId = executionId,
+                )
+            ) {
+                "Committed History authority changed before finalization for $downloadId"
+            }
+            repository.completeAndDelete(
+                id = downloadId,
+                expectedExecutionId = executionId,
+            )
+        }
+        return clearAfterCommittedHistoryFinalization(
+            context = context,
+            downloadId = downloadId,
+            executionId = executionId,
+        )
     }
 
     /**
@@ -638,6 +901,14 @@ internal object DownloadExecutionRecovery {
                 throw NativeProcessQuiescenceException(
                     downloadId,
                     executionId,
+                )
+            }
+            UserStopPreparation.COMMITTED_HISTORY_ALREADY_WON -> {
+                return convergeCommittedHistoryFinalization(
+                    context = context,
+                    dbManager = dbManager,
+                    downloadId = downloadId,
+                    executionId = executionId,
                 )
             }
             UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE -> Unit
@@ -694,6 +965,7 @@ internal object DownloadExecutionRecovery {
         downloadId: Long,
         executionId: String,
         dbManager: DBManager = DBManager.getInstance(context),
+        clearCarrierAfterNativeQuiescence: Boolean = true,
     ): Boolean {
         return try {
             val pending = readPending(context, downloadId)
@@ -740,6 +1012,8 @@ internal object DownloadExecutionRecovery {
                     ),
                 )
                 false
+            } else if (!clearCarrierAfterNativeQuiescence) {
+                true
             } else if (
                 if (pending?.isUserStop == true) {
                     val expectedStatus = if (
@@ -882,6 +1156,23 @@ internal object DownloadExecutionRecovery {
         ) {
             return false
         }
+        return clearPending(
+            context = context,
+            id = downloadId,
+            expectedExecutionId = executionId,
+        )
+    }
+
+    /** Clears only the dedicated carrier after History finalization. */
+    internal fun clearAfterCommittedHistoryFinalization(
+        context: Context,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean {
+        val pending = readPending(context, downloadId)
+            ?.takeIf { it.executionId == executionId }
+            ?: return true
+        if (!pending.isHistoryFinalization) return false
         return clearPending(
             context = context,
             id = downloadId,
@@ -1173,6 +1464,31 @@ internal object DownloadExecutionRecovery {
                             it.phase == RecoveryPhase.SEMANTIC_STOP_PENDING
                     } == true
                 ) {
+                    val historyAlreadyWon = if (current == null) {
+                        // After a committed History replacement deletes the
+                        // Download row, the exact replacement History row is
+                        // the remaining durable identity for this carrier.
+                        // Do not retry the losing semantic user stop forever
+                        // during cold-start/orphan-journal recovery.
+                        withDownloadWorkerExecutionLock {
+                            dbManager.historyDao.getItemByDownloadId(downloadId) != null
+                        }
+                    } else {
+                        current.executionId == executionId &&
+                            isCommittedHistoryReplacement(dbManager, current)
+                    }
+                    if (historyAlreadyWon) {
+                        check(
+                            convergeCommittedHistoryFinalization(
+                                context = context,
+                                dbManager = dbManager,
+                                downloadId = downloadId,
+                                executionId = executionId,
+                            )
+                        ) {
+                            "Committed History finalization did not converge for download $downloadId"
+                        }
+                    } else {
                     check(
                         convergeUserStopBeforeGenericCleanup(
                             context = context,
@@ -1182,6 +1498,7 @@ internal object DownloadExecutionRecovery {
                         )
                     ) {
                         "User-stop semantic recovery did not converge for download $downloadId"
+                    }
                     }
                     return@withDownloadWorkerExecutionSideEffectLease
                 }
@@ -1314,7 +1631,22 @@ internal object DownloadExecutionRecovery {
                 }
                 DownloadWorkerExecutionOwners.release(downloadId, executionId)
                 if (pending?.executionId == executionId) {
-                    val cleared = if (pending?.isUserStop == true) {
+                    val cleared = if (pending?.isHistoryFinalization == true) {
+                        // A missing Download row is not, by itself, proof
+                        // that History finalization completed.  Keep this
+                        // carrier until the exact replacement History row
+                        // confirms that the committed primary result still
+                        // exists; otherwise a malformed/deleted carrier
+                        // would erase the only finalization responsibility.
+                        val historyStillExists = withDownloadWorkerExecutionLock {
+                            dbManager.historyDao.getItemByDownloadId(downloadId) != null
+                        }
+                        historyStillExists && clearPending(
+                            context = context,
+                            id = downloadId,
+                            expectedExecutionId = executionId,
+                        )
+                    } else if (pending?.isUserStop == true) {
                         clearAfterProvenUserStop(
                             context = context,
                             downloadId = downloadId,
@@ -1551,7 +1883,21 @@ internal object DownloadExecutionRecovery {
                             )
                             DownloadWorkerExecutionOwners.release(snapshot.id, executionId)
                             if (pending?.executionId == executionId) {
-                                val cleared = if (pending?.isUserStop == true) {
+                                val cleared = if (pending?.isHistoryFinalization == true) {
+                                    // A missing Download row is not, by
+                                    // itself, proof that History finalization
+                                    // completed. The exact replacement
+                                    // History row is the remaining durable
+                                    // confirmation for this carrier.
+                                    val historyStillExists = withDownloadWorkerExecutionLock {
+                                        dbManager.historyDao.getItemByDownloadId(snapshot.id) != null
+                                    }
+                                    historyStillExists && clearPending(
+                                        context = context,
+                                        id = snapshot.id,
+                                        expectedExecutionId = executionId,
+                                    )
+                                } else if (pending?.isUserStop == true) {
                                     clearAfterProvenUserStop(
                                         context = context,
                                         downloadId = snapshot.id,
@@ -1708,18 +2054,59 @@ internal object DownloadExecutionRecovery {
                                     current.id,
                                     current.executionId,
                                 )
+                            if (
+                                pendingForCurrent?.isUserStop == true &&
+                                    isCommittedHistoryReplacement(dbManager, current) &&
+                                    !anotherExecutionOwnsTheRow &&
+                                    !anotherExecutionHasNativeProcess
+                            ) {
+                                check(
+                                    supersedeUserStopForCommittedHistory(
+                                        context = context,
+                                        dbManager = dbManager,
+                                        downloadId = current.id,
+                                        executionId = current.executionId,
+                                    )
+                                ) {
+                                    "Committed History could not supersede late user stop for ${current.id}"
+                                }
+                                pending = readPending(context, current.id)
+                                pendingForCurrent = pending?.takeIf {
+                                    it.executionId == current.executionId
+                                }
+                            }
                             val userStopPendingForCurrent = pendingForCurrent?.isUserStop == true
+                            val historyFinalizationPendingForCurrent =
+                                pendingForCurrent?.isHistoryFinalization == true
                             if (
                                 userStopPendingForCurrent &&
                                     (
                                         anotherExecutionOwnsTheRow ||
                                             anotherExecutionHasNativeProcess
-                                        )
+                                    )
                             ) {
                                 throw NativeProcessQuiescenceException(
                                     current.id,
                                     current.executionId,
                                 )
+                            }
+                            if (
+                                !owned &&
+                                    !anotherExecutionOwnsTheRow &&
+                                    !anotherExecutionHasNativeProcess &&
+                                    historyFinalizationPendingForCurrent
+                            ) {
+                                check(
+                                    convergeCommittedHistoryFinalization(
+                                        context = context,
+                                        dbManager = dbManager,
+                                        downloadId = current.id,
+                                        executionId = current.executionId,
+                                    )
+                                ) {
+                                    "Committed History finalization remained unresolved for ${current.id}"
+                                }
+                                return@withDownloadWorkerExecutionSideEffectLease
                             }
                             if (
                                 !owned &&
@@ -1929,7 +2316,20 @@ internal object DownloadExecutionRecovery {
                                 val latest = withDownloadWorkerExecutionLock {
                                     dbManager.downloadDao.getNullableDownloadById(current.id)
                                 }
-                                if (pendingForCurrent?.isUserStop == true) {
+                                if (pendingForCurrent?.isHistoryFinalization == true) {
+                                    check(
+                                        convergeCommittedHistoryFinalization(
+                                            context = context,
+                                            dbManager = dbManager,
+                                            downloadId = current.id,
+                                            executionId = current.executionId,
+                                        )
+                                    ) {
+                                        "Committed History finalization remained unresolved for ${current.id}"
+                                    }
+                                    pending = readPending(context, current.id)
+                                    clearJournal = pending != null
+                                } else if (pendingForCurrent?.isUserStop == true) {
                                     // A user-stop carrier is operation-specific
                                     // authority.  It may not be cleared by a
                                     // generic non-running branch; re-read and

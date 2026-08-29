@@ -318,7 +318,7 @@ class DownloadViewModel private constructor(
                 var recoveryRecorded = false
                 try {
                     withDownloadWorkerExecutionSideEffectLease(item.id, expectedExecutionId) {
-                        val affected = withDownloadWorkerExecutionLock {
+                        val semanticResult = withDownloadWorkerExecutionLock {
                             val current = dao.getNullableDownloadById(item.id)
                             if (current == null || current.executionId != expectedExecutionId) {
                                 return@withDownloadWorkerExecutionLock null
@@ -334,34 +334,60 @@ class DownloadViewModel private constructor(
                                 "Could not persist cancellation recovery responsibility for ${current.id}"
                             }
                             recoveryRecorded = true
-                            val operationIds = repository.cancelByUser(
-                                item.id,
-                                expectedExecutionId,
-                            )
-                            val committed = dao.getNullableDownloadById(item.id)?.let {
-                                it.status == DownloadRepository.Status.Cancelled.name &&
-                                    it.executionId == expectedExecutionId
-                            } == true
-                            check(committed) {
-                                "Cancellation semantic state was not committed for ${item.id}"
-                            }
-                            operationIds
-                        }
-                        if (affected != null) {
-                            val operationIds = affected.toMutableSet()
-                            val quiesced = cancelDownloadOnlyOwned(
+                            repository.convergeUserStopSemantic(
                                 id = item.id,
                                 expectedExecutionId = expectedExecutionId,
-                                recoveryRecorded = true,
-                                stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
                             )
-                            if (sharedPreferences.getBoolean("incognito", false) && quiesced) {
-                                operationIds += repository.delete(item.id)
+                        }
+                        if (semanticResult != null) {
+                            when (val outcome = semanticResult.outcome) {
+                                DownloadRepository.UserStopSemanticOutcome.USER_STOP_COMMITTED,
+                                DownloadRepository.UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED -> {
+                                    val operationIds = semanticResult.affectedOperationIds.toMutableSet()
+                                    val quiesced = cancelDownloadOnlyOwned(
+                                        id = item.id,
+                                        expectedExecutionId = expectedExecutionId,
+                                        recoveryRecorded = true,
+                                        stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                    )
+                                    if (sharedPreferences.getBoolean("incognito", false) && quiesced) {
+                                        operationIds += repository.delete(item.id)
+                                    }
+                                    check(quiesced) {
+                                        "Native quiescence remained unresolved for cancelled download ${item.id}"
+                                    }
+                                    LowQualityRedownloadLedger.refresh(application, operationIds)
+                                }
+                                DownloadRepository.UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON -> {
+                                    check(
+                                        DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                            context = application,
+                                            dbManager = dbManager,
+                                            downloadId = item.id,
+                                            executionId = expectedExecutionId,
+                                        )
+                                    ) {
+                                        "Committed History finalization remained unresolved for ${item.id}"
+                                    }
+                                }
+                                DownloadRepository.UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON -> {
+                                    check(
+                                        DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                                            context = application,
+                                            dbManager = dbManager,
+                                            downloadId = item.id,
+                                            executionId = expectedExecutionId,
+                                        )
+                                    ) {
+                                        "Stronger Cancel convergence remained unresolved for ${item.id}"
+                                    }
+                                }
+                                DownloadRepository.UserStopSemanticOutcome.OWNERSHIP_LOST -> Unit
+                                is DownloadRepository.UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE -> {
+                                    throw outcome.error
+                                }
                             }
-                            check(quiesced) {
-                                "Native quiescence remained unresolved for cancelled download ${item.id}"
-                            }
-                            LowQualityRedownloadLedger.refresh(application, operationIds)
                         }
                     }
                 } catch (cancelled: CancellationException) {
@@ -1353,6 +1379,22 @@ class DownloadViewModel private constructor(
                                 DownloadExecutionRecovery.UserStopPreparation.BLOCKED
                         ) {
                             "User-stop semantic recovery remained unresolved for ${current.id}"
+                        }
+                        if (
+                            userStopPreparation ==
+                                DownloadExecutionRecovery.UserStopPreparation.COMMITTED_HISTORY_ALREADY_WON
+                        ) {
+                            check(
+                                DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                    context = application,
+                                    dbManager = dbManager,
+                                    downloadId = current.id,
+                                    executionId = current.executionId,
+                                )
+                            ) {
+                                "Committed History finalization remained unresolved for ${current.id}"
+                            }
+                            return@withDownloadWorkerExecutionSideEffectLease
                         }
                         if (
                             userStopPreparation ==
@@ -2670,14 +2712,19 @@ class DownloadViewModel private constructor(
         expectedExecutionId: String? = null,
     ) {
         withContext(Dispatchers.IO) {
-            val expected = expectedExecutionId.orEmpty()
             var recoveryRecorded = false
+            var resolvedExecutionId = expectedExecutionId.orEmpty()
             try {
-                withDownloadWorkerExecutionSideEffectLease(id, expected) {
-                    val committed = withDownloadWorkerExecutionLock {
+                withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId.orEmpty()) {
+                    val semanticResult = withDownloadWorkerExecutionLock {
                         val current = dao.getNullableDownloadById(id)
-                            ?.takeIf { expected.isBlank() || it.executionId == expected }
-                            ?: return@withDownloadWorkerExecutionLock false
+                            ?.takeIf {
+                                expectedExecutionId.isNullOrBlank() ||
+                                    it.executionId == expectedExecutionId
+                            }
+                            ?: return@withDownloadWorkerExecutionLock null
+                        val exactExecutionId = current.executionId
+                        resolvedExecutionId = exactExecutionId
                         check(
                             DownloadExecutionRecovery.recordPending(
                                 context = application,
@@ -2689,22 +2736,55 @@ class DownloadViewModel private constructor(
                             "Could not persist cancellation recovery responsibility for ${current.id}"
                         }
                         recoveryRecorded = true
-                        repository.cancelByUser(id, expected)
-                        dao.getNullableDownloadById(id)?.let {
-                            it.executionId == current.executionId &&
-                                it.status == DownloadRepository.Status.Cancelled.name
-                        } == true
+                        repository.convergeUserStopSemantic(
+                            id = id,
+                            expectedExecutionId = exactExecutionId,
+                            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                        )
                     }
-                    check(committed) {
-                        "Cancellation semantic state was not committed for $id"
-                    }
-                    check(cancelDownloadOnlyOwned(
-                        id = id,
-                        expectedExecutionId = expected,
-                        recoveryRecorded = true,
-                        stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
-                    )) {
-                        "Native quiescence remained unresolved for cancelled download $id"
+                    when (val outcome = semanticResult?.outcome) {
+                        DownloadRepository.UserStopSemanticOutcome.USER_STOP_COMMITTED,
+                        DownloadRepository.UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED -> {
+                            check(
+                                cancelDownloadOnlyOwned(
+                                    id = id,
+                                    expectedExecutionId = resolvedExecutionId,
+                                    recoveryRecorded = true,
+                                    stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                )
+                            ) {
+                                "Native quiescence remained unresolved for cancelled download $id"
+                            }
+                        }
+                        DownloadRepository.UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON -> {
+                            check(
+                                DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                    context = application,
+                                    dbManager = dbManager,
+                                    downloadId = id,
+                                    executionId = resolvedExecutionId,
+                                )
+                            ) {
+                                "Committed History finalization remained unresolved for $id"
+                            }
+                        }
+                        DownloadRepository.UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON -> {
+                            check(
+                                DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                                    context = application,
+                                    dbManager = dbManager,
+                                    downloadId = id,
+                                    executionId = resolvedExecutionId,
+                                )
+                            ) {
+                                "Stronger Cancel convergence remained unresolved for $id"
+                            }
+                        }
+                        DownloadRepository.UserStopSemanticOutcome.OWNERSHIP_LOST,
+                        null -> return@withDownloadWorkerExecutionSideEffectLease
+                        is DownloadRepository.UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE -> {
+                            throw outcome.error
+                        }
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -2763,24 +2843,42 @@ class DownloadViewModel private constructor(
             )
             return false
         }
-        if (stopDisposition != null && !DownloadExecutionRecovery.markUserStopSemanticCommitted(
-                context = application,
-                downloadId = id,
-                executionId = current.executionId,
-                disposition = stopDisposition,
-            )
-        ) {
-            DownloadExecutionRecovery.retainRecoveryResponsibility(
-                context = application,
-                downloadId = id,
-                dbManager = dbManager,
-                failure = IllegalStateException(
-                    "Could not persist user-stop semantic completion for $id",
-                ),
-            )
-            return false
-        }
-        if (
+        if (stopDisposition != null) {
+            when (
+                DownloadExecutionRecovery.prepareUserStopBeforeNative(
+                    context = application,
+                    dbManager = dbManager,
+                    downloadId = id,
+                    executionId = current.executionId,
+                )
+            ) {
+                DownloadExecutionRecovery.UserStopPreparation.NOT_PENDING,
+                DownloadExecutionRecovery.UserStopPreparation.BLOCKED -> return false
+                DownloadExecutionRecovery.UserStopPreparation.COMMITTED_HISTORY_ALREADY_WON -> {
+                    if (!DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                            context = application,
+                            dbManager = dbManager,
+                            downloadId = id,
+                            executionId = current.executionId,
+                        )
+                    ) {
+                        return false
+                    }
+                }
+                DownloadExecutionRecovery.UserStopPreparation.READY_FOR_NATIVE_QUIESCENCE -> {
+                    if (
+                        !DownloadExecutionRecovery.quiesceAfterDurableStop(
+                            context = application,
+                            downloadId = id,
+                            executionId = current.executionId,
+                            dbManager = dbManager,
+                        )
+                    ) {
+                        return false
+                    }
+                }
+            }
+        } else if (
             !DownloadExecutionRecovery.quiesceAfterDurableStop(
                 context = application,
                 downloadId = id,
@@ -2801,7 +2899,7 @@ class DownloadViewModel private constructor(
             var recoveryRecorded = false
             try {
                 withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
-                    val affected = withDownloadWorkerExecutionLock {
+                    val semanticResult = withDownloadWorkerExecutionLock {
                         val current = dao.getNullableDownloadById(id)
                         if (current == null || current.executionId != expectedExecutionId) {
                             return@withDownloadWorkerExecutionLock null
@@ -2817,29 +2915,60 @@ class DownloadViewModel private constructor(
                             "Could not persist cancellation recovery responsibility for ${current.id}"
                         }
                         recoveryRecorded = true
-                        val affectedOperationIds = repository.cancelByUser(id, expectedExecutionId)
-                        if (
-                            dao.getNullableDownloadById(id)?.let {
-                                it.executionId == expectedExecutionId &&
-                                    it.status == DownloadRepository.Status.Cancelled.name
-                            } != true
-                        ) {
-                            error("Cancellation semantic state was not committed for $id")
-                        }
-                        affectedOperationIds
+                        repository.convergeUserStopSemantic(
+                            id = id,
+                            expectedExecutionId = expectedExecutionId,
+                            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                        )
                     }
-                    if (affected != null) {
-                        check(
-                            cancelDownloadOnlyOwned(
-                                id,
-                                expectedExecutionId,
-                                recoveryRecorded = true,
-                                stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
-                            )
-                        ) {
-                            "Native quiescence remained unresolved for cancelled download $id"
+                    if (semanticResult != null) {
+                        when (val outcome = semanticResult.outcome) {
+                            DownloadRepository.UserStopSemanticOutcome.USER_STOP_COMMITTED,
+                            DownloadRepository.UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED -> {
+                                check(
+                                    cancelDownloadOnlyOwned(
+                                        id,
+                                        expectedExecutionId,
+                                        recoveryRecorded = true,
+                                        stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                    )
+                                ) {
+                                    "Native quiescence remained unresolved for cancelled download $id"
+                                }
+                                LowQualityRedownloadLedger.refresh(
+                                    application,
+                                    semanticResult.affectedOperationIds,
+                                )
+                            }
+                            DownloadRepository.UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON -> {
+                                check(
+                                    DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                        context = application,
+                                        dbManager = dbManager,
+                                        downloadId = id,
+                                        executionId = expectedExecutionId,
+                                    )
+                                ) {
+                                    "Committed History finalization remained unresolved for $id"
+                                }
+                            }
+                            DownloadRepository.UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON -> {
+                                check(
+                                    DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                                        context = application,
+                                        dbManager = dbManager,
+                                        downloadId = id,
+                                        executionId = expectedExecutionId,
+                                    )
+                                ) {
+                                    "Stronger Cancel convergence remained unresolved for $id"
+                                }
+                            }
+                            DownloadRepository.UserStopSemanticOutcome.OWNERSHIP_LOST -> Unit
+                            is DownloadRepository.UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE -> {
+                                throw outcome.error
+                            }
                         }
-                        LowQualityRedownloadLedger.refresh(application, affected)
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -2893,19 +3022,78 @@ class DownloadViewModel private constructor(
                         repository.beginUndoableCancellation(id, expectedExecutionId)
                     }
                     if (outcome == null || !outcome.changed) {
-                        if (recoveryRecorded) {
-                            val failure = IllegalStateException(
-                                "Cancellation semantic state was not committed for $id",
-                            )
-                            DownloadExecutionRecovery.retainRecoveryResponsibility(
-                                context = application,
-                                downloadId = id,
-                                dbManager = dbManager,
-                                failure = failure,
-                            )
-                            throw failure
+                        if (!recoveryRecorded) {
+                            null
+                        } else {
+                            // The undoable transaction exposes only a
+                            // changed flag. Re-read through the typed
+                            // operation-aware protocol before deciding that
+                            // the user stop lost: an already-cancelled row is
+                            // idempotent, while committed History is a
+                            // stronger result that needs finalization.
+                            when (
+                                val semanticResult = repository.convergeUserStopSemantic(
+                                    id = id,
+                                    expectedExecutionId = expectedExecutionId,
+                                    disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                ).outcome
+                            ) {
+                                DownloadRepository.UserStopSemanticOutcome.USER_STOP_COMMITTED,
+                                DownloadRepository.UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED -> {
+                                    check(
+                                        cancelDownloadOnlyOwned(
+                                            id = id,
+                                            expectedExecutionId = expectedExecutionId,
+                                            recoveryRecorded = true,
+                                            stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                                        )
+                                    ) {
+                                        "Native quiescence remained unresolved for cancelled download $id"
+                                    }
+                                    null
+                                }
+                                DownloadRepository.UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON -> {
+                                    check(
+                                        DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                            context = application,
+                                            dbManager = dbManager,
+                                            downloadId = id,
+                                            executionId = expectedExecutionId,
+                                        )
+                                    ) {
+                                        "Committed History finalization remained unresolved for $id"
+                                    }
+                                    null
+                                }
+                                DownloadRepository.UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON -> {
+                                    check(
+                                        DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                                            context = application,
+                                            dbManager = dbManager,
+                                            downloadId = id,
+                                            executionId = expectedExecutionId,
+                                        )
+                                    ) {
+                                        "Stronger Cancel convergence remained unresolved for $id"
+                                    }
+                                    null
+                                }
+                                DownloadRepository.UserStopSemanticOutcome.OWNERSHIP_LOST -> {
+                                    DownloadExecutionRecovery.retainRecoveryResponsibility(
+                                        context = application,
+                                        downloadId = id,
+                                        dbManager = dbManager,
+                                        failure = IllegalStateException(
+                                            "Cancellation recovery lost exact execution for $id",
+                                        ),
+                                    )
+                                    null
+                                }
+                                is DownloadRepository.UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE -> {
+                                    throw semanticResult.error
+                                }
+                            }
                         }
-                        null
                     } else if (!recoveryRecorded) {
                         // Queued rows without an execution owner have no
                         // exact native authority to recover.  Keep the
@@ -3075,10 +3263,10 @@ class DownloadViewModel private constructor(
             var recoveryRecorded = false
             try {
                 withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
-                    val committed = withDownloadWorkerExecutionLock {
+                    val semanticResult = withDownloadWorkerExecutionLock {
                         val current = dao.getNullableDownloadById(id)
                         if (current == null || current.executionId != expectedExecutionId) {
-                            return@withDownloadWorkerExecutionLock false
+                            return@withDownloadWorkerExecutionLock null
                         }
                         check(
                             DownloadExecutionRecovery.recordPending(
@@ -3091,28 +3279,55 @@ class DownloadViewModel private constructor(
                             "Could not persist pause recovery responsibility for ${current.id}"
                         }
                         recoveryRecorded = true
-                        updateToStatus(
-                            id,
-                            DownloadRepository.Status.Paused,
-                            expectedExecutionId,
+                        repository.convergeUserStopSemantic(
+                            id = id,
+                            expectedExecutionId = expectedExecutionId,
+                            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
                         )
-                        dao.getNullableDownloadById(id)?.let {
-                            it.executionId == expectedExecutionId &&
-                                it.status == DownloadRepository.Status.Paused.name
-                        } == true
                     }
-                    check(committed) {
-                        "Pause semantic state was not committed for $id"
-                    }
-                    check(
-                        cancelDownloadOnlyOwned(
-                            id,
-                            expectedExecutionId,
-                            recoveryRecorded = true,
-                            stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
-                        )
-                    ) {
-                        "Native quiescence remained unresolved for paused download $id"
+                    when (val outcome = semanticResult?.outcome) {
+                        DownloadRepository.UserStopSemanticOutcome.USER_STOP_COMMITTED,
+                        DownloadRepository.UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED -> {
+                            check(
+                                cancelDownloadOnlyOwned(
+                                    id,
+                                    expectedExecutionId,
+                                    recoveryRecorded = true,
+                                    stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                                )
+                            ) {
+                                "Native quiescence remained unresolved for paused download $id"
+                            }
+                        }
+                        DownloadRepository.UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON -> {
+                            check(
+                                DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                    context = application,
+                                    dbManager = dbManager,
+                                    downloadId = id,
+                                    executionId = expectedExecutionId,
+                                )
+                            ) {
+                                "Committed History finalization remained unresolved for $id"
+                            }
+                        }
+                        DownloadRepository.UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON -> {
+                            check(
+                                DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                                    context = application,
+                                    dbManager = dbManager,
+                                    downloadId = id,
+                                    executionId = expectedExecutionId,
+                                )
+                            ) {
+                                "Stronger Cancel convergence remained unresolved for $id"
+                            }
+                        }
+                        DownloadRepository.UserStopSemanticOutcome.OWNERSHIP_LOST,
+                        null -> Unit
+                        is DownloadRepository.UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE -> {
+                            throw outcome.error
+                        }
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -3153,10 +3368,10 @@ class DownloadViewModel private constructor(
                 activeDownloadsList.forEach { item ->
                     try {
                         withDownloadWorkerExecutionSideEffectLease(item.id, item.executionId) {
-                            val committed = withDownloadWorkerExecutionLock {
+                            val semanticResult = withDownloadWorkerExecutionLock {
                                 val current = dao.getNullableDownloadById(item.id)
                                 if (current?.executionId != item.executionId) {
-                                    return@withDownloadWorkerExecutionLock false
+                                    return@withDownloadWorkerExecutionLock null
                                 }
                                 check(
                                     DownloadExecutionRecovery.recordPending(
@@ -3166,30 +3381,59 @@ class DownloadViewModel private constructor(
                                         phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
                                     )
                                 ) {
-                                    "Could not persist pause recovery responsibility for ${current.id}"
+                                        "Could not persist pause recovery responsibility for ${current.id}"
                                 }
-                                repository.setDownloadStatus(
-                                    item.id,
-                                    DownloadRepository.Status.Paused,
-                                    item.executionId,
+                                repository.convergeUserStopSemantic(
+                                    id = item.id,
+                                    expectedExecutionId = item.executionId,
+                                    disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
                                 )
-                                dao.getNullableDownloadById(item.id)?.let {
-                                    it.executionId == item.executionId &&
-                                        it.status == DownloadRepository.Status.Paused.name
-                                } == true
                             }
-                            check(committed) {
-                                "Pause semantic state was not committed for ${item.id}"
-                            }
-                            check(
-                                cancelDownloadOnlyOwned(
-                                    item.id,
-                                    item.executionId,
-                                    recoveryRecorded = true,
-                                    stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
-                                )
-                            ) {
-                                "Native quiescence remained unresolved for paused download ${item.id}"
+                            when (val outcome = semanticResult?.outcome) {
+                                DownloadRepository.UserStopSemanticOutcome.USER_STOP_COMMITTED,
+                                DownloadRepository.UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED -> {
+                                    check(
+                                        cancelDownloadOnlyOwned(
+                                            item.id,
+                                            item.executionId,
+                                            recoveryRecorded = true,
+                                            stopDisposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+                                        )
+                                    ) {
+                                        "Native quiescence remained unresolved for paused download ${item.id}"
+                                    }
+                                }
+                                DownloadRepository.UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON -> {
+                                    check(
+                                        DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                            context = application,
+                                            dbManager = dbManager,
+                                            downloadId = item.id,
+                                            executionId = item.executionId,
+                                        )
+                                    ) {
+                                        "Committed History finalization remained unresolved for ${item.id}"
+                                    }
+                                }
+                                DownloadRepository.UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON -> {
+                                    check(
+                                        DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                                            context = application,
+                                            dbManager = dbManager,
+                                            downloadId = item.id,
+                                            executionId = item.executionId,
+                                        )
+                                    ) {
+                                        "Stronger Cancel convergence remained unresolved for ${item.id}"
+                                    }
+                                }
+                                DownloadRepository.UserStopSemanticOutcome.OWNERSHIP_LOST,
+                                null -> {
+                                    error("Pause semantic ownership was lost for ${item.id}")
+                                }
+                                is DownloadRepository.UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE -> {
+                                    throw outcome.error
+                                }
                             }
                         }
                     } catch (cancelled: CancellationException) {

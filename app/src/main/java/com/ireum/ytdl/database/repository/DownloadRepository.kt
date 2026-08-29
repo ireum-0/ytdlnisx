@@ -118,6 +118,28 @@ class DownloadRepository(private val database: DBManager) {
         NOT_RUNNING,
     }
 
+    /**
+     * The semantic result of an exact user-stop attempt.  A Boolean cannot
+     * carry the distinction between a committed History replacement, a stale
+     * execution, and a persistence failure; recovery must retain that
+     * distinction before it decides whether native authority may be touched.
+     */
+    internal sealed interface UserStopSemanticOutcome {
+        data object USER_STOP_COMMITTED : UserStopSemanticOutcome
+        data object USER_STOP_ALREADY_SATISFIED : UserStopSemanticOutcome
+        data object STRONGER_USER_CANCEL_ALREADY_WON : UserStopSemanticOutcome
+        data object OWNERSHIP_LOST : UserStopSemanticOutcome
+        data object COMMITTED_HISTORY_ALREADY_WON : UserStopSemanticOutcome
+        data class RETRYABLE_PERSISTENCE_FAILURE(
+            val error: Exception,
+        ) : UserStopSemanticOutcome
+    }
+
+    internal data class UserStopSemanticResult(
+        val outcome: UserStopSemanticOutcome,
+        val affectedOperationIds: Set<String> = emptySet(),
+    )
+
     data class UndoableCancellation(
         val pendingToken: String? = null,
         val affectedOperationIds: Set<String> = emptySet(),
@@ -822,6 +844,17 @@ class DownloadRepository(private val database: DBManager) {
         downloadDao.getNullableDownloadById(id)?.let(::isCommittedHistoryReplacementLocked) == true
     }
 
+    /** Exact-execution variant used by recovery before finalization. */
+    internal suspend fun isCommittedHistoryReplacement(
+        id: Long,
+        expectedExecutionId: String,
+    ): Boolean = database.withTransaction {
+        downloadDao.getNullableDownloadById(id)?.let { current ->
+            current.executionId == expectedExecutionId &&
+                isCommittedHistoryReplacementLocked(current)
+        } == true
+    }
+
     /**
      * Reclassifies one running Download under one Room transaction.  Every
      * caller that can stop a worker-owned row must use this primitive so the
@@ -958,6 +991,102 @@ class DownloadRepository(private val database: DBManager) {
         forceError: Boolean = true,
     ): HistoryReplacementConvergenceResult =
         convergeHistoryReplacementRefusalLocked(id, expectedExecutionId, forceError)
+
+    /**
+     * Converges the semantic half of one exact user stop and returns the
+     * reason the attempt did or did not win.  This is deliberately separate
+     * from the legacy Boolean/Set APIs: late user actions must not mistake a
+     * committed History replacement or a different execution for a failed
+     * persistence attempt.
+     */
+    internal suspend fun convergeUserStopSemantic(
+        id: Long,
+        expectedExecutionId: String,
+        disposition: DownloadExecutionRecovery.RecoveryDisposition,
+    ): UserStopSemanticResult {
+        require(
+            disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL ||
+                disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE
+        )
+        val desiredStatus = if (
+            disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+        ) {
+            Status.Cancelled
+        } else {
+            Status.Paused
+        }
+
+        fun classify(
+            current: DownloadItem?,
+        ): UserStopSemanticOutcome = when {
+            current == null || current.executionId != expectedExecutionId ->
+                UserStopSemanticOutcome.OWNERSHIP_LOST
+            isCommittedHistoryReplacementLocked(current) ->
+                UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON
+            disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE &&
+                current.status == Status.Cancelled.name ->
+                UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON
+            current.status == desiredStatus.name ->
+                UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED
+            else -> UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE(
+                IllegalStateException(
+                    "User-stop semantic state remained ${current.status} for " +
+                        "$id/$expectedExecutionId; desired=${desiredStatus.name}",
+                )
+            )
+        }
+
+        return try {
+            val before = database.withTransaction {
+                val current = downloadDao.getNullableDownloadById(id)
+                when {
+                    current == null || current.executionId != expectedExecutionId ->
+                        UserStopSemanticOutcome.OWNERSHIP_LOST
+                    isCommittedHistoryReplacementLocked(current) ->
+                        UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON
+                    disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE &&
+                        current.status == Status.Cancelled.name ->
+                        UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON
+                    current.status == desiredStatus.name ->
+                        UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED
+                    else -> null
+                }
+            }
+            before?.let { outcome ->
+                return UserStopSemanticResult(outcome)
+            }
+
+            val affectedOperationIds = if (
+                disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+            ) {
+                cancelByUser(
+                    id = id,
+                    expectedExecutionId = expectedExecutionId,
+                )
+            } else {
+                setDownloadStatus(
+                    id = id,
+                    status = desiredStatus,
+                    expectedExecutionId = expectedExecutionId,
+                )
+                emptySet()
+            }
+
+            val after = database.withTransaction {
+                classify(downloadDao.getNullableDownloadById(id))
+            }
+            UserStopSemanticResult(
+                outcome = after,
+                affectedOperationIds = affectedOperationIds,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            UserStopSemanticResult(
+                outcome = UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE(failure),
+            )
+        }
+    }
 
 
     suspend fun setDownloadStatus(
@@ -1880,17 +2009,39 @@ class DownloadRepository(private val database: DBManager) {
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         val affectedOperationIds = linkedSetOf<String>()
         var firstFailure: Exception? = null
+        data class BulkItemCancellationResult(
+            val result: UserCancellationResult,
+            val historyFinalizationRequired: Boolean = false,
+            val ownershipLost: Boolean = false,
+            val executionId: String? = null,
+        )
 
         snapshots.forEach { snapshot ->
             try {
-                val result = withDownloadWorkerExecutionSideEffectLease(
+                val itemResult = withDownloadWorkerExecutionSideEffectLease(
                     downloadId = snapshot.id,
                     executionId = snapshot.executionId,
                 ) {
-                    withDownloadWorkerExecutionLock {
+                    val result = withDownloadWorkerExecutionLock {
                         val currentBeforeCancellation = downloadDao
                             .getNullableDownloadById(snapshot.id)
-                        if (recoveryContext != null) {
+                        val exactUserCancel = recoveryContext != null &&
+                            recoveryDisposition ==
+                                DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL &&
+                            currentBeforeCancellation?.executionId?.isNotBlank() == true
+                        if (exactUserCancel) {
+                            val current = requireNotNull(currentBeforeCancellation)
+                            check(
+                                DownloadExecutionRecovery.recordPending(
+                                    context = requireNotNull(recoveryContext),
+                                    item = current,
+                                    disposition = recoveryDisposition,
+                                    phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+                                )
+                            ) {
+                                "Could not persist cancellation recovery responsibility for ${current.id}"
+                            }
+                        } else if (recoveryContext != null) {
                             currentBeforeCancellation
                                 ?.takeIf { it.executionId.isNotBlank() }
                                 ?.let { current ->
@@ -1906,55 +2057,93 @@ class DownloadRepository(private val database: DBManager) {
                                 }
                         }
                         cancelActiveQueuedFailureForTesting?.invoke(snapshot.id)?.let { throw it }
-                        val result = cancelByUserWithPublication(
-                            id = snapshot.id,
-                            // Clear Queue owns the current queue intent, not
-                            // the stale execution token from the observation
-                            // snapshot. The transaction rereads and CASes
-                            // that current token.
-                            expectedExecutionId = null,
-                        )
-                        if (
-                            recoveryContext != null &&
-                                recoveryDisposition ==
-                                    DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL &&
-                                currentBeforeCancellation != null
-                        ) {
-                            val currentAfterCancellation = downloadDao
-                                .getNullableDownloadById(snapshot.id)
-                            check(
-                                currentAfterCancellation != null &&
-                                    currentAfterCancellation.status == Status.Cancelled.name &&
-                                    currentAfterCancellation.executionId ==
-                                        currentBeforeCancellation.executionId
-                            ) {
-                                "Cancellation semantic state was not committed for ${snapshot.id}"
-                            }
-                            if (
-                                result.publication == null &&
-                                    currentAfterCancellation.executionId.isNotBlank()
-                            ) {
-                                // A concurrent/replayed Cancel may have
-                                // already committed the row.  Return an
-                                // execution-scoped publication anyway so the
-                                // caller still consumes the native proof
-                                // obligation instead of treating the empty
-                                // result as completed work.
-                                result.copy(
-                                    publication = DownloadCancellationRegistry.Publication(
-                                        downloadId = snapshot.id,
-                                        executionId = currentAfterCancellation.executionId,
-                                        reason = DownloadCancellationRegistry.Reason.CANCELLED,
-                                    ),
-                                )
-                            } else {
-                                result
+                        if (exactUserCancel) {
+                            val current = requireNotNull(currentBeforeCancellation)
+                            val semanticResult = convergeUserStopSemantic(
+                                id = snapshot.id,
+                                expectedExecutionId = current.executionId,
+                                disposition =
+                                    DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                            )
+                            when (val outcome = semanticResult.outcome) {
+                                    UserStopSemanticOutcome.USER_STOP_COMMITTED,
+                                    UserStopSemanticOutcome.USER_STOP_ALREADY_SATISFIED -> {
+                                        val currentAfterCancellation = downloadDao
+                                            .getNullableDownloadById(snapshot.id)
+                                        check(
+                                            currentAfterCancellation != null &&
+                                                currentAfterCancellation.status == Status.Cancelled.name &&
+                                                currentAfterCancellation.executionId == current.executionId
+                                        ) {
+                                            "Cancellation semantic state was not committed for ${snapshot.id}"
+                                        }
+                                        BulkItemCancellationResult(
+                                            result = UserCancellationResult(
+                                                affectedOperationIds = semanticResult.affectedOperationIds,
+                                                publication = DownloadCancellationRegistry.Publication(
+                                                    downloadId = snapshot.id,
+                                                    executionId = current.executionId,
+                                                    reason = DownloadCancellationRegistry.Reason.CANCELLED,
+                                                ),
+                                            ),
+                                            executionId = current.executionId,
+                                        )
+                                    }
+                                    UserStopSemanticOutcome.COMMITTED_HISTORY_ALREADY_WON ->
+                                        BulkItemCancellationResult(
+                                            result = UserCancellationResult(),
+                                            historyFinalizationRequired = true,
+                                            executionId = current.executionId,
+                                        )
+                                    UserStopSemanticOutcome.OWNERSHIP_LOST ->
+                                        BulkItemCancellationResult(
+                                            result = UserCancellationResult(),
+                                            ownershipLost = true,
+                                            executionId = current.executionId,
+                                        )
+                                    UserStopSemanticOutcome.STRONGER_USER_CANCEL_ALREADY_WON ->
+                                        error("Pause disposition unexpectedly outranked Cancel for ${snapshot.id}")
+                                    is UserStopSemanticOutcome.RETRYABLE_PERSISTENCE_FAILURE ->
+                                        throw outcome.error
                             }
                         } else {
-                            result
+                            BulkItemCancellationResult(
+                                result = cancelByUserWithPublication(
+                                    id = snapshot.id,
+                                    // Clear Queue owns the current queue intent,
+                                    // not the stale execution token from the
+                                    // observation snapshot. The transaction
+                                    // rereads and CASes that current token.
+                                    expectedExecutionId = null,
+                                ),
+                            )
                         }
                     }
+                    if (result.historyFinalizationRequired) {
+                        check(
+                            DownloadExecutionRecovery.convergeCommittedHistoryFinalization(
+                                context = requireNotNull(recoveryContext),
+                                dbManager = database,
+                                downloadId = snapshot.id,
+                                executionId = requireNotNull(result.executionId),
+                            )
+                        ) {
+                            "Committed History finalization remained unresolved for ${snapshot.id}"
+                        }
+                    }
+                    if (result.ownershipLost) {
+                        DownloadExecutionRecovery.retainRecoveryResponsibility(
+                            context = requireNotNull(recoveryContext),
+                            downloadId = snapshot.id,
+                            dbManager = database,
+                            failure = IllegalStateException(
+                                "Cancellation recovery lost exact execution for ${snapshot.id}",
+                            ),
+                        )
+                    }
+                    result
                 }
+                val result = itemResult.result
                 affectedOperationIds += result.affectedOperationIds
                 result.publication?.let { publication ->
                     publications += publication
