@@ -1,7 +1,15 @@
 package com.ireum.ytdl.work
 
+import android.content.Context
+import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.database.repository.DownloadExecutionOwnershipLostException
+import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.util.download.DownloadIssue
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 internal sealed interface HistoryReplacementPersistenceResult {
     data object Persisted : HistoryReplacementPersistenceResult
@@ -53,6 +61,126 @@ internal suspend fun persistHistoryReplacementTerminalState(
         }
     }
     return HistoryReplacementPersistenceResult.Persisted
+}
+
+/**
+ * Persists an ordinary worker terminal result only while the exact worker
+ * still owns the Download side-effect lease.  The short global lock protects
+ * the final ownership/user-stop read; the terminal Room/ledger work then
+ * runs with only the per-Download lease held, so no slow external operation
+ * is placed under the global execution lock.
+ *
+ * A History refusal is a stronger operation fact than an ordinary Error
+ * projection.  If a durable USER_STOP already won before this boundary, keep
+ * that refusal carrier and stop before writing Error.  This prevents a stale
+ * worker from making Cancel/Pause recovery impossible while retaining the
+ * immutable refusal proof.
+ */
+internal suspend fun persistHistoryReplacementTerminalStateWithOwnedExecution(
+    context: Context,
+    dbManager: DBManager,
+    downloadItem: DownloadItem,
+    issue: DownloadIssue,
+    preserveRefusalIssue: DownloadIssue? = null,
+    persistDownload: suspend () -> Unit,
+    transitionLinkedDownload: suspend (String) -> Unit,
+    isCancellationRequested: (suspend () -> Boolean)? = null,
+    onLinkedTransitionFailure: (suspend (Exception) -> Unit)? = null,
+): HistoryReplacementPersistenceResult {
+    val beforeTerminalPersistence = DownloadWorkerEffectTestHooks
+        .beforeFailureTerminalPersistenceForTesting
+    DownloadWorkerEffectTestHooks.beforeFailureTerminalPersistenceForTesting = null
+    beforeTerminalPersistence?.invoke()
+
+    return withDownloadWorkerExecutionSideEffectLease(
+        downloadId = downloadItem.id,
+        executionId = downloadItem.executionId,
+    ) {
+        val userStopWon = withDownloadWorkerExecutionLock {
+            val current = dbManager.downloadDao.getNullableDownloadById(downloadItem.id)
+            if (
+                current == null ||
+                    current.executionId != downloadItem.executionId ||
+                    current.status !in setOf(
+                        DownloadRepository.Status.Active.name,
+                        DownloadRepository.Status.PostProcessing.name,
+                    ) ||
+                    !DownloadWorkerExecutionOwners.isOwnedBy(
+                        downloadItem.id,
+                        downloadItem.executionId,
+                    )
+            ) {
+                throw DownloadExecutionOwnershipLostException(
+                    downloadId = downloadItem.id,
+                    expectedExecutionId = downloadItem.executionId,
+                    actualExecutionId = current?.executionId,
+                )
+            }
+            if (dbManager.lowQualityRedownloadDao.hasCancellationRequestedByDownload(downloadItem.id)) {
+                throw CancellationException(
+                    "Low-quality cancellation revoked terminal failure authority " +
+                        "id=${downloadItem.id}",
+                )
+            }
+            hasDurableUserStopRevokedAuthority(context, dbManager, current)
+        }
+
+        if (userStopWon) {
+            val refusal = preserveRefusalIssue?.takeIf {
+                HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(it.code.name)
+            }
+            if (refusal != null) {
+                val carrierPersisted = withContext(NonCancellable) {
+                    DownloadRepository(dbManager).persistHistoryReplacementRefusalCarrier(
+                        id = downloadItem.id,
+                        expectedExecutionId = downloadItem.executionId,
+                        issueCode = refusal.code.name,
+                        issueStage = refusal.stage.name,
+                    )
+                }
+                check(carrierPersisted) {
+                    "History refusal carrier could not be preserved while user stop was pending " +
+                        "for download ${downloadItem.id}"
+                }
+            }
+            throw CancellationException(
+                "Durable user stop revoked terminal failure authority " +
+                    "id=${downloadItem.id} executionId=${downloadItem.executionId}",
+            )
+        }
+
+        val result = persistHistoryReplacementTerminalState(
+            issue = issue,
+            persistDownload = persistDownload,
+            transitionLinkedDownload = transitionLinkedDownload,
+            isCancellationRequested = isCancellationRequested,
+            onLinkedTransitionFailure = onLinkedTransitionFailure,
+        )
+        val refusal = preserveRefusalIssue?.takeIf {
+            HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(it.code.name)
+        }
+        if (refusal != null && result is HistoryReplacementPersistenceResult.Persisted) {
+            val carrierPersisted = withContext(NonCancellable) {
+                DownloadRepository(dbManager).persistHistoryReplacementRefusalCarrier(
+                    id = downloadItem.id,
+                    expectedExecutionId = downloadItem.executionId,
+                    issueCode = refusal.code.name,
+                    issueStage = refusal.stage.name,
+                )
+            }
+            if (!carrierPersisted) {
+                HistoryReplacementPersistenceResult.Failed(
+                    IllegalStateException(
+                        "History refusal carrier was not durable for download ${downloadItem.id}",
+                    )
+                )
+            } else {
+                result
+            }
+        } else {
+            result
+        }
+    }
 }
 
 internal fun authoritativeDownloadIssue(

@@ -15,12 +15,17 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
+import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
+import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.receiver.CancelDownloadNotificationReceiver
 import com.ireum.ytdl.receiver.PauseDownloadNotificationReceiver
 import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.download.DownloadIssue
+import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.util.download.DownloadIssueStage
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorkerAdmissionResult
 import com.ireum.ytdl.work.DownloadWorkerEffectTestHooks
@@ -32,6 +37,7 @@ import com.ireum.ytdl.work.hasDurableUserStopRevokedAuthority
 import com.ireum.ytdl.work.observeQueuedDownloadsAfterRecovery
 import com.ireum.ytdl.work.publishNoCacheMediaWithOwnedExecution
 import com.ireum.ytdl.work.publishTerminalWorkerProgressWithOwnedExecution
+import com.ireum.ytdl.work.persistHistoryReplacementTerminalStateWithOwnedExecution
 import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
@@ -80,8 +86,10 @@ class FindingAProductionWiringTest {
         DownloadWorkerProcessOwners.clearForTesting()
         CancelDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
         CancelDownloadNotificationReceiver.finishObserverForTesting = null
+        CancelDownloadNotificationReceiver.beforeStopLeaseForTesting = null
         PauseDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
         PauseDownloadNotificationReceiver.finishObserverForTesting = null
+        PauseDownloadNotificationReceiver.beforeStopLeaseForTesting = null
         PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
         DownloadRepository.userStopWriteFailureForTesting = null
         DownloadRepository.userStopWriteNoOpForTesting = null
@@ -89,6 +97,7 @@ class FindingAProductionWiringTest {
         DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
         DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting = null
         DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting = null
+        DownloadWorkerEffectTestHooks.beforeFailureTerminalPersistenceForTesting = null
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
             DBManager::class.java,
@@ -105,8 +114,10 @@ class FindingAProductionWiringTest {
         DownloadWorkerProcessOwners.clearForTesting()
         CancelDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
         CancelDownloadNotificationReceiver.finishObserverForTesting = null
+        CancelDownloadNotificationReceiver.beforeStopLeaseForTesting = null
         PauseDownloadNotificationReceiver.beforeAsyncBodyForTesting = null
         PauseDownloadNotificationReceiver.finishObserverForTesting = null
+        PauseDownloadNotificationReceiver.beforeStopLeaseForTesting = null
         PauseDownloadNotificationReceiver.resumePublicationObserverForTesting = null
         DownloadRepository.userStopWriteFailureForTesting = null
         DownloadRepository.userStopWriteNoOpForTesting = null
@@ -114,6 +125,7 @@ class FindingAProductionWiringTest {
         DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
         DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting = null
         DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting = null
+        DownloadWorkerEffectTestHooks.beforeFailureTerminalPersistenceForTesting = null
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
@@ -2412,6 +2424,107 @@ class FindingAProductionWiringTest {
     }
 
     @Test
+    fun liveWorkerFailureTerminalWriteDoesNotOverrideCancelFirstWriteException() = runBlocking {
+        exerciseLiveWorkerFailureTerminalBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            noOp = false,
+        )
+    }
+
+    @Test
+    fun liveWorkerFailureTerminalWriteDoesNotOverrideCancelFirstWriteNoOp() = runBlocking {
+        exerciseLiveWorkerFailureTerminalBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+            noOp = true,
+        )
+    }
+
+    @Test
+    fun liveWorkerFailureTerminalWriteDoesNotOverridePauseFirstWriteException() = runBlocking {
+        exerciseLiveWorkerFailureTerminalBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+            noOp = false,
+        )
+    }
+
+    @Test
+    fun liveWorkerFailureTerminalWriteDoesNotOverridePauseFirstWriteNoOp() = runBlocking {
+        exerciseLiveWorkerFailureTerminalBoundary(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+            noOp = true,
+        )
+    }
+
+    @Test
+    fun terminalErrorWinsBeforeLateCancelDoesNotCreateRecoveryCarrier() = runBlocking {
+        exerciseTerminalErrorWinsBeforeLateUserStop(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+        )
+    }
+
+    @Test
+    fun terminalErrorWinsBeforeLatePauseDoesNotCreateRecoveryCarrier() = runBlocking {
+        exerciseTerminalErrorWinsBeforeLateUserStop(
+            disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_PAUSE,
+        )
+    }
+
+    @Test
+    fun userStopBeforeHistoryRefusalTerminalWritePreservesHistoryProof() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val historyId = db.historyDao.insertAndGetIdRaw(history())
+        val executionId = "history-refusal-stop-race-E1"
+        val downloadId = db.downloadDao.insertRaw(
+            download().copy(
+                playlistURL = "history-redownload:$historyId",
+                executionId = executionId,
+            )
+        )
+        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        val refusal = HistoryReplacementDiagnostic.issue(HistoryReplacementMismatchKind.SOURCE)
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        try {
+            assertTrue(
+                DownloadExecutionRecovery.recordPending(
+                    context = context,
+                    item = item,
+                    disposition = DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL,
+                    phase = DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING,
+                )
+            )
+            val terminalResult = runCatching {
+                persistHistoryReplacementTerminalStateWithOwnedExecution(
+                    context = context,
+                    dbManager = db,
+                    downloadItem = item.copy(
+                        status = DownloadRepository.Status.Error.name,
+                        lastIssueCode = refusal.code.name,
+                        lastIssueStage = refusal.stage.name,
+                    ),
+                    issue = refusal,
+                    preserveRefusalIssue = refusal,
+                    persistDownload = {
+                        error("ordinary Error must not win a durable user stop")
+                    },
+                    transitionLinkedDownload = {},
+                )
+            }
+            assertTrue(terminalResult.isFailure)
+            assertTrue(terminalResult.exceptionOrNull() is CancellationException)
+            assertEquals(
+                DownloadRepository.Status.Active.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            val barrier = db.historyReplacementBarrierDao.getByDownloadId(downloadId)
+            assertNotNull(barrier)
+            assertEquals(refusal.code.name, barrier?.issueCode)
+            assertEquals(refusal.stage.name, barrier?.issueStage)
+        } finally {
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    @Test
     fun ownedNoCacheMediaScanPublishesWithExactLiveWorkerAuthority() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val executionId = "owned-no-cache-control-E1"
@@ -2807,6 +2920,243 @@ class FindingAProductionWiringTest {
     private enum class WorkerEffectBoundary {
         NO_CACHE_MEDIA,
         TERMINAL_PROGRESS,
+    }
+
+    private suspend fun exerciseLiveWorkerFailureTerminalBoundary(
+        disposition: DownloadExecutionRecovery.RecoveryDisposition,
+        noOp: Boolean,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val expectedStatus = if (
+            disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+        ) {
+            DownloadRepository.Status.Cancelled
+        } else {
+            DownloadRepository.Status.Paused
+        }
+        val executionId =
+            "worker-failure-terminal-${disposition.name.lowercase()}-${if (noOp) "noop" else "exception"}-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val process = QuiescingProcess()
+        val boundaryEntered = CountDownLatch(1)
+        val boundaryRelease = CountDownLatch(1)
+        val terminalMutationCount = AtomicInteger(0)
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, executionId))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+        if (noOp) {
+            DownloadRepository.userStopWriteNoOpForTesting = { targetId, status ->
+                targetId == downloadId && status == expectedStatus
+            }
+        } else {
+            DownloadRepository.userStopWriteFailureForTesting = { targetId, status ->
+                if (targetId == downloadId && status == expectedStatus) {
+                    IllegalStateException("injected first ${expectedStatus.name} write failure")
+                } else {
+                    null
+                }
+            }
+        }
+        DownloadWorkerEffectTestHooks.beforeFailureTerminalPersistenceForTesting = {
+            boundaryEntered.countDown()
+            check(boundaryRelease.await(5_000L, TimeUnit.MILLISECONDS)) {
+                "Timed out waiting to release failure terminal boundary"
+            }
+        }
+
+        val issue = DownloadIssue.create(
+            stage = DownloadIssueStage.DOWNLOAD,
+            code = DownloadIssueCode.UNKNOWN,
+            details = "deterministic failure terminal boundary",
+        )
+        try {
+            coroutineScope {
+                val terminalResult = async(Dispatchers.IO) {
+                    runCatching {
+                        val item = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+                        persistHistoryReplacementTerminalStateWithOwnedExecution(
+                            context = context,
+                            dbManager = db,
+                            downloadItem = item,
+                            issue = issue,
+                            persistDownload = {
+                                terminalMutationCount.incrementAndGet()
+                                check(
+                                    db.downloadDao.updateIfExecutionOwnedAndRunning(
+                                        item.copy(status = DownloadRepository.Status.Error.name),
+                                        executionId,
+                                    )
+                                )
+                            },
+                            transitionLinkedDownload = {},
+                        )
+                    }
+                }
+
+                assertTrue(boundaryEntered.await(5_000L, TimeUnit.MILLISECONDS))
+                sendReceiverAndAwait(
+                    context = context,
+                    receiver = if (
+                        disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+                    ) {
+                        CancelDownloadNotificationReceiver(db)
+                    } else {
+                        PauseDownloadNotificationReceiver(db)
+                    },
+                    intent = receiverIntent(
+                        action = "failure-terminal-stop-${UUID.randomUUID()}",
+                        downloadId = downloadId,
+                        executionId = executionId,
+                    ),
+                ) {
+                    db.downloadDao.getNullableDownloadById(downloadId)?.status ==
+                        DownloadRepository.Status.Active.name &&
+                        DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId) ==
+                            disposition &&
+                        DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId) ==
+                            DownloadExecutionRecovery.RecoveryPhase.SEMANTIC_STOP_PENDING
+                }
+                DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+
+                boundaryRelease.countDown()
+                val result = terminalResult.await()
+                assertTrue(result.isFailure)
+                assertTrue(result.exceptionOrNull() is CancellationException)
+                assertEquals(0, terminalMutationCount.get())
+                assertEquals(
+                    DownloadRepository.Status.Active.name,
+                    db.downloadDao.getNullableDownloadById(downloadId)?.status,
+                )
+                assertEquals(0, process.destroyCount.get())
+                assertTrue(process.isAlive)
+
+                DownloadRepository.userStopWriteFailureForTesting = null
+                DownloadRepository.userStopWriteNoOpForTesting = null
+                assertTrue(
+                    DownloadExecutionRecovery.convergeUserStopBeforeGenericCleanup(
+                        context = context,
+                        dbManager = db,
+                        downloadId = downloadId,
+                        executionId = executionId,
+                    )
+                )
+                assertEquals(
+                    expectedStatus.name,
+                    db.downloadDao.getNullableDownloadById(downloadId)?.status,
+                )
+                assertEquals(1, process.destroyCount.get())
+                assertFalse(process.isAlive)
+                assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            }
+        } finally {
+            boundaryRelease.countDown()
+            DownloadWorkerEffectTestHooks.beforeFailureTerminalPersistenceForTesting = null
+            DownloadRepository.userStopWriteFailureForTesting = null
+            DownloadRepository.userStopWriteNoOpForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(downloadId, executionId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
+    }
+
+    private suspend fun exerciseTerminalErrorWinsBeforeLateUserStop(
+        disposition: DownloadExecutionRecovery.RecoveryDisposition,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val executionId = "terminal-error-before-stop-${disposition.name.lowercase()}-E1"
+        val downloadId = db.downloadDao.insertRaw(download().copy(executionId = executionId))
+        val processId = YtdlpProcessIdentity.download(downloadId, executionId)
+        val process = QuiescingProcess()
+        val publisherEntered = CountDownLatch(1)
+        val publisherRelease = CountDownLatch(1)
+        val finishCount = AtomicInteger(0)
+        val receiver = if (
+            disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL
+        ) {
+            CancelDownloadNotificationReceiver(db)
+        } else {
+            PauseDownloadNotificationReceiver(db)
+        }
+        DownloadWorkerExecutionOwners.claim(downloadId, executionId)
+        assertTrue(DownloadWorkerProcessOwners.claim(downloadId, executionId))
+        YoutubeDLCompat.registerProcessForTesting(processId, process)
+        if (disposition == DownloadExecutionRecovery.RecoveryDisposition.USER_CANCEL) {
+            CancelDownloadNotificationReceiver.beforeStopLeaseForTesting = {
+                publisherEntered.countDown()
+                check(publisherRelease.await(5_000L, TimeUnit.MILLISECONDS))
+            }
+            CancelDownloadNotificationReceiver.finishObserverForTesting = {
+                finishCount.incrementAndGet()
+            }
+        } else {
+            PauseDownloadNotificationReceiver.beforeStopLeaseForTesting = {
+                publisherEntered.countDown()
+                check(publisherRelease.await(5_000L, TimeUnit.MILLISECONDS))
+            }
+            PauseDownloadNotificationReceiver.finishObserverForTesting = {
+                finishCount.incrementAndGet()
+            }
+        }
+        val issue = DownloadIssue.create(
+            stage = DownloadIssueStage.DOWNLOAD,
+            code = DownloadIssueCode.UNKNOWN,
+            details = "deterministic terminal winner",
+        )
+        try {
+            coroutineScope {
+                val receiverJob = async(Dispatchers.IO) {
+                    sendReceiverAndAwait(
+                        context = context,
+                        receiver = receiver,
+                        intent = receiverIntent(
+                            action = "terminal-error-late-stop-${UUID.randomUUID()}",
+                            downloadId = downloadId,
+                            executionId = executionId,
+                        ),
+                    ) { finishCount.get() == 1 }
+                }
+                assertTrue(publisherEntered.await(5_000L, TimeUnit.MILLISECONDS))
+
+                val result = persistHistoryReplacementTerminalStateWithOwnedExecution(
+                    context = context,
+                    dbManager = db,
+                    downloadItem = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId)),
+                    issue = issue,
+                    persistDownload = {
+                        val current = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+                        check(
+                            db.downloadDao.updateIfExecutionOwnedAndRunning(
+                                current.copy(status = DownloadRepository.Status.Error.name),
+                                executionId,
+                            )
+                        )
+                    },
+                    transitionLinkedDownload = {},
+                )
+                assertTrue(result is com.ireum.ytdl.work.HistoryReplacementPersistenceResult.Persisted)
+                assertEquals(
+                    DownloadRepository.Status.Error.name,
+                    db.downloadDao.getNullableDownloadById(downloadId)?.status,
+                )
+                publisherRelease.countDown()
+                receiverJob.await()
+                assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+                assertEquals(0, process.destroyCount.get())
+                assertTrue(process.isAlive)
+            }
+        } finally {
+            publisherRelease.countDown()
+            CancelDownloadNotificationReceiver.beforeStopLeaseForTesting = null
+            CancelDownloadNotificationReceiver.finishObserverForTesting = null
+            PauseDownloadNotificationReceiver.beforeStopLeaseForTesting = null
+            PauseDownloadNotificationReceiver.finishObserverForTesting = null
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(downloadId)
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(downloadId, executionId)
+            DownloadWorkerExecutionOwners.release(downloadId, executionId)
+        }
     }
 
     private suspend fun exerciseLiveWorkerEffectBoundary(

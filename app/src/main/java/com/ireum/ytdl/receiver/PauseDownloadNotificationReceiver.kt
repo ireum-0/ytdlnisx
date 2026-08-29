@@ -29,6 +29,10 @@ class PauseDownloadNotificationReceiver private constructor(
         @Volatile
         internal var finishObserverForTesting: (() -> Unit)? = null
 
+        /** Holds the publisher before it acquires the exact stop lease. */
+        @Volatile
+        internal var beforeStopLeaseForTesting: (() -> Unit)? = null
+
         /** Deterministic observation of the normal Resume publication point. */
         @Volatile
         internal var resumePublicationObserverForTesting: (() -> Unit)? = null
@@ -65,6 +69,9 @@ class PauseDownloadNotificationReceiver private constructor(
                     beforeAsyncBodyForTesting = null
                     injectedFailure?.invoke()
                     if (expectedExecutionId.isNotBlank()) {
+                        val beforeLease = beforeStopLeaseForTesting
+                        beforeStopLeaseForTesting = null
+                        beforeLease?.invoke()
                         withDownloadWorkerExecutionSideEffectLease(id.toLong(), expectedExecutionId) {
                             val semanticResult = withDownloadWorkerExecutionLock {
                                 val item = dbManager.downloadDao.getDownloadById(id.toLong())

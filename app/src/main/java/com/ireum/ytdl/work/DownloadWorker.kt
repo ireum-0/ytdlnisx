@@ -223,6 +223,10 @@ internal object DownloadWorkerEffectTestHooks {
 
     @Volatile
     internal var beforeTerminalProgressPostForTesting: (() -> Unit)? = null
+
+    /** Holds an ordinary failure terminal writer before its exact lease. */
+    @Volatile
+    internal var beforeFailureTerminalPersistenceForTesting: (() -> Unit)? = null
 }
 
 /**
@@ -246,6 +250,54 @@ internal suspend fun <T> withOwnedDownloadWorkerSideEffect(
             dbManager = dbManager,
             downloadItem = downloadItem,
         )
+    }
+    sideEffect()
+}
+
+/**
+ * Exact authority boundary for effects that describe an already-persisted
+ * ordinary Error terminal state.  The normal Active/PostProcessing wrapper
+ * intentionally rejects Error, so failure notification/progress must use a
+ * separate gate rather than accidentally weakening every worker side effect.
+ */
+internal suspend fun <T> withOwnedDownloadWorkerTerminalSideEffect(
+    context: Context,
+    dbManager: DBManager,
+    downloadItem: DownloadItem,
+    sideEffect: suspend () -> T,
+): T = withDownloadWorkerExecutionSideEffectLease(
+    downloadId = downloadItem.id,
+    executionId = downloadItem.executionId,
+) {
+    withDownloadWorkerExecutionLock {
+        val current = dbManager.downloadDao.getNullableDownloadById(downloadItem.id)
+        if (current != null && hasDurableUserStopRevokedAuthority(context, dbManager, current)) {
+            throw CancellationException(
+                "Durable user stop revoked terminal publication authority " +
+                    "id=${downloadItem.id} executionId=${downloadItem.executionId}",
+            )
+        }
+        if (dbManager.lowQualityRedownloadDao.hasCancellationRequestedByDownload(downloadItem.id)) {
+            throw CancellationException(
+                "Low-quality cancellation revoked terminal publication authority " +
+                    "id=${downloadItem.id}",
+            )
+        }
+        if (
+            current == null ||
+                current.executionId != downloadItem.executionId ||
+                current.status != DownloadRepository.Status.Error.name ||
+                !DownloadWorkerExecutionOwners.isOwnedBy(
+                    downloadItem.id,
+                    downloadItem.executionId,
+                )
+        ) {
+            throw DownloadExecutionOwnershipLostException(
+                downloadId = downloadItem.id,
+                expectedExecutionId = downloadItem.executionId,
+                actualExecutionId = current?.executionId,
+            )
+        }
     }
     sideEffect()
 }
@@ -330,13 +382,10 @@ internal suspend fun publishTerminalWorkerProgressWithOwnedExecution(
     downloadItem: DownloadItem,
     eventBus: EventBus,
     summary: String,
+    terminalError: Boolean = false,
 ) {
     DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting?.invoke()
-    withOwnedDownloadWorkerSideEffect(
-        context = context,
-        dbManager = dbManager,
-        downloadItem = downloadItem,
-    ) {
+    val publish: suspend () -> Unit = {
         DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting?.invoke()
         eventBus.post(
             DownloadWorker.WorkerProgress(
@@ -345,6 +394,21 @@ internal suspend fun publishTerminalWorkerProgressWithOwnedExecution(
                 downloadItem.id,
                 downloadItem.logID,
             )
+        )
+    }
+    if (terminalError) {
+        withOwnedDownloadWorkerTerminalSideEffect(
+            context = context,
+            dbManager = dbManager,
+            downloadItem = downloadItem,
+            sideEffect = publish,
+        )
+    } else {
+        withOwnedDownloadWorkerSideEffect(
+            context = context,
+            dbManager = dbManager,
+            downloadItem = downloadItem,
+            sideEffect = publish,
         )
     }
 }
@@ -2314,13 +2378,34 @@ class DownloadWorker(
                                         }
                                     }
                                     persistedHistoryId?.let { historyId ->
-                                        com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(dbManager)
-                                            .applyToHistory(
-                                                historyId,
-                                                downloadItem.url,
-                                                downloadItem.observeSourceId,
-                                                observeKeyword
-                                            )
+                                        if (historyReplacementCommitted) {
+                                            // A committed replacement History
+                                            // row is the stronger primary
+                                            // authority; ancillary warnings
+                                            // may finish after it commits.
+                                            com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(dbManager)
+                                                .applyToHistory(
+                                                    historyId,
+                                                    downloadItem.url,
+                                                    downloadItem.observeSourceId,
+                                                    observeKeyword
+                                                )
+                                        } else {
+                                            // For an ordinary History insert,
+                                            // keyword assignment is still a
+                                            // correctness-relevant mutation.
+                                            // Revalidate exact USER_STOP
+                                            // authority at the actual effect.
+                                            withOwnedExecutionSideEffect(downloadItem) {
+                                                com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine(dbManager)
+                                                    .applyToHistory(
+                                                        historyId,
+                                                        downloadItem.url,
+                                                        downloadItem.observeSourceId,
+                                                        observeKeyword
+                                                    )
+                                            }
+                                        }
                                     }
                                     if (replacedHistoryId > 0L && persistedHistoryId != null) {
                         if (!historyReplacementCommitted && shouldStopForUserRequest()) return AttemptControl.STOP
@@ -2336,11 +2421,13 @@ class DownloadWorker(
                                         existingDuplicateHistoryItem != null &&
                                         persistedHistoryId != null
                                     ) {
-                                        PendingDuplicateDownloadStore.add(
-                                            sharedPreferences,
-                                            newHistoryId = persistedHistoryId,
-                                            existingHistoryId = existingDuplicateHistoryItem.id
-                                        )
+                                        withOwnedExecutionSideEffect(downloadItem) {
+                                            PendingDuplicateDownloadStore.add(
+                                                sharedPreferences,
+                                                newHistoryId = persistedHistoryId,
+                                                existingHistoryId = existingDuplicateHistoryItem.id
+                                            )
+                                        }
                                         Log.i(
                                             TAG,
                                             "Duplicate download needs user choice newHistoryId=$persistedHistoryId existingHistoryId=${existingDuplicateHistoryItem.id} url=${downloadItem.url}"
@@ -2436,62 +2523,43 @@ class DownloadWorker(
                                 }
                                 downloadItem.lastIssueCode = historyIssue.code.name
                                 downloadItem.lastIssueStage = DownloadIssueStage.HISTORY.name
-                                val persistenceResult = persistHistoryReplacementTerminalState(
-                                    issue = historyIssue,
-                                    persistDownload = {
-                                        check(
-                                            dao.updateIfExecutionOwnedAndRunning(
-                                                downloadItem,
-                                                downloadItem.executionId,
-                                            )
-                                        ) {
-                                            "History mismatch ownership lost for download ${downloadItem.id}"
-                                        }
-                                    },
-                                    transitionLinkedDownload = { reason ->
-                                        LowQualityRedownloadLedger.transition(
-                                            context,
-                                            downloadItem.id,
-                                            com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
-                                            reason = reason,
-                                            expectedExecutionId = downloadItem.executionId,
-                                        )
-                                    },
-                                    isCancellationRequested = {
-                                        LowQualityRedownloadRepository(dbManager)
-                                            .isCancellationRequestedForDownload(downloadItem.id)
-                                    },
-                                    onLinkedTransitionFailure = {
-                                        LowQualityRedownloadLedger.scheduleConvergence(
-                                            context,
-                                            downloadItem.id,
-                                        )
-                                    },
-                                )
-                                if (
-                                    HistoryReplacementDiagnostic
-                                        .isPersistedHistoryReplacementRefusal(historyIssue.code.name) &&
-                                        persistenceResult is HistoryReplacementPersistenceResult.Persisted
-                                ) {
-                                    // The first barrier insert/read-back may
-                                    // have failed before this catch.  The
-                                    // Download diagnostic is portable, but it
-                                    // must be followed by the immutable barrier
-                                    // before the worker is allowed to finish.
-                                    check(
-                                        withContext(Dispatchers.IO + NonCancellable) {
-                                            DownloadRepository(dbManager)
-                                                .persistHistoryReplacementRefusalCarrier(
-                                                    id = downloadItem.id,
-                                                    expectedExecutionId = downloadItem.executionId,
-                                                    issueCode = historyIssue.code.name,
-                                                    issueStage = historyIssue.stage.name,
+                                val persistenceResult =
+                                    persistHistoryReplacementTerminalStateWithOwnedExecution(
+                                        context = context,
+                                        dbManager = dbManager,
+                                        downloadItem = downloadItem,
+                                        issue = historyIssue,
+                                        preserveRefusalIssue = historyIssue,
+                                        persistDownload = {
+                                            check(
+                                                dao.updateIfExecutionOwnedAndRunning(
+                                                    downloadItem,
+                                                    downloadItem.executionId,
                                                 )
-                                        }
-                                    ) {
-                                        "History refusal carrier could not be restored for download ${downloadItem.id}"
-                                    }
-                                }
+                                            ) {
+                                                "History mismatch ownership lost for download ${downloadItem.id}"
+                                            }
+                                        },
+                                        transitionLinkedDownload = { reason ->
+                                            LowQualityRedownloadLedger.transition(
+                                                context,
+                                                downloadItem.id,
+                                                com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                                reason = reason,
+                                                expectedExecutionId = downloadItem.executionId,
+                                            )
+                                        },
+                                        isCancellationRequested = {
+                                            LowQualityRedownloadRepository(dbManager)
+                                                .isCancellationRequestedForDownload(downloadItem.id)
+                                        },
+                                        onLinkedTransitionFailure = {
+                                            LowQualityRedownloadLedger.scheduleConvergence(
+                                                context,
+                                                downloadItem.id,
+                                            )
+                                        },
+                                    )
                                 val unrecoverableMismatch =
                                     unrecoverableHistoryReplacementPersistenceFailure(
                                         historyReplacementAuthoritativeIssue,
@@ -2533,7 +2601,7 @@ class DownloadWorker(
                             // lease as the terminal Room mutation.  A durable
                             // USER_STOP carrier that wins first therefore
                             // prevents a stale success/error publication.
-                            withOwnedExecutionSideEffect(downloadItem) {
+                            val publishCompletionNotification: suspend () -> Unit = {
                                 withContext(Dispatchers.Main) {
                                     notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
                                     if (historyReplacementFailureIssue == null) {
@@ -2556,6 +2624,18 @@ class DownloadWorker(
                                             allowReconfigure = false
                                         )
                                     }
+                                }
+                            }
+                            if (preserveQueueRecord) {
+                                withOwnedDownloadWorkerTerminalSideEffect(
+                                    context = context,
+                                    dbManager = dbManager,
+                                    downloadItem = downloadItem,
+                                    sideEffect = publishCompletionNotification,
+                                )
+                            } else {
+                                withOwnedExecutionSideEffect(downloadItem) {
+                                    publishCompletionNotification()
                                 }
                             }
                         } catch (notificationError: Exception) {
@@ -2588,6 +2668,7 @@ class DownloadWorker(
                                 downloadItem = downloadItem,
                                 eventBus = eventBus,
                                 summary = summary,
+                                terminalError = preserveQueueRecord,
                             )
                         }
 
@@ -2922,13 +3003,15 @@ class DownloadWorker(
                                     downloadItem.lastIssueCode = primaryIssue.code.name
                                     downloadItem.lastIssueStage = primaryIssue.stage.name
                                     try {
-                                        check(
-                                            dao.updateIfExecutionOwnedAndRunning(
-                                                downloadItem,
-                                                downloadItem.executionId,
-                                            )
-                                        ) {
-                                            "Download ownership lost while persisting failure ${downloadItem.id}"
+                                        withOwnedExecutionSideEffect(downloadItem) {
+                                            check(
+                                                dao.updateIfExecutionOwnedAndRunning(
+                                                    downloadItem,
+                                                    downloadItem.executionId,
+                                                )
+                                            ) {
+                                                "Download ownership lost while persisting failure ${downloadItem.id}"
+                                            }
                                         }
                                     } catch (cancelled: CancellationException) {
                                         throw cancelled
@@ -2947,15 +3030,37 @@ class DownloadWorker(
                                 }
                             }
                             try {
-                                withContext(Dispatchers.Main) {
-                                    notificationUtil.createDownloadFinished(
-                                        downloadItem.id,
-                                        notificationTitle,
-                                        downloadItem.type,
-                                        createdOutputPaths,
-                                        resources,
-                                        warningSummary
+                                val publishPartialCompletion: suspend () -> Unit = {
+                                    withContext(Dispatchers.Main) {
+                                        notificationUtil.createDownloadFinished(
+                                            downloadItem.id,
+                                            notificationTitle,
+                                            downloadItem.type,
+                                            createdOutputPaths,
+                                            resources,
+                                            warningSummary
+                                        )
+                                    }
+                                    eventBus.post(
+                                        WorkerProgress(100, warningSummary, downloadItem.id, downloadItem.logID)
                                     )
+                                }
+                                if (preserveQueueRecord) {
+                                    // A failed terminal deletion leaves an
+                                    // Error row, so both warning publications
+                                    // must revalidate that exact terminal
+                                    // authority and any durable USER_STOP.
+                                    withOwnedDownloadWorkerTerminalSideEffect(
+                                        context = context,
+                                        dbManager = dbManager,
+                                        downloadItem = downloadItem,
+                                        sideEffect = publishPartialCompletion,
+                                    )
+                                } else {
+                                    // The Download row was already deleted;
+                                    // the successful terminal result is the
+                                    // stronger authority for this warning.
+                                    publishPartialCompletion()
                                 }
                             } catch (cancelled: CancellationException) {
                                 throw cancelled
@@ -2966,9 +3071,6 @@ class DownloadWorker(
                                     notificationError
                                 )
                             }
-                            eventBus.post(
-                                WorkerProgress(100, warningSummary, downloadItem.id, downloadItem.logID)
-                            )
             return AttemptControl.STOP
                         }
                         val failedOutcome = DownloadOutcome.failed(primaryIssue)
@@ -3076,38 +3178,43 @@ class DownloadWorker(
                         downloadItem.status = DownloadRepository.Status.Error.toString()
                         downloadItem.lastIssueCode = primaryIssue.code.name
                         downloadItem.lastIssueStage = primaryIssue.stage.name
-                        val terminalPersistence = persistHistoryReplacementTerminalState(
-                            issue = primaryIssue,
-                            persistDownload = {
-                                check(
-                                    dao.updateIfExecutionOwnedAndRunning(
-                                        downloadItem,
-                                        downloadItem.executionId,
+                        val terminalPersistence =
+                            persistHistoryReplacementTerminalStateWithOwnedExecution(
+                                context = context,
+                                dbManager = dbManager,
+                                downloadItem = downloadItem,
+                                issue = primaryIssue,
+                                preserveRefusalIssue = historyReplacementAuthoritativeIssue,
+                                persistDownload = {
+                                    check(
+                                        dao.updateIfExecutionOwnedAndRunning(
+                                            downloadItem,
+                                            downloadItem.executionId,
+                                        )
+                                    ) {
+                                        "Download ownership lost while persisting failure ${downloadItem.id}"
+                                    }
+                                },
+                                transitionLinkedDownload = { reason ->
+                                    LowQualityRedownloadLedger.transition(
+                                        context,
+                                        downloadItem.id,
+                                        com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                        reason = reason,
+                                        expectedExecutionId = downloadItem.executionId,
                                     )
-                                ) {
-                                    "Download ownership lost while persisting failure ${downloadItem.id}"
-                                }
-                            },
-                            transitionLinkedDownload = { reason ->
-                                LowQualityRedownloadLedger.transition(
-                                    context,
-                                    downloadItem.id,
-                                    com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
-                                    reason = reason,
-                                    expectedExecutionId = downloadItem.executionId,
-                                )
-                            },
-                            isCancellationRequested = {
-                                LowQualityRedownloadRepository(dbManager)
-                                    .isCancellationRequestedForDownload(downloadItem.id)
-                            },
-                            onLinkedTransitionFailure = {
-                                LowQualityRedownloadLedger.scheduleConvergence(
-                                    context,
-                                    downloadItem.id,
-                                )
-                            },
-                        )
+                                },
+                                isCancellationRequested = {
+                                    LowQualityRedownloadRepository(dbManager)
+                                        .isCancellationRequestedForDownload(downloadItem.id)
+                                },
+                                onLinkedTransitionFailure = {
+                                    LowQualityRedownloadLedger.scheduleConvergence(
+                                        context,
+                                        downloadItem.id,
+                                    )
+                                },
+                            )
                         if (terminalPersistence is HistoryReplacementPersistenceResult.Failed) {
                             throw terminalPersistence.error
                         }
@@ -3140,7 +3247,11 @@ class DownloadWorker(
                             }.getOrDefault(DownloadRetryStrategy.ORIGINAL)
                         )
 
-                        withOwnedExecutionSideEffect(downloadItem) {
+                        withOwnedDownloadWorkerTerminalSideEffect(
+                            context = context,
+                            dbManager = dbManager,
+                            downloadItem = downloadItem,
+                        ) {
                             notificationUtil.createDownloadErrored(
                                 downloadItem.id,
                                 notificationTitle,
@@ -3432,38 +3543,43 @@ class DownloadWorker(
                                     downloadItem.status = DownloadRepository.Status.Error.toString()
                                     downloadItem.lastIssueCode = issue.code.name
                                     downloadItem.lastIssueStage = issue.stage.name
-                                    recoveryResult = persistHistoryReplacementTerminalState(
-                                        issue = issue,
-                                        persistDownload = {
-                                            check(
-                                                dao.updateIfExecutionOwnedAndRunning(
-                                                    downloadItem,
-                                                    downloadItem.executionId,
+                                    recoveryResult =
+                                        persistHistoryReplacementTerminalStateWithOwnedExecution(
+                                            context = context,
+                                            dbManager = dbManager,
+                                            downloadItem = downloadItem,
+                                            issue = issue,
+                                            preserveRefusalIssue = refusalIssue,
+                                            persistDownload = {
+                                                check(
+                                                    dao.updateIfExecutionOwnedAndRunning(
+                                                        downloadItem,
+                                                        downloadItem.executionId,
+                                                    )
+                                                ) {
+                                                    "History mismatch ownership lost during recovery ${downloadItem.id}"
+                                                }
+                                            },
+                                            transitionLinkedDownload = { reason ->
+                                                LowQualityRedownloadLedger.transition(
+                                                    context,
+                                                    downloadItem.id,
+                                                    com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                                    reason = reason,
+                                                    expectedExecutionId = downloadItem.executionId,
                                                 )
-                                            ) {
-                                                "History mismatch ownership lost during recovery ${downloadItem.id}"
-                                            }
-                                        },
-                                        transitionLinkedDownload = { reason ->
-                                            LowQualityRedownloadLedger.transition(
-                                                context,
-                                                downloadItem.id,
-                                                com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
-                                                reason = reason,
-                                                expectedExecutionId = downloadItem.executionId,
-                                            )
-                                        },
-                                        isCancellationRequested = {
-                                            LowQualityRedownloadRepository(dbManager)
-                                                .isCancellationRequestedForDownload(downloadItem.id)
-                                        },
-                                        onLinkedTransitionFailure = {
-                                            LowQualityRedownloadLedger.scheduleConvergence(
-                                                context,
-                                                downloadItem.id,
-                                            )
-                                        },
-                                    )
+                                            },
+                                            isCancellationRequested = {
+                                                LowQualityRedownloadRepository(dbManager)
+                                                    .isCancellationRequestedForDownload(downloadItem.id)
+                                            },
+                                            onLinkedTransitionFailure = {
+                                                LowQualityRedownloadLedger.scheduleConvergence(
+                                                    context,
+                                                    downloadItem.id,
+                                                )
+                                            },
+                                        )
                                     } else {
                                         // Pause/Cancel is a user-state
                                         // dimension, not permission to erase a
@@ -3570,20 +3686,26 @@ class DownloadWorker(
                                 )
                             }
                             try {
-                                notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
-                                notificationUtil.createDownloadErrored(
-                                    downloadItem.id,
-                                    SensitiveTextRedactor.redactOutput(
-                                        downloadItem.title.ifBlank { downloadItem.url }
-                                    ),
-                                    DownloadIssueText.formatted(resources, issue),
-                                    downloadItem.logID,
-                                    resources,
-                                    retryable = false,
-                                    allowReconfigure = historyReplacementAuthoritativeIssue == null,
-                                    retryCapabilityOperationId = downloadItem.operationId,
-                                    retryCapabilityAttempt = downloadItem.retryAttempt,
-                                )
+                                withOwnedDownloadWorkerTerminalSideEffect(
+                                    context = context,
+                                    dbManager = dbManager,
+                                    downloadItem = downloadItem,
+                                ) {
+                                    notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
+                                    notificationUtil.createDownloadErrored(
+                                        downloadItem.id,
+                                        SensitiveTextRedactor.redactOutput(
+                                            downloadItem.title.ifBlank { downloadItem.url }
+                                        ),
+                                        DownloadIssueText.formatted(resources, issue),
+                                        downloadItem.logID,
+                                        resources,
+                                        retryable = false,
+                                        allowReconfigure = historyReplacementAuthoritativeIssue == null,
+                                        retryCapabilityOperationId = downloadItem.operationId,
+                                        retryCapabilityAttempt = downloadItem.retryAttempt,
+                                    )
+                                }
                             } catch (cancelled: CancellationException) {
                                 throw cancelled
                             } catch (notificationError: Exception) {

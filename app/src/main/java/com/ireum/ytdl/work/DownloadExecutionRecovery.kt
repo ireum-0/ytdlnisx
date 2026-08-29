@@ -157,6 +157,39 @@ internal object DownloadExecutionRecovery {
             YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN -> "UNKNOWN"
         }
 
+    /**
+     * A user-stop carrier is an authority for a still-stoppable execution,
+     * not a generic late-status annotation.  Refuse publication after an
+     * incompatible terminal result has already won; otherwise the carrier
+     * could never satisfy its exact Cancel/Pause CAS and would retry forever.
+     * The check is intentionally centralized so notification, ViewModel,
+     * bulk, and low-quality producers all share the same validated refusal.
+     */
+    internal fun canPublishUserStopCarrier(
+        item: DownloadItem,
+        disposition: RecoveryDisposition,
+    ): Boolean {
+        if (
+            disposition != RecoveryDisposition.USER_CANCEL &&
+                disposition != RecoveryDisposition.USER_PAUSE
+        ) {
+            return true
+        }
+        if (
+            disposition == RecoveryDisposition.USER_PAUSE &&
+                item.status == DownloadRepository.Status.Cancelled.name
+        ) {
+            // A Pause request cannot downgrade a stronger already-committed
+            // Cancel decision.
+            return false
+        }
+        return item.status !in setOf(
+            DownloadRepository.Status.Error.name,
+            DownloadRepository.Status.Saved.name,
+            DownloadRepository.Status.Duplicate.name,
+        )
+    }
+
     fun recordPending(
         context: Context,
         item: DownloadItem,
@@ -165,13 +198,10 @@ internal object DownloadExecutionRecovery {
         phase: RecoveryPhase? = null,
     ): Boolean {
         YtdlpNativeProcessBarrier.configure(context)
-        if (
-            disposition == RecoveryDisposition.USER_PAUSE &&
-                item.status == DownloadRepository.Status.Cancelled.name
-        ) {
-            // A Pause request cannot downgrade a stronger already-committed
-            // Cancel decision into a resumable state.  Do not create a new
-            // Pause carrier for a terminal Cancelled row.
+        if (!canPublishUserStopCarrier(item, disposition)) {
+            // A terminal Download result won before this publisher acquired
+            // the stop boundary.  Do not create an unsatisfiable user-stop
+            // carrier; the existing terminal result remains authoritative.
             return false
         }
         val requestedPhase = phase ?: if (
