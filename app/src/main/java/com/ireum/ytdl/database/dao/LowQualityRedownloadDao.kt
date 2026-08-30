@@ -339,13 +339,14 @@ interface LowQualityRedownloadDao {
     ): Int
 
     @Query(
-        "UPDATE low_quality_redownload_items SET itemState = 'QUEUED', reasonCode = '', " +
+        "UPDATE low_quality_redownload_items SET itemState = :state, reasonCode = '', " +
             "updatedAt = :updatedAt WHERE downloadId = :downloadId " +
             "AND itemState = 'CANCELLATION_REQUESTED' AND reasonCode = :token"
     )
     suspend fun restorePendingUserCancellation(
         downloadId: Long,
         token: String,
+        state: String,
         updatedAt: Long
     ): Int
 

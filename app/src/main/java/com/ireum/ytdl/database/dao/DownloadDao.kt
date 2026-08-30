@@ -571,7 +571,11 @@ interface DownloadDao {
             "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items debt " +
             "WHERE debt.downloadId = downloads.id " +
             "AND debt.itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-            "AND COALESCE(downloads.lastIssueCode, '') != '') " +
+            "AND NOT (:status = 'WaitingForMembership' " +
+            "AND downloads.lastIssueCode = 'MEMBERSHIP_REQUIRED' " +
+            "AND debt.operationId = :operationId " +
+            "AND debt.itemState = 'CANCELLATION_REQUESTED' " +
+            "AND debt.reasonCode = :token)) " +
             "AND (:status != 'WaitingForMembership' OR EXISTS (" +
             "SELECT 1 FROM sources membershipSource " +
             "WHERE membershipSource.id = downloads.observeSourceId " +

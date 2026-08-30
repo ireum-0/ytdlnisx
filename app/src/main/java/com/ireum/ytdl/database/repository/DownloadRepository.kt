@@ -1836,10 +1836,16 @@ class DownloadRepository(private val database: DBManager) {
                 token = token,
             )
             if (restored == 1) {
+                val restoredLinkedState = when (originalStatus) {
+                    Status.Queued -> LowQualityRedownloadItemState.QUEUED
+                    Status.WaitingForMembership -> LowQualityRedownloadItemState.WAITING
+                    else -> error("Unsupported pending-cancellation Undo status $originalStatus")
+                }
                 check(
                     ledgerDao.restorePendingUserCancellation(
                         id,
                         token,
+                        restoredLinkedState.name,
                         System.currentTimeMillis()
                     ) == 1
                 ) {

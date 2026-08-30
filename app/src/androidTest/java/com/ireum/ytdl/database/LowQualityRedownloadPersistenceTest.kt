@@ -15,12 +15,14 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
 import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
 import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.DownloadExecutionOwnershipLostException
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
+import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.runStartupCancellationReconciliation
 import com.ireum.ytdl.runStartupReconciliation
 import com.ireum.ytdl.ui.downloads.shouldPresentLowQualitySelection
@@ -1251,6 +1253,107 @@ class LowQualityRedownloadPersistenceTest {
         assertEquals(active.operationId, repository.getActiveOperation()?.operationId)
         assertEquals(active.operationId, repository.getCurrentOperation()?.operationId)
         assertNotEquals(completed.operationId, active.operationId)
+    }
+
+    @Test
+    fun waitingForMembershipPendingCancellationUndoRestoresExactWaitingAuthority() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 84, DownloadRepository.Status.Queued)
+        val sourceId = database.observeSourcesDao.insert(
+            ObserveSourcesItem(
+                id = 0,
+                name = "Membership source",
+                url = "https://example.com/membership-source",
+                downloadItemTemplate = download(84),
+                everyNr = 1,
+                everyCategory = ObserveSourcesRepository.EveryCategory.DAY,
+                everyTime = 0,
+                weeklyConfig = null,
+                monthlyConfig = null,
+                status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+                startsTime = 0,
+                endsDate = 0,
+                endsAfterCount = 0,
+                runCount = 0,
+                getOnlyNewUploads = false,
+                retryMissingDownloads = false,
+                ignoredLinks = mutableListOf(),
+                alreadyProcessedLinks = mutableListOf(),
+                syncWithSource = false,
+            )
+        )
+        val linkedDownload = database.downloadDao.getDownloadById(linkedId)
+        database.downloadDao.updateRaw(linkedDownload.copy(observeSourceId = sourceId))
+        assertEquals(
+            1,
+            database.observeSourcesDao.parkDownloadForMembership(
+                downloadId = linkedId,
+                sourceId = sourceId,
+                expectedStatus = DownloadRepository.Status.Queued.name,
+                issueCode = DownloadIssueCode.MEMBERSHIP_REQUIRED.name,
+                issueStage = "DOWNLOAD",
+            )
+        )
+        assertEquals(
+            1,
+            database.lowQualityRedownloadDao.setItemStateByDownloadId(
+                downloadId = linkedId,
+                state = LowQualityRedownloadItemState.WAITING.name,
+                reason = "",
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.WAITING,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        val downloadRepository = DownloadRepository(database)
+        val pending = downloadRepository.beginUndoableCancellation(linkedId)
+        val token = pending.pendingToken!!
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        val restored = downloadRepository.undoPendingCancellation(
+            id = linkedId,
+            token = token,
+            originalStatus = DownloadRepository.Status.WaitingForMembership,
+        )
+
+        assertEquals(DownloadRepository.Status.WaitingForMembership, restored.restoredStatus)
+        val restoredDownload = database.downloadDao.getDownloadById(linkedId)
+        assertEquals(
+            DownloadRepository.Status.WaitingForMembership.name,
+            restoredDownload.status,
+        )
+        assertEquals(sourceId, restoredDownload.observeSourceId)
+        assertEquals(DownloadIssueCode.MEMBERSHIP_REQUIRED.name, restoredDownload.lastIssueCode)
+        assertEquals("DOWNLOAD", restoredDownload.lastIssueStage)
+        assertEquals(
+            LowQualityRedownloadItemState.WAITING,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(
+            "",
+            repository.getItems(operation.operationId).single().reasonCode,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.RUNNING,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+        assertFalse(repository.getOperation(operation.operationId)?.cancelRequested ?: true)
+        assertFalse(database.downloadDao.getQueuedDownloadsListIDs().contains(linkedId))
+        assertEquals(
+            0,
+            database.downloadDao.claimDownloadForWorker(
+                id = linkedId,
+                expectedOperationId = restoredDownload.operationId,
+                expectedRetryAttempt = restoredDownload.retryAttempt,
+                executionId = "waiting-undo-claim",
+            )
+        )
     }
 
     @Test
