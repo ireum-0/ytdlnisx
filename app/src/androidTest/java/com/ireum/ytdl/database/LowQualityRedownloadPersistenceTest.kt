@@ -1357,6 +1357,95 @@ class LowQualityRedownloadPersistenceTest {
     }
 
     @Test
+    fun pendingCancellationUndoUsesBeginTimeStatusNotStaleUiStatus() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 85, DownloadRepository.Status.Queued)
+        val sourceId = database.observeSourcesDao.insert(
+            ObserveSourcesItem(
+                id = 0,
+                name = "Membership source",
+                url = "https://example.com/membership-source-stale-undo",
+                downloadItemTemplate = download(85),
+                everyNr = 1,
+                everyCategory = ObserveSourcesRepository.EveryCategory.DAY,
+                everyTime = 0,
+                weeklyConfig = null,
+                monthlyConfig = null,
+                status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+                startsTime = 0,
+                endsDate = 0,
+                endsAfterCount = 0,
+                runCount = 0,
+                getOnlyNewUploads = false,
+                retryMissingDownloads = false,
+                ignoredLinks = mutableListOf(),
+                alreadyProcessedLinks = mutableListOf(),
+                syncWithSource = false,
+            )
+        )
+        val linkedDownload = database.downloadDao.getDownloadById(linkedId)
+        database.downloadDao.updateRaw(linkedDownload.copy(observeSourceId = sourceId))
+        assertEquals(
+            1,
+            database.observeSourcesDao.parkDownloadForMembership(
+                downloadId = linkedId,
+                sourceId = sourceId,
+                expectedStatus = DownloadRepository.Status.Queued.name,
+                issueCode = DownloadIssueCode.MEMBERSHIP_REQUIRED.name,
+                issueStage = "DOWNLOAD",
+            )
+        )
+        assertEquals(
+            1,
+            database.lowQualityRedownloadDao.setItemStateByDownloadId(
+                downloadId = linkedId,
+                state = LowQualityRedownloadItemState.WAITING.name,
+                reason = "",
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+
+        // This is the stale item retained by the confirmation UI.  The real
+        // membership requeue changes only the Download row; the exact Undo
+        // authority must still bind to the state seen when cancellation begins.
+        val staleUiStatus = DownloadRepository.Status.WaitingForMembership
+        assertEquals(listOf(linkedId), database.observeSourcesDao.requeueMembershipWaiting(sourceId))
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            database.downloadDao.getDownloadById(linkedId).status,
+        )
+
+        val downloadRepository = DownloadRepository(database)
+        val pending = downloadRepository.beginUndoableCancellation(linkedId)
+        val token = pending.pendingToken!!
+        val restored = downloadRepository.undoPendingCancellation(
+            id = linkedId,
+            token = token,
+            originalStatus = staleUiStatus,
+        )
+
+        assertEquals(DownloadRepository.Status.Queued, restored.restoredStatus)
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            database.downloadDao.getDownloadById(linkedId).status,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(
+            "",
+            repository.getItems(operation.operationId).single().reasonCode,
+        )
+        assertEquals(LowQualityRedownloadOperationState.RUNNING, repository.getOperation(operation.operationId)?.stateValue)
+        assertFalse(repository.getOperation(operation.operationId)?.cancelRequested ?: true)
+        assertFalse(
+            database.downloadDao.getMembershipWaitingDownloads().any { it.id == linkedId }
+        )
+        assertTrue(database.downloadDao.getQueuedDownloadsListIDs().contains(linkedId))
+    }
+
+    @Test
     fun queuedBatchCancellationUndoRestoresSameDownloadAndAllowsSuccess() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
         val linkedId = linkDownload(operation.operationId, 81, DownloadRepository.Status.Queued)

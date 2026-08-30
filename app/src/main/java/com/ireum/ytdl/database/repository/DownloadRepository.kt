@@ -1742,8 +1742,13 @@ class DownloadRepository(private val database: DBManager) {
             val ledgerDao = database.lowQualityRedownloadDao
             val ledgerItem = ledgerDao.getItemByDownloadId(id)
             val operation = ledgerItem?.let { ledgerDao.getOperation(it.operationId) }
+            val pendingOriginalStatus = when (item.status) {
+                Status.Queued.name -> Status.Queued
+                Status.WaitingForMembership.name -> Status.WaitingForMembership
+                else -> null
+            }
             val canRemainPending =
-                item.status in setOf(Status.Queued.name, Status.WaitingForMembership.name) &&
+                pendingOriginalStatus != null &&
                     ledgerItem != null &&
                     !ledgerItem.stateValue.isTerminal &&
                     operation != null &&
@@ -1751,7 +1756,7 @@ class DownloadRepository(private val database: DBManager) {
                     !operation.cancelRequested
 
             if (canRemainPending) {
-                val token = "$PENDING_CANCELLATION_TOKEN_PREFIX${UUID.randomUUID()}"
+                val token = createPendingCancellationToken(checkNotNull(pendingOriginalStatus))
                 check(downloadDao.cancelByUser(id) == 1) {
                     "Undoable cancellation lost download ownership"
                 }
@@ -1794,9 +1799,16 @@ class DownloadRepository(private val database: DBManager) {
         return result
     }
 
+    /**
+     * Restores only the status encoded by the exact token created by
+     * [beginUndoableCancellation].  [originalStatus] remains for callers
+     * using the older API, but a stale UI snapshot is never an authority for
+     * the restoration decision.
+     */
     suspend fun undoPendingCancellation(
         id: Long,
         token: String,
+        @Suppress("UNUSED_PARAMETER")
         originalStatus: Status
     ): PendingCancellationResolution {
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
@@ -1812,6 +1824,7 @@ class DownloadRepository(private val database: DBManager) {
         }
         val operation = ledgerDao.getOperation(ledgerItem.operationId)
         val download = downloadDao.getNullableDownloadById(id)
+        val pendingOriginalStatus = parsePendingCancellationStatus(token)
         if (download != null && persistedHistoryRefusalLocked(id) != null) {
             return@withTransaction PendingCancellationResolution(
                 affectedOperationIds = convergeHistoryReplacementRefusalLocked(
@@ -1826,20 +1839,21 @@ class DownloadRepository(private val database: DBManager) {
                 !operation.stateValue.isTerminal &&
                 !operation.cancelRequested &&
                 download?.status == Status.Cancelled.name &&
-                originalStatus in setOf(Status.Queued, Status.WaitingForMembership)
+                pendingOriginalStatus != null
 
         if (canRestore) {
+            val restoreStatus = checkNotNull(pendingOriginalStatus)
             val restored = downloadDao.restoreCancelledStatusForPendingCancellation(
                 id = id,
-                status = originalStatus.name,
+                status = restoreStatus.name,
                 operationId = ledgerItem.operationId,
                 token = token,
             )
             if (restored == 1) {
-                val restoredLinkedState = when (originalStatus) {
+                val restoredLinkedState = when (restoreStatus) {
                     Status.Queued -> LowQualityRedownloadItemState.QUEUED
                     Status.WaitingForMembership -> LowQualityRedownloadItemState.WAITING
-                    else -> error("Unsupported pending-cancellation Undo status $originalStatus")
+                    else -> error("Unsupported pending-cancellation Undo status $restoreStatus")
                 }
                 check(
                     ledgerDao.restorePendingUserCancellation(
@@ -1852,7 +1866,7 @@ class DownloadRepository(private val database: DBManager) {
                     "Undoable cancellation lost restore ownership"
                 }
                 return@withTransaction PendingCancellationResolution(
-                    restoredStatus = originalStatus,
+                    restoredStatus = restoreStatus,
                     affectedOperationIds = setOf(ledgerItem.operationId)
                 )
             }
@@ -2303,8 +2317,26 @@ class DownloadRepository(private val database: DBManager) {
         const val REASON_HISTORY_TARGET_DELETED = "HISTORY_TARGET_DELETED"
         const val PENDING_CANCELLATION_TOKEN_PREFIX = "PENDING_USER_CANCELLATION:"
         const val PENDING_REMOVAL_TOKEN_PREFIX = "PENDING_USER_REMOVAL:"
+        private const val PENDING_CANCELLATION_TOKEN_VERSION = "v1"
         private val pendingRemovalSnapshots = ConcurrentHashMap<String, DownloadRemovalSnapshot>()
         private val livePendingRemovalTokens = ConcurrentHashMap.newKeySet<String>()
+
+        private fun createPendingCancellationToken(status: Status): String =
+            "$PENDING_CANCELLATION_TOKEN_PREFIX$PENDING_CANCELLATION_TOKEN_VERSION:${status.name}:${UUID.randomUUID()}"
+
+        private fun parsePendingCancellationStatus(token: String): Status? {
+            if (!token.startsWith(PENDING_CANCELLATION_TOKEN_PREFIX)) return null
+            val parts = token.removePrefix(PENDING_CANCELLATION_TOKEN_PREFIX).split(":")
+            if (parts.size != 3 || parts[0] != PENDING_CANCELLATION_TOKEN_VERSION) return null
+            val status = when (parts[1]) {
+                Status.Queued.name -> Status.Queued
+                Status.WaitingForMembership.name -> Status.WaitingForMembership
+                else -> return null
+            }
+            val tokenId = runCatching { UUID.fromString(parts[2]) }.getOrNull() ?: return null
+            if (tokenId.toString() != parts[2]) return null
+            return status
+        }
 
         /** Test seam for the first semantic user-stop Room write. */
         @Volatile
