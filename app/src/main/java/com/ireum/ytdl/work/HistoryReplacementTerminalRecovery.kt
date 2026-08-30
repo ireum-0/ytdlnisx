@@ -149,13 +149,27 @@ internal suspend fun persistHistoryReplacementTerminalStateWithOwnedExecution(
             )
         }
 
-        val result = persistHistoryReplacementTerminalState(
-            issue = issue,
-            persistDownload = persistDownload,
-            transitionLinkedDownload = transitionLinkedDownload,
-            isCancellationRequested = isCancellationRequested,
-            onLinkedTransitionFailure = onLinkedTransitionFailure,
-        )
+        val injectedFailure = DownloadWorkerEffectTestHooks
+            .failureTerminalPersistenceForTesting
+            ?.invoke(downloadItem.id)
+        val injectedNoOp = DownloadWorkerEffectTestHooks
+            .failureTerminalPersistenceNoOpForTesting
+            ?.invoke(downloadItem.id) == true
+        val result = when {
+            injectedFailure != null -> HistoryReplacementPersistenceResult.Failed(injectedFailure)
+            injectedNoOp -> HistoryReplacementPersistenceResult.Failed(
+                IllegalStateException(
+                    "Injected ordinary terminal affected-row no-op for download ${downloadItem.id}",
+                )
+            )
+            else -> persistHistoryReplacementTerminalState(
+                issue = issue,
+                persistDownload = persistDownload,
+                transitionLinkedDownload = transitionLinkedDownload,
+                isCancellationRequested = isCancellationRequested,
+                onLinkedTransitionFailure = onLinkedTransitionFailure,
+            )
+        }
         val refusal = preserveRefusalIssue?.takeIf {
             HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(it.code.name)
         }

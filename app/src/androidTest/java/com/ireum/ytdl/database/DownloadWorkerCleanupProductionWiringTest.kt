@@ -3,12 +3,17 @@ package com.ireum.ytdl.database
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.preference.PreferenceManager
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.database.dao.DownloadClaimTestHooks
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
@@ -17,6 +22,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorker
+import com.ireum.ytdl.work.DownloadWorkerEffectTestHooks
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
 import com.ireum.ytdl.work.YtdlpProcessIdentity
@@ -30,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.After
@@ -50,6 +57,13 @@ import java.io.OutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+
+private val realWorkerTestDownloadIds = AtomicLong(
+    System.currentTimeMillis().coerceAtLeast(9_000_000L),
+)
 
 @RunWith(AndroidJUnit4::class)
 class DownloadWorkerCleanupProductionWiringTest {
@@ -62,6 +76,12 @@ class DownloadWorkerCleanupProductionWiringTest {
         DownloadExecutionRecovery.clearForTesting(context)
         DownloadWorkerExecutionOwners.clearForTesting()
         DownloadWorkerProcessOwners.clearForTesting()
+        DownloadClaimTestHooks.resetForTesting()
+        DownloadWorkerEffectTestHooks.dbManagerForTesting = null
+        DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = null
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceNoOpForTesting = null
+        DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = null
         db = Room.inMemoryDatabaseBuilder(
             context,
             DBManager::class.java,
@@ -74,6 +94,12 @@ class DownloadWorkerCleanupProductionWiringTest {
         DownloadExecutionRecovery.clearForTesting(ApplicationProvider.getApplicationContext())
         DownloadWorkerExecutionOwners.clearForTesting()
         DownloadWorkerProcessOwners.clearForTesting()
+        DownloadClaimTestHooks.resetForTesting()
+        DownloadWorkerEffectTestHooks.dbManagerForTesting = null
+        DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = null
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceNoOpForTesting = null
+        DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = null
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         DownloadExecutionRecovery.commitOverride = null
@@ -895,6 +921,185 @@ class DownloadWorkerCleanupProductionWiringTest {
             assertNull(db.downloadDao.getNullableDownloadById(downloadId))
         } finally {
             marker.delete()
+        }
+    }
+
+    @Test
+    fun realWorkerRetriesOrdinaryErrorAfterFirstTerminalWriteException() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        cancelStaleRealWorkerRequests(context)
+        val downloadId = insertQueuedDownload("first-error-exception")
+        val enteredYtdlp = AtomicBoolean(false)
+        val terminalAttempts = AtomicInteger(0)
+        val notificationAttempts = AtomicInteger(0)
+
+        DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+        DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+            if (candidateId == downloadId) {
+                enteredYtdlp.set(true)
+                throw IOException("injected ordinary yt-dlp failure")
+            }
+        }
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = { candidateId ->
+            if (candidateId == downloadId && terminalAttempts.getAndIncrement() == 0) {
+                IOException("injected first Error terminal write failure")
+            } else {
+                null
+            }
+        }
+        DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = { candidateId ->
+            if (candidateId == downloadId) notificationAttempts.incrementAndGet()
+        }
+
+        val workInfo = enqueueAndAwaitDownloadWorker(context)
+        val current = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+
+        assertTrue("the real item execution boundary was not reached", enteredYtdlp.get())
+        assertTrue("the real terminal writer was not retried", terminalAttempts.get() >= 2)
+        assertEquals(1, notificationAttempts.get())
+        assertEquals(DownloadRepository.Status.Error.name, current.status)
+        assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
+        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        assertTrue(workInfo.state.isFinished)
+    }
+
+    @Test
+    fun realWorkerRetriesOrdinaryErrorAfterFirstTerminalWriteNoOp() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        cancelStaleRealWorkerRequests(context)
+        val downloadId = insertQueuedDownload("first-error-no-op")
+        val enteredYtdlp = AtomicBoolean(false)
+        val terminalAttempts = AtomicInteger(0)
+        val notificationAttempts = AtomicInteger(0)
+
+        DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+        DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+            if (candidateId == downloadId) {
+                enteredYtdlp.set(true)
+                throw IOException("injected ordinary yt-dlp failure")
+            }
+        }
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceNoOpForTesting = { candidateId ->
+            candidateId == downloadId && terminalAttempts.getAndIncrement() == 0
+        }
+        DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = { candidateId ->
+            if (candidateId == downloadId) notificationAttempts.incrementAndGet()
+        }
+
+        val workInfo = enqueueAndAwaitDownloadWorker(context)
+        val current = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+
+        assertTrue("the real item execution boundary was not reached", enteredYtdlp.get())
+        assertTrue("the real terminal writer was not retried", terminalAttempts.get() >= 2)
+        assertEquals(1, notificationAttempts.get())
+        assertEquals(DownloadRepository.Status.Error.name, current.status)
+        assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
+        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+        assertTrue(workInfo.state.isFinished)
+    }
+
+    @Test
+    fun realWorkerEscapesPersistentTerminalFailureAfterSiblingAndReleasesDeadOwner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        cancelStaleRealWorkerRequests(context)
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val hadConcurrentSetting = preferences.contains("concurrent_downloads")
+        val previousConcurrentSetting = preferences.getInt("concurrent_downloads", 1)
+        val failedId = insertQueuedDownload("persistent-terminal-failure")
+        val siblingId = insertQueuedDownload("healthy-sibling")
+        val enteredIds = mutableSetOf<Long>()
+        val notificationAttempts = AtomicInteger(0)
+
+        try {
+            assertTrue(preferences.edit().putInt("concurrent_downloads", 2).commit())
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == failedId || candidateId == siblingId) {
+                    synchronized(enteredIds) { enteredIds += candidateId }
+                    throw IOException("injected ordinary yt-dlp failure $candidateId")
+                }
+            }
+            DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = { candidateId ->
+                if (candidateId == failedId) {
+                    IOException("persistent Error terminal write failure")
+                } else {
+                    null
+                }
+            }
+            DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = { candidateId ->
+                if (candidateId == failedId) {
+                    notificationAttempts.incrementAndGet()
+                }
+            }
+
+            val workInfo = enqueueAndAwaitDownloadWorker(context)
+            val failed = requireNotNull(db.downloadDao.getNullableDownloadById(failedId))
+            val sibling = requireNotNull(db.downloadDao.getNullableDownloadById(siblingId))
+
+            assertEquals(setOf(failedId, siblingId), synchronized(enteredIds) { enteredIds.toSet() })
+            assertEquals(DownloadRepository.Status.Queued.name, failed.status)
+            assertEquals(DownloadRepository.Status.Error.name, sibling.status)
+            assertEquals(0, notificationAttempts.get())
+            assertNull(DownloadWorkerExecutionOwners.ownerOf(failedId))
+            assertNull(DownloadWorkerExecutionOwners.ownerOf(siblingId))
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(failedId))
+            assertTrue(workInfo.state == WorkInfo.State.FAILED)
+        } finally {
+            val editor = preferences.edit()
+            if (hadConcurrentSetting) {
+                editor.putInt("concurrent_downloads", previousConcurrentSetting)
+            } else {
+                editor.remove("concurrent_downloads")
+            }
+            assertTrue(editor.commit())
+        }
+    }
+
+    private suspend fun insertQueuedDownload(operationSuffix: String): Long =
+        realWorkerTestDownloadIds.getAndIncrement().let { testId ->
+            db.downloadDao.insertRaw(
+                download().copy(
+                    id = testId,
+                    status = DownloadRepository.Status.Queued.name,
+                    executionId = "",
+                    operationId = "a2-$operationSuffix-${UUID.randomUUID()}",
+                    downloadStartTime = 0L,
+                )
+            )
+        }
+
+    private fun cancelStaleRealWorkerRequests(context: android.content.Context) {
+        WorkManager.getInstance(context)
+            .cancelAllWork()
+            .result
+            .get(10, TimeUnit.SECONDS)
+        // Cancellation marks WorkManager rows synchronously, but an already
+        // running worker can still be unwinding its finally/cleanup path.
+        // Let that old worker finish before this test publishes its
+        // in-memory DB hook; otherwise its dynamic test seam could inspect
+        // and release the new test's exact owner by numeric ID.
+        Thread.sleep(2_000L)
+    }
+
+    private suspend fun enqueueAndAwaitDownloadWorker(
+        context: android.content.Context,
+    ): WorkInfo {
+        val workManager = WorkManager.getInstance(context)
+        val request = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .addTag("finding-a-a2-real-worker")
+            .build()
+        workManager.enqueue(request)
+        return withContext(Dispatchers.IO) {
+            repeat(240) {
+                val workInfo = runCatching {
+                    workManager.getWorkInfoById(request.id).get(1, TimeUnit.SECONDS)
+                }.getOrNull()
+                if (workInfo?.state?.isFinished == true) {
+                    return@withContext workInfo
+                }
+                Thread.sleep(250L)
+            }
+            error("Timed out waiting for real DownloadWorker ${request.id}")
         }
     }
 

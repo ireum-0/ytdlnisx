@@ -206,12 +206,20 @@ internal fun hasDurableUserStopRevokedAuthority(
 }
 
 /**
- * Test-only observation points around the two worker effects whose exact
+ * Test-only observation points around worker effects whose exact
  * publication boundary is deliberately exercised by production-wiring tests.
  * The hooks do not replace the effect; they run immediately before the
  * production lease is acquired or immediately before the real effect call.
  */
 internal object DownloadWorkerEffectTestHooks {
+    /** Uses an in-memory Room database for a real WorkManager worker test. */
+    @Volatile
+    internal var dbManagerForTesting: DBManager? = null
+
+    /** Injects a non-cancellation yt-dlp failure inside the real phase path. */
+    @Volatile
+    internal var beforeYtdlpExecutionForTesting: ((Long) -> Unit)? = null
+
     @Volatile
     internal var beforeNoCacheMediaPublicationForTesting: (() -> Unit)? = null
 
@@ -227,6 +235,18 @@ internal object DownloadWorkerEffectTestHooks {
     /** Holds an ordinary failure terminal writer before its exact lease. */
     @Volatile
     internal var beforeFailureTerminalPersistenceForTesting: (() -> Unit)? = null
+
+    /** Fails the actual worker terminal-persistence boundary after authority. */
+    @Volatile
+    internal var failureTerminalPersistenceForTesting: ((Long) -> Exception?)? = null
+
+    /** Models an affected-row/no-op result at the same production boundary. */
+    @Volatile
+    internal var failureTerminalPersistenceNoOpForTesting: ((Long) -> Boolean)? = null
+
+    /** Observes an ordinary unexpected-error notification at its effect boundary. */
+    @Volatile
+    internal var beforeUnexpectedErrorNotificationForTesting: ((Long) -> Unit)? = null
 }
 
 /**
@@ -449,7 +469,8 @@ class DownloadWorker(
         includeStaleRows: Boolean = true,
         propagateRequeueFailure: Boolean = false,
     ): Unit = withContext(Dispatchers.IO + NonCancellable) {
-        val dbManager = DBManager.getInstance(context)
+        val dbManager = DownloadWorkerEffectTestHooks.dbManagerForTesting
+            ?: DBManager.getInstance(context)
         val dao = dbManager.downloadDao
         val snapshot = withDownloadWorkerExecutionLock {
             val workerOwnedIds = (workerCleanupDownloadIds + workerDownloadIds).distinct()
@@ -901,7 +922,7 @@ class DownloadWorker(
                 enrichedItem.executionId = current.executionId
                 enrichedItem.lastIssueCode = current.lastIssueCode
                 enrichedItem.lastIssueStage = current.lastIssueStage
-                DBManager.getInstance(context).historyReplacementBarrierDao
+                workerDbManager().historyReplacementBarrierDao
                     .getByDownloadId(enrichedItem.id)
                     ?.let { barrier ->
                         enrichedItem.lastIssueCode = barrier.issueCode
@@ -953,7 +974,8 @@ class DownloadWorker(
         if (!setForegroundSafely()) return Result.retry()
 
         val notificationUtil = NotificationUtil(App.instance)
-        val dbManager = DBManager.getInstance(context)
+        val dbManager = DownloadWorkerEffectTestHooks.dbManagerForTesting
+            ?: DBManager.getInstance(context)
         val dao = dbManager.downloadDao
         val historyDao = dbManager.historyDao
         val observeSourcesDao = dbManager.observeSourcesDao
@@ -3671,6 +3693,65 @@ class DownloadWorker(
                                             )
                                         )
                                     }
+                                } else if (
+                                    latest.executionId == downloadItem.executionId &&
+                                        latest.status in setOf(
+                                            DownloadRepository.Status.Active.name,
+                                            DownloadRepository.Status.PostProcessing.name,
+                                        )
+                                ) {
+                                    // The first ordinary Error write may have
+                                    // failed before this outer catch was
+                                    // entered.  Retry the same exact terminal
+                                    // decision while holding the canonical
+                                    // worker side-effect boundary.  If this
+                                    // retry also fails, recoveryResult is
+                                    // Failed and the exception below escapes
+                                    // the item child so cleanupStoppedWorker()
+                                    // owns the durable recovery handoff.  A
+                                    // null result here would let a dead child
+                                    // return CONTINUE while its Active row and
+                                    // process-local execution owner remained
+                                    // live.
+                                    downloadItem.status = DownloadRepository.Status.Error.toString()
+                                    downloadItem.lastIssueCode = issue.code.name
+                                    downloadItem.lastIssueStage = issue.stage.name
+                                    recoveryResult =
+                                        persistHistoryReplacementTerminalStateWithOwnedExecution(
+                                            context = context,
+                                            dbManager = dbManager,
+                                            downloadItem = downloadItem,
+                                            issue = issue,
+                                            persistDownload = {
+                                                check(
+                                                    dao.updateIfExecutionOwnedAndRunning(
+                                                        downloadItem,
+                                                        downloadItem.executionId,
+                                                    )
+                                                ) {
+                                                    "Ordinary failure ownership lost during recovery ${downloadItem.id}"
+                                                }
+                                            },
+                                            transitionLinkedDownload = { reason ->
+                                                LowQualityRedownloadLedger.transition(
+                                                    context,
+                                                    downloadItem.id,
+                                                    com.ireum.ytdl.database.models.LowQualityRedownloadItemState.FAILED,
+                                                    reason = reason,
+                                                    expectedExecutionId = downloadItem.executionId,
+                                                )
+                                            },
+                                            isCancellationRequested = {
+                                                LowQualityRedownloadRepository(dbManager)
+                                                    .isCancellationRequestedForDownload(downloadItem.id)
+                                            },
+                                            onLinkedTransitionFailure = {
+                                                LowQualityRedownloadLedger.scheduleConvergence(
+                                                    context,
+                                                    downloadItem.id,
+                                                )
+                                            },
+                                        )
                                 }
                             } catch (cancelled: CancellationException) {
                                 throw cancelled
@@ -3685,34 +3766,46 @@ class DownloadWorker(
                                     recoveryFailure.error
                                 )
                             }
-                            try {
-                                withOwnedDownloadWorkerTerminalSideEffect(
-                                    context = context,
-                                    dbManager = dbManager,
-                                    downloadItem = downloadItem,
-                                ) {
-                                    notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
-                                    notificationUtil.createDownloadErrored(
-                                        downloadItem.id,
-                                        SensitiveTextRedactor.redactOutput(
-                                            downloadItem.title.ifBlank { downloadItem.url }
-                                        ),
-                                        DownloadIssueText.formatted(resources, issue),
-                                        downloadItem.logID,
-                                        resources,
-                                        retryable = false,
-                                        allowReconfigure = historyReplacementAuthoritativeIssue == null,
-                                        retryCapabilityOperationId = downloadItem.operationId,
-                                        retryCapabilityAttempt = downloadItem.retryAttempt,
+                            if (recoveryFailure == null) {
+                                try {
+                                    withOwnedDownloadWorkerTerminalSideEffect(
+                                        context = context,
+                                        dbManager = dbManager,
+                                        downloadItem = downloadItem,
+                                    ) {
+                                        DownloadWorkerEffectTestHooks
+                                            .beforeUnexpectedErrorNotificationForTesting
+                                            ?.invoke(downloadItem.id)
+                                        notificationUtil.cancelRunningDownloadNotification(downloadItem.id.toInt())
+                                        notificationUtil.createDownloadErrored(
+                                            downloadItem.id,
+                                            SensitiveTextRedactor.redactOutput(
+                                                downloadItem.title.ifBlank { downloadItem.url }
+                                            ),
+                                            DownloadIssueText.formatted(resources, issue),
+                                            downloadItem.logID,
+                                            resources,
+                                            retryable = false,
+                                            allowReconfigure = historyReplacementAuthoritativeIssue == null,
+                                            retryCapabilityOperationId = downloadItem.operationId,
+                                            retryCapabilityAttempt = downloadItem.retryAttempt,
+                                        )
+                                    }
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (notificationError: Exception) {
+                                    Log.w(
+                                        TAG,
+                                        "Failed to report unexpected download error id=${downloadItem.id}",
+                                        notificationError
                                     )
                                 }
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (notificationError: Exception) {
+                            } else {
                                 Log.w(
                                     TAG,
-                                    "Failed to report unexpected download error id=${downloadItem.id}",
-                                    notificationError
+                                    "Skipping unexpected error notification because terminal state " +
+                                        "remains unresolved id=${downloadItem.id}",
+                                    recoveryFailure.error,
                                 )
                             }
                             unrecoverableHistoryReplacementPersistenceFailure(
@@ -4094,6 +4187,8 @@ class DownloadWorker(
     ): YtdlpPhaseOutcome {
         val runtime = YtdlpPhaseRuntimeState(preparation, startedAt)
         return try {
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting
+                ?.invoke(input.downloadItem.id)
             runtime.validatedTempDirectory = resetYtdlpTempDirectory(
                 downloadItem = input.downloadItem,
                 rawTempDirectory = input.rawTempDirectory,
@@ -5030,12 +5125,15 @@ class DownloadWorker(
             command.contains("visitor_data=")
     }
 
+    private fun workerDbManager(): DBManager =
+        DownloadWorkerEffectTestHooks.dbManagerForTesting ?: DBManager.getInstance(context)
+
     private suspend fun <T> withOwnedExecutionSideEffect(
         downloadItem: DownloadItem,
         sideEffect: suspend () -> T,
     ): T = withOwnedDownloadWorkerSideEffect(
         context = context,
-        dbManager = DBManager.getInstance(context),
+        dbManager = workerDbManager(),
         downloadItem = downloadItem,
         sideEffect = sideEffect,
     )
@@ -5045,7 +5143,7 @@ class DownloadWorker(
         sideEffect: suspend () -> T,
     ): T = withOwnedDownloadWorkerSideEffect(
         context = context,
-        dbManager = DBManager.getInstance(context),
+        dbManager = workerDbManager(),
         downloadItem = downloadItem,
         sideEffect = sideEffect,
     )
@@ -5053,14 +5151,15 @@ class DownloadWorker(
     private suspend fun assertExecutionOwnedBeforeAttemptLocked(downloadItem: DownloadItem) {
         assertDownloadWorkerExecutionOwnedBeforeSideEffect(
             context = context,
-            dbManager = DBManager.getInstance(context),
+            dbManager = workerDbManager(),
             downloadItem = downloadItem,
         )
     }
 
     private suspend fun ensureExecutionOwnedBeforeAttempt(downloadItem: DownloadItem) {
         withDownloadWorkerExecutionLock {
-            val current = DBManager.getInstance(context).downloadDao
+            val dbManager = workerDbManager()
+            val current = dbManager.downloadDao
                 .getNullableDownloadById(downloadItem.id)
             if (
                 this@DownloadWorker.isStopped ||
@@ -5070,14 +5169,14 @@ class DownloadWorker(
                     ) ||
                     (current != null && hasDurableUserStopRevokedAuthority(
                         context = context,
-                        dbManager = DBManager.getInstance(context),
+                        dbManager = dbManager,
                         current = current,
                     )) ||
                     current?.status in setOf(
                         DownloadRepository.Status.Paused.name,
                         DownloadRepository.Status.Cancelled.name,
                     ) ||
-                    DBManager.getInstance(context).lowQualityRedownloadDao
+                    dbManager.lowQualityRedownloadDao
                         .hasCancellationRequestedByDownload(downloadItem.id)
             ) {
                 throw CancellationException(
@@ -7402,7 +7501,7 @@ class DownloadWorker(
             deleteValidatedReplacementPaths(
                 historyId = previousHistoryItem.id,
                 paths = stalePaths,
-                historyDao = DBManager.getInstance(context).historyDao,
+                historyDao = workerDbManager().historyDao,
                 logLabel = "History replacement cleanup",
                 trustedHistoryItem = previousHistoryItem,
                 expectedDownloadId = downloadItem.id,
@@ -7515,7 +7614,7 @@ class DownloadWorker(
             )
         }
         if (expectedDownloadId > 0L && expectedExecutionId.isNotBlank()) {
-            val current = DBManager.getInstance(context).downloadDao
+            val current = workerDbManager().downloadDao
                 .getNullableDownloadById(expectedDownloadId)
             if (
                 current?.executionId != expectedExecutionId ||

@@ -98,6 +98,11 @@ class FindingAProductionWiringTest {
         DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting = null
         DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting = null
         DownloadWorkerEffectTestHooks.beforeFailureTerminalPersistenceForTesting = null
+        DownloadWorkerEffectTestHooks.dbManagerForTesting = null
+        DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = null
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceNoOpForTesting = null
+        DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = null
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
             DBManager::class.java,
@@ -126,6 +131,11 @@ class FindingAProductionWiringTest {
         DownloadWorkerEffectTestHooks.beforeTerminalProgressPublicationForTesting = null
         DownloadWorkerEffectTestHooks.beforeTerminalProgressPostForTesting = null
         DownloadWorkerEffectTestHooks.beforeFailureTerminalPersistenceForTesting = null
+        DownloadWorkerEffectTestHooks.dbManagerForTesting = null
+        DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = null
+        DownloadWorkerEffectTestHooks.failureTerminalPersistenceNoOpForTesting = null
+        DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = null
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
