@@ -102,6 +102,7 @@ class LowQualityRedownloadPersistenceTest {
         DownloadExecutionRecovery.recoveryReadFailureCountForTesting = 0
         DownloadExecutionRecovery.failCommittedHistoryFinalizationForTesting = false
         DownloadExecutionRecovery.commitOverride = null
+        DownloadRepository.clearLivePendingRemovalTokensForTest()
         repository.beforeFinalLinkedExecutionRevalidationForTesting = null
         repository.beforeFinalLinkedExecutionActionForTesting = null
         YtdlpNativeProcessBarrier.markerReadFailureForTesting = false
@@ -1949,10 +1950,13 @@ class LowQualityRedownloadPersistenceTest {
     fun restartReconciliationCommitsAbandonedPendingCancellation() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
         val linkedId = linkDownload(operation.operationId, 83, DownloadRepository.Status.Queued)
-        val token = DownloadRepository(database)
-            .beginUndoableCancellation(linkedId)
-            .pendingToken
+        val owner = DownloadRepository(database)
+        val token = owner.beginUndoableCancellation(linkedId).pendingToken
         assertTrue(token!!.startsWith(DownloadRepository.PENDING_CANCELLATION_TOKEN_PREFIX))
+
+        // Model process death: the durable pending token survives, but the
+        // process-local Undo owner does not.
+        DownloadRepository.clearLivePendingRemovalTokensForTest()
 
         val reconstructed = LowQualityRedownloadRepository(database)
         reconstructed.reconcileLinkedDownloads(operation.operationId)
@@ -1963,6 +1967,168 @@ class LowQualityRedownloadPersistenceTest {
         assertEquals(
             LowQualityRedownloadOperationState.CANCELLED,
             reconstructed.getOperation(operation.operationId)?.stateValue
+        )
+    }
+
+    @Test
+    fun livePendingCancellationSurvivesStartupReconciliationUntilUndo() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 84, DownloadRepository.Status.Queued)
+        val owner = DownloadRepository(database)
+        val token = checkNotNull(owner.beginUndoableCancellation(linkedId).pendingToken)
+
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(token))
+        assertFalse(
+            LowQualityRedownloadManager.get(context)
+                .reconcileCancellationDebt(database)
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(token, repository.getItems(operation.operationId).single().reasonCode)
+        assertEquals(
+            LowQualityRedownloadOperationState.RUNNING,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+
+        assertEquals(
+            DownloadRepository.Status.Queued,
+            owner.undoPendingCancellation(
+                linkedId,
+                token,
+                DownloadRepository.Status.Queued,
+            ).restoredStatus,
+        )
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(token))
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+    }
+
+    @Test
+    fun livePendingCancellationSurvivesOrdinaryReconciliation() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 85, DownloadRepository.Status.Queued)
+        val owner = DownloadRepository(database)
+        val token = checkNotNull(owner.beginUndoableCancellation(linkedId).pendingToken)
+        val reconciler = LowQualityRedownloadRepository(database)
+
+        assertEquals(operation.operationId, reconciler.reconcileDownload(linkedId))
+        reconciler.reconcileLinkedDownloads(operation.operationId)
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(token, repository.getItems(operation.operationId).single().reasonCode)
+
+        assertEquals(
+            DownloadRepository.Status.Queued,
+            owner.undoPendingCancellation(
+                linkedId,
+                token,
+                DownloadRepository.Status.Queued,
+            ).restoredStatus,
+        )
+    }
+
+    @Test
+    fun abandoningPendingCancellationTransfersAuthorityToRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 86, DownloadRepository.Status.Queued)
+        val owner = DownloadRepository(database)
+        val token = checkNotNull(owner.beginUndoableCancellation(linkedId).pendingToken)
+
+        owner.abandonPendingUndoSnapshots()
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(token))
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+
+        // Recovery remains idempotent after the lifecycle handoff has already
+        // converged the exact carrier.
+        assertFalse(
+            LowQualityRedownloadManager.get(context)
+                .reconcileCancellationDebt(database)
+        )
+    }
+
+    @Test
+    fun operationCancellationSupersedesLivePendingCancellationUndo() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 87, DownloadRepository.Status.Queued)
+        val owner = DownloadRepository(database)
+        val token = checkNotNull(owner.beginUndoableCancellation(linkedId).pendingToken)
+
+        repository.requestCancellation(operation.operationId)
+        assertTrue(repository.getOperation(operation.operationId)?.cancelRequested == true)
+        assertTrue(
+            LowQualityRedownloadManager.get(context)
+                .reconcileCancellationDebt(database)
+        )
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(token))
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+        assertNull(
+            owner.undoPendingCancellation(
+                linkedId,
+                token,
+                DownloadRepository.Status.Queued,
+            ).restoredStatus,
+        )
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getDownloadById(linkedId).status,
+        )
+    }
+
+    @Test
+    fun pendingCancellationUndoOwnershipIsScopedToItsOwner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val firstId = linkDownload(operation.operationId, 88, DownloadRepository.Status.Queued)
+        val secondId = linkDownload(operation.operationId, 89, DownloadRepository.Status.Queued)
+        val firstOwner = DownloadRepository(database)
+        val secondOwner = DownloadRepository(database)
+        val firstToken = checkNotNull(firstOwner.beginUndoableCancellation(firstId).pendingToken)
+        val secondToken = checkNotNull(secondOwner.beginUndoableCancellation(secondId).pendingToken)
+
+        firstOwner.abandonPendingUndoSnapshots()
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(firstToken))
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(secondToken))
+        assertFalse(
+            LowQualityRedownloadManager.get(context)
+                .reconcileCancellationDebt(database)
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId)
+                .single { it.downloadId == secondId }
+                .stateValue,
+        )
+
+        assertEquals(
+            DownloadRepository.Status.Queued,
+            secondOwner.undoPendingCancellation(
+                secondId,
+                secondToken,
+                DownloadRepository.Status.Queued,
+            ).restoredStatus,
         )
     }
 
