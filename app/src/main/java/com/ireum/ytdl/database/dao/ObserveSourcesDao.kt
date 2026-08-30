@@ -112,9 +112,35 @@ interface ObserveSourcesDao {
         SELECT id FROM downloads
         WHERE observeSourceId=:sourceId
           AND status='WaitingForMembership'
+          AND lastIssueCode='MEMBERSHIP_REQUIRED'
           AND EXISTS(
               SELECT 1 FROM sources
               WHERE id=:sourceId AND status='ACTIVE'
+          )
+          AND NOT EXISTS(
+              SELECT 1 FROM history_replacement_barriers barrier
+              WHERE barrier.downloadId=downloads.id
+          )
+          AND NOT (
+              COALESCE(playlistURL, '') LIKE 'history-redownload:%'
+              AND EXISTS(
+                  SELECT 1 FROM history committedHistory
+                  WHERE committedHistory.downloadId=downloads.id
+              )
+          )
+          AND NOT EXISTS(
+              SELECT 1
+              FROM low_quality_redownload_items linked
+              LEFT JOIN low_quality_redownload_operations operation
+                ON operation.operationId=linked.operationId
+              WHERE linked.downloadId=downloads.id
+                AND (
+                    linked.itemState NOT IN ('WAITING','QUEUED')
+                    OR COALESCE(linked.reasonCode, '') != ''
+                    OR operation.operationId IS NULL
+                    OR operation.state != 'RUNNING'
+                    OR operation.cancelRequested = 1
+                )
           )
     """)
     suspend fun getRequeueableMembershipWaitingIds(sourceId: Long): List<Long>
@@ -122,9 +148,58 @@ interface ObserveSourcesDao {
     @Query("""
         UPDATE downloads
         SET status='Queued', downloadStartTime=0
-        WHERE id IN (:downloadIds) AND status='WaitingForMembership'
+        WHERE id IN (:downloadIds)
+          AND status='WaitingForMembership'
+          AND lastIssueCode='MEMBERSHIP_REQUIRED'
+          AND EXISTS(
+              SELECT 1 FROM sources source
+              WHERE source.id=downloads.observeSourceId
+                AND source.status='ACTIVE'
+          )
+          AND NOT EXISTS(
+              SELECT 1 FROM history_replacement_barriers barrier
+              WHERE barrier.downloadId=downloads.id
+          )
+          AND NOT (
+              COALESCE(playlistURL, '') LIKE 'history-redownload:%'
+              AND EXISTS(
+                  SELECT 1 FROM history committedHistory
+                  WHERE committedHistory.downloadId=downloads.id
+              )
+          )
     """)
-    suspend fun requeueMembershipWaitingIds(downloadIds: List<Long>)
+    suspend fun requeueMembershipWaitingIds(downloadIds: List<Long>): Int
+
+    /**
+     * Membership retry changes the linked low-quality child in the same Room
+     * transaction as the Download status transition.  A queued Download with
+     * a still-WAITING child is not a coherent claim candidate.
+     */
+    @Query("""
+        UPDATE low_quality_redownload_items
+        SET itemState='QUEUED', reasonCode='', updatedAt=:updatedAt
+        WHERE downloadId IN (:downloadIds)
+          AND itemState='WAITING'
+          AND COALESCE(reasonCode, '')=''
+          AND EXISTS(
+              SELECT 1 FROM downloads retryDownload
+              WHERE retryDownload.id=low_quality_redownload_items.downloadId
+                AND retryDownload.observeSourceId=:sourceId
+                AND retryDownload.status='Queued'
+                AND retryDownload.lastIssueCode='MEMBERSHIP_REQUIRED'
+          )
+          AND EXISTS(
+              SELECT 1 FROM low_quality_redownload_operations operation
+              WHERE operation.operationId=low_quality_redownload_items.operationId
+                AND operation.state='RUNNING'
+                AND operation.cancelRequested=0
+          )
+    """)
+    suspend fun requeueMembershipWaitingChildren(
+        sourceId: Long,
+        downloadIds: List<Long>,
+        updatedAt: Long,
+    ): Int
 
     @Query("""
         UPDATE downloads
@@ -137,16 +212,95 @@ interface ObserveSourcesDao {
               SELECT 1 FROM sources
               WHERE id=:sourceId AND status='ACTIVE'
           )
+          AND NOT EXISTS(
+              SELECT 1 FROM history_replacement_barriers barrier
+              WHERE barrier.downloadId=downloads.id
+          )
+          AND NOT (
+              COALESCE(playlistURL, '') LIKE 'history-redownload:%'
+              AND EXISTS(
+                  SELECT 1 FROM history committedHistory
+                  WHERE committedHistory.downloadId=downloads.id
+              )
+          )
+          AND NOT EXISTS(
+              SELECT 1
+              FROM low_quality_redownload_items linked
+              LEFT JOIN low_quality_redownload_operations operation
+                ON operation.operationId=linked.operationId
+              WHERE linked.downloadId=downloads.id
+                AND (
+                    linked.itemState != 'QUEUED'
+                    OR COALESCE(linked.reasonCode, '') != ''
+                    OR operation.operationId IS NULL
+                    OR operation.state != 'RUNNING'
+                    OR operation.cancelRequested = 1
+                )
+          )
     """)
-    suspend fun restoreMembershipWaitingIds(sourceId: Long, downloadIds: List<Long>)
+    suspend fun restoreMembershipWaitingIds(sourceId: Long, downloadIds: List<Long>): Int
+
+    @Query("""
+        UPDATE low_quality_redownload_items
+        SET itemState='WAITING', reasonCode='', updatedAt=:updatedAt
+        WHERE downloadId IN (:downloadIds)
+          AND itemState='QUEUED'
+          AND COALESCE(reasonCode, '')=''
+          AND EXISTS(
+              SELECT 1 FROM downloads waitingDownload
+              WHERE waitingDownload.id=low_quality_redownload_items.downloadId
+                AND waitingDownload.observeSourceId=:sourceId
+                AND waitingDownload.status='WaitingForMembership'
+                AND waitingDownload.lastIssueCode='MEMBERSHIP_REQUIRED'
+          )
+          AND EXISTS(
+              SELECT 1 FROM low_quality_redownload_operations operation
+              WHERE operation.operationId=low_quality_redownload_items.operationId
+                AND operation.state='RUNNING'
+                AND operation.cancelRequested=0
+          )
+    """)
+    suspend fun restoreMembershipWaitingChildren(
+        sourceId: Long,
+        downloadIds: List<Long>,
+        updatedAt: Long,
+    ): Int
 
     @Transaction
     suspend fun requeueMembershipWaiting(sourceId: Long): List<Long> {
         val waitingIds = getRequeueableMembershipWaitingIds(sourceId)
-        if (waitingIds.isNotEmpty()) {
-            requeueMembershipWaitingIds(waitingIds)
+        if (waitingIds.isEmpty()) return emptyList()
+        check(requeueMembershipWaitingIds(waitingIds) == waitingIds.size) {
+            "Membership retry lost its exact Download transition"
         }
+        requeueMembershipWaitingChildren(
+            sourceId = sourceId,
+            downloadIds = waitingIds,
+            updatedAt = System.currentTimeMillis(),
+        )
         return waitingIds
+    }
+
+    /**
+     * Compensation for a retry-start failure restores both sides of the
+     * waiting authority.  Every mutation is guarded by the queued membership
+     * state and an uncancelled running operation, so a stronger concurrent
+     * decision is never reopened.
+     */
+    @Transaction
+    suspend fun restoreMembershipWaiting(
+        sourceId: Long,
+        downloadIds: List<Long>,
+    ): Int {
+        val restored = restoreMembershipWaitingIds(sourceId, downloadIds)
+        if (restored > 0) {
+            restoreMembershipWaitingChildren(
+                sourceId = sourceId,
+                downloadIds = downloadIds,
+                updatedAt = System.currentTimeMillis(),
+            )
+        }
+        return restored
     }
 
     @Transaction

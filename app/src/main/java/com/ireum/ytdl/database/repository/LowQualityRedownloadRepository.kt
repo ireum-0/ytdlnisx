@@ -15,6 +15,7 @@ import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
@@ -820,6 +821,11 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         val now = System.currentTimeMillis()
         if (operation.cancelRequested || item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
             dao.markCancelledByDownloadId(downloadId, REASON_USER_CANCELLED, now)
+        } else if (isMembershipRetryAuthority(download, item, operation)) {
+            // MEMBERSHIP_REQUIRED is a transient waiting/retry authority
+            // while the exact Download/child/operation/source tuple is
+            // coherent.  It must not be reclassified as terminal debt before
+            // the production claim consumes it.
         } else if (
             !download?.lastIssueCode.isNullOrBlank() &&
                 !item.stateValue.isTerminal
@@ -848,6 +854,41 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         }
         finalizeIfReadyLocked(item.operationId, now)
         item.operationId
+    }
+
+    /**
+     * Distinguishes a real membership retry from terminal convergence debt.
+     * The status and linked child state must advance together; a loose issue
+     * code or a queued-list observation is not enough authority.
+     */
+    private suspend fun isMembershipRetryAuthority(
+        download: DownloadItem?,
+        item: LowQualityRedownloadItem,
+        operation: LowQualityRedownloadOperation,
+    ): Boolean {
+        if (download == null) return false
+        if (download.lastIssueCode != DownloadIssueCode.MEMBERSHIP_REQUIRED.name) return false
+        if (operation.stateValue != LowQualityRedownloadOperationState.RUNNING) return false
+        if (operation.cancelRequested) return false
+        if (item.reasonCode.isNotBlank()) return false
+        if (database.downloadDao.getHistoryReplacementBarrier(download.id) != null) return false
+        val historyMarker = HistoryRedownloadMarker.parse(download.playlistURL)
+        if (
+            historyMarker != null &&
+                database.historyDao.getNullableItem(historyMarker.historyId)?.downloadId == download.id
+        ) {
+            return false
+        }
+        val expectedChildState = when (download.status) {
+            DownloadRepository.Status.WaitingForMembership.name ->
+                LowQualityRedownloadItemState.WAITING
+            DownloadRepository.Status.Queued.name ->
+                LowQualityRedownloadItemState.QUEUED
+            else -> return false
+        }
+        if (item.stateValue != expectedChildState) return false
+        return database.observeSourcesDao.getByIDOrNull(download.observeSourceId)?.status ==
+            ObserveSourcesRepository.SourceStatus.ACTIVE
     }
 
     private suspend fun finalizeIfReadyLocked(

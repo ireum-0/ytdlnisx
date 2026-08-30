@@ -300,10 +300,7 @@ class ObserveSourceWorker(
                     }
                 } catch (error: Exception) {
                     withContext(Dispatchers.IO + NonCancellable) {
-                        dbManager.observeSourcesDao.restoreMembershipWaitingIds(
-                            sourceID,
-                            requeuedIds
-                        )
+                        dbManager.observeSourcesDao.restoreMembershipWaiting(sourceID, requeuedIds)
                     }
                     throw error
                 }

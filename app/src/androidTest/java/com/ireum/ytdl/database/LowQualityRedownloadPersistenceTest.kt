@@ -1406,8 +1406,9 @@ class LowQualityRedownloadPersistenceTest {
         )
 
         // This is the stale item retained by the confirmation UI.  The real
-        // membership requeue changes only the Download row; the exact Undo
-        // authority must still bind to the state seen when cancellation begins.
+        // membership requeue changes the exact Download/child retry state;
+        // the Undo authority must still bind to the state seen when
+        // cancellation begins.
         val staleUiStatus = DownloadRepository.Status.WaitingForMembership
         assertEquals(listOf(linkedId), database.observeSourcesDao.requeueMembershipWaiting(sourceId))
         assertEquals(
@@ -1443,6 +1444,130 @@ class LowQualityRedownloadPersistenceTest {
             database.downloadDao.getMembershipWaitingDownloads().any { it.id == linkedId }
         )
         assertTrue(database.downloadDao.getQueuedDownloadsListIDs().contains(linkedId))
+
+        val claimed = claimDownloadThroughProductionAdmission(
+            context = ApplicationProvider.getApplicationContext(),
+            dbManager = database,
+            candidate = database.downloadDao.getDownloadById(linkedId),
+            concurrentDownloadLimit = 1,
+        )
+        assertTrue(claimed != null)
+        val claimedItem = checkNotNull(claimed)
+        assertEquals(DownloadRepository.Status.Active.name, claimedItem.status)
+        assertTrue(claimedItem.executionId.isNotBlank())
+        assertEquals(claimedItem.executionId, DownloadWorkerExecutionOwners.ownerOf(linkedId))
+        DownloadWorkerExecutionOwners.release(linkedId, claimedItem.executionId)
+    }
+
+    @Test
+    fun lowQualityMembershipRetryRequeueIsActuallyClaimable() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 86, DownloadRepository.Status.Queued)
+        val sourceId = database.observeSourcesDao.insert(
+            ObserveSourcesItem(
+                id = 0,
+                name = "Membership retry source",
+                url = "https://example.com/membership-retry-source",
+                downloadItemTemplate = download(86),
+                everyNr = 1,
+                everyCategory = ObserveSourcesRepository.EveryCategory.DAY,
+                everyTime = 0,
+                weeklyConfig = null,
+                monthlyConfig = null,
+                status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+                startsTime = 0,
+                endsDate = 0,
+                endsAfterCount = 0,
+                runCount = 0,
+                getOnlyNewUploads = false,
+                retryMissingDownloads = false,
+                ignoredLinks = mutableListOf(),
+                alreadyProcessedLinks = mutableListOf(),
+                syncWithSource = false,
+            )
+        )
+        database.downloadDao.updateRaw(
+            database.downloadDao.getDownloadById(linkedId).copy(observeSourceId = sourceId)
+        )
+        assertEquals(
+            1,
+            database.observeSourcesDao.parkDownloadForMembership(
+                downloadId = linkedId,
+                sourceId = sourceId,
+                expectedStatus = DownloadRepository.Status.Queued.name,
+                issueCode = DownloadIssueCode.MEMBERSHIP_REQUIRED.name,
+                issueStage = "DOWNLOAD",
+            )
+        )
+        assertEquals(
+            1,
+            database.lowQualityRedownloadDao.setItemStateByDownloadId(
+                downloadId = linkedId,
+                state = LowQualityRedownloadItemState.WAITING.name,
+                reason = "",
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+
+        val requeuedIds = database.observeSourcesDao.requeueMembershipWaiting(sourceId)
+        assertEquals(listOf(linkedId), requeuedIds)
+        val requeuedDownload = database.downloadDao.getDownloadById(linkedId)
+        assertEquals(DownloadRepository.Status.Queued.name, requeuedDownload.status)
+        assertEquals(DownloadIssueCode.MEMBERSHIP_REQUIRED.name, requeuedDownload.lastIssueCode)
+        assertEquals("DOWNLOAD", requeuedDownload.lastIssueStage)
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(LowQualityRedownloadOperationState.RUNNING, repository.getOperation(operation.operationId)?.stateValue)
+        assertFalse(repository.getOperation(operation.operationId)?.cancelRequested ?: true)
+
+        // ObserveSourceWorker uses this guarded transition when starting the
+        // retry path fails. It must restore the complete waiting authority,
+        // including the linked child, before a later retry.
+        assertEquals(
+            1,
+            database.observeSourcesDao.restoreMembershipWaiting(sourceId, requeuedIds),
+        )
+        val compensatedDownload = database.downloadDao.getDownloadById(linkedId)
+        assertEquals(
+            DownloadRepository.Status.WaitingForMembership.name,
+            compensatedDownload.status,
+        )
+        assertEquals(DownloadIssueCode.MEMBERSHIP_REQUIRED.name, compensatedDownload.lastIssueCode)
+        assertEquals("DOWNLOAD", compensatedDownload.lastIssueStage)
+        assertEquals(
+            LowQualityRedownloadItemState.WAITING,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        assertEquals(listOf(linkedId), database.observeSourcesDao.requeueMembershipWaiting(sourceId))
+        val claimCandidate = database.downloadDao.getDownloadById(linkedId)
+        assertEquals(DownloadRepository.Status.Queued.name, claimCandidate.status)
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertTrue(repository.reconcileDownload(linkedId) != null)
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        val claimed = claimDownloadThroughProductionAdmission(
+            context = context,
+            dbManager = database,
+            candidate = claimCandidate,
+            concurrentDownloadLimit = 1,
+        )
+        assertTrue(claimed != null)
+        val claimedItem = checkNotNull(claimed)
+        assertEquals(DownloadRepository.Status.Active.name, claimedItem.status)
+        assertTrue(claimedItem.executionId.isNotBlank())
+        assertEquals(claimedItem.executionId, DownloadWorkerExecutionOwners.ownerOf(linkedId))
+        assertEquals("", database.downloadDao.getDownloadById(linkedId).lastIssueCode)
+        DownloadWorkerExecutionOwners.release(linkedId, claimedItem.executionId)
     }
 
     @Test

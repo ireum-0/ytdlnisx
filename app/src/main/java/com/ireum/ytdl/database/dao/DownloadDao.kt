@@ -22,11 +22,46 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val HISTORY_TARGET_DELETED_ISSUE = "HISTORY_TARGET_DELETED"
 
+/**
+ * A membership retry is the one nonterminal issue that is intentionally
+ * claimable.  It remains typed by every part of the durable authority:
+ * Queued Download + MEMBERSHIP_REQUIRED + the same Queued child + a running,
+ * uncancelled operation + an active observe source.  This is deliberately
+ * expressed inside the debt row predicate so another unresolved child cannot
+ * be hidden by a valid membership child.
+ */
+private const val LOW_QUALITY_MEMBERSHIP_RETRY_AUTHORITY =
+    "downloads.status = 'Queued' " +
+        "AND downloads.lastIssueCode = 'MEMBERSHIP_REQUIRED' " +
+        "AND debt.itemState = 'QUEUED' " +
+        "AND COALESCE(debt.reasonCode, '') = '' " +
+        "AND EXISTS (SELECT 1 FROM low_quality_redownload_operations membershipOperation " +
+        "WHERE membershipOperation.operationId = debt.operationId " +
+        "AND membershipOperation.state = 'RUNNING' " +
+        "AND membershipOperation.cancelRequested = 0) " +
+        "AND EXISTS (SELECT 1 FROM sources membershipSource " +
+        "WHERE membershipSource.id = downloads.observeSourceId " +
+        "AND membershipSource.status = 'ACTIVE') " +
+        "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers membershipBarrier " +
+        "WHERE membershipBarrier.downloadId = downloads.id) " +
+        "AND NOT (COALESCE(downloads.playlistURL, '') LIKE 'history-redownload:%' " +
+        "AND EXISTS (SELECT 1 FROM history committedMembershipHistory " +
+        "WHERE committedMembershipHistory.downloadId = downloads.id))"
+
 private const val LOW_QUALITY_TERMINAL_DEBT_GUARD =
     "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items debt " +
         "WHERE debt.downloadId = downloads.id " +
         "AND debt.itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
-        "AND COALESCE(downloads.lastIssueCode, '') != '')"
+        "AND COALESCE(downloads.lastIssueCode, '') != '' " +
+        "AND NOT ($LOW_QUALITY_MEMBERSHIP_RETRY_AUTHORITY))"
+
+/** Same typed state, used to consume the transient issue at successful claim. */
+private const val LOW_QUALITY_MEMBERSHIP_RETRY_CLEAR_PREDICATE =
+    "downloads.status = 'Queued' " +
+        "AND downloads.lastIssueCode = 'MEMBERSHIP_REQUIRED' " +
+        "AND EXISTS (SELECT 1 FROM sources membershipSource " +
+        "WHERE membershipSource.id = downloads.observeSourceId " +
+        "AND membershipSource.status = 'ACTIVE')"
 
 private const val COMMITTED_HISTORY_REPLACEMENT_GUARD =
     "AND NOT (COALESCE(playlistURL, '') LIKE 'history-redownload:%' " +
@@ -412,7 +447,11 @@ interface DownloadDao {
      * not run the item or write its stale full-row snapshot back to Room.
      */
     @Query(
-        "UPDATE downloads SET status='Active', executionId=:executionId " +
+        "UPDATE downloads SET status='Active', executionId=:executionId, " +
+            "lastIssueCode=CASE WHEN ($LOW_QUALITY_MEMBERSHIP_RETRY_CLEAR_PREDICATE) " +
+            "THEN '' ELSE lastIssueCode END, " +
+            "lastIssueStage=CASE WHEN ($LOW_QUALITY_MEMBERSHIP_RETRY_CLEAR_PREDICATE) " +
+            "THEN '' ELSE lastIssueStage END " +
             "WHERE id=:id AND status IN ('Queued','Scheduled') " +
             "AND operationId=:expectedOperationId AND retryAttempt=:expectedRetryAttempt " +
             "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
