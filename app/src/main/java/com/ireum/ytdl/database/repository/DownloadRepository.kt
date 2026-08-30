@@ -674,9 +674,12 @@ class DownloadRepository(private val database: DBManager) {
         }
         val operation = ledgerDao.getOperation(ledgerItem.operationId)
             ?: error("Missing low-quality operation for linked download $downloadId")
+        val isPendingUserCancellation =
+            ledgerItem.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
+                ledgerItem.reasonCode.startsWith(PENDING_CANCELLATION_TOKEN_PREFIX)
         if (
             operation.cancelRequested ||
-                ledgerItem.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED
+                isPendingUserCancellation
         ) {
             ledgerDao.markCancelledByDownloadId(
                 downloadId = downloadId,
@@ -1826,17 +1829,12 @@ class DownloadRepository(private val database: DBManager) {
                 originalStatus in setOf(Status.Queued, Status.WaitingForMembership)
 
         if (canRestore) {
-            val restored = when (originalStatus) {
-                Status.Queued -> downloadDao.restoreCancelledStatus(id, Status.Queued.name)
-                Status.WaitingForMembership -> database.observeSourcesDao.parkDownloadForMembership(
-                    downloadId = id,
-                    sourceId = download!!.observeSourceId,
-                    expectedStatus = Status.Cancelled.name,
-                    issueCode = download!!.lastIssueCode,
-                    issueStage = download!!.lastIssueStage
-                )
-                else -> 0
-            }
+            val restored = downloadDao.restoreCancelledStatusForPendingCancellation(
+                id = id,
+                status = originalStatus.name,
+                operationId = ledgerItem.operationId,
+                token = token,
+            )
             if (restored == 1) {
                 check(
                     ledgerDao.restorePendingUserCancellation(

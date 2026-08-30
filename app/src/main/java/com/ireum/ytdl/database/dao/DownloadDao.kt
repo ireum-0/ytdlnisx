@@ -558,6 +558,42 @@ interface DownloadDao {
     suspend fun restoreCancelledStatus(id: Long, status: String): Int
 
     @Query(
+        "UPDATE downloads SET status=:status, " +
+            "executionId=CASE WHEN :status='Queued' THEN '' ELSE executionId END " +
+            "WHERE id=:id AND status='Cancelled' " +
+            "AND :status IN ('Queued','WaitingForMembership') " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode != 'HISTORY_TARGET_DELETED') " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b " +
+            "WHERE b.downloadId = downloads.id) " +
+            "AND NOT (COALESCE(playlistURL, '') LIKE 'history-redownload:%' " +
+            "AND EXISTS (SELECT 1 FROM history committedHistory " +
+            "WHERE committedHistory.downloadId = downloads.id)) " +
+            "AND NOT EXISTS (SELECT 1 FROM low_quality_redownload_items debt " +
+            "WHERE debt.downloadId = downloads.id " +
+            "AND debt.itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED') " +
+            "AND COALESCE(downloads.lastIssueCode, '') != '') " +
+            "AND (:status != 'WaitingForMembership' OR EXISTS (" +
+            "SELECT 1 FROM sources membershipSource " +
+            "WHERE membershipSource.id = downloads.observeSourceId " +
+            "AND membershipSource.status = 'ACTIVE')) " +
+            "AND EXISTS (SELECT 1 FROM low_quality_redownload_items pending " +
+            "JOIN low_quality_redownload_operations operation " +
+            "ON operation.operationId = pending.operationId " +
+            "WHERE pending.downloadId = downloads.id " +
+            "AND pending.operationId = :operationId " +
+            "AND pending.itemState = 'CANCELLATION_REQUESTED' " +
+            "AND pending.reasonCode = :token " +
+            "AND operation.state = 'RUNNING' " +
+            "AND operation.cancelRequested = 0)"
+    )
+    suspend fun restoreCancelledStatusForPendingCancellation(
+        id: Long,
+        status: String,
+        operationId: String,
+        token: String,
+    ): Int
+
+    @Query(
         "UPDATE downloads SET status='Paused' WHERE id=:id AND executionId=:executionId " +
             "AND status IN ('Active','PostProcessing','Queued','Scheduled','WaitingForMembership')"
     )
