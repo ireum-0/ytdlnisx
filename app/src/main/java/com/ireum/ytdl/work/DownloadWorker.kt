@@ -220,6 +220,14 @@ internal object DownloadWorkerEffectTestHooks {
     @Volatile
     internal var beforeYtdlpExecutionForTesting: ((Long) -> Unit)? = null
 
+    /** Supplies synthetic successful yt-dlp output to the real worker path. */
+    @Volatile
+    internal var ytdlpSuccessForTesting: ((Long, File) -> String?)? = null
+
+    /** Fails the real committed-History finalization boundary once in tests. */
+    @Volatile
+    internal var beforeCommittedHistoryFinalizationForTesting: ((Long) -> Unit)? = null
+
     @Volatile
     internal var beforeNoCacheMediaPublicationForTesting: (() -> Unit)? = null
 
@@ -2725,6 +2733,9 @@ class DownloadWorker(
                                             "Committed History finalization preparation remained unresolved for ${downloadItem.id}"
                                         }
                                     }
+                                    DownloadWorkerEffectTestHooks
+                                        .beforeCommittedHistoryFinalizationForTesting
+                                        ?.invoke(downloadItem.id)
                                     val affectedOperations = if (
                                         historyReplacementTerminalAction ==
                                             HistoryReplacementTerminalAction.TARGET_DELETED
@@ -2776,6 +2787,23 @@ class DownloadWorker(
         }
 
         private suspend fun handleYtdlpFailure(it: Exception): AttemptControl {
+                        // A committed History replacement is the stronger
+                        // primary result.  This check must precede ordinary
+                        // Error classification because finalization failures
+                        // from publishCompletion arrive through this handler.
+                        // Route them through the existing committed-History
+                        // finalization owner instead of projecting the result
+                        // back onto the Download row as Error.
+                        if (it !is CancellationException) {
+                            val committedHistoryReplacement = historyReplacementCommitted ||
+                                withContext(Dispatchers.IO + NonCancellable) {
+                                    isDurablyCommittedHistoryReplacement(dbManager, downloadItem)
+                                }
+                            if (committedHistoryReplacement) {
+                                historyReplacementCommitted = true
+                                return handleUnexpectedFailure(it)
+                            }
+                        }
                         val failedYtdlpState = ytdlpExecutionState
                         if (downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs) {
                             Log.e(TAG, "HardSub failed id=${downloadItem.id} type=${it.javaClass.simpleName}")
@@ -4189,6 +4217,23 @@ class DownloadWorker(
         return try {
             DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting
                 ?.invoke(input.downloadItem.id)
+            val injectedOutput = DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting
+                ?.invoke(input.downloadItem.id, input.rawTempDirectory)
+            if (injectedOutput != null) {
+                runtime.validatedTempDirectory = input.rawTempDirectory
+                return YtdlpPhaseOutcome.Completed(
+                    YtdlpExecutionResult(
+                        response = YoutubeDLResponse(
+                            emptyList(),
+                            0,
+                            0L,
+                            injectedOutput,
+                            "",
+                        ),
+                    ),
+                    runtime.snapshot(),
+                )
+            }
             runtime.validatedTempDirectory = resetYtdlpTempDirectory(
                 downloadItem = input.downloadItem,
                 rawTempDirectory = input.rawTempDirectory,

@@ -88,6 +88,31 @@ class LowQualityRedownloadManager private constructor(context: Context) {
         dispatchRecovery(operation)
     }
 
+    /**
+     * Owns only the durable phase-one cancellation debt.  This deliberately
+     * does not open the normal scan/preparation/download reconciliation gate;
+     * cancellation convergence must remain discoverable after optional
+     * runtime initialization fails.
+     */
+    suspend fun reconcileCancellationDebt(
+        dbManager: DBManager = database,
+    ): Boolean {
+        val recoveryRepository = if (dbManager === database) {
+            repository
+        } else {
+            LowQualityRedownloadRepository(dbManager)
+        }
+        val operation = recoveryRepository.getActiveOperation()
+            ?.takeIf { it.cancelRequested }
+            ?: return false
+        completeCancellation(
+            operationId = operation.operationId,
+            dbManager = dbManager,
+            recoveryRepository = recoveryRepository,
+        )
+        return true
+    }
+
     private suspend fun dispatchRecovery(operation: LowQualityRedownloadOperation) {
         dispatchLowQualityRedownloadRecovery(
             operation = operation,
@@ -100,10 +125,14 @@ class LowQualityRedownloadManager private constructor(context: Context) {
         )
     }
 
-    private suspend fun completeCancellation(operationId: String) {
+    private suspend fun completeCancellation(
+        operationId: String,
+        dbManager: DBManager = database,
+        recoveryRepository: LowQualityRedownloadRepository = repository,
+    ) {
         try {
             workManager.cancelAllWorkByTag(LowQualityRedownloadWorker.operationTag(operationId))
-            val result = repository.completePersistedCancellationWithPublications(
+            val result = recoveryRepository.completePersistedCancellationWithPublications(
                 operationId = operationId,
                 context = appContext,
             )
@@ -129,7 +158,7 @@ class LowQualityRedownloadManager private constructor(context: Context) {
                             context = appContext,
                             downloadId = publication.downloadId,
                             executionId = publication.executionId,
-                            dbManager = database,
+                            dbManager = dbManager,
                         )
                     ) {
                         "Native cancellation was not acknowledged for ${publication.downloadId}"
@@ -142,10 +171,11 @@ class LowQualityRedownloadManager private constructor(context: Context) {
             LowQualityRedownloadLedger.scheduleCancellationConvergence(
                 appContext,
                 operationId,
+                dbManager,
             )
             throw error
         } finally {
-            repository.progress(operationId)?.let { notification.update(it) }
+            recoveryRepository.progress(operationId)?.let { notification.update(it) }
         }
     }
 

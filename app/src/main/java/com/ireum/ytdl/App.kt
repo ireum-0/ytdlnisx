@@ -81,6 +81,17 @@ class App : Application() {
             }
         }
         applicationScope.launch(Dispatchers.IO) {
+            runStartupCancellationReconciliation(
+                reconcile = {
+                    LowQualityRedownloadManager.get(this@App)
+                        .reconcileCancellationDebt()
+                },
+                reportFailure = {
+                    Log.w(TAG, "Low-quality cancellation recovery failed", it)
+                },
+            )
+        }
+        applicationScope.launch(Dispatchers.IO) {
             runStartupReconciliation(
                 readiness = runtimeReadiness,
                 reconcile = { AutomaticKeywordObservationCoverage(this@App).reconcile() },
@@ -419,6 +430,25 @@ internal suspend fun runStartupReconciliation(
     reportFailure: (Exception) -> Unit
 ) {
     if (!readiness.await()) return
+    try {
+        reconcile()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        reportFailure(failure)
+    }
+}
+
+/**
+ * User cancellation is a durable correctness debt, not optional runtime
+ * work.  Give it a startup owner that can run even when native initialization
+ * failed; ordinary low-quality scan/preparation reconciliation remains behind
+ * [runStartupReconciliation].
+ */
+internal suspend fun runStartupCancellationReconciliation(
+    reconcile: suspend () -> Unit,
+    reportFailure: (Exception) -> Unit,
+) {
     try {
         reconcile()
     } catch (cancelled: CancellationException) {

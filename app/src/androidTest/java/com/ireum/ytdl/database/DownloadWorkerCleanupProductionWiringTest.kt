@@ -51,6 +51,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -79,6 +80,8 @@ class DownloadWorkerCleanupProductionWiringTest {
         DownloadClaimTestHooks.resetForTesting()
         DownloadWorkerEffectTestHooks.dbManagerForTesting = null
         DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
+        DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = null
+        DownloadWorkerEffectTestHooks.beforeCommittedHistoryFinalizationForTesting = null
         DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = null
         DownloadWorkerEffectTestHooks.failureTerminalPersistenceNoOpForTesting = null
         DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = null
@@ -97,6 +100,8 @@ class DownloadWorkerCleanupProductionWiringTest {
         DownloadClaimTestHooks.resetForTesting()
         DownloadWorkerEffectTestHooks.dbManagerForTesting = null
         DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
+        DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = null
+        DownloadWorkerEffectTestHooks.beforeCommittedHistoryFinalizationForTesting = null
         DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = null
         DownloadWorkerEffectTestHooks.failureTerminalPersistenceNoOpForTesting = null
         DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = null
@@ -1050,6 +1055,84 @@ class DownloadWorkerCleanupProductionWiringTest {
                 editor.putInt("concurrent_downloads", previousConcurrentSetting)
             } else {
                 editor.remove("concurrent_downloads")
+            }
+            assertTrue(editor.commit())
+        }
+    }
+
+    @Test
+    fun realWorkerKeepsCommittedHistoryAuthoritativeAfterFinalizationFailure() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        cancelStaleRealWorkerRequests(context)
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val hadCacheSetting = preferences.contains("cache_downloads")
+        val previousCacheSetting = preferences.getBoolean("cache_downloads", true)
+        val historyId = db.historyDao.insertAndGetIdRaw(
+            history().copy(
+                url = "https://example.com/audio",
+                type = DownloadType.audio,
+                format = Format(container = "m4a"),
+                downloadPath = listOf("/old/file.m4a"),
+            )
+        )
+        val downloadId = realWorkerTestDownloadIds.getAndIncrement()
+        val outputPaths = AtomicInteger(0)
+        val finalizationFailures = AtomicInteger(0)
+
+        try {
+            assertTrue(preferences.edit().putBoolean("cache_downloads", false).commit())
+            db.downloadDao.insertRaw(
+                download().copy(
+                    id = downloadId,
+                    url = "https://example.com/audio",
+                    type = DownloadType.audio,
+                    format = Format(container = "m4a"),
+                    container = "m4a",
+                    downloadPath = context.cacheDir.absolutePath,
+                    playlistURL = com.ireum.ytdl.util.HistoryRedownloadMarker.regular(historyId),
+                    status = DownloadRepository.Status.Queued.name,
+                    executionId = "",
+                    operationId = "a9-history-finalization-${UUID.randomUUID()}",
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = { candidateId, rawTempDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    rawTempDirectory.mkdirs()
+                    val output = File(rawTempDirectory, "replacement.m4a")
+                    output.writeBytes(byteArrayOf(1, 2, 3))
+                    outputPaths.incrementAndGet()
+                    "[download] Destination: ${output.absolutePath}"
+                }
+            }
+            DownloadWorkerEffectTestHooks.beforeCommittedHistoryFinalizationForTesting = { candidateId ->
+                if (
+                    candidateId == downloadId &&
+                    finalizationFailures.getAndIncrement() == 0
+                ) {
+                    throw IOException("injected committed History finalization failure")
+                }
+            }
+
+            val workInfo = enqueueAndAwaitDownloadWorker(context)
+            val replaced = requireNotNull(db.historyDao.getNullableItem(historyId))
+
+            assertEquals(1, outputPaths.get())
+            assertEquals(1, finalizationFailures.get())
+            assertEquals("replacement", replaced.title)
+            assertEquals(downloadId, replaced.downloadId)
+            assertNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
+            assertTrue(workInfo.state.isFinished)
+        } finally {
+            val editor = preferences.edit()
+            if (hadCacheSetting) {
+                editor.putBoolean("cache_downloads", previousCacheSetting)
+            } else {
+                editor.remove("cache_downloads")
             }
             assertTrue(editor.commit())
         }

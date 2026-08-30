@@ -21,6 +21,8 @@ import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
+import com.ireum.ytdl.runStartupCancellationReconciliation
+import com.ireum.ytdl.runStartupReconciliation
 import com.ireum.ytdl.ui.downloads.shouldPresentLowQualitySelection
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.download.DownloadIssueCode
@@ -31,6 +33,7 @@ import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
+import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.work.claimDownloadThroughProductionAdmission
 import com.ireum.ytdl.work.dispatchLowQualityRedownloadRecovery
@@ -2385,6 +2388,59 @@ class LowQualityRedownloadPersistenceTest {
                 executionId = "child-cancel-requested-worker",
             ),
         )
+    }
+
+    @Test
+    fun startupCancellationDebtConvergesWhenRuntimeInitializationFails() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(
+            operationId = operation.operationId,
+            historyId = 315,
+            status = DownloadRepository.Status.Active,
+            executionId = "a6-startup-E1",
+        )
+
+        assertEquals(
+            listOf(linkedId),
+            repository.requestCancellation(operation.operationId),
+        )
+
+        var ordinaryReconciliationRan = false
+        runStartupReconciliation(
+            readiness = CompletableDeferred(false),
+            reconcile = { ordinaryReconciliationRan = true },
+            reportFailure = { throw AssertionError("Unexpected ordinary recovery failure", it) },
+        )
+        assertFalse(ordinaryReconciliationRan)
+
+        var cancellationReconciliationRan = false
+        var cancellationFailure: Exception? = null
+        runStartupCancellationReconciliation(
+            reconcile = {
+                cancellationReconciliationRan =
+                    LowQualityRedownloadManager.get(context)
+                        .reconcileCancellationDebt(database)
+            },
+            reportFailure = { cancellationFailure = it },
+        )
+
+        assertTrue(cancellationReconciliationRan)
+        assertNull(cancellationFailure)
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getNullableDownloadById(linkedId)?.status,
+        )
+        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(linkedId))
+        assertTrue(database.downloadDao.getQueuedDownloadsList().none { it.id == linkedId })
     }
 
     private suspend fun linkDownload(
