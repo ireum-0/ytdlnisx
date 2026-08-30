@@ -45,6 +45,14 @@ interface LowQualityRedownloadDao {
     suspend fun getItemByDownloadId(downloadId: Long): LowQualityRedownloadItem?
 
     @Query(
+        "SELECT * FROM low_quality_redownload_items " +
+            "WHERE itemState = 'CANCELLATION_REQUESTED' " +
+            "AND (reasonCode LIKE 'PENDING_USER_CANCELLATION:%' " +
+            "OR reasonCode LIKE 'PENDING_USER_REMOVAL:%')"
+    )
+    suspend fun getPendingUndoItems(): List<LowQualityRedownloadItem>
+
+    @Query(
         "SELECT EXISTS(" +
             "SELECT 1 FROM low_quality_redownload_items lqi " +
             "LEFT JOIN low_quality_redownload_operations lqo " +

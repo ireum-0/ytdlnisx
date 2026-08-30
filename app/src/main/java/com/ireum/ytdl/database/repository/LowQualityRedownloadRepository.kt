@@ -68,6 +68,50 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     suspend fun hasLinkedDownload(downloadId: Long): Boolean =
         dao.getItemByDownloadId(downloadId) != null
 
+    /**
+     * Runtime-independent owner for durable Undo carriers whose process-local
+     * Snackbar authority disappeared.  This is intentionally narrower than
+     * normal low-quality reconciliation: it consumes only exact pending user
+     * Undo tokens and derives the parent result from the current sibling set.
+     */
+    suspend fun reconcileAbandonedUndoDebts(): Set<String> {
+        val affectedOperationIds = linkedSetOf<String>()
+        dao.getPendingUndoItems().forEach { item ->
+            val downloadId = item.downloadId ?: return@forEach
+            when {
+                item.reasonCode.startsWith(DownloadRepository.PENDING_CANCELLATION_TOKEN_PREFIX) &&
+                    DownloadRepository.isValidPendingCancellationToken(item.reasonCode) -> {
+                    affectedOperationIds += DownloadRepository(database)
+                        .commitPendingCancellation(downloadId, item.reasonCode)
+                }
+                item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX) &&
+                    !DownloadRepository.isLivePendingRemovalToken(item.reasonCode) &&
+                    database.downloadDao.getNullableDownloadById(downloadId) == null -> {
+                    affectedOperationIds += commitAbandonedPendingRemoval(item)
+                }
+            }
+        }
+        return affectedOperationIds
+    }
+
+    private suspend fun commitAbandonedPendingRemoval(
+        item: LowQualityRedownloadItem,
+    ): Set<String> = database.withTransaction {
+        val downloadId = item.downloadId ?: return@withTransaction emptySet()
+        if (
+            dao.commitUndoableLinkedItem(
+                downloadId = downloadId,
+                expectedToken = item.reasonCode,
+                reason = DownloadRepository.REASON_USER_REMOVED,
+                updatedAt = System.currentTimeMillis(),
+            ) != 1
+        ) {
+            return@withTransaction emptySet()
+        }
+        finalizeIfReadyLocked(item.operationId, System.currentTimeMillis())
+        setOf(item.operationId)
+    }
+
     suspend fun createOrReconnect(now: Long = System.currentTimeMillis()): LowQualityRedownloadOperation =
         database.withTransaction {
             dao.getActiveOperation()?.let { return@withTransaction it }
@@ -879,14 +923,21 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         ) {
             return false
         }
-        val expectedChildState = when (download.status) {
+        val childStateIsCoherent = when (download.status) {
+            // Production parking currently leaves the child QUEUED.  A
+            // WAITING child is also a durable compensation/legacy topology;
+            // both are valid only before the Download is requeued.  The
+            // actual claim boundary still accepts Queued + QUEUED only.
             DownloadRepository.Status.WaitingForMembership.name ->
-                LowQualityRedownloadItemState.WAITING
+                item.stateValue in setOf(
+                    LowQualityRedownloadItemState.WAITING,
+                    LowQualityRedownloadItemState.QUEUED,
+                )
             DownloadRepository.Status.Queued.name ->
-                LowQualityRedownloadItemState.QUEUED
+                item.stateValue == LowQualityRedownloadItemState.QUEUED
             else -> return false
         }
-        if (item.stateValue != expectedChildState) return false
+        if (!childStateIsCoherent) return false
         return database.observeSourcesDao.getByIDOrNull(download.observeSourceId)?.status ==
             ObserveSourcesRepository.SourceStatus.ACTIVE
     }

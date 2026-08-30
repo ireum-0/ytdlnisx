@@ -6,7 +6,10 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
+import com.ireum.ytdl.database.models.LowQualityRedownloadItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
+import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -74,6 +77,16 @@ interface ObserveSourcesDao {
           AND (
               status='WaitingForMembership'
               OR (status='Queued' AND lastIssueCode='MEMBERSHIP_REQUIRED')
+              OR (
+                  status='Cancelled'
+                  AND lastIssueCode='MEMBERSHIP_REQUIRED'
+                  AND EXISTS(
+                      SELECT 1 FROM low_quality_redownload_items pendingCancellation
+                      WHERE pendingCancellation.downloadId=downloads.id
+                        AND pendingCancellation.itemState='CANCELLATION_REQUESTED'
+                        AND pendingCancellation.reasonCode LIKE 'PENDING_USER_CANCELLATION:v1:%'
+                  )
+              )
           )
     """)
     suspend fun getMembershipRetryDownloadIds(sourceId: Long): List<Long>
@@ -84,6 +97,16 @@ interface ObserveSourcesDao {
           AND (
               status='WaitingForMembership'
               OR (status='Queued' AND lastIssueCode='MEMBERSHIP_REQUIRED')
+              OR (
+                  status='Cancelled'
+                  AND lastIssueCode='MEMBERSHIP_REQUIRED'
+                  AND EXISTS(
+                      SELECT 1 FROM low_quality_redownload_items pendingCancellation
+                      WHERE pendingCancellation.downloadId=downloads.id
+                        AND pendingCancellation.itemState='CANCELLATION_REQUESTED'
+                        AND pendingCancellation.reasonCode LIKE 'PENDING_USER_CANCELLATION:v1:%'
+                  )
+              )
           )
     """)
     suspend fun getAllMembershipRetryDownloadIds(): List<Long>
@@ -107,6 +130,78 @@ interface ObserveSourcesDao {
           )
     """)
     suspend fun cancelAllMembershipRetryDownloads()
+
+    /**
+     * Source revocation is selected before the source row is changed or
+     * deleted.  Revalidate each selected Download here so a concurrent
+     * production claim that won first is not retroactively cancelled.
+     */
+    @Query("""
+        UPDATE downloads SET status='Cancelled'
+        WHERE id IN (:downloadIds)
+          AND (
+              status='WaitingForMembership'
+              OR (status='Queued' AND lastIssueCode='MEMBERSHIP_REQUIRED')
+          )
+    """)
+    suspend fun cancelMembershipRetryDownloadsByIds(downloadIds: List<Long>): Int
+
+    @Query("""
+        SELECT DISTINCT operationId
+        FROM low_quality_redownload_items
+        WHERE downloadId IN (:downloadIds)
+    """)
+    suspend fun getMembershipRevocationOperationIds(downloadIds: List<Long>): List<String>
+
+    @Query("""
+        SELECT * FROM low_quality_redownload_operations
+        WHERE operationId=:operationId
+        LIMIT 1
+    """)
+    suspend fun getMembershipRevocationOperation(operationId: String): LowQualityRedownloadOperation?
+
+    @Query("""
+        SELECT * FROM low_quality_redownload_items
+        WHERE operationId=:operationId
+    """)
+    suspend fun getMembershipRevocationItems(operationId: String): List<LowQualityRedownloadItem>
+
+    /**
+     * A source stop/delete is an authoritative cancellation for membership
+     * retry rows.  Only rows that are still Cancelled are allowed to drive the
+     * linked-child transition; this is the source-vs-claim first-wins fence.
+     */
+    @Query("""
+        UPDATE low_quality_redownload_items
+        SET itemState='CANCELLED', reasonCode='USER_CANCELLED', updatedAt=:updatedAt
+        WHERE downloadId IN (:downloadIds)
+          AND itemState IN ('PROVISIONAL','PENDING','CHECKING','QUEUED','ACTIVE','WAITING','CANCELLATION_REQUESTED')
+          AND EXISTS(
+              SELECT 1 FROM downloads revokedDownload
+              WHERE revokedDownload.id=low_quality_redownload_items.downloadId
+                AND revokedDownload.status='Cancelled'
+          )
+    """)
+    suspend fun cancelMembershipLinkedItems(
+        downloadIds: List<Long>,
+        updatedAt: Long,
+    ): Int
+
+    @Query("""
+        UPDATE low_quality_redownload_operations
+        SET state=:state,
+            phase='FINALIZING',
+            terminalReason='USER_CANCELLED',
+            completedAt=:completedAt,
+            updatedAt=:completedAt
+        WHERE operationId=:operationId
+          AND state='RUNNING'
+    """)
+    suspend fun finishMembershipRevokedOperation(
+        operationId: String,
+        state: String,
+        completedAt: Long,
+    ): Int
 
     @Query("""
         SELECT id FROM downloads
@@ -307,7 +402,7 @@ interface ObserveSourcesDao {
     suspend fun updateAndCancelWaiting(item: ObserveSourcesItem): List<Long> {
         val waitingIds = getMembershipRetryDownloadIds(item.id)
         update(item)
-        cancelMembershipRetryDownloads(item.id)
+        convergeMembershipRevocation(waitingIds)
         return waitingIds
     }
 
@@ -315,7 +410,7 @@ interface ObserveSourcesDao {
     suspend fun deleteAndCancelWaiting(itemId: Long): List<Long> {
         val waitingIds = getMembershipRetryDownloadIds(itemId)
         deleteRecord(itemId)
-        cancelMembershipRetryDownloads(itemId)
+        convergeMembershipRevocation(waitingIds)
         return waitingIds
     }
 
@@ -323,8 +418,40 @@ interface ObserveSourcesDao {
     suspend fun deleteAllAndCancelWaiting(): List<Long> {
         val waitingIds = getAllMembershipRetryDownloadIds()
         deleteAllRecords()
-        cancelAllMembershipRetryDownloads()
+        convergeMembershipRevocation(waitingIds)
         return waitingIds
+    }
+
+    /**
+     * Keeps source revocation and the linked low-quality terminal transition
+     * in one Room transaction.  If the transaction is interrupted, SQLite
+     * rolls back both the source/download mutation and this convergence, so
+     * process death cannot strand a cancelled membership child without an
+     * owner.
+     */
+    private suspend fun convergeMembershipRevocation(downloadIds: List<Long>) {
+        if (downloadIds.isEmpty()) return
+        cancelMembershipRetryDownloadsByIds(downloadIds)
+        cancelMembershipLinkedItems(
+            downloadIds = downloadIds,
+            updatedAt = System.currentTimeMillis(),
+        )
+        getMembershipRevocationOperationIds(downloadIds)
+            .distinct()
+            .forEach { operationId ->
+                val operation = getMembershipRevocationOperation(operationId)
+                    ?: return@forEach
+                if (operation.stateValue.isTerminal) return@forEach
+                val terminalState = LowQualityRedownloadCompletionPolicy.terminalState(
+                    operation,
+                    getMembershipRevocationItems(operationId),
+                ) ?: return@forEach
+                finishMembershipRevokedOperation(
+                    operationId = operationId,
+                    state = terminalState.name,
+                    completedAt = System.currentTimeMillis(),
+                )
+            }
     }
 
     @Update(onConflict = OnConflictStrategy.REPLACE)

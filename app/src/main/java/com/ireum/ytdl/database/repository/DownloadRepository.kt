@@ -416,8 +416,14 @@ class DownloadRepository(private val database: DBManager) {
     private suspend fun commitRemovalSnapshot(
         snapshot: DownloadRemovalSnapshot,
     ): Set<String> = database.withTransaction {
-        val linkedSnapshot = snapshot.linkedItem ?: return@withTransaction emptySet()
-        val pendingToken = snapshot.pendingUndoToken ?: return@withTransaction emptySet()
+        commitRemovalSnapshotLocked(snapshot)
+    }
+
+    private suspend fun commitRemovalSnapshotLocked(
+        snapshot: DownloadRemovalSnapshot,
+    ): Set<String> {
+        val linkedSnapshot = snapshot.linkedItem ?: return emptySet()
+        val pendingToken = snapshot.pendingUndoToken ?: return emptySet()
         val ledgerDao = database.lowQualityRedownloadDao
         if (
             ledgerDao.commitUndoableLinkedItem(
@@ -427,7 +433,7 @@ class DownloadRepository(private val database: DBManager) {
                 updatedAt = System.currentTimeMillis(),
             ) != 1
         ) {
-            return@withTransaction emptySet()
+            return emptySet()
         }
         val operation = ledgerDao.getOperation(linkedSnapshot.operationId)
         if (operation != null && !operation.stateValue.isTerminal) {
@@ -445,7 +451,7 @@ class DownloadRepository(private val database: DBManager) {
                 ) { "Undoable low-quality removal lost operation ownership" }
             }
         }
-        setOf(linkedSnapshot.operationId)
+        return setOf(linkedSnapshot.operationId)
     }
 
     private suspend fun restoreRemovalSnapshot(
@@ -470,17 +476,29 @@ class DownloadRepository(private val database: DBManager) {
                     // the child is still token-owned, commit only that pending
                     // removal and leave the current parent/siblings untouched.
                     if (childStillBelongsToUndo) {
-                        check(
-                            ledgerDao.commitUndoableLinkedItem(
-                                downloadId = snapshot.download.id,
-                                expectedToken = pendingUndoToken,
-                                reason = REASON_USER_REMOVED,
-                                updatedAt = System.currentTimeMillis(),
-                            ) == 1
-                        ) { "Undoable low-quality removal lost token ownership" }
+                        commitRemovalSnapshotLocked(snapshot)
                     }
                     return@withTransaction null
                 }
+            }
+            val membershipDerived = snapshot.download.observeSourceId > 0L &&
+                snapshot.download.lastIssueCode == DownloadIssueCode.MEMBERSHIP_REQUIRED.name &&
+                snapshot.download.status in setOf(
+                    Status.Queued.name,
+                    Status.WaitingForMembership.name,
+                )
+            if (
+                membershipDerived &&
+                    database.observeSourcesDao.getByIDOrNull(snapshot.download.observeSourceId)
+                        ?.status != ObserveSourcesRepository.SourceStatus.ACTIVE
+            ) {
+                // A source-derived removal Undo cannot recreate retry
+                // authority after source STOP/delete.  Consume the exact
+                // removal token and recompute the current parent instead.
+                if (linkedSnapshot != null && pendingUndoToken != null) {
+                    commitRemovalSnapshotLocked(snapshot)
+                }
+                return@withTransaction null
             }
             val existing = downloadDao.getNullableDownloadById(snapshot.download.id)
             val restoredItem = snapshot.download.copy(
@@ -2337,6 +2355,9 @@ class DownloadRepository(private val database: DBManager) {
             if (tokenId.toString() != parts[2]) return null
             return status
         }
+
+        internal fun isValidPendingCancellationToken(token: String): Boolean =
+            parsePendingCancellationStatus(token) != null
 
         /** Test seam for the first semantic user-stop Room write. */
         @Volatile

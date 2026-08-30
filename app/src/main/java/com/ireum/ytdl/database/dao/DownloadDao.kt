@@ -621,6 +621,10 @@ interface DownloadDao {
             "SELECT 1 FROM sources membershipSource " +
             "WHERE membershipSource.id = downloads.observeSourceId " +
             "AND membershipSource.status = 'ACTIVE')) " +
+            "AND (:status != 'Queued' OR COALESCE(downloads.lastIssueCode, '') != 'MEMBERSHIP_REQUIRED' " +
+            "OR EXISTS (SELECT 1 FROM sources membershipQueuedSource " +
+            "WHERE membershipQueuedSource.id = downloads.observeSourceId " +
+            "AND membershipQueuedSource.status = 'ACTIVE')) " +
             "AND EXISTS (SELECT 1 FROM low_quality_redownload_items pending " +
             "JOIN low_quality_redownload_operations operation " +
             "ON operation.operationId = pending.operationId " +

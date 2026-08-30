@@ -102,9 +102,10 @@ class LowQualityRedownloadManager private constructor(context: Context) {
         } else {
             LowQualityRedownloadRepository(dbManager)
         }
+        val abandonedUndoDebts = recoveryRepository.reconcileAbandonedUndoDebts()
         val operation = recoveryRepository.getActiveOperation()
             ?.takeIf { it.cancelRequested }
-            ?: return false
+        if (operation == null) return abandonedUndoDebts.isNotEmpty()
         completeCancellation(
             operationId = operation.operationId,
             dbManager = dbManager,

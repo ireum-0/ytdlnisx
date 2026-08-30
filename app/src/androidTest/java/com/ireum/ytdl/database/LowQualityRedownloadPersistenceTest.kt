@@ -1,9 +1,11 @@
 package com.ireum.ytdl.database
 
 import android.content.Context
+import androidx.preference.PreferenceManager
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.WorkManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
@@ -1571,6 +1573,303 @@ class LowQualityRedownloadPersistenceTest {
     }
 
     @Test
+    fun membershipPendingUndoCannotRestoreAfterSourceRevocation() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 87, DownloadRepository.Status.Queued)
+        val sourceId = insertActiveMembershipSource(
+            historyId = 87,
+            url = "https://example.com/membership-source-pending-undo-revoked",
+        )
+        database.downloadDao.updateRaw(
+            database.downloadDao.getDownloadById(linkedId).copy(observeSourceId = sourceId)
+        )
+        assertEquals(
+            1,
+            database.observeSourcesDao.parkDownloadForMembership(
+                downloadId = linkedId,
+                sourceId = sourceId,
+                expectedStatus = DownloadRepository.Status.Queued.name,
+                issueCode = DownloadIssueCode.MEMBERSHIP_REQUIRED.name,
+                issueStage = "DOWNLOAD",
+            )
+        )
+        assertEquals(listOf(linkedId), database.observeSourcesDao.requeueMembershipWaiting(sourceId))
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        val downloadRepository = DownloadRepository(database)
+        val pending = downloadRepository.beginUndoableCancellation(linkedId)
+        val token = checkNotNull(pending.pendingToken)
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        val sourceRepository = ObserveSourcesRepository(
+            observeSourcesDao = database.observeSourcesDao,
+            workManager = WorkManager.getInstance(context),
+            sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context),
+        )
+        val stoppedSource = database.observeSourcesDao
+            .getByID(sourceId)
+            .copy(status = ObserveSourcesRepository.SourceStatus.STOPPED)
+        assertEquals(listOf(linkedId), sourceRepository.update(stoppedSource))
+
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getDownloadById(linkedId).status,
+        )
+        val revokedChild = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.CANCELLED, revokedChild.stateValue)
+        assertEquals(LowQualityRedownloadRepository.REASON_USER_CANCELLED, revokedChild.reasonCode)
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+
+        val undo = downloadRepository.undoPendingCancellation(
+            id = linkedId,
+            token = token,
+            originalStatus = DownloadRepository.Status.Queued,
+        )
+        assertNull(undo.restoredStatus)
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getDownloadById(linkedId).status,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertNull(
+            claimDownloadThroughProductionAdmission(
+                context = context,
+                dbManager = database,
+                candidate = database.downloadDao.getDownloadById(linkedId),
+                concurrentDownloadLimit = 1,
+            )
+        )
+
+        // A delete-for-Undo carrier has no Download row for source
+        // revocation to inspect.  Restoration must therefore revalidate the
+        // exact membership source before recreating the row, then commit the
+        // removal token when the source has already been stopped.
+        val removalOperation = repository.createOrReconnect(now = 200)
+        val removalId = linkDownload(
+            removalOperation.operationId,
+            89,
+            DownloadRepository.Status.Queued,
+        )
+        val removalSourceId = insertActiveMembershipSource(
+            historyId = 89,
+            url = "https://example.com/membership-source-pending-removal",
+        )
+        database.downloadDao.updateRaw(
+            database.downloadDao.getDownloadById(removalId).copy(observeSourceId = removalSourceId)
+        )
+        assertEquals(
+            1,
+            database.observeSourcesDao.parkDownloadForMembership(
+                downloadId = removalId,
+                sourceId = removalSourceId,
+                expectedStatus = DownloadRepository.Status.Queued.name,
+                issueCode = DownloadIssueCode.MEMBERSHIP_REQUIRED.name,
+                issueStage = "DOWNLOAD",
+            )
+        )
+        assertEquals(
+            listOf(removalId),
+            database.observeSourcesDao.requeueMembershipWaiting(removalSourceId),
+        )
+        val removalHandle = checkNotNull(downloadRepository.deleteForUndo(removalId))
+        assertNull(database.downloadDao.getNullableDownloadById(removalId))
+        assertEquals(
+            emptyList<Long>(),
+            sourceRepository.update(
+                database.observeSourcesDao
+                    .getByID(removalSourceId)
+                    .copy(status = ObserveSourcesRepository.SourceStatus.STOPPED)
+            ),
+        )
+        assertNull(downloadRepository.restoreUndo(removalHandle.token))
+        assertNull(database.downloadDao.getNullableDownloadById(removalId))
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(removalOperation.operationId).single().stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(removalOperation.operationId)?.stateValue,
+        )
+    }
+
+    @Test
+    fun sourceRevocationConvergesLinkedMembershipCancellation() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val operation = repository.createOrReconnect(now = 100)
+        val linkedId = linkDownload(operation.operationId, 88, DownloadRepository.Status.Queued)
+        val sourceId = insertActiveMembershipSource(
+            historyId = 88,
+            url = "https://example.com/membership-source-revocation",
+        )
+        database.downloadDao.updateRaw(
+            database.downloadDao.getDownloadById(linkedId).copy(observeSourceId = sourceId)
+        )
+        assertEquals(
+            1,
+            database.observeSourcesDao.parkDownloadForMembership(
+                downloadId = linkedId,
+                sourceId = sourceId,
+                expectedStatus = DownloadRepository.Status.Queued.name,
+                issueCode = DownloadIssueCode.MEMBERSHIP_REQUIRED.name,
+                issueStage = "DOWNLOAD",
+            )
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        val sourceRepository = ObserveSourcesRepository(
+            observeSourcesDao = database.observeSourcesDao,
+            workManager = WorkManager.getInstance(context),
+            sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context),
+        )
+        val stoppedSource = database.observeSourcesDao
+            .getByID(sourceId)
+            .copy(status = ObserveSourcesRepository.SourceStatus.STOPPED)
+        assertEquals(listOf(linkedId), sourceRepository.update(stoppedSource))
+
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getDownloadById(linkedId).status,
+        )
+        val cancelledChild = repository.getItems(operation.operationId).single()
+        assertEquals(LowQualityRedownloadItemState.CANCELLED, cancelledChild.stateValue)
+        assertEquals(LowQualityRedownloadRepository.REASON_USER_CANCELLED, cancelledChild.reasonCode)
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+        assertNull(
+            claimDownloadThroughProductionAdmission(
+                context = context,
+                dbManager = database,
+                candidate = database.downloadDao.getDownloadById(linkedId),
+                concurrentDownloadLimit = 1,
+            )
+        )
+
+        // The startup-independent owner consumes both durable Undo carrier
+        // types after the process-local Snackbar authority is gone.  The
+        // ordinary runtime-gated reconciliation remains intentionally
+        // uncalled when readiness is false.
+        val downloadRepository = DownloadRepository(database)
+        val abandonedOperation = repository.createOrReconnect(now = 200)
+        val abandonedCancellationId = linkDownload(
+            abandonedOperation.operationId,
+            90,
+            DownloadRepository.Status.Queued,
+        )
+        val abandonedCancellationToken = checkNotNull(
+            downloadRepository.beginUndoableCancellation(abandonedCancellationId).pendingToken
+        )
+        assertTrue(
+            abandonedCancellationToken.startsWith(
+                DownloadRepository.PENDING_CANCELLATION_TOKEN_PREFIX
+            )
+        )
+
+        val abandonedRemovalId = linkDownload(
+            abandonedOperation.operationId,
+            91,
+            DownloadRepository.Status.Queued,
+        )
+        val abandonedRemovalSourceId = insertActiveMembershipSource(
+            historyId = 91,
+            url = "https://example.com/membership-source-abandoned-removal",
+        )
+        database.downloadDao.updateRaw(
+            database.downloadDao.getDownloadById(abandonedRemovalId)
+                .copy(observeSourceId = abandonedRemovalSourceId)
+        )
+        assertEquals(
+            1,
+            database.observeSourcesDao.parkDownloadForMembership(
+                downloadId = abandonedRemovalId,
+                sourceId = abandonedRemovalSourceId,
+                expectedStatus = DownloadRepository.Status.Queued.name,
+                issueCode = DownloadIssueCode.MEMBERSHIP_REQUIRED.name,
+                issueStage = "DOWNLOAD",
+            )
+        )
+        assertEquals(
+            listOf(abandonedRemovalId),
+            database.observeSourcesDao.requeueMembershipWaiting(abandonedRemovalSourceId),
+        )
+        val abandonedRemovalHandle = checkNotNull(
+            downloadRepository.deleteForUndo(abandonedRemovalId)
+        )
+        assertNull(database.downloadDao.getNullableDownloadById(abandonedRemovalId))
+        // Simulate process death: the in-memory removal snapshot and its live
+        // Undo ownership are gone, while the exact durable child token stays.
+        DownloadRepository.clearLivePendingRemovalTokensForTest()
+
+        var ordinaryReconciliationRan = false
+        runStartupReconciliation(
+            readiness = CompletableDeferred(false),
+            reconcile = { ordinaryReconciliationRan = true },
+            reportFailure = { throw AssertionError("Unexpected ordinary recovery failure", it) },
+        )
+        assertFalse(ordinaryReconciliationRan)
+        var abandonedUndoRecovered = false
+        var abandonedUndoFailure: Exception? = null
+        runStartupCancellationReconciliation(
+            reconcile = {
+                abandonedUndoRecovered =
+                    LowQualityRedownloadManager.get(context)
+                        .reconcileCancellationDebt(database)
+            },
+            reportFailure = { abandonedUndoFailure = it },
+        )
+        assertTrue(abandonedUndoRecovered)
+        assertNull(abandonedUndoFailure)
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(abandonedOperation.operationId)
+                .single { it.downloadId == abandonedCancellationId }
+                .stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(abandonedOperation.operationId)?.stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(abandonedOperation.operationId)
+                .single { it.downloadId == abandonedRemovalId }
+                .stateValue,
+        )
+        assertEquals(
+            DownloadRepository.REASON_USER_REMOVED,
+            repository.getItems(abandonedOperation.operationId)
+                .single { it.downloadId == abandonedRemovalId }
+                .reasonCode,
+        )
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(abandonedOperation.operationId)?.stateValue,
+        )
+        assertNull(database.downloadDao.getNullableDownloadById(abandonedRemovalId))
+        // The local handle is intentionally no longer restorable after the
+        // simulated process death.
+        assertNull(downloadRepository.restoreUndo(abandonedRemovalHandle.token))
+    }
+
+    @Test
     fun queuedBatchCancellationUndoRestoresSameDownloadAndAllowsSuccess() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
         val linkedId = linkDownload(operation.operationId, 81, DownloadRepository.Status.Queued)
@@ -2804,6 +3103,33 @@ class LowQualityRedownloadPersistenceTest {
         )
         return operation
     }
+
+    private suspend fun insertActiveMembershipSource(
+        historyId: Long,
+        url: String,
+    ): Long = database.observeSourcesDao.insert(
+        ObserveSourcesItem(
+            id = 0,
+            name = "Membership source",
+            url = url,
+            downloadItemTemplate = download(historyId),
+            everyNr = 1,
+            everyCategory = ObserveSourcesRepository.EveryCategory.DAY,
+            everyTime = 0,
+            weeklyConfig = null,
+            monthlyConfig = null,
+            status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+            startsTime = 0,
+            endsDate = 0,
+            endsAfterCount = 0,
+            runCount = 0,
+            getOnlyNewUploads = false,
+            retryMissingDownloads = false,
+            ignoredLinks = mutableListOf(),
+            alreadyProcessedLinks = mutableListOf(),
+            syncWithSource = false,
+        )
+    )
 
     private fun download(historyId: Long) = DownloadItem(
         id = 0,
