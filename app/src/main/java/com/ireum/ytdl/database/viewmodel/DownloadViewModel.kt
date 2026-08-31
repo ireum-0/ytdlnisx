@@ -134,6 +134,21 @@ class DownloadViewModel private constructor(
         onCleared()
     }
 
+    /** Transfers exact Undo capabilities when only this Fragment's view disappears. */
+    internal fun abandonPendingUndoCapabilitiesForView() {
+        repository.abandonPendingUndoCapabilitiesForView()
+    }
+
+    /** Gives a recreated Fragment view a distinct process-local Undo owner. */
+    internal fun beginUndoPresentationOwner() {
+        repository.beginUndoPresentationOwner()
+    }
+
+    /** A Snackbar becomes positive UI authority only after its onShown callback. */
+    internal fun acknowledgeUndoPublication(token: String) {
+        repository.acknowledgeUndoPublication(token)
+    }
+
     val allDownloads : Flow<PagingData<DownloadItem>>
     val queuedDownloads : Flow<PagingData<DownloadItemSimple>>
     val activeDownloads : Flow<List<DownloadItem>>

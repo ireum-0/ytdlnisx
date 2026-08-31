@@ -75,6 +75,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
         fragmentView = inflater.inflate(R.layout.fragment_inqueue, container, false)
         notificationUtil = NotificationUtil(requireContext())
         downloadViewModel = ViewModelProvider(this)[DownloadViewModel::class.java]
+        downloadViewModel.beginUndoPresentationOwner()
         ytdlpViewModel = ViewModelProvider(this)[YTDLPViewModel::class.java]
         return fragmentView
     }
@@ -173,15 +174,19 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                                 }
                             }
                         }
-                    if (pendingToken != null) {
-                        snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
-                            override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
-                                if (event != DISMISS_EVENT_ACTION) {
-                                    downloadViewModel.commitPendingCancellation(item.id, pendingToken)
+                        if (pendingToken != null) {
+                            snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
+                                override fun onShown(transientBottomBar: Snackbar?) {
+                                    downloadViewModel.acknowledgeUndoPublication(pendingToken)
                                 }
-                            }
-                        })
-                    }
+
+                                override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
+                                    if (event != DISMISS_EVENT_ACTION) {
+                                        downloadViewModel.commitPendingCancellation(item.id, pendingToken)
+                                    }
+                                }
+                            })
+                        }
                     snackbar.show()
                 }
             }
@@ -571,6 +576,9 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
     }
 
     override fun onDestroyView() {
+        if (::downloadViewModel.isInitialized) {
+            downloadViewModel.abandonPendingUndoCapabilitiesForView()
+        }
         actionMode?.finish()
         queuedRecyclerView.adapter = null
         fragmentView = null

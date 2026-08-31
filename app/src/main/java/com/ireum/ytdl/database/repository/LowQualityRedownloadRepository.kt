@@ -75,7 +75,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
 
     private fun isLivePendingUserCancellation(item: LowQualityRedownloadItem): Boolean =
         isPendingUserCancellation(item) &&
-            DownloadRepository.isLivePendingCancellationToken(item.reasonCode)
+            DownloadRepository.isProcessLocalPendingUndoAuthority(item.reasonCode)
 
     /**
      * Runtime-independent owner for durable Undo carriers whose process-local
@@ -105,13 +105,23 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     internal suspend fun reconcileAbandonedUndoDebt(token: String): Boolean {
         val item = getPendingUndoItemsForRecovery()
             .firstOrNull { it.reasonCode == token }
-            ?: return true
+            ?: return if (DownloadRepository.isUndoAuthorityKnown(token)) {
+                DownloadRepository.resolveRecoveryWithoutCarrier(token)
+            } else {
+                // Process death clears the registry.  With no durable item,
+                // the exact token has already lost its carrier.
+                true
+            }
         if (!isSupportedAbandonedUndoToken(item)) return true
         val resolved = reconcileAbandonedUndoItem(item)
         if (!resolved) return false
         val downloadId = item.downloadId ?: return false
         val current = dao.getItemByDownloadId(downloadId)
-        return !isSamePendingUndoCarrier(current, token)
+        val stillPending = isSamePendingUndoCarrier(current, token)
+        if (!stillPending) {
+            DownloadRepository.resolveRecoveryWithoutCarrier(token)
+        }
+        return !stillPending
     }
 
     private suspend fun reconcileAbandonedUndoItem(
@@ -133,16 +143,14 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                     // token until that owner resolves or abandons it.
                     return false
                 }
-                if (strongerOperationAuthority) {
-                    DownloadRepository(database)
-                        .commitPendingCancellationForRecovery(downloadId, item.reasonCode)
-                } else {
-                    DownloadRepository(database)
-                        .commitPendingCancellation(downloadId, item.reasonCode)
-                }
+                DownloadRepository(database)
+                    .commitPendingCancellationForRecovery(downloadId, item.reasonCode)
             }
             item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX) -> {
-                if (DownloadRepository.isLivePendingRemovalToken(item.reasonCode)) {
+                if (DownloadRepository.isUndoResolverInFlight(item.reasonCode)) {
+                    return false
+                }
+                if (DownloadRepository.isProcessLocalPendingUndoAuthority(item.reasonCode)) {
                     return false
                 }
                 // A pending-removal carrier is expected to have lost its
@@ -923,7 +931,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                     item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
                     item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX)
             ) {
-                if (DownloadRepository.isLivePendingRemovalToken(item.reasonCode)) {
+                if (DownloadRepository.isProcessLocalPendingUndoAuthority(item.reasonCode)) {
                     // A live Snackbar Undo token is still authoritative.  A
                     // routine reconcile must not consume it before the exact
                     // Undo action or explicit commit gets to run.

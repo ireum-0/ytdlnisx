@@ -79,13 +79,18 @@ class LowQualityRedownloadPersistenceTest {
 
     @Before
     fun createDatabase() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
         DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
         DownloadExecutionRecovery.clearForTesting(context)
         DownloadWorkerExecutionOwners.clearForTesting()
         DownloadWorkerProcessOwners.clearForTesting()
         DownloadRepository.pendingCancellationCommitFailureForTesting = null
         DownloadRepository.pendingRemovalCommitFailureForTesting = null
+        DownloadRepository.pendingRemovalRestoreFailureForTesting = null
+        DownloadRepository.pendingRemovalAfterTransactionForTesting = null
+        DownloadRepository.pendingCancellationAfterTransactionForTesting = null
+        DownloadRepository.pendingRemovalResolverClaimedForTesting = null
+        DownloadRepository.pendingCancellationResolverClaimedForTesting = null
         DownloadRepository.terminalizeLinkedChildrenFailureForTesting = null
         LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = null
         LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
@@ -106,6 +111,11 @@ class LowQualityRedownloadPersistenceTest {
         LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = null
         DownloadRepository.pendingCancellationCommitFailureForTesting = null
         DownloadRepository.pendingRemovalCommitFailureForTesting = null
+        DownloadRepository.pendingRemovalRestoreFailureForTesting = null
+        DownloadRepository.pendingRemovalAfterTransactionForTesting = null
+        DownloadRepository.pendingCancellationAfterTransactionForTesting = null
+        DownloadRepository.pendingRemovalResolverClaimedForTesting = null
+        DownloadRepository.pendingCancellationResolverClaimedForTesting = null
         DownloadRepository.terminalizeLinkedChildrenFailureForTesting = null
         DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
         DownloadExecutionRecovery.clearForTesting(ApplicationProvider.getApplicationContext())
@@ -1989,6 +1999,7 @@ class LowQualityRedownloadPersistenceTest {
         val linkedId = linkDownload(operation.operationId, 84, DownloadRepository.Status.Queued)
         val owner = DownloadRepository(database)
         val token = checkNotNull(owner.beginUndoableCancellation(linkedId).pendingToken)
+        owner.acknowledgeUndoPublication(token)
 
         assertTrue(DownloadRepository.isLivePendingCancellationToken(token))
         assertFalse(
@@ -2095,6 +2106,7 @@ class LowQualityRedownloadPersistenceTest {
         val siblingToken = checkNotNull(
             siblingOwner.beginUndoableCancellation(siblingId).pendingToken
         )
+        siblingOwner.acknowledgeUndoPublication(siblingToken)
 
         DownloadRepository.pendingCancellationCommitFailureForTesting = {
             IllegalStateException("injected abandoned cancellation commit failure")
@@ -2200,6 +2212,216 @@ class LowQualityRedownloadPersistenceTest {
     }
 
     @Test
+    fun pendingCancellationViewLossBeforePublicationTransfersExactCarrierToRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 324, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val committed = CompletableDeferred<Unit>()
+        val resume = CompletableDeferred<Unit>()
+        DownloadRepository.pendingCancellationAfterTransactionForTesting = {
+            committed.complete(Unit)
+            resume.await()
+        }
+        val begin = async(Dispatchers.IO) {
+            viewModel.beginUndoableCancellation(downloadId)
+        }
+
+        committed.await()
+        val token = repository.getItems(operation.operationId).single().reasonCode
+        DownloadRepository.pendingCancellationCommitFailureForTesting = {
+            IllegalStateException("injected unpublished cancellation recovery failure")
+        }
+        viewModel.abandonPendingUndoCapabilitiesForView()
+        awaitAbandonedUndoOwnerActive(token)
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(token))
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        resume.complete(Unit)
+        assertEquals(token, begin.await())
+        DownloadRepository.pendingCancellationCommitFailureForTesting = null
+        withTimeout(20_000L) {
+            while (repository.getItems(operation.operationId).single().stateValue !=
+                LowQualityRedownloadItemState.CANCELLED
+            ) {
+                delay(25L)
+            }
+        }
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+    }
+
+    @Test
+    fun pendingRemovalViewLossBeforePublicationDoesNotRestoreDeletedDownload() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 325, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val committed = CompletableDeferred<Unit>()
+        val resume = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalAfterTransactionForTesting = {
+            committed.complete(Unit)
+            resume.await()
+        }
+        val deletion = async(Dispatchers.IO) {
+            viewModel.deleteDownloadForUndo(downloadId)
+        }
+
+        committed.await()
+        val token = repository.getItems(operation.operationId).single().reasonCode
+        LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = {
+            IllegalStateException("injected unpublished removal recovery failure")
+        }
+        viewModel.abandonPendingUndoCapabilitiesForView()
+        awaitAbandonedUndoOwnerActive(token)
+        assertFalse(DownloadRepository.isLivePendingRemovalToken(token))
+        assertNull(database.downloadDao.getNullableDownloadById(downloadId))
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        resume.complete(Unit)
+        assertEquals(downloadId, deletion.await()?.item?.id)
+        LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = null
+        withTimeout(20_000L) {
+            while (repository.getItems(operation.operationId).single().stateValue !=
+                LowQualityRedownloadItemState.CANCELLED
+            ) {
+                delay(25L)
+            }
+        }
+        assertNull(database.downloadDao.getNullableDownloadById(downloadId))
+    }
+
+    @Test
+    fun removalRestoreFailureAfterOwnerClearKeepsRecoveryOwnership() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 326, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val handle = checkNotNull(viewModel.repository.deleteForUndo(downloadId))
+        viewModel.acknowledgeUndoPublication(handle.token.value)
+        val claimed = CompletableDeferred<Unit>()
+        val resume = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalResolverClaimedForTesting = {
+            claimed.complete(Unit)
+            resume.await()
+        }
+        val restore = async(Dispatchers.IO) {
+            runCatching { viewModel.restoreDownloadUndo(handle) }
+        }
+
+        claimed.await()
+        DownloadRepository.pendingRemovalRestoreFailureForTesting = {
+            IllegalStateException("injected resolver restore failure")
+        }
+        LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = {
+            IllegalStateException("injected recovery failure")
+        }
+        viewModel.clearForTesting()
+        awaitAbandonedUndoOwnerActive(handle.token.value)
+        resume.complete(Unit)
+        assertTrue(restore.await().isFailure)
+        assertFalse(DownloadRepository.isLivePendingRemovalToken(handle.token.value))
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+
+        DownloadRepository.pendingRemovalRestoreFailureForTesting = null
+        LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = null
+        withTimeout(20_000L) {
+            while (repository.getItems(operation.operationId).single().stateValue !=
+                LowQualityRedownloadItemState.CANCELLED
+            ) {
+                delay(25L)
+            }
+        }
+        assertNull(database.downloadDao.getNullableDownloadById(downloadId))
+    }
+
+    @Test
+    fun removalRestoreSuccessAfterOwnerClearResolvesExactlyOnce() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 328, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val handle = checkNotNull(viewModel.repository.deleteForUndo(downloadId))
+        viewModel.acknowledgeUndoPublication(handle.token.value)
+        val claimed = CompletableDeferred<Unit>()
+        val resume = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalResolverClaimedForTesting = {
+            claimed.complete(Unit)
+            resume.await()
+        }
+        val restore = async(Dispatchers.IO) {
+            viewModel.restoreDownloadUndo(handle)
+        }
+
+        claimed.await()
+        viewModel.clearForTesting()
+        awaitAbandonedUndoOwnerActive(handle.token.value)
+        resume.complete(Unit)
+        val restoredId = restore.await()
+        assertTrue(restoredId != null)
+        withTimeout(20_000L) {
+            while (repository.getItems(operation.operationId).single().stateValue !=
+                LowQualityRedownloadItemState.QUEUED
+            ) {
+                delay(25L)
+            }
+        }
+        assertFalse(DownloadRepository.isLivePendingRemovalToken(handle.token.value))
+        assertFalse(LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(handle.token.value))
+        assertTrue(database.downloadDao.getNullableDownloadById(restoredId!!) != null)
+    }
+
+    @Test
+    fun removalCommitSuccessAfterOwnerClearResolvesExactlyOnce() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 327, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val handle = checkNotNull(viewModel.repository.deleteForUndo(downloadId))
+        viewModel.acknowledgeUndoPublication(handle.token.value)
+        val claimed = CompletableDeferred<Unit>()
+        val resume = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalResolverClaimedForTesting = {
+            claimed.complete(Unit)
+            resume.await()
+        }
+        val commit = async(Dispatchers.IO) {
+            viewModel.commitDownloadUndo(handle)
+        }
+
+        claimed.await()
+        viewModel.clearForTesting()
+        awaitAbandonedUndoOwnerActive(handle.token.value)
+        resume.complete(Unit)
+        commit.await()
+        withTimeout(20_000L) {
+            while (repository.getItems(operation.operationId).single().stateValue !=
+                LowQualityRedownloadItemState.CANCELLED
+            ) {
+                delay(25L)
+            }
+        }
+        assertFalse(DownloadRepository.isLivePendingRemovalToken(handle.token.value))
+        assertFalse(LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(handle.token.value))
+        assertNull(database.downloadDao.getNullableDownloadById(downloadId))
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+    }
+
+    @Test
     fun strongerSaveRollbackPreservesExactLiveUndoOwner() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
         val downloadId = linkDownload(
@@ -2209,6 +2431,7 @@ class LowQualityRedownloadPersistenceTest {
         )
         val owner = DownloadRepository(database)
         val token = checkNotNull(owner.beginUndoableCancellation(downloadId).pendingToken)
+        owner.acknowledgeUndoPublication(token)
         DownloadRepository.terminalizeLinkedChildrenFailureForTesting = {
             IllegalStateException("injected stronger-transition rollback")
         }
@@ -2279,6 +2502,7 @@ class LowQualityRedownloadPersistenceTest {
         )
         val owner = DownloadRepository(database)
         val token = checkNotNull(owner.beginUndoableCancellation(downloadId).pendingToken)
+        owner.acknowledgeUndoPublication(token)
         DownloadRepository.terminalizeLinkedChildrenFailureForTesting = {
             IllegalStateException("injected remove rollback")
         }
@@ -2355,6 +2579,7 @@ class LowQualityRedownloadPersistenceTest {
         val secondOwner = DownloadRepository(database)
         val firstToken = checkNotNull(firstOwner.beginUndoableCancellation(firstId).pendingToken)
         val secondToken = checkNotNull(secondOwner.beginUndoableCancellation(secondId).pendingToken)
+        secondOwner.acknowledgeUndoPublication(secondToken)
 
         firstOwner.abandonPendingUndoSnapshots()
         assertFalse(DownloadRepository.isLivePendingCancellationToken(firstToken))

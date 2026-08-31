@@ -77,6 +77,7 @@ class SavedDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickLis
         fragmentView = inflater.inflate(R.layout.generic_list, container, false)
         activity = getActivity()
         downloadViewModel = ViewModelProvider(requireActivity())[DownloadViewModel::class.java]
+        downloadViewModel.beginUndoPresentationOwner()
         ytdlpViewModel = ViewModelProvider(requireActivity())[YTDLPViewModel::class.java]
         preferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
         return fragmentView
@@ -155,6 +156,13 @@ class SavedDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickLis
             count.text = "$it ${getString(R.string.items)}"
             noResults.visibility = if (it == 0) View.VISIBLE else View.GONE
         }
+    }
+
+    override fun onDestroyView() {
+        if (::downloadViewModel.isInitialized) {
+            downloadViewModel.abandonPendingUndoCapabilitiesForView()
+        }
+        super.onDestroyView()
     }
 
     override fun onActionButtonClick(itemID: Long) {
@@ -391,7 +399,7 @@ class SavedDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickLis
                 }
                 when (direction) {
                     ItemTouchHelper.LEFT -> {
-                        lifecycleScope.launch {
+                        viewLifecycleOwner.lifecycleScope.launch {
                             val undoHandle = withContext(Dispatchers.IO) {
                                 downloadViewModel.deleteDownloadForUndo(itemID)
                             } ?: return@launch
@@ -401,6 +409,10 @@ class SavedDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClickLis
                                     downloadViewModel.restoreDownloadUndoFromUi(undoHandle)
                                 }
                             snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
+                                override fun onShown(transientBottomBar: Snackbar?) {
+                                    downloadViewModel.acknowledgeUndoPublication(undoHandle.token.value)
+                                }
+
                                 override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
                                     if (event != DISMISS_EVENT_ACTION) {
                                         downloadViewModel.commitDownloadUndoFromUi(undoHandle)
