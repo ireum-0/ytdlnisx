@@ -14,6 +14,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import com.google.gson.Gson
 import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
@@ -26,6 +27,8 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
+import com.ireum.ytdl.database.models.PendingUndoCarrier
+import com.ireum.ytdl.database.models.PendingUndoResolutionIntent
 import com.ireum.ytdl.util.Extensions.toListString
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
@@ -64,6 +67,7 @@ class DownloadExecutionOwnershipLostException(
 
 class DownloadRepository(private val database: DBManager) {
     private val downloadDao: DownloadDao = database.downloadDao
+    private val undoCarrierGson = Gson()
     val allDownloads : Pager<Int, DownloadItem> = Pager(
         config = PagingConfig(pageSize = 20, initialLoadSize = 20, prefetchDistance = 1),
         pagingSourceFactory = {downloadDao.getAllDownloads()}
@@ -184,8 +188,11 @@ class DownloadRepository(private val database: DBManager) {
     private enum class UndoAuthorityState {
         PREPARED_UNPUBLISHED,
         LIVE_UI,
-        RESOLVING,
+        RESOLVING_RESTORE,
+        RESOLVING_COMMIT,
         RECOVERY_OWNED,
+        RECOVERY_RESTORE_OWNED,
+        RECOVERY_COMMIT_OWNED,
         RESOLVED,
     }
 
@@ -196,6 +203,8 @@ class DownloadRepository(private val database: DBManager) {
         val state: UndoAuthorityState,
         val durableCarrierCommitted: Boolean = false,
         val resolverGeneration: Long? = null,
+        val resolutionIntent: PendingUndoResolutionIntent? = null,
+        val resolverClaimed: Boolean = false,
     )
 
     private data class UndoResolverClaim(
@@ -205,6 +214,7 @@ class DownloadRepository(private val database: DBManager) {
         val resolverGeneration: Long,
         val kind: UndoAuthorityKind,
         val recovery: Boolean,
+        val intent: PendingUndoResolutionIntent,
     )
 
     /**
@@ -294,7 +304,7 @@ class DownloadRepository(private val database: DBManager) {
         }
         var durableCarrierCommitted = false
         try {
-            val result = removeDownloadWithSnapshot(id, token.value)
+            val result = removeDownloadWithSnapshot(id, token.value, ownerId)
             val snapshot = result?.snapshot
             if (snapshot == null) {
                 resolveUndoWithoutCarrier(token.value)
@@ -336,11 +346,13 @@ class DownloadRepository(private val database: DBManager) {
     private suspend fun removeDownloadWithSnapshot(
         id: Long,
         pendingUndoToken: String,
+        ownerId: String,
     ): DownloadRemovalResult? {
         return removeDownloadTransaction(
             id = id,
             captureUndo = true,
             pendingUndoToken = pendingUndoToken,
+            undoOwnerId = ownerId,
         )
     }
 
@@ -348,6 +360,7 @@ class DownloadRepository(private val database: DBManager) {
         id: Long,
         captureUndo: Boolean,
         pendingUndoToken: String? = null,
+        undoOwnerId: String? = null,
     ): DownloadRemovalResult? {
         val pendingTokensToRelease = linkedSetOf<String>()
         val result = database.withTransaction {
@@ -390,10 +403,28 @@ class DownloadRepository(private val database: DBManager) {
                     download = item,
                     barrier = barrier,
                     linkedItem = linkedItem,
-                    pendingUndoToken = pendingLinkedItem,
+                    // Keep the carrier token even when this Download is not
+                    // linked to the low-quality ledger.  The linked-child
+                    // restore checks below still require linkedItem, while
+                    // terminal cleanup can delete this exact carrier.
+                    pendingUndoToken = if (captureUndo) pendingUndoToken else pendingLinkedItem,
+                    ownerId = undoOwnerId.orEmpty(),
                 )
             } else {
                 null
+            }
+            if (captureUndo && pendingUndoToken != null && snapshot != null) {
+                database.pendingUndoCarrierDao.insert(
+                    PendingUndoCarrier(
+                        token = pendingUndoToken,
+                        kind = PendingUndoCarrier.REMOVAL_KIND,
+                        ownerId = undoOwnerId.orEmpty(),
+                        authorityGeneration = undoAuthorityGeneration(pendingUndoToken),
+                        snapshotJson = undoCarrierGson.toJson(snapshot),
+                        createdAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                )
             }
             database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
             downloadDao.delete(id)
@@ -424,16 +455,42 @@ class DownloadRepository(private val database: DBManager) {
         kotlin.runCatching { downloadDao.updateWithoutUpsert(item) }
     }
 
+    /**
+     * Direct/suspending callers select the semantic intent before the
+     * resolver is allowed to run.  UI callers use the corresponding
+     * accept* method synchronously at the Snackbar callback boundary and then
+     * invoke the resolver from a coroutine.
+     */
     suspend fun restoreUndo(token: DownloadUndoToken): Long? {
-        val claim = claimUndoResolver(token.value, UndoAuthorityKind.REMOVAL) ?: return null
-        val snapshot = pendingRemovalSnapshot(token.value) ?: run {
+        if (!acceptRemovalUndoResolution(token.value, PendingUndoResolutionIntent.RESTORE)) {
+            return null
+        }
+        return resolveSelectedRemovalUndo(token.value, PendingUndoResolutionIntent.RESTORE)
+    }
+
+    /** Commits a pending Undo removal when its Snackbar is dismissed. */
+    suspend fun commitUndo(token: DownloadUndoToken): Set<String> {
+        if (!acceptRemovalUndoResolution(token.value, PendingUndoResolutionIntent.COMMIT)) {
+            return emptySet()
+        }
+        return resolveSelectedRemovalCommitUndo(token.value)
+    }
+
+    /** Retries a durably selected removal RESTORE intent after owner loss. */
+    internal suspend fun restoreUndoForRecovery(token: String): Long? {
+        val claim = claimRecoveryResolver(
+            token,
+            UndoAuthorityKind.REMOVAL,
+            PendingUndoResolutionIntent.RESTORE,
+        ) ?: return null
+        val snapshot = pendingRemovalSnapshot(token) ?: loadPersistedRemovalSnapshot(token) ?: run {
             finishUndoResolverFailure(claim)
             return null
         }
         return try {
             pendingRemovalResolverClaimedForTesting?.invoke()
             val restoredId = restoreRemovalSnapshot(snapshot)
-            if (restoredId != null || !hasPendingUndoCarrier(token.value)) {
+            if (restoredId != null || !hasPendingUndoCarrier(token)) {
                 finishUndoResolverSuccess(claim)
             } else {
                 finishUndoResolverFailure(claim)
@@ -445,17 +502,101 @@ class DownloadRepository(private val database: DBManager) {
         }
     }
 
-    /** Commits a pending Undo removal when its Snackbar is dismissed. */
-    suspend fun commitUndo(token: DownloadUndoToken): Set<String> {
-        val claim = claimUndoResolver(token.value, UndoAuthorityKind.REMOVAL) ?: return emptySet()
-        val snapshot = pendingRemovalSnapshot(token.value) ?: run {
+    /** Retries a durably selected removal COMMIT intent after owner loss. */
+    internal suspend fun commitUndoForRecovery(token: String): Set<String> {
+        val claim = claimRecoveryResolver(
+            token,
+            UndoAuthorityKind.REMOVAL,
+            PendingUndoResolutionIntent.COMMIT,
+        ) ?: return emptySet()
+        val snapshot = pendingRemovalSnapshot(token) ?: loadPersistedRemovalSnapshot(token) ?: run {
+            finishUndoResolverFailure(claim)
+            return emptySet()
+        }
+        return try {
+            val affectedOperationIds = commitRemovalSnapshot(snapshot)
+            if (!hasPendingUndoCarrier(token)) {
+                finishUndoResolverSuccess(claim)
+            } else {
+                finishUndoResolverFailure(claim)
+            }
+            affectedOperationIds
+        } catch (error: Exception) {
+            finishUndoResolverFailure(claim)
+            throw error
+        }
+    }
+
+    /** Synchronously records the removal Snackbar's selected intent. */
+    internal suspend fun acceptRemovalUndoResolution(
+        token: String,
+        intent: PendingUndoResolutionIntent,
+    ): Boolean = acceptUndoResolution(token, UndoAuthorityKind.REMOVAL, intent)
+
+    /** Synchronously records the cancellation Snackbar's selected intent. */
+    internal suspend fun acceptCancellationUndoResolution(
+        token: String,
+        intent: PendingUndoResolutionIntent,
+    ): Boolean = acceptUndoResolution(token, UndoAuthorityKind.CANCELLATION, intent)
+
+    private suspend fun resolveSelectedRemovalUndo(
+        token: String,
+        intent: PendingUndoResolutionIntent,
+    ): Long? {
+        try {
+            pendingRemovalBeforeResolverClaimedForTesting?.invoke()
+        } catch (error: Exception) {
+            transferUndoTokenToRecovery(token)
+            scheduleRecoveryForUndoToken(token)
+            throw error
+        }
+        val claim = claimSelectedUndoResolver(
+            token = token,
+            kind = UndoAuthorityKind.REMOVAL,
+            intent = intent,
+        ) ?: return null
+        val snapshot = pendingRemovalSnapshot(token) ?: loadPersistedRemovalSnapshot(token) ?: run {
+            finishUndoResolverFailure(claim)
+            return null
+        }
+        return try {
+            pendingRemovalResolverClaimedForTesting?.invoke()
+            val restoredId = if (intent == PendingUndoResolutionIntent.RESTORE) {
+                restoreRemovalSnapshot(snapshot)
+            } else {
+                commitRemovalSnapshot(snapshot)
+                null
+            }
+            if (restoredId != null) {
+                pendingRemovalResolvedBeforeCleanupForTesting?.invoke()
+            }
+            if (restoredId != null || !hasPendingUndoCarrier(token)) {
+                finishUndoResolverSuccess(claim)
+            } else {
+                finishUndoResolverFailure(claim)
+            }
+            restoredId
+        } catch (error: Exception) {
+            finishUndoResolverFailure(claim)
+            throw error
+        }
+    }
+
+    private suspend fun resolveSelectedRemovalCommitUndo(token: String): Set<String> {
+        val intent = PendingUndoResolutionIntent.COMMIT
+        val claim = claimSelectedUndoResolver(
+            token = token,
+            kind = UndoAuthorityKind.REMOVAL,
+            intent = intent,
+        ) ?: return emptySet()
+        val snapshot = pendingRemovalSnapshot(token) ?: loadPersistedRemovalSnapshot(token) ?: run {
             finishUndoResolverFailure(claim)
             return emptySet()
         }
         return try {
             pendingRemovalResolverClaimedForTesting?.invoke()
             val affectedOperationIds = commitRemovalSnapshot(snapshot)
-            if (!hasPendingUndoCarrier(token.value)) {
+            if (!hasPendingUndoCarrier(token)) {
                 finishUndoResolverSuccess(claim)
             } else {
                 finishUndoResolverFailure(claim)
@@ -532,6 +673,15 @@ class DownloadRepository(private val database: DBManager) {
         )
     }
 
+    /**
+     * Closes the producer-to-consumer handoff when a post-commit producer
+     * step fails before a Snackbar/handle can receive the exact token.
+     */
+    internal fun abandonUndoCapabilityAfterProducerFailure(token: String) {
+        transferUndoTokenToRecovery(token)
+        scheduleRecoveryForUndoToken(token)
+    }
+
     private fun abandonCurrentUndoOwner(rotateForFutureUi: Boolean): List<String> {
         val ownerId: String
         val tokens: List<String>
@@ -559,7 +709,9 @@ class DownloadRepository(private val database: DBManager) {
                         authority.state != UndoAuthorityState.RESOLVED
                 ) {
                     undoAuthorities[token] = authority.copy(
-                        state = UndoAuthorityState.RECOVERY_OWNED,
+                        state = recoveryStateFor(authority.resolutionIntent),
+                        resolverGeneration = null,
+                        resolverClaimed = false,
                     )
                 }
             }
@@ -631,7 +783,11 @@ class DownloadRepository(private val database: DBManager) {
         synchronized(undoAuthorityLock) {
             val authority = undoAuthorities[token] ?: return
             if (authority.state != UndoAuthorityState.RESOLVED) {
-                undoAuthorities[token] = authority.copy(state = UndoAuthorityState.RECOVERY_OWNED)
+                undoAuthorities[token] = authority.copy(
+                    state = recoveryStateFor(authority.resolutionIntent),
+                    resolverGeneration = null,
+                    resolverClaimed = false,
+                )
             }
         }
     }
@@ -654,46 +810,219 @@ class DownloadRepository(private val database: DBManager) {
     private fun pendingRemovalSnapshot(token: String): DownloadRemovalSnapshot? =
         synchronized(undoAuthorityLock) { pendingRemovalSnapshots[token] }
 
-    private fun claimUndoResolver(
+    private val UndoAuthorityKind.carrierKind: String
+        get() = when (this) {
+            UndoAuthorityKind.CANCELLATION -> PendingUndoCarrier.CANCELLATION_KIND
+            UndoAuthorityKind.REMOVAL -> PendingUndoCarrier.REMOVAL_KIND
+        }
+
+    private val PendingUndoResolutionIntent.carrierValue: String
+        get() = when (this) {
+            PendingUndoResolutionIntent.RESTORE -> PendingUndoCarrier.RESTORE_INTENT
+            PendingUndoResolutionIntent.COMMIT -> PendingUndoCarrier.COMMIT_INTENT
+        }
+
+    private fun parseUndoResolutionIntent(value: String): PendingUndoResolutionIntent? =
+        when (value) {
+            PendingUndoCarrier.RESTORE_INTENT -> PendingUndoResolutionIntent.RESTORE
+            PendingUndoCarrier.COMMIT_INTENT -> PendingUndoResolutionIntent.COMMIT
+            else -> null
+        }
+
+    private fun resolvingStateFor(intent: PendingUndoResolutionIntent): UndoAuthorityState =
+        when (intent) {
+            PendingUndoResolutionIntent.RESTORE -> UndoAuthorityState.RESOLVING_RESTORE
+            PendingUndoResolutionIntent.COMMIT -> UndoAuthorityState.RESOLVING_COMMIT
+        }
+
+    private fun recoveryStateFor(intent: PendingUndoResolutionIntent?): UndoAuthorityState =
+        when (intent) {
+            PendingUndoResolutionIntent.RESTORE -> UndoAuthorityState.RECOVERY_RESTORE_OWNED
+            PendingUndoResolutionIntent.COMMIT -> UndoAuthorityState.RECOVERY_COMMIT_OWNED
+            null -> UndoAuthorityState.RECOVERY_OWNED
+        }
+
+    private suspend fun loadPersistedRemovalSnapshot(
+        token: String,
+    ): DownloadRemovalSnapshot? {
+        val json = database.pendingUndoCarrierDao.get(token)
+            ?.takeIf { it.kind == PendingUndoCarrier.REMOVAL_KIND }
+            ?.snapshotJson
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        return runCatching {
+            undoCarrierGson.fromJson(json, DownloadRemovalSnapshot::class.java)
+        }.getOrNull()
+    }
+
+    internal suspend fun pendingUndoResolutionIntent(
+        token: String,
+    ): PendingUndoResolutionIntent? {
+        val persisted = database.pendingUndoCarrierDao.get(token)
+            ?.resolutionIntent
+            ?.let(::parseUndoResolutionIntent)
+        if (persisted != null) return persisted
+
+        // The UI action is accepted only after the process-local state has
+        // moved to an intent-specific resolver state. If the durable intent
+        // write itself fails transiently, same-process recovery must retain
+        // that exact choice instead of defaulting to COMMIT. Once the
+        // process dies, only a durably recorded intent is considered
+        // accepted, so this fallback cannot manufacture post-death authority.
+        return synchronized(undoAuthorityLock) {
+            undoAuthorities[token]?.resolutionIntent
+        }
+    }
+
+    internal suspend fun pendingUndoCarrier(
+        token: String,
+    ): PendingUndoCarrier? = database.pendingUndoCarrierDao.get(token)
+
+    private suspend fun acceptUndoResolutionCarrier(
         token: String,
         kind: UndoAuthorityKind,
-    ): UndoResolverClaim? {
-        val ownerId = currentUndoOwnerId()
-        synchronized(undoAuthorityLock) {
-            val authority = undoAuthorities[token] ?: return null
+        selected: UndoAuthority,
+        intent: PendingUndoResolutionIntent,
+    ): Int = database.withTransaction {
+        val carrier = database.pendingUndoCarrierDao.get(token)
+        if (carrier == null) {
+            val replacement = when (kind) {
+                UndoAuthorityKind.CANCELLATION -> {
+                    if (
+                        database.lowQualityRedownloadDao.getPendingUndoItems()
+                            .none { it.reasonCode == token }
+                    ) {
+                        null
+                    } else {
+                        PendingUndoCarrier(
+                            token = token,
+                            kind = PendingUndoCarrier.CANCELLATION_KIND,
+                            ownerId = selected.ownerId,
+                            authorityGeneration = selected.generation,
+                            createdAt = System.currentTimeMillis(),
+                            updatedAt = System.currentTimeMillis(),
+                        )
+                    }
+                }
+                UndoAuthorityKind.REMOVAL -> {
+                    val snapshot = pendingRemovalSnapshot(token) ?: return@withTransaction 0
+                    PendingUndoCarrier(
+                        token = token,
+                        kind = PendingUndoCarrier.REMOVAL_KIND,
+                        ownerId = selected.ownerId,
+                        authorityGeneration = selected.generation,
+                        snapshotJson = undoCarrierGson.toJson(snapshot),
+                        createdAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                }
+            }
+            if (replacement != null) {
+                database.pendingUndoCarrierDao.insert(replacement)
+            }
+        }
+        database.pendingUndoCarrierDao.recordResolution(
+            token = token,
+            kind = kind.carrierKind,
+            intent = intent.carrierValue,
+            resolverGeneration = checkNotNull(selected.resolverGeneration),
+            updatedAt = System.currentTimeMillis(),
+        )
+    }
+
+    private suspend fun acceptUndoResolution(
+        token: String,
+        kind: UndoAuthorityKind,
+        intent: PendingUndoResolutionIntent,
+    ): Boolean {
+        val selected = synchronized(undoAuthorityLock) {
+            val ownerId = currentUndoOwnerId()
+            val authority = undoAuthorities[token] ?: return@synchronized null
             if (
                 authority.kind != kind ||
                     authority.ownerId != ownerId ||
                     abandonedUndoOwners.contains(ownerId) ||
-                    !authority.durableCarrierCommitted ||
-                    authority.state !in setOf(
-                        UndoAuthorityState.PREPARED_UNPUBLISHED,
-                        UndoAuthorityState.LIVE_UI,
-                    ) ||
-                    (kind == UndoAuthorityKind.REMOVAL &&
-                        !pendingRemovalSnapshots.containsKey(token))
+                    !authority.durableCarrierCommitted
             ) {
-                return null
+                return@synchronized null
             }
-            val resolverGeneration = nextUndoGeneration.incrementAndGet()
-            undoAuthorities[token] = authority.copy(
-                state = UndoAuthorityState.RESOLVING,
-                resolverGeneration = resolverGeneration,
-            )
-            return UndoResolverClaim(
+            when (authority.state) {
+                UndoAuthorityState.PREPARED_UNPUBLISHED,
+                UndoAuthorityState.LIVE_UI -> {
+                    val resolverGeneration = nextUndoGeneration.incrementAndGet()
+                    val next = authority.copy(
+                        state = resolvingStateFor(intent),
+                        resolverGeneration = resolverGeneration,
+                        resolutionIntent = intent,
+                        resolverClaimed = false,
+                    )
+                    undoAuthorities[token] = next
+                    next
+                }
+                resolvingStateFor(intent) -> {
+                    if (authority.resolverClaimed) null else authority
+                }
+                else -> null
+            }
+        } ?: return false
+
+        return try {
+            val recorded = acceptUndoResolutionCarrier(
                 token = token,
-                ownerId = ownerId,
-                generation = authority.generation,
-                resolverGeneration = resolverGeneration,
                 kind = kind,
-                recovery = false,
-            )
+                selected = selected,
+                intent = intent,
+            ) == 1
+            if (!recorded) {
+                transferUndoTokenToRecovery(token)
+                scheduleRecoveryForUndoToken(token)
+            }
+            recorded
+        } catch (error: Exception) {
+            // The action is never downgraded to an implicit COMMIT after the
+            // UI has selected it.  Keep the exact selected intent under the
+            // process-local recovery owner while the durable write retries.
+            transferUndoTokenToRecovery(token)
+            scheduleRecoveryForUndoToken(token)
+            throw error
         }
+    }
+
+    private fun claimSelectedUndoResolver(
+        token: String,
+        kind: UndoAuthorityKind,
+        intent: PendingUndoResolutionIntent,
+    ): UndoResolverClaim? = synchronized(undoAuthorityLock) {
+        val ownerId = currentUndoOwnerId()
+        val authority = undoAuthorities[token] ?: return@synchronized null
+        if (
+            authority.kind != kind ||
+                authority.ownerId != ownerId ||
+                abandonedUndoOwners.contains(ownerId) ||
+                !authority.durableCarrierCommitted ||
+                authority.state != resolvingStateFor(intent) ||
+                authority.resolutionIntent != intent ||
+                authority.resolverGeneration == null ||
+                authority.resolverClaimed
+        ) {
+            return@synchronized null
+        }
+        undoAuthorities[token] = authority.copy(resolverClaimed = true)
+        UndoResolverClaim(
+            token = token,
+            ownerId = ownerId,
+            generation = authority.generation,
+            resolverGeneration = checkNotNull(authority.resolverGeneration),
+            kind = kind,
+            recovery = false,
+            intent = intent,
+        )
     }
 
     private fun claimRecoveryResolver(
         token: String,
         kind: UndoAuthorityKind,
+        intent: PendingUndoResolutionIntent,
     ): UndoResolverClaim? = synchronized(undoAuthorityLock) {
         val authority = undoAuthorities[token]
         if (authority == null) {
@@ -703,9 +1032,11 @@ class DownloadRepository(private val database: DBManager) {
                 ownerId = "",
                 kind = kind,
                 generation = generation,
-                state = UndoAuthorityState.RESOLVING,
+                state = resolvingStateFor(intent),
                 durableCarrierCommitted = true,
                 resolverGeneration = resolverGeneration,
+                resolutionIntent = intent,
+                resolverClaimed = true,
             )
             return@synchronized UndoResolverClaim(
                 token = token,
@@ -714,20 +1045,30 @@ class DownloadRepository(private val database: DBManager) {
                 resolverGeneration = resolverGeneration,
                 kind = kind,
                 recovery = true,
+                intent = intent,
             )
         }
+        val effectiveIntent = authority.resolutionIntent ?: intent
         if (
             authority.kind != kind ||
                 !authority.durableCarrierCommitted ||
-                authority.resolverGeneration != null
-                || authority.state == UndoAuthorityState.RESOLVED
+                authority.resolverGeneration != null ||
+                authority.state == UndoAuthorityState.RESOLVED ||
+                effectiveIntent != intent ||
+                authority.state !in setOf(
+                    UndoAuthorityState.RECOVERY_OWNED,
+                    UndoAuthorityState.RECOVERY_RESTORE_OWNED,
+                    UndoAuthorityState.RECOVERY_COMMIT_OWNED,
+                )
         ) {
             return@synchronized null
         }
         val resolverGeneration = nextUndoGeneration.incrementAndGet()
         undoAuthorities[token] = authority.copy(
-            state = UndoAuthorityState.RESOLVING,
+            state = resolvingStateFor(intent),
             resolverGeneration = resolverGeneration,
+            resolutionIntent = intent,
+            resolverClaimed = true,
         )
         UndoResolverClaim(
             token = token,
@@ -736,6 +1077,7 @@ class DownloadRepository(private val database: DBManager) {
             resolverGeneration = resolverGeneration,
             kind = kind,
             recovery = true,
+            intent = intent,
         )
     }
 
@@ -753,6 +1095,7 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     private fun finishUndoResolverFailure(claim: UndoResolverClaim) {
+        var shouldScheduleRecovery = false
         synchronized(undoAuthorityLock) {
             val authority = undoAuthorities[claim.token] ?: return
             if (
@@ -762,22 +1105,40 @@ class DownloadRepository(private val database: DBManager) {
                 return
             }
             val nextState = if (
-                claim.recovery || authority.state == UndoAuthorityState.RECOVERY_OWNED
+                claim.recovery ||
+                    authority.state in setOf(
+                        UndoAuthorityState.RECOVERY_OWNED,
+                        UndoAuthorityState.RECOVERY_RESTORE_OWNED,
+                        UndoAuthorityState.RECOVERY_COMMIT_OWNED,
+                    )
             ) {
-                UndoAuthorityState.RECOVERY_OWNED
+                recoveryStateFor(claim.intent)
             } else {
-                UndoAuthorityState.LIVE_UI
+                // A selected Snackbar capability has already been consumed;
+                // it is never recreated as LIVE_UI after resolver failure.
+                recoveryStateFor(claim.intent)
             }
             undoAuthorities[claim.token] = authority.copy(
                 state = nextState,
                 resolverGeneration = null,
+                resolutionIntent = claim.intent,
+                resolverClaimed = false,
             )
+            shouldScheduleRecovery = true
+        }
+        if (shouldScheduleRecovery) {
+            // A selected Snackbar has already been consumed. Keep the exact
+            // intent moving under the token-scoped recovery owner even when
+            // the failure came from the UI resolver rather than an existing
+            // recovery job.
+            scheduleRecoveryForUndoToken(claim.token)
         }
     }
 
     private suspend fun hasPendingUndoCarrier(token: String): Boolean =
-        database.lowQualityRedownloadDao.getPendingUndoItems()
-            .any { it.reasonCode == token }
+        database.pendingUndoCarrierDao.get(token) != null ||
+            database.lowQualityRedownloadDao.getPendingUndoItems()
+                .any { it.reasonCode == token }
 
     private suspend fun commitRemovalSnapshot(
         snapshot: DownloadRemovalSnapshot,
@@ -788,8 +1149,12 @@ class DownloadRepository(private val database: DBManager) {
     private suspend fun commitRemovalSnapshotLocked(
         snapshot: DownloadRemovalSnapshot,
     ): Set<String> {
-        val linkedSnapshot = snapshot.linkedItem ?: return emptySet()
         val pendingToken = snapshot.pendingUndoToken ?: return emptySet()
+        val linkedSnapshot = snapshot.linkedItem
+        if (linkedSnapshot == null) {
+            database.pendingUndoCarrierDao.delete(pendingToken)
+            return emptySet()
+        }
         val ledgerDao = database.lowQualityRedownloadDao
         pendingRemovalCommitFailureForTesting?.invoke()?.let { throw it }
         if (
@@ -800,6 +1165,10 @@ class DownloadRepository(private val database: DBManager) {
                 updatedAt = System.currentTimeMillis(),
             ) != 1
         ) {
+            // The exact pending child was already consumed by a stronger
+            // authority or a different generation. Do not retain an
+            // unrecoverable removal carrier for a row it can no longer own.
+            database.pendingUndoCarrierDao.delete(pendingToken)
             return emptySet()
         }
         val operation = ledgerDao.getOperation(linkedSnapshot.operationId)
@@ -818,16 +1187,28 @@ class DownloadRepository(private val database: DBManager) {
                 ) { "Undoable low-quality removal lost operation ownership" }
             }
         }
+        database.pendingUndoCarrierDao.delete(pendingToken)
         return setOf(linkedSnapshot.operationId)
     }
 
     private suspend fun restoreRemovalSnapshot(
         snapshot: DownloadRemovalSnapshot,
     ): Long? = database.withTransaction {
+        // A resolver successor may race the original resolver after the
+        // durable restore transaction has already consumed this carrier.  The
+        // exact carrier is the once-only restore claim; without it, an
+        // unlinked removal could insert a second Download from the retained
+        // immutable snapshot.
+        val pendingUndoToken = snapshot.pendingUndoToken
+        if (
+            pendingUndoToken != null &&
+                database.pendingUndoCarrierDao.get(pendingUndoToken) == null
+        ) {
+            return@withTransaction null
+        }
         pendingRemovalRestoreFailureForTesting?.invoke()?.let { throw it }
         if (snapshot.barrier == null) {
             val linkedSnapshot = snapshot.linkedItem
-            val pendingUndoToken = snapshot.pendingUndoToken
             val ledgerDao = database.lowQualityRedownloadDao
             val operation = linkedSnapshot?.let { ledgerDao.getOperation(it.operationId) }
             if (linkedSnapshot != null && pendingUndoToken != null) {
@@ -845,6 +1226,12 @@ class DownloadRepository(private val database: DBManager) {
                     // removal and leave the current parent/siblings untouched.
                     if (childStillBelongsToUndo) {
                         commitRemovalSnapshotLocked(snapshot)
+                    } else {
+                        // A stronger action or a different generation already
+                        // consumed the child. The immutable removal carrier is
+                        // no longer actionable, so consume only this exact
+                        // token rather than retrying forever.
+                        pendingUndoToken?.let { database.pendingUndoCarrierDao.delete(it) }
                     }
                     return@withTransaction null
                 }
@@ -865,6 +1252,8 @@ class DownloadRepository(private val database: DBManager) {
                 // removal token and recompute the current parent instead.
                 if (linkedSnapshot != null && pendingUndoToken != null) {
                     commitRemovalSnapshotLocked(snapshot)
+                } else {
+                    pendingUndoToken?.let { database.pendingUndoCarrierDao.delete(it) }
                 }
                 return@withTransaction null
             }
@@ -922,6 +1311,7 @@ class DownloadRepository(private val database: DBManager) {
                     }
                 }
             }
+            snapshot.pendingUndoToken?.let { database.pendingUndoCarrierDao.delete(it) }
             return@withTransaction restoredId
         }
 
@@ -951,6 +1341,7 @@ class DownloadRepository(private val database: DBManager) {
             restoredId,
             PersistedHistoryRefusal(restoredBarrier.issueCode, restoredBarrier.issueStage),
         )
+        snapshot.pendingUndoToken?.let { database.pendingUndoCarrierDao.delete(it) }
         // Do not replay stale child/parent snapshots: sibling progress,
         // cancellation, and a terminal parent may have changed while Undo was
         // available.
@@ -2222,6 +2613,16 @@ class DownloadRepository(private val database: DBManager) {
                 ) {
                     "Undoable cancellation lost ledger ownership"
                 }
+                database.pendingUndoCarrierDao.insert(
+                    PendingUndoCarrier(
+                        token = token,
+                        kind = PendingUndoCarrier.CANCELLATION_KIND,
+                        ownerId = ownerId,
+                        authorityGeneration = undoAuthorityGeneration(token),
+                        createdAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                )
                 return@withTransaction UndoableCancellation(
                     pendingToken = token,
                     changed = true,
@@ -2264,14 +2665,39 @@ class DownloadRepository(private val database: DBManager) {
             }
             throw error
         }
-        result.pendingToken?.let { token ->
-            markUndoCarrierCommitted(token)
-            pendingCancellationAfterTransactionForTesting?.invoke()
-            durableCarrierCommitted = true
-        } ?: registeredPendingCancellationTokens.forEach(::resolveUndoWithoutCarrier)
-        pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
-        DownloadCancellationRegistry.publish(publications)
-        return result
+        try {
+            result.pendingToken?.let { token ->
+                // The Room transaction has returned, so this exact carrier is
+                // durable even if a subsequent handoff/publication step
+                // throws or is cancelled.
+                durableCarrierCommitted = true
+                markUndoCarrierCommitted(token)
+                pendingCancellationAfterTransactionForTesting?.invoke()
+            } ?: registeredPendingCancellationTokens.forEach(::resolveUndoWithoutCarrier)
+            pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
+            DownloadCancellationRegistry.publish(publications)
+            return result
+        } catch (cancelled: CancellationException) {
+            result.pendingToken?.let { token ->
+                if (durableCarrierCommitted || isUndoCarrierCommitted(token)) {
+                    transferUndoTokenToRecovery(token)
+                    scheduleRecoveryForUndoToken(token)
+                } else {
+                    resolveUndoWithoutCarrier(token)
+                }
+            }
+            throw cancelled
+        } catch (error: Exception) {
+            result.pendingToken?.let { token ->
+                if (durableCarrierCommitted || isUndoCarrierCommitted(token)) {
+                    transferUndoTokenToRecovery(token)
+                    scheduleRecoveryForUndoToken(token)
+                } else {
+                    resolveUndoWithoutCarrier(token)
+                }
+            }
+            throw error
+        }
     }
 
     /**
@@ -2287,17 +2713,36 @@ class DownloadRepository(private val database: DBManager) {
         originalStatus: Status
     ): PendingCancellationResolution {
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
-        val claim = claimUndoResolver(token, UndoAuthorityKind.CANCELLATION) ?: return PendingCancellationResolution()
+        if (!acceptCancellationUndoResolution(token, PendingUndoResolutionIntent.RESTORE)) {
+            return PendingCancellationResolution()
+        }
+        try {
+            pendingCancellationBeforeResolverClaimedForTesting?.invoke()
+        } catch (error: Exception) {
+            transferUndoTokenToRecovery(token)
+            scheduleRecoveryForUndoToken(token)
+            throw error
+        }
+        val claim = claimSelectedUndoResolver(
+            token,
+            UndoAuthorityKind.CANCELLATION,
+            PendingUndoResolutionIntent.RESTORE,
+        ) ?: return PendingCancellationResolution()
         return try {
             pendingCancellationResolverClaimedForTesting?.invoke()
+            pendingCancellationRestoreFailureForTesting?.invoke()?.let { throw it }
             val result = database.withTransaction {
             val ledgerDao = database.lowQualityRedownloadDao
             val ledgerItem = ledgerDao.getItemByDownloadId(id)
-                ?: return@withTransaction PendingCancellationResolution()
+                ?: run {
+                    database.pendingUndoCarrierDao.delete(token)
+                    return@withTransaction PendingCancellationResolution()
+                }
             if (
                 ledgerItem.stateValue != LowQualityRedownloadItemState.CANCELLATION_REQUESTED ||
                 ledgerItem.reasonCode != token
             ) {
+                database.pendingUndoCarrierDao.delete(token)
                 return@withTransaction PendingCancellationResolution()
             }
             val operation = ledgerDao.getOperation(ledgerItem.operationId)
@@ -2343,6 +2788,7 @@ class DownloadRepository(private val database: DBManager) {
                     ) {
                         "Undoable cancellation lost restore ownership"
                     }
+                    database.pendingUndoCarrierDao.delete(token)
                     return@withTransaction PendingCancellationResolution(
                         restoredStatus = restoreStatus,
                         affectedOperationIds = setOf(ledgerItem.operationId)
@@ -2350,9 +2796,20 @@ class DownloadRepository(private val database: DBManager) {
                 }
             }
 
-            PendingCancellationResolution(
-                affectedOperationIds = commitPendingCancellationLocked(id, token, publications)
-            )
+            val strongerAuthority = operation == null ||
+                operation.cancelRequested ||
+                operation.stateValue.isTerminal ||
+                download == null
+            if (strongerAuthority) {
+                PendingCancellationResolution(
+                    affectedOperationIds = commitPendingCancellationLocked(id, token, publications)
+                )
+            } else {
+                // RESTORE was already accepted at the UI boundary.  A
+                // transiently non-restorable row remains exact recovery debt;
+                // it is never silently converted into COMMIT.
+                PendingCancellationResolution()
+            }
             }
             if (result.restoredStatus != null || !hasExactPendingCancellation(id, token)) {
                 finishUndoResolverSuccess(claim)
@@ -2368,7 +2825,14 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun commitPendingCancellation(id: Long, token: String): Set<String> {
-        val claim = claimUndoResolver(token, UndoAuthorityKind.CANCELLATION) ?: return emptySet()
+        if (!acceptCancellationUndoResolution(token, PendingUndoResolutionIntent.COMMIT)) {
+            return emptySet()
+        }
+        val claim = claimSelectedUndoResolver(
+            token,
+            UndoAuthorityKind.CANCELLATION,
+            PendingUndoResolutionIntent.COMMIT,
+        ) ?: return emptySet()
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         return try {
             pendingCancellationResolverClaimedForTesting?.invoke()
@@ -2399,7 +2863,16 @@ class DownloadRepository(private val database: DBManager) {
         id: Long,
         token: String,
     ): Set<String> {
-        val claim = claimRecoveryResolver(token, UndoAuthorityKind.CANCELLATION)
+        val intent = pendingUndoResolutionIntent(token)
+            ?: PendingUndoResolutionIntent.COMMIT
+        if (intent == PendingUndoResolutionIntent.RESTORE) {
+            return restorePendingCancellationForRecovery(id, token)
+        }
+        val claim = claimRecoveryResolver(
+            token,
+            UndoAuthorityKind.CANCELLATION,
+            PendingUndoResolutionIntent.COMMIT,
+        )
             ?: return emptySet()
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         return try {
@@ -2419,6 +2892,105 @@ class DownloadRepository(private val database: DBManager) {
         }
     }
 
+    /** Retries a durably selected RESTORE intent without recreating UI authority. */
+    internal suspend fun restorePendingCancellationForRecovery(
+        id: Long,
+        token: String,
+    ): Set<String> {
+        val claim = claimRecoveryResolver(
+            token,
+            UndoAuthorityKind.CANCELLATION,
+            PendingUndoResolutionIntent.RESTORE,
+        ) ?: return emptySet()
+        val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
+        return try {
+            pendingCancellationRestoreFailureForTesting?.invoke()?.let { throw it }
+            val result = database.withTransaction {
+                val ledgerDao = database.lowQualityRedownloadDao
+                val ledgerItem = ledgerDao.getItemByDownloadId(id)
+                    ?: run {
+                        database.pendingUndoCarrierDao.delete(token)
+                        return@withTransaction PendingCancellationResolution()
+                    }
+                if (
+                    ledgerItem.stateValue != LowQualityRedownloadItemState.CANCELLATION_REQUESTED ||
+                    ledgerItem.reasonCode != token
+                ) {
+                    database.pendingUndoCarrierDao.delete(token)
+                    return@withTransaction PendingCancellationResolution()
+                }
+                val operation = ledgerDao.getOperation(ledgerItem.operationId)
+                val download = downloadDao.getNullableDownloadById(id)
+                val pendingOriginalStatus = parsePendingCancellationStatus(token)
+                val canRestore =
+                    operation != null &&
+                        !operation.stateValue.isTerminal &&
+                        !operation.cancelRequested &&
+                        download?.status == Status.Cancelled.name &&
+                        pendingOriginalStatus != null
+                if (canRestore) {
+                    val restoreStatus = checkNotNull(pendingOriginalStatus)
+                    if (
+                        downloadDao.restoreCancelledStatusForPendingCancellation(
+                            id = id,
+                            status = restoreStatus.name,
+                            operationId = ledgerItem.operationId,
+                            token = token,
+                        ) == 1
+                    ) {
+                        val restoredLinkedState = when (restoreStatus) {
+                            Status.Queued -> LowQualityRedownloadItemState.QUEUED
+                            Status.WaitingForMembership -> LowQualityRedownloadItemState.WAITING
+                            else -> error("Unsupported pending-cancellation recovery status $restoreStatus")
+                        }
+                        check(
+                            ledgerDao.restorePendingUserCancellation(
+                                id,
+                                token,
+                                restoredLinkedState.name,
+                                System.currentTimeMillis(),
+                            ) == 1
+                        ) { "Undoable cancellation recovery lost restore ownership" }
+                        database.pendingUndoCarrierDao.delete(token)
+                        return@withTransaction PendingCancellationResolution(
+                            restoredStatus = restoreStatus,
+                            affectedOperationIds = setOf(ledgerItem.operationId),
+                        )
+                    }
+                }
+                // A durable operation cancellation/terminal state is stronger
+                // than the selected RESTORE.  Only that proof permits the
+                // exact carrier to be committed instead.
+                if (
+                    operation == null ||
+                        operation.cancelRequested ||
+                        operation.stateValue.isTerminal ||
+                        download == null
+                ) {
+                    PendingCancellationResolution(
+                        affectedOperationIds = commitPendingCancellationLocked(
+                            id,
+                            token,
+                            publications,
+                        )
+                    )
+                } else {
+                    PendingCancellationResolution()
+                }
+            }
+            if (result.restoredStatus != null || !hasPendingUndoCarrier(token)) {
+                finishUndoResolverSuccess(claim)
+            } else {
+                finishUndoResolverFailure(claim)
+            }
+            DownloadCancellationRegistry.publish(publications)
+            result.affectedOperationIds
+        } catch (error: Exception) {
+            finishUndoResolverFailure(claim)
+            throw error
+        }
+    }
+
     private suspend fun hasExactPendingCancellation(id: Long, token: String): Boolean {
         val item = database.lowQualityRedownloadDao.getItemByDownloadId(id)
         return item?.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
@@ -2431,20 +3003,26 @@ class DownloadRepository(private val database: DBManager) {
         publications: MutableList<DownloadCancellationRegistry.Publication>,
     ): Set<String> {
         val ledgerDao = database.lowQualityRedownloadDao
-        val ledgerItem = ledgerDao.getItemByDownloadId(id) ?: return emptySet()
+        val ledgerItem = ledgerDao.getItemByDownloadId(id) ?: run {
+            database.pendingUndoCarrierDao.delete(token)
+            return emptySet()
+        }
         if (
             ledgerItem.stateValue != LowQualityRedownloadItemState.CANCELLATION_REQUESTED ||
             ledgerItem.reasonCode != token
         ) {
+            database.pendingUndoCarrierDao.delete(token)
             return emptySet()
         }
         val download = downloadDao.getNullableDownloadById(id)
         if (download != null && persistedHistoryRefusalLocked(id) != null) {
-            return convergeHistoryReplacementRefusalLocked(
+            val affectedOperationIds = convergeHistoryReplacementRefusalLocked(
                 id = id,
                 expectedExecutionId = download.executionId,
                 forceError = false,
             ).affectedOperationIds
+            database.pendingUndoCarrierDao.delete(token)
+            return affectedOperationIds
         }
         if (download != null && download.status != Status.Cancelled.name) {
             val changed = if (download.executionId.isBlank()) {
@@ -2488,6 +3066,7 @@ class DownloadRepository(private val database: DBManager) {
                 )
             }
         }
+        database.pendingUndoCarrierDao.delete(token)
         return setOf(ledgerItem.operationId)
     }
 
@@ -2883,6 +3462,9 @@ class DownloadRepository(private val database: DBManager) {
         private val abandonedUndoOwners = mutableSetOf<String>()
         private val pendingRemovalSnapshots = ConcurrentHashMap<String, DownloadRemovalSnapshot>()
 
+        private fun undoAuthorityGeneration(token: String): Long =
+            synchronized(undoAuthorityLock) { undoAuthorities[token]?.generation ?: 0L }
+
         private fun createPendingCancellationToken(status: Status): String =
             "$PENDING_CANCELLATION_TOKEN_PREFIX$PENDING_CANCELLATION_TOKEN_VERSION:${status.name}:${UUID.randomUUID()}"
 
@@ -2915,6 +3497,10 @@ class DownloadRepository(private val database: DBManager) {
         @Volatile
         internal var pendingCancellationCommitFailureForTesting: (() -> Exception?)? = null
 
+        /** Test seam for a pending-cancellation restore failure. */
+        @Volatile
+        internal var pendingCancellationRestoreFailureForTesting: (() -> Exception?)? = null
+
         /** Test seam for a pending-removal commit failure. */
         @Volatile
         internal var pendingRemovalCommitFailureForTesting: (() -> Exception?)? = null
@@ -2935,9 +3521,21 @@ class DownloadRepository(private val database: DBManager) {
         @Volatile
         internal var pendingRemovalResolverClaimedForTesting: (suspend () -> Unit)? = null
 
+        /** Test seam after durable removal RESTORE and before local cleanup. */
+        @Volatile
+        internal var pendingRemovalResolvedBeforeCleanupForTesting: (suspend () -> Unit)? = null
+
         /** Test seam after a cancellation resolver claims RESOLVING authority. */
         @Volatile
         internal var pendingCancellationResolverClaimedForTesting: (suspend () -> Unit)? = null
+
+        /** Test seam before a selected removal resolver claims its generation. */
+        @Volatile
+        internal var pendingRemovalBeforeResolverClaimedForTesting: (suspend () -> Unit)? = null
+
+        /** Test seam before a selected cancellation resolver claims its generation. */
+        @Volatile
+        internal var pendingCancellationBeforeResolverClaimedForTesting: (suspend () -> Unit)? = null
 
         /** Test seam for a later failure in a rollback-capable child terminalization transaction. */
         @Volatile
@@ -2954,7 +3552,8 @@ class DownloadRepository(private val database: DBManager) {
                 when (undoAuthorities[token]?.state) {
                     UndoAuthorityState.PREPARED_UNPUBLISHED,
                     UndoAuthorityState.LIVE_UI,
-                    UndoAuthorityState.RESOLVING -> true
+                    UndoAuthorityState.RESOLVING_RESTORE,
+                    UndoAuthorityState.RESOLVING_COMMIT -> true
                     else -> false
                 }
             }
@@ -2984,7 +3583,11 @@ class DownloadRepository(private val database: DBManager) {
             synchronized(undoAuthorityLock) {
                 val authority = undoAuthorities[token] ?: return@synchronized false
                 if (
-                    authority.state != UndoAuthorityState.RECOVERY_OWNED ||
+                    authority.state !in setOf(
+                        UndoAuthorityState.RECOVERY_OWNED,
+                        UndoAuthorityState.RECOVERY_RESTORE_OWNED,
+                        UndoAuthorityState.RECOVERY_COMMIT_OWNED,
+                    ) ||
                         !authority.durableCarrierCommitted ||
                         authority.resolverGeneration != null
                 ) {

@@ -160,20 +160,21 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                     val pendingToken = withContext(Dispatchers.IO) {
                         downloadViewModel.beginUndoableCancellation(item.id)
                     }
-                    val snackbar = Snackbar.make(queuedRecyclerView, getString(R.string.cancelled) + ": " + item.title.ifEmpty { item.url }, Snackbar.LENGTH_INDEFINITE)
-                        .setAction(getString(R.string.undo)) {
-                            if (pendingToken != null) {
-                                downloadViewModel.undoPendingCancellation(item, pendingToken)
-                            } else {
-                                viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-                                    if (wasWaitingForMembership) {
-                                        downloadViewModel.restoreMembershipWaiting(item)
-                                    } else {
-                                        downloadViewModel.undoCancelledDownload(item)
+                    try {
+                        val snackbar = Snackbar.make(queuedRecyclerView, getString(R.string.cancelled) + ": " + item.title.ifEmpty { item.url }, Snackbar.LENGTH_INDEFINITE)
+                            .setAction(getString(R.string.undo)) {
+                                if (pendingToken != null) {
+                                    downloadViewModel.undoPendingCancellation(item, pendingToken)
+                                } else {
+                                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                                        if (wasWaitingForMembership) {
+                                            downloadViewModel.restoreMembershipWaiting(item)
+                                        } else {
+                                            downloadViewModel.undoCancelledDownload(item)
+                                        }
                                     }
                                 }
                             }
-                        }
                         if (pendingToken != null) {
                             snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
                                 override fun onShown(transientBottomBar: Snackbar?) {
@@ -187,7 +188,11 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                                 }
                             })
                         }
-                    snackbar.show()
+                        snackbar.show()
+                    } catch (failure: Throwable) {
+                        pendingToken?.let(downloadViewModel::abandonUndoCapabilityAfterConsumerFailure)
+                        throw failure
+                    }
                 }
             }
             deleteDialog.show()

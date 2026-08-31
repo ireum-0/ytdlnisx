@@ -10,6 +10,8 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadLiveCounts
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
 import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
+import com.ireum.ytdl.database.models.PendingUndoCarrier
+import com.ireum.ytdl.database.models.PendingUndoResolutionIntent
 import com.ireum.ytdl.util.LowQualityRedownloadProgress
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
@@ -85,13 +87,18 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
      */
     suspend fun reconcileAbandonedUndoDebts(): Set<String> {
         val affectedOperationIds = linkedSetOf<String>()
-        getPendingUndoItemsForRecovery()
+        val pendingItems = getPendingUndoItemsForRecovery()
             .filter(::isSupportedAbandonedUndoToken)
-            .forEach { item ->
-                if (reconcileAbandonedUndoItem(item)) {
-                    affectedOperationIds += item.operationId
-                }
+        val itemByToken = pendingItems.associateBy { it.reasonCode }
+        val tokens = (pendingItems.map { it.reasonCode } +
+            database.pendingUndoCarrierDao.getAll().map { it.token })
+            .filter(::isSupportedAbandonedUndoToken)
+            .distinct()
+        tokens.forEach { token ->
+            if (reconcileAbandonedUndoDebt(token)) {
+                itemByToken[token]?.operationId?.let(affectedOperationIds::add)
             }
+        }
         return affectedOperationIds
     }
 
@@ -105,29 +112,74 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     internal suspend fun reconcileAbandonedUndoDebt(token: String): Boolean {
         val item = getPendingUndoItemsForRecovery()
             .firstOrNull { it.reasonCode == token }
-            ?: return if (DownloadRepository.isUndoAuthorityKnown(token)) {
+        if (item != null) {
+            if (!isSupportedAbandonedUndoToken(item)) return true
+            val resolved = reconcileAbandonedUndoItem(item)
+            if (!resolved) return false
+            val downloadId = item.downloadId ?: return false
+            val current = dao.getItemByDownloadId(downloadId)
+            val stillPending = isSamePendingUndoCarrier(current, token)
+            if (!stillPending) {
                 DownloadRepository.resolveRecoveryWithoutCarrier(token)
-            } else {
-                // Process death clears the registry.  With no durable item,
-                // the exact token has already lost its carrier.
-                true
             }
-        if (!isSupportedAbandonedUndoToken(item)) return true
-        val resolved = reconcileAbandonedUndoItem(item)
-        if (!resolved) return false
-        val downloadId = item.downloadId ?: return false
-        val current = dao.getItemByDownloadId(downloadId)
-        val stillPending = isSamePendingUndoCarrier(current, token)
-        if (!stillPending) {
-            DownloadRepository.resolveRecoveryWithoutCarrier(token)
+            return !stillPending
         }
-        return !stillPending
+
+        val durableCarrier = database.pendingUndoCarrierDao.get(token)
+        if (durableCarrier != null) {
+            if (DownloadRepository.isProcessLocalPendingUndoAuthority(token)) {
+                return false
+            }
+            if (DownloadRepository.isUndoResolverInFlight(token)) return false
+            return when (durableCarrier.kind) {
+                PendingUndoCarrier.REMOVAL_KIND -> {
+                    val intent = DownloadRepository(database)
+                        .pendingUndoResolutionIntent(token)
+                        ?: PendingUndoResolutionIntent.COMMIT
+                    if (intent == PendingUndoResolutionIntent.RESTORE) {
+                        DownloadRepository(database).restoreUndoForRecovery(token)
+                        database.pendingUndoCarrierDao.get(token) == null
+                    } else {
+                        DownloadRepository(database).commitUndoForRecovery(token)
+                        database.pendingUndoCarrierDao.get(token) == null
+                    }
+                }
+                PendingUndoCarrier.CANCELLATION_KIND -> {
+                    // The low-quality item disappeared under a stronger
+                    // durable operation.  The exact carrier is no longer
+                    // actionable, but no other token is touched.
+                    database.pendingUndoCarrierDao.delete(token)
+                    DownloadRepository.resolveRecoveryWithoutCarrier(token)
+                    true
+                }
+                else -> true
+            }
+        }
+
+        if (
+            DownloadRepository.isUndoCarrierAwaitingDurableCommit(token) ||
+            DownloadRepository.isProcessLocalPendingUndoAuthority(token)
+        ) {
+            // The producer may still commit the carrier.  DB absence is not
+            // evidence of resolution until that producer authority is gone.
+            return false
+        }
+        return if (DownloadRepository.isUndoAuthorityKnown(token)) {
+            DownloadRepository.resolveRecoveryWithoutCarrier(token)
+        } else {
+            // Process death clears the registry.  With no durable item or
+            // carrier, this exact token has already lost its carrier.
+            true
+        }
     }
 
     private suspend fun reconcileAbandonedUndoItem(
         item: LowQualityRedownloadItem,
     ): Boolean {
         val downloadId = item.downloadId ?: return false
+        val downloadRepository = DownloadRepository(database)
+        val intent = downloadRepository.pendingUndoResolutionIntent(item.reasonCode)
+            ?: PendingUndoResolutionIntent.COMMIT
         when {
             isPendingUserCancellation(item) -> {
                 val operation = dao.getOperation(item.operationId)
@@ -143,8 +195,17 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                     // token until that owner resolves or abandons it.
                     return false
                 }
-                DownloadRepository(database)
-                    .commitPendingCancellationForRecovery(downloadId, item.reasonCode)
+                if (intent == PendingUndoResolutionIntent.RESTORE) {
+                    downloadRepository.restorePendingCancellationForRecovery(
+                        downloadId,
+                        item.reasonCode,
+                    )
+                } else {
+                    downloadRepository.commitPendingCancellationForRecovery(
+                        downloadId,
+                        item.reasonCode,
+                    )
+                }
             }
             item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX) -> {
                 if (DownloadRepository.isUndoResolverInFlight(item.reasonCode)) {
@@ -159,7 +220,13 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                 if (database.downloadDao.getNullableDownloadById(downloadId) != null) {
                     return false
                 }
-                commitAbandonedPendingRemoval(item)
+                if (intent == PendingUndoResolutionIntent.RESTORE) {
+                    downloadRepository.restoreUndoForRecovery(item.reasonCode)
+                } else if (database.pendingUndoCarrierDao.get(item.reasonCode) != null) {
+                    downloadRepository.commitUndoForRecovery(item.reasonCode)
+                } else {
+                    commitAbandonedPendingRemoval(item)
+                }
             }
             else -> return true
         }
@@ -172,6 +239,10 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     private fun isSupportedAbandonedUndoToken(item: LowQualityRedownloadItem): Boolean =
         isPendingUserCancellation(item) ||
             item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX)
+
+    private fun isSupportedAbandonedUndoToken(token: String): Boolean =
+        token.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX) ||
+            DownloadRepository.isValidPendingCancellationToken(token)
 
     private fun isSamePendingUndoCarrier(
         item: LowQualityRedownloadItem?,

@@ -80,6 +80,7 @@ class CancelledDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClic
         fragmentView = inflater.inflate(R.layout.generic_list, container, false)
         activity = getActivity()
         downloadViewModel = ViewModelProvider(requireActivity())[DownloadViewModel::class.java]
+        downloadViewModel.beginUndoPresentationOwner()
         ytdlpViewModel = ViewModelProvider(requireActivity())[YTDLPViewModel::class.java]
         preferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
         return fragmentView
@@ -401,19 +402,30 @@ class CancelledDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClic
                             val undoHandle = withContext(Dispatchers.IO) {
                                 downloadViewModel.deleteDownloadForUndo(itemID)
                             } ?: return@launch
-                            val deletedItem = undoHandle.item
-                            val snackbar = Snackbar.make(cancelledRecyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title.ifEmpty { deletedItem.url }, Snackbar.LENGTH_INDEFINITE)
-                                .setAction(getString(R.string.undo)) {
-                                    downloadViewModel.restoreDownloadUndoFromUi(undoHandle)
-                                }
-                            snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
-                                override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
-                                    if (event != DISMISS_EVENT_ACTION) {
-                                        downloadViewModel.commitDownloadUndoFromUi(undoHandle)
+                            try {
+                                val deletedItem = undoHandle.item
+                                val snackbar = Snackbar.make(cancelledRecyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title.ifEmpty { deletedItem.url }, Snackbar.LENGTH_INDEFINITE)
+                                    .setAction(getString(R.string.undo)) {
+                                        downloadViewModel.restoreDownloadUndoFromUi(undoHandle)
                                     }
-                                }
-                            })
-                            snackbar.show()
+                                snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
+                                    override fun onShown(transientBottomBar: Snackbar?) {
+                                        downloadViewModel.acknowledgeUndoPublication(undoHandle.token.value)
+                                    }
+
+                                    override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
+                                        if (event != DISMISS_EVENT_ACTION) {
+                                            downloadViewModel.commitDownloadUndoFromUi(undoHandle)
+                                        }
+                                    }
+                                })
+                                snackbar.show()
+                            } catch (failure: Throwable) {
+                                downloadViewModel.abandonUndoCapabilityAfterConsumerFailure(
+                                    undoHandle.token.value
+                                )
+                                throw failure
+                            }
                         }
                     }
                     ItemTouchHelper.RIGHT -> {
@@ -464,6 +476,13 @@ class CancelledDownloadsFragment : Fragment(), GenericDownloadAdapter.OnItemClic
                 )
             }
         }
+
+    override fun onDestroyView() {
+        if (::downloadViewModel.isInitialized) {
+            downloadViewModel.abandonPendingUndoCapabilitiesForView()
+        }
+        super.onDestroyView()
+    }
 
 }
 

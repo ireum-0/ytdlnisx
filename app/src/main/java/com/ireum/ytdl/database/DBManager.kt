@@ -18,6 +18,7 @@ import com.ireum.ytdl.database.dao.KeywordGroupDao
 import com.ireum.ytdl.database.dao.LogDao
 import com.ireum.ytdl.database.dao.LowQualityRedownloadDao
 import com.ireum.ytdl.database.dao.ObserveSourcesDao
+import com.ireum.ytdl.database.dao.PendingUndoCarrierDao
 import com.ireum.ytdl.database.dao.PlaylistDao
 import com.ireum.ytdl.database.dao.PlaylistGroupDao
 import com.ireum.ytdl.database.dao.ResultDao
@@ -45,6 +46,7 @@ import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.models.Playlist
 import com.ireum.ytdl.database.models.PlaylistGroup
 import com.ireum.ytdl.database.models.PlaylistGroupMember
+import com.ireum.ytdl.database.models.PendingUndoCarrier
 import com.ireum.ytdl.database.models.PlaylistItemCrossRef
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.SearchHistoryItem
@@ -86,9 +88,10 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         LowQualityRedownloadItem::class,
         HistoryDateFetchOperation::class,
         HistoryDateFetchItem::class,
-        HistoryReplacementBarrier::class
+        HistoryReplacementBarrier::class,
+        PendingUndoCarrier::class
     ],
-    version = 58,
+    version = 59,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),
@@ -139,6 +142,7 @@ abstract class DBManager : RoomDatabase(){
     abstract val lowQualityRedownloadDao: LowQualityRedownloadDao
     abstract val historyDateFetchDao: HistoryDateFetchDao
     abstract val historyReplacementBarrierDao: HistoryReplacementBarrierDao
+    abstract val pendingUndoCarrierDao: PendingUndoCarrierDao
 
     enum class SORTING{
         DESC, ASC

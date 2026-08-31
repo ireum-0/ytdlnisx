@@ -1,10 +1,15 @@
 package com.ireum.ytdl.database
 
 import android.content.Context
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
 import androidx.preference.PreferenceManager
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequest
+import androidx.work.Operation
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
@@ -17,6 +22,7 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
 import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
 import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.database.models.PendingUndoResolutionIntent
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.DownloadExecutionOwnershipLostException
@@ -39,6 +45,7 @@ import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.LowQualityRedownloadManager
+import com.ireum.ytdl.work.LowQualityRedownloadWorker
 import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.work.claimDownloadThroughProductionAdmission
 import com.ireum.ytdl.work.dispatchLowQualityRedownloadRecovery
@@ -49,12 +56,15 @@ import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import androidx.work.impl.utils.futures.SettableFuture
+import com.google.common.util.concurrent.ListenableFuture
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -69,6 +79,8 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -90,10 +102,14 @@ class LowQualityRedownloadPersistenceTest {
         DownloadRepository.pendingRemovalAfterTransactionForTesting = null
         DownloadRepository.pendingCancellationAfterTransactionForTesting = null
         DownloadRepository.pendingRemovalResolverClaimedForTesting = null
+        DownloadRepository.pendingRemovalResolvedBeforeCleanupForTesting = null
         DownloadRepository.pendingCancellationResolverClaimedForTesting = null
+        DownloadRepository.pendingRemovalBeforeResolverClaimedForTesting = null
+        DownloadRepository.pendingCancellationBeforeResolverClaimedForTesting = null
         DownloadRepository.terminalizeLinkedChildrenFailureForTesting = null
         LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = null
         LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
+        LowQualityRedownloadLedger.refreshFailureForTesting = null
         database = Room.inMemoryDatabaseBuilder(context, DBManager::class.java)
             .addTypeConverter(Converters())
             .allowMainThreadQueries()
@@ -106,6 +122,7 @@ class LowQualityRedownloadPersistenceTest {
     fun closeDatabase() {
         LowQualityRedownloadLedger.cancelAllAbandonedUndoConvergenceJobsForTesting()
         LowQualityRedownloadLedger.cancelAllCancellationConvergenceJobsForTesting()
+        LowQualityRedownloadLedger.cancelAllEnqueueConvergenceJobsForTesting()
         LowQualityRedownloadRepository.getItemsFailureCountForTesting = 0
         LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
         LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = null
@@ -115,8 +132,12 @@ class LowQualityRedownloadPersistenceTest {
         DownloadRepository.pendingRemovalAfterTransactionForTesting = null
         DownloadRepository.pendingCancellationAfterTransactionForTesting = null
         DownloadRepository.pendingRemovalResolverClaimedForTesting = null
+        DownloadRepository.pendingRemovalResolvedBeforeCleanupForTesting = null
         DownloadRepository.pendingCancellationResolverClaimedForTesting = null
+        DownloadRepository.pendingRemovalBeforeResolverClaimedForTesting = null
+        DownloadRepository.pendingCancellationBeforeResolverClaimedForTesting = null
         DownloadRepository.terminalizeLinkedChildrenFailureForTesting = null
+        LowQualityRedownloadLedger.refreshFailureForTesting = null
         DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
         DownloadExecutionRecovery.clearForTesting(ApplicationProvider.getApplicationContext())
         DownloadWorkerExecutionOwners.clearForTesting()
@@ -2422,6 +2443,562 @@ class LowQualityRedownloadPersistenceTest {
     }
 
     @Test
+    fun pendingCancellationPostCommitRefreshFailureTransfersUnpublishedCarrierToRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 329, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val failRefreshOnce = AtomicBoolean(true)
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 1
+        LowQualityRedownloadLedger.refreshFailureForTesting = {
+            if (failRefreshOnce.compareAndSet(true, false)) {
+                IllegalStateException("injected post-commit refresh failure")
+            } else {
+                null
+            }
+        }
+
+        val failure = runCatching {
+            viewModel.beginUndoableCancellation(downloadId)
+        }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+
+        val token = repository.getItems(operation.operationId).single().reasonCode
+        assertTrue(DownloadRepository.isValidPendingCancellationToken(token))
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(token))
+        assertTrue(database.pendingUndoCarrierDao.get(token) != null)
+        awaitAbandonedUndoOwnerActive(token)
+
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
+        withTimeout(20_000L) {
+            while (repository.getItems(operation.operationId).single().stateValue !=
+                LowQualityRedownloadItemState.CANCELLED
+            ) {
+                delay(25L)
+            }
+        }
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+        assertNull(database.pendingUndoCarrierDao.get(token))
+        assertFalse(LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(token))
+    }
+
+    @Test
+    fun undoTapBeforeResolverCoroutineClaimPreservesRestoreIntentAcrossViewLoss() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 330, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val handle = checkNotNull(viewModel.repository.deleteForUndo(downloadId))
+        viewModel.acknowledgeUndoPublication(handle.token.value)
+        val boundaryReached = CompletableDeferred<Unit>()
+        val releaseBoundary = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalBeforeResolverClaimedForTesting = {
+            boundaryReached.complete(Unit)
+            releaseBoundary.await()
+        }
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 1
+
+        viewModel.restoreDownloadUndoFromUi(handle)
+        boundaryReached.await()
+        assertEquals(
+            PendingUndoResolutionIntent.RESTORE,
+            DownloadRepository(database).pendingUndoResolutionIntent(handle.token.value),
+        )
+
+        viewModel.abandonPendingUndoCapabilitiesForView()
+        awaitAbandonedUndoOwnerActive(handle.token.value)
+        assertFalse(DownloadRepository.isLivePendingRemovalToken(handle.token.value))
+
+        releaseBoundary.complete(Unit)
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
+        withTimeout(20_000L) {
+            while (database.downloadDao.getNullableDownloadById(downloadId) == null) {
+                delay(25L)
+            }
+        }
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertNull(database.pendingUndoCarrierDao.get(handle.token.value))
+    }
+
+    @Test
+    fun pendingCancellationRestoreFailureRetriesRestoreNotCommit() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 331, DownloadRepository.Status.Queued)
+        val owner = DownloadRepository(database)
+        val token = checkNotNull(owner.beginUndoableCancellation(downloadId).pendingToken)
+        owner.acknowledgeUndoPublication(token)
+        val failRestoreOnce = AtomicBoolean(true)
+        DownloadRepository.pendingCancellationRestoreFailureForTesting = {
+            if (failRestoreOnce.compareAndSet(true, false)) {
+                IllegalStateException("injected cancellation restore failure")
+            } else {
+                null
+            }
+        }
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 1
+
+        assertTrue(
+            runCatching {
+                owner.undoPendingCancellation(
+                    downloadId,
+                    token,
+                    DownloadRepository.Status.Queued,
+                )
+            }.isFailure
+        )
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(token))
+        assertEquals(
+            PendingUndoResolutionIntent.RESTORE,
+            owner.pendingUndoResolutionIntent(token),
+        )
+        awaitAbandonedUndoOwnerActive(token)
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
+
+        withTimeout(20_000L) {
+            while (repository.getItems(operation.operationId).single().stateValue !=
+                LowQualityRedownloadItemState.QUEUED
+            ) {
+                delay(25L)
+            }
+        }
+        assertEquals(
+            DownloadRepository.Status.Queued.name,
+            database.downloadDao.getNullableDownloadById(downloadId)?.status,
+        )
+        assertNull(database.pendingUndoCarrierDao.get(token))
+    }
+
+    @Test
+    fun pendingRemovalRestoreFailureWhileViewAliveDoesNotReturnFalseLiveUi() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 332, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val handle = checkNotNull(viewModel.repository.deleteForUndo(downloadId))
+        viewModel.acknowledgeUndoPublication(handle.token.value)
+        val failRestoreOnce = AtomicBoolean(true)
+        DownloadRepository.pendingRemovalRestoreFailureForTesting = {
+            if (failRestoreOnce.compareAndSet(true, false)) {
+                IllegalStateException("injected removal restore failure")
+            } else {
+                null
+            }
+        }
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 1
+
+        assertTrue(runCatching { viewModel.restoreDownloadUndo(handle) }.isFailure)
+        assertFalse(DownloadRepository.isLivePendingRemovalToken(handle.token.value))
+        assertEquals(
+            PendingUndoResolutionIntent.RESTORE,
+            viewModel.repository.pendingUndoResolutionIntent(handle.token.value),
+        )
+        awaitAbandonedUndoOwnerActive(handle.token.value)
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
+
+        withTimeout(20_000L) {
+            while (database.downloadDao.getNullableDownloadById(downloadId) == null) {
+                delay(25L)
+            }
+        }
+        assertEquals(
+            LowQualityRedownloadItemState.QUEUED,
+            repository.getItems(operation.operationId).single().stateValue,
+        )
+        assertNull(database.pendingUndoCarrierDao.get(handle.token.value))
+    }
+
+    @Test
+    fun dismissCommitFailureRetriesCommit() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 333, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val handle = checkNotNull(viewModel.repository.deleteForUndo(downloadId))
+        viewModel.acknowledgeUndoPublication(handle.token.value)
+        val failCommitOnce = AtomicBoolean(true)
+        DownloadRepository.pendingRemovalCommitFailureForTesting = {
+            if (failCommitOnce.compareAndSet(true, false)) {
+                IllegalStateException("injected removal commit failure")
+            } else {
+                null
+            }
+        }
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 1
+
+        assertTrue(runCatching { viewModel.commitDownloadUndo(handle) }.isFailure)
+        assertFalse(DownloadRepository.isLivePendingRemovalToken(handle.token.value))
+        assertEquals(
+            PendingUndoResolutionIntent.COMMIT,
+            viewModel.repository.pendingUndoResolutionIntent(handle.token.value),
+        )
+        awaitAbandonedUndoOwnerActive(handle.token.value)
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
+
+        withTimeout(20_000L) {
+            while (repository.getItems(operation.operationId).single().stateValue !=
+                LowQualityRedownloadItemState.CANCELLED
+            ) {
+                delay(25L)
+            }
+        }
+        assertNull(database.downloadDao.getNullableDownloadById(downloadId))
+        assertNull(database.pendingUndoCarrierDao.get(handle.token.value))
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+    }
+
+    @Test
+    fun selectedRestoreProcessDeathMatrixRetainsIntentAtEveryResolverBoundary() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val owner = DownloadRepository(database)
+
+        // Selection accepted before the asynchronous resolver claims its
+        // generation.
+        val beforeClaimId = linkDownload(
+            operation.operationId,
+            334,
+            DownloadRepository.Status.Queued,
+        )
+        val beforeClaim = checkNotNull(owner.deleteForUndo(beforeClaimId))
+        owner.acknowledgeUndoPublication(beforeClaim.token.value)
+        assertTrue(
+            owner.acceptRemovalUndoResolution(
+                beforeClaim.token.value,
+                PendingUndoResolutionIntent.RESTORE,
+            )
+        )
+        DownloadRepository.clearLivePendingRemovalTokensForTest()
+        runStartupUndoRecovery(context)
+        assertTrue(database.downloadDao.getNullableDownloadById(beforeClaimId) != null)
+
+        // Resolver generation claimed, but no Room RESTORE write completed.
+        val inFlightId = linkDownload(
+            operation.operationId,
+            335,
+            DownloadRepository.Status.Queued,
+        )
+        val inFlight = checkNotNull(owner.deleteForUndo(inFlightId))
+        owner.acknowledgeUndoPublication(inFlight.token.value)
+        val claimed = CompletableDeferred<Unit>()
+        val releaseClaim = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalResolverClaimedForTesting = {
+            claimed.complete(Unit)
+            releaseClaim.await()
+        }
+        val inFlightResolver = async(Dispatchers.IO) {
+            owner.restoreUndo(inFlight.token)
+        }
+        claimed.await()
+        DownloadRepository.clearLivePendingRemovalTokensForTest()
+        inFlightResolver.cancelAndJoin()
+        DownloadRepository.pendingRemovalResolverClaimedForTesting = null
+        runStartupUndoRecovery(context)
+        assertTrue(database.downloadDao.getNullableDownloadById(inFlightId) != null)
+
+        // A first Room restore write failed; the durable selected intent must
+        // still drive startup recovery rather than an implicit COMMIT.
+        val failedId = linkDownload(
+            operation.operationId,
+            336,
+            DownloadRepository.Status.Queued,
+        )
+        val failed = checkNotNull(owner.deleteForUndo(failedId))
+        owner.acknowledgeUndoPublication(failed.token.value)
+        DownloadRepository.pendingRemovalRestoreFailureForTesting = {
+            IllegalStateException("injected process-death restore failure")
+        }
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 1
+        assertTrue(runCatching { owner.restoreUndo(failed.token) }.isFailure)
+        awaitAbandonedUndoOwnerActive(failed.token.value)
+        LowQualityRedownloadLedger.cancelAbandonedUndoConvergenceForTesting(failed.token.value)
+        DownloadRepository.clearLivePendingRemovalTokensForTest()
+        DownloadRepository.pendingRemovalRestoreFailureForTesting = null
+        LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
+        runStartupUndoRecovery(context)
+        assertTrue(database.downloadDao.getNullableDownloadById(failedId) != null)
+
+        // Durable RESTORE completed before process-local cleanup. Startup must
+        // observe the resolved carrier and never insert a second Download.
+        val resolvedId = linkDownload(
+            operation.operationId,
+            337,
+            DownloadRepository.Status.Queued,
+        )
+        val resolved = checkNotNull(owner.deleteForUndo(resolvedId))
+        owner.acknowledgeUndoPublication(resolved.token.value)
+        val resolvedBeforeCleanup = CompletableDeferred<Unit>()
+        val releaseCleanup = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalResolvedBeforeCleanupForTesting = {
+            resolvedBeforeCleanup.complete(Unit)
+            releaseCleanup.await()
+        }
+        val resolvedResolver = async(Dispatchers.IO) {
+            owner.restoreUndo(resolved.token)
+        }
+        resolvedBeforeCleanup.await()
+        assertNull(database.pendingUndoCarrierDao.get(resolved.token.value))
+        assertTrue(database.downloadDao.getNullableDownloadById(resolvedId) != null)
+        DownloadRepository.clearLivePendingRemovalTokensForTest()
+        resolvedResolver.cancelAndJoin()
+        releaseCleanup.complete(Unit)
+        DownloadRepository.pendingRemovalResolvedBeforeCleanupForTesting = null
+        runStartupUndoRecovery(context)
+        assertEquals(
+            1,
+            database.downloadDao.getAllDownloadsList().count { it.id == resolvedId },
+        )
+    }
+
+    @Test
+    fun siblingRestoreAndCommitIntentsRemainIsolatedAcrossRecovery() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val owner = DownloadRepository(database)
+        val restoreId = linkDownload(
+            operation.operationId,
+            338,
+            DownloadRepository.Status.Queued,
+        )
+        val commitId = linkDownload(
+            operation.operationId,
+            339,
+            DownloadRepository.Status.Queued,
+        )
+        val restore = checkNotNull(owner.deleteForUndo(restoreId))
+        val commit = checkNotNull(owner.deleteForUndo(commitId))
+        owner.acknowledgeUndoPublication(restore.token.value)
+        owner.acknowledgeUndoPublication(commit.token.value)
+        assertTrue(
+            owner.acceptRemovalUndoResolution(
+                restore.token.value,
+                PendingUndoResolutionIntent.RESTORE,
+            )
+        )
+        assertTrue(
+            owner.acceptRemovalUndoResolution(
+                commit.token.value,
+                PendingUndoResolutionIntent.COMMIT,
+            )
+        )
+
+        DownloadRepository.clearLivePendingRemovalTokensForTest()
+        runStartupUndoRecovery(context)
+        withTimeout(20_000L) {
+            while (database.downloadDao.getNullableDownloadById(restoreId) == null) {
+                delay(25L)
+            }
+        }
+        assertNull(database.downloadDao.getNullableDownloadById(commitId))
+        val children = repository.getItems(operation.operationId).associateBy { it.downloadId }
+        assertEquals(LowQualityRedownloadItemState.QUEUED, children[restoreId]?.stateValue)
+        assertEquals(LowQualityRedownloadItemState.CANCELLED, children[commitId]?.stateValue)
+        assertNull(database.pendingUndoCarrierDao.get(restore.token.value))
+        assertNull(database.pendingUndoCarrierDao.get(commit.token.value))
+    }
+
+    @Test
+    fun confirmationPreparingEnqueueSynchronousFailureRetriesExactPhase() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operationId = createAwaitingSelectionOperationWithIdentity(340)
+        val calls = AtomicInteger(0)
+        val policies = Collections.synchronizedList(mutableListOf<ExistingWorkPolicy>())
+        val workNames = Collections.synchronizedList(mutableListOf<String>())
+        val accepted = ControlledWorkManagerOperation()
+        val manager = LowQualityRedownloadManager.createForTesting(
+            context = context,
+            database = database,
+        ) { workName, policy, _ ->
+            workNames += workName
+            policies += policy
+            if (calls.getAndIncrement() == 0) {
+                throw IllegalStateException("injected synchronous enqueue failure")
+            }
+            accepted
+        }
+
+        manager.confirm(operationId)
+        awaitEnqueueCalls(calls, 2)
+        assertEquals(
+            LowQualityRedownloadPhase.PREPARING,
+            repository.getOperation(operationId)?.phaseValue,
+        )
+        accepted.succeed()
+        awaitEnqueueOwnerStopped(operationId)
+        assertEquals(
+            listOf(
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                ExistingWorkPolicy.KEEP,
+            ),
+            policies,
+        )
+        assertTrue(workNames.all { it == LowQualityRedownloadWorker.uniqueWorkName(operationId) })
+    }
+
+    @Test
+    fun confirmationPreparingAsyncOperationFailureRetriesExactPhase() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operationId = createAwaitingSelectionOperationWithIdentity(341)
+        val calls = AtomicInteger(0)
+        val policies = Collections.synchronizedList(mutableListOf<ExistingWorkPolicy>())
+        val first = ControlledWorkManagerOperation()
+        val second = ControlledWorkManagerOperation()
+        val manager = LowQualityRedownloadManager.createForTesting(
+            context = context,
+            database = database,
+        ) { _, policy, _ ->
+            policies += policy
+            if (calls.getAndIncrement() == 0) first else second
+        }
+
+        manager.confirm(operationId)
+        awaitEnqueueCalls(calls, 1)
+        assertEquals(
+            LowQualityRedownloadPhase.PREPARING,
+            repository.getOperation(operationId)?.phaseValue,
+        )
+        first.fail(IllegalStateException("injected asynchronous enqueue failure"))
+        awaitEnqueueCalls(calls, 2)
+        second.succeed()
+        awaitEnqueueOwnerStopped(operationId)
+        assertEquals(
+            listOf(
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                ExistingWorkPolicy.KEEP,
+            ),
+            policies,
+        )
+    }
+
+    @Test
+    fun initialScanningEnqueueFailureConvergesWithoutFeatureReentry() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val calls = AtomicInteger(0)
+        val second = ControlledWorkManagerOperation()
+        val manager = LowQualityRedownloadManager.createForTesting(
+            context = context,
+            database = database,
+        ) { _, _, _ ->
+            if (calls.getAndIncrement() == 0) {
+                throw IllegalStateException("injected scanning enqueue failure")
+            }
+            second
+        }
+
+        manager.startOrReconnect()
+        awaitEnqueueCalls(calls, 2)
+        val operationId = checkNotNull(repository.getActiveOperation()).operationId
+        assertEquals(
+            LowQualityRedownloadPhase.SCANNING,
+            repository.getOperation(operationId)?.phaseValue,
+        )
+        second.succeed()
+        awaitEnqueueOwnerStopped(operationId)
+        assertEquals(2, calls.get())
+    }
+
+    @Test
+    fun preparingRecoveryEnqueueFailureConvergesSameProcess() = runBlocking {
+        assertRecoveryEnqueueFailureConverges(
+            phase = LowQualityRedownloadPhase.PREPARING,
+            historyId = 342,
+        )
+    }
+
+    @Test
+    fun queueingRecoveryEnqueueFailureConvergesSameProcess() = runBlocking {
+        assertRecoveryEnqueueFailureConverges(
+            phase = LowQualityRedownloadPhase.QUEUEING,
+            historyId = 343,
+        )
+    }
+
+    @Test
+    fun enqueueRetryProcessDeathReconstructsExactPhaseCarrier() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        assertTrue(
+            repository.advancePhase(
+                operation.operationId,
+                LowQualityRedownloadPhase.SCANNING,
+                LowQualityRedownloadPhase.PREPARING,
+            )
+        )
+        LowQualityRedownloadLedger.cancelAllEnqueueConvergenceJobsForTesting()
+        val calls = AtomicInteger(0)
+        val accepted = ControlledWorkManagerOperation()
+        val recreatedManager = LowQualityRedownloadManager.createForTesting(
+            context = context,
+            database = database,
+        ) { _, _, _ ->
+            calls.incrementAndGet()
+            accepted
+        }
+
+        runStartupReconciliation(
+            readiness = CompletableDeferred(true),
+            reconcile = { recreatedManager.reconcile() },
+            reportFailure = { throw AssertionError("Unexpected low-quality startup failure", it) },
+        )
+        awaitEnqueueCalls(calls, 1)
+        assertEquals(
+            LowQualityRedownloadPhase.PREPARING,
+            repository.getOperation(operation.operationId)?.phaseValue,
+        )
+        accepted.succeed()
+        awaitEnqueueOwnerStopped(operation.operationId)
+    }
+
+    @Test
+    fun cancellationRevokesPendingEnqueueRetryBeforeLateAcceptance() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val calls = AtomicInteger(0)
+        val lateAcceptance = ControlledWorkManagerOperation()
+        val manager = LowQualityRedownloadManager.createForTesting(
+            context = context,
+            database = database,
+        ) { _, _, _ ->
+            if (calls.getAndIncrement() == 0) {
+                throw IllegalStateException("injected retryable enqueue failure")
+            }
+            lateAcceptance
+        }
+
+        manager.startOrReconnect()
+        awaitEnqueueCalls(calls, 2)
+        assertTrue(
+            LowQualityRedownloadLedger.isEnqueueConvergenceActiveForTesting(
+                operation.operationId,
+            )
+        )
+        val cancelled = CompletableDeferred<Unit>()
+        manager.cancel(operation.operationId) { cancelled.complete(Unit) }
+        cancelled.await()
+        awaitEnqueueOwnerStopped(operation.operationId)
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+        val callsAfterCancel = calls.get()
+        lateAcceptance.succeed()
+        delay(250L)
+        assertEquals(callsAfterCancel, calls.get())
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
+    }
+
+    @Test
     fun strongerSaveRollbackPreservesExactLiveUndoOwner() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
         val downloadId = linkDownload(
@@ -3612,6 +4189,90 @@ class LowQualityRedownloadPersistenceTest {
         }
     }
 
+    private suspend fun awaitEnqueueCalls(
+        calls: AtomicInteger,
+        expected: Int,
+    ) {
+        withTimeout(5_000L) {
+            while (calls.get() < expected) {
+                delay(10L)
+            }
+        }
+    }
+
+    private suspend fun awaitEnqueueOwnerStopped(operationId: String) {
+        withTimeout(20_000L) {
+            while (LowQualityRedownloadLedger.isEnqueueConvergenceActiveForTesting(operationId)) {
+                delay(25L)
+            }
+        }
+    }
+
+    private suspend fun assertRecoveryEnqueueFailureConverges(
+        phase: LowQualityRedownloadPhase,
+        historyId: Long,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        assertTrue(
+            repository.advancePhase(
+                operation.operationId,
+                LowQualityRedownloadPhase.SCANNING,
+                phase,
+            )
+        )
+        val calls = AtomicInteger(0)
+        val first = ControlledWorkManagerOperation()
+        val second = ControlledWorkManagerOperation()
+        val manager = LowQualityRedownloadManager.createForTesting(
+            context = context,
+            database = database,
+        ) { _, _, _ ->
+            if (calls.getAndIncrement() == 0) first else second
+        }
+
+        manager.reconcile()
+        awaitEnqueueCalls(calls, 1)
+        assertEquals(phase, repository.getOperation(operation.operationId)?.phaseValue)
+        first.fail(IllegalStateException("injected $phase enqueue failure ($historyId)"))
+        awaitEnqueueCalls(calls, 2)
+        second.succeed()
+        awaitEnqueueOwnerStopped(operation.operationId)
+        assertEquals(phase, repository.getOperation(operation.operationId)?.phaseValue)
+    }
+
+    private suspend fun createAwaitingSelectionOperationWithIdentity(historyId: Long): String {
+        val operation = repository.createOrReconnect(now = 100)
+        database.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = operation.operationId,
+                historyId = historyId,
+                intendedSourceUrl = "https://example.com/$historyId",
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.PENDING.name,
+            )
+        )
+        assertTrue(
+            repository.advancePhase(
+                operation.operationId,
+                LowQualityRedownloadPhase.SCANNING,
+                LowQualityRedownloadPhase.AWAITING_SELECTION,
+            )
+        )
+        return operation.operationId
+    }
+
+    private suspend fun runStartupUndoRecovery(context: Context) {
+        runStartupCancellationReconciliation(
+            reconcile = {
+                LowQualityRedownloadManager.get(context)
+                    .reconcileCancellationDebt(database)
+            },
+            reportFailure = { throw AssertionError("Unexpected startup Undo recovery failure", it) },
+        )
+    }
+
     @Test
     fun cancelRequestedQualityReplacementCannotBeQueuedOrClaimed() = runBlocking {
         val operation = repository.createOrReconnect(now = 100)
@@ -3805,6 +4466,25 @@ class LowQualityRedownloadPersistenceTest {
         playlistURL = HistoryRedownloadMarker.quality(historyId, 1080),
         operationId = "download-operation"
     )
+
+    private class ControlledWorkManagerOperation : Operation {
+        private val state = MutableLiveData<Operation.State>(Operation.IN_PROGRESS)
+        private val result = SettableFuture.create<Operation.State.SUCCESS>()
+
+        override fun getState(): LiveData<Operation.State> = state
+
+        override fun getResult(): ListenableFuture<Operation.State.SUCCESS> = result
+
+        fun succeed() {
+            state.postValue(Operation.SUCCESS)
+            result.set(Operation.SUCCESS)
+        }
+
+        fun fail(error: Throwable) {
+            state.postValue(Operation.State.FAILURE(error))
+            result.setException(error)
+        }
+    }
 
     private class ControlledNativeProcess(
         private val acknowledgeOnForce: Boolean,

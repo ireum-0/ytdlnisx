@@ -5,6 +5,8 @@ import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.Operation
+import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
@@ -17,15 +19,21 @@ import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.util.LowQualityRedownloadNotification
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-class LowQualityRedownloadManager private constructor(context: Context) {
+class LowQualityRedownloadManager private constructor(
+    context: Context,
+    databaseOverride: DBManager? = null,
+    private val enqueueOverride:
+        ((String, ExistingWorkPolicy, OneTimeWorkRequest) -> Operation)? = null,
+) {
     private val appContext = context.applicationContext
-    private val database = DBManager.getInstance(appContext)
+    private val database = databaseOverride ?: DBManager.getInstance(appContext)
     private val repository = LowQualityRedownloadRepository(database)
     private val workManager = WorkManager.getInstance(appContext)
     // Selection toggles and confirm/cancel commands must retain call order even though
@@ -62,6 +70,16 @@ class LowQualityRedownloadManager private constructor(context: Context) {
                 repository.requestCancellation(operationId)
                 completeCancellation(operationId)
             } catch (cancelled: CancellationException) {
+                // requestCancellation() may already have committed the
+                // durable revocation before coroutine cancellation interrupts
+                // phase two.  Keep an exact-state convergence owner alive so
+                // cancellation cannot strand that operation or leave a stale
+                // enqueue retry responsible for it.
+                LowQualityRedownloadLedger.scheduleCancellationConvergence(
+                    appContext,
+                    operationId,
+                    database,
+                )
                 throw cancelled
             } catch (error: Exception) {
                 // The phase-one transaction may have committed even though a
@@ -71,6 +89,7 @@ class LowQualityRedownloadManager private constructor(context: Context) {
                 LowQualityRedownloadLedger.scheduleCancellationConvergence(
                     appContext,
                     operationId,
+                    database,
                 )
                 android.util.Log.e(
                     "LowQualityRedownload",
@@ -132,6 +151,7 @@ class LowQualityRedownloadManager private constructor(context: Context) {
         recoveryRepository: LowQualityRedownloadRepository = repository,
     ) {
         try {
+            LowQualityRedownloadLedger.cancelEnqueueConvergence(operationId)
             workManager.cancelAllWorkByTag(LowQualityRedownloadWorker.operationTag(operationId))
             val result = recoveryRepository.completePersistedCancellationWithPublications(
                 operationId = operationId,
@@ -207,10 +227,86 @@ class LowQualityRedownloadManager private constructor(context: Context) {
             .addTag(LowQualityRedownloadWorker.GLOBAL_TAG)
             .addTag(LowQualityRedownloadWorker.operationTag(operationId))
             .build()
-        workManager.enqueueUniqueWork(
-            LowQualityRedownloadWorker.uniqueWorkName(operationId),
-            policy,
-            request
+        enqueueAttempt(
+            operationId = operationId,
+            networkRequired = networkRequired,
+            policy = policy,
+            request = request,
+        ) { failure ->
+            if (failure != null) {
+                scheduleEnqueueRetry(operationId, networkRequired)
+            }
+        }
+    }
+
+    /** Observe Operation.result; invoking enqueue is not acceptance. */
+    private fun enqueueAttempt(
+        operationId: String,
+        networkRequired: Boolean,
+        policy: ExistingWorkPolicy,
+        request: OneTimeWorkRequest,
+        completion: (Throwable?) -> Unit,
+    ) {
+        try {
+            val operation = enqueueOverride?.invoke(
+                LowQualityRedownloadWorker.uniqueWorkName(operationId),
+                policy,
+                request,
+            ) ?: workManager.enqueueUniqueWork(
+                LowQualityRedownloadWorker.uniqueWorkName(operationId),
+                policy,
+                request,
+            )
+            operation.result.addListener(
+                {
+                    completion(
+                        runCatching { operation.result.get() }.exceptionOrNull()
+                    )
+                },
+                Runnable::run,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            completion(failure)
+        }
+    }
+
+    private fun scheduleEnqueueRetry(
+        operationId: String,
+        networkRequired: Boolean,
+    ) {
+        LowQualityRedownloadLedger.scheduleEnqueueConvergence(
+            dbManager = database,
+            operationId = operationId,
+            networkRequired = networkRequired,
+            enqueueAttempt = { retryOperationId, retryNetworkRequired, retryPolicy, completion ->
+                val constraints = Constraints.Builder().apply {
+                    if (retryNetworkRequired) {
+                        setRequiredNetworkType(NetworkType.CONNECTED)
+                    }
+                }.build()
+                val retryRequest = OneTimeWorkRequestBuilder<LowQualityRedownloadWorker>()
+                    .setConstraints(constraints)
+                    .setInputData(
+                        Data.Builder()
+                            .putString(
+                                LowQualityRedownloadWorker.KEY_OPERATION_ID,
+                                retryOperationId,
+                            )
+                            .build()
+                    )
+                    .addTag(LowQualityRedownloadWorker.GLOBAL_TAG)
+                    .addTag(LowQualityRedownloadWorker.operationTag(retryOperationId))
+                    .build()
+                enqueueAttempt(
+                    operationId = retryOperationId,
+                    networkRequired = retryNetworkRequired,
+                    policy = retryPolicy,
+                    request = retryRequest,
+                    completion = completion,
+                )
+            },
         )
     }
 
@@ -222,6 +318,17 @@ class LowQualityRedownloadManager private constructor(context: Context) {
             instance ?: synchronized(this) {
                 instance ?: LowQualityRedownloadManager(context).also { instance = it }
             }
+
+        /** Uses the production manager path with only the WorkManager result injected. */
+        internal fun createForTesting(
+            context: Context,
+            database: DBManager,
+            enqueue: (String, ExistingWorkPolicy, OneTimeWorkRequest) -> Operation,
+        ): LowQualityRedownloadManager = LowQualityRedownloadManager(
+            context = context,
+            databaseOverride = database,
+            enqueueOverride = enqueue,
+        )
     }
 }
 
@@ -276,6 +383,12 @@ object LowQualityRedownloadLedger {
     private val cancellationJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
     private val abandonedUndoJobs =
         java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+    private val enqueueJobs =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+
+    /** Test seam for the first post-commit notification/ledger refresh step. */
+    @Volatile
+    internal var refreshFailureForTesting: (() -> Exception?)? = null
 
     suspend fun transition(
         context: Context,
@@ -430,6 +543,102 @@ object LowQualityRedownloadLedger {
     }
 
     /**
+     * Owns the exact durable low-quality phase until WorkManager's Operation
+     * has accepted the unique work.  It is intentionally independent of the
+     * manager's limitedParallelism(1) command lane, so cancellation can still
+     * establish cancelRequested while this carrier retries.
+     */
+    fun scheduleEnqueueConvergence(
+        dbManager: DBManager,
+        operationId: String,
+        networkRequired: Boolean,
+        enqueueAttempt: (
+            String,
+            Boolean,
+            ExistingWorkPolicy,
+            (Throwable?) -> Unit,
+        ) -> Unit,
+    ) {
+        if (operationId.isBlank()) return
+        enqueueJobs.computeIfAbsent(operationId) {
+            convergenceScope.launch {
+                val ownerJob = coroutineContext[Job]
+                var retryDelayMs = 100L
+                try {
+                    while (true) {
+                        val repository = LowQualityRedownloadRepository(dbManager)
+                        val operation = try {
+                            repository.getOperation(operationId)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            android.util.Log.w(
+                                "LowQualityRedownload",
+                                "Could not inspect enqueue carrier operation=$operationId",
+                                error,
+                            )
+                            delay(retryDelayMs)
+                            retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                            continue
+                        }
+                        if (operation == null || operation.stateValue.isTerminal || operation.cancelRequested) {
+                            return@launch
+                        }
+                        val phaseMatches = if (networkRequired) {
+                            operation.phaseValue in setOf(
+                                LowQualityRedownloadPhase.PREPARING,
+                                LowQualityRedownloadPhase.QUEUEING,
+                            )
+                        } else {
+                            operation.phaseValue == LowQualityRedownloadPhase.SCANNING
+                        }
+                        if (!phaseMatches) return@launch
+
+                        val result = CompletableDeferred<Throwable?>()
+                        try {
+                            // KEEP is used by every retry.  The unique name is
+                            // the exact operation carrier and prevents a late
+                            // retry from creating a second worker generation.
+                            enqueueAttempt(
+                                operationId,
+                                networkRequired,
+                                ExistingWorkPolicy.KEEP,
+                            ) { failure -> result.complete(failure) }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Throwable) {
+                            result.complete(error)
+                        }
+                        val failure = result.await()
+                        if (failure == null) return@launch
+                        android.util.Log.w(
+                            "LowQualityRedownload",
+                            "Low-quality enqueue acceptance retry operation=$operationId",
+                            failure,
+                        )
+                        delay(retryDelayMs)
+                        retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                    }
+                } finally {
+                    if (ownerJob != null) enqueueJobs.remove(operationId, ownerJob)
+                }
+            }
+        }
+    }
+
+    internal fun isEnqueueConvergenceActiveForTesting(operationId: String): Boolean =
+        enqueueJobs[operationId]?.isActive == true
+
+    internal fun cancelEnqueueConvergence(operationId: String) {
+        enqueueJobs.remove(operationId)?.cancel()
+    }
+
+    internal fun cancelAllEnqueueConvergenceJobsForTesting() {
+        enqueueJobs.values.forEach { it.cancel() }
+        enqueueJobs.clear()
+    }
+
+    /**
      * Phase-one cancellation is durable even when native cancellation or the
      * phase-two Room transaction fails.  Keep retrying the exact operation in
      * this process; startup recovery invokes the same protocol after process
@@ -503,6 +712,7 @@ object LowQualityRedownloadLedger {
                             if (!operation.cancelRequested) {
                                 return@launch
                             }
+                            cancelEnqueueConvergence(operationId)
                             try {
                                 val result = repository.completePersistedCancellationWithPublications(
                                     operationId = operationId,
@@ -587,6 +797,7 @@ object LowQualityRedownloadLedger {
     }
 
     suspend fun refresh(context: Context, operationIds: Collection<String>) {
+        refreshFailureForTesting?.invoke()?.let { throw it }
         if (operationIds.isEmpty()) return
         val appContext = context.applicationContext
         val repository = LowQualityRedownloadRepository(DBManager.getInstance(appContext))

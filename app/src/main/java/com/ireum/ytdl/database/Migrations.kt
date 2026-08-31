@@ -441,6 +441,21 @@ object Migrations {
                 "ALTER TABLE low_quality_redownload_items " +
                     "ADD COLUMN intendedType TEXT NOT NULL DEFAULT ''"
             )
+        },
+        Migration(58, 59) { database ->
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `pending_undo_carriers` (" +
+                    "`token` TEXT NOT NULL, " +
+                    "`kind` TEXT NOT NULL, " +
+                    "`ownerId` TEXT NOT NULL DEFAULT '', " +
+                    "`authorityGeneration` INTEGER NOT NULL DEFAULT 0, " +
+                    "`resolutionIntent` TEXT NOT NULL DEFAULT '', " +
+                    "`resolverGeneration` INTEGER NOT NULL DEFAULT 0, " +
+                    "`snapshotJson` TEXT NOT NULL DEFAULT '', " +
+                    "`createdAt` INTEGER NOT NULL DEFAULT 0, " +
+                    "`updatedAt` INTEGER NOT NULL DEFAULT 0, " +
+                    "PRIMARY KEY(`token`))"
+            )
         }
     )
 
