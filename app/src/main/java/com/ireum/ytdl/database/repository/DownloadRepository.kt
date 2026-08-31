@@ -701,6 +701,7 @@ class DownloadRepository(private val database: DBManager) {
                 generation = nextUndoPresentationGeneration.incrementAndGet(),
             )
             issuedUndoPresentationOwners[next.id] = next
+            activeUndoPresentationOwners[next.id] = next.generation
             next
         }
         // Keep the no-owner compatibility overloads usable by older tests and
@@ -847,6 +848,7 @@ class DownloadRepository(private val database: DBManager) {
             generation = nextUndoPresentationGeneration.incrementAndGet(),
         )
         issuedUndoPresentationOwners[next.id] = next
+        activeUndoPresentationOwners[next.id] = next.generation
         legacyUndoPresentationOwnerHandle = next
         next
     }
@@ -866,6 +868,7 @@ class DownloadRepository(private val database: DBManager) {
             val issued = issuedUndoPresentationOwners[owner.id]
             if (issued == null || issued.generation != owner.generation) return emptyList()
             issuedUndoPresentationOwners.remove(owner.id)
+            activeUndoPresentationOwners.remove(owner.id)
             abandonedUndoOwners += owner.id
             tokens = undoAuthorities.entries
                 .filter { (_, authority) ->
@@ -900,7 +903,10 @@ class DownloadRepository(private val database: DBManager) {
         synchronized(undoAuthorityLock) {
             val owners = issuedUndoPresentationOwners.values.toList()
             issuedUndoPresentationOwners.clear()
-            owners.forEach { abandonedUndoOwners += it.id }
+            owners.forEach {
+                activeUndoPresentationOwners.remove(it.id)
+                abandonedUndoOwners += it.id
+            }
             val ownerKeys = owners.map { it.id to it.generation }.toSet()
             tokens = undoAuthorities.entries
                 .filter { (_, authority) ->
@@ -1188,6 +1194,7 @@ class DownloadRepository(private val database: DBManager) {
                 authority.kind != kind ||
                     authority.ownerId != owner.id ||
                     authority.ownerGeneration != owner.generation ||
+                    issuedUndoPresentationOwners[owner.id]?.generation != owner.generation ||
                     abandonedUndoOwners.contains(owner.id) ||
                     !authority.durableCarrierCommitted
             ) {
@@ -1246,6 +1253,7 @@ class DownloadRepository(private val database: DBManager) {
             authority.kind != kind ||
                 authority.ownerId != owner.id ||
                 authority.ownerGeneration != owner.generation ||
+                issuedUndoPresentationOwners[owner.id]?.generation != owner.generation ||
                 abandonedUndoOwners.contains(owner.id) ||
                 !authority.durableCarrierCommitted ||
                 authority.state != resolvingStateFor(intent) ||
@@ -3740,6 +3748,8 @@ class DownloadRepository(private val database: DBManager) {
         private val nextUndoGeneration = AtomicLong(0L)
         private val nextUndoPresentationGeneration = AtomicLong(0L)
         private val undoAuthorities = mutableMapOf<String, UndoAuthority>()
+        /** Exact owner generations currently reachable by a live UI scope. */
+        private val activeUndoPresentationOwners = mutableMapOf<String, Long>()
         private val abandonedUndoOwners = mutableSetOf<String>()
         private val pendingRemovalSnapshots = ConcurrentHashMap<String, DownloadRemovalSnapshot>()
 
@@ -3827,14 +3837,28 @@ class DownloadRepository(private val database: DBManager) {
         internal var terminalizeLinkedChildrenFailureForTesting: (() -> Exception?)? = null
 
         internal fun isLivePendingRemovalToken(token: String): Boolean =
-            undoAuthorityState(token) == UndoAuthorityState.LIVE_UI
+            synchronized(undoAuthorityLock) {
+                undoAuthorities[token]?.let {
+                    it.state == UndoAuthorityState.LIVE_UI &&
+                        isReachableUndoPresentationOwner(it)
+                } == true
+            }
 
         internal fun isLivePendingCancellationToken(token: String): Boolean =
-            undoAuthorityState(token) == UndoAuthorityState.LIVE_UI
+            synchronized(undoAuthorityLock) {
+                undoAuthorities[token]?.let {
+                    it.state == UndoAuthorityState.LIVE_UI &&
+                        isReachableUndoPresentationOwner(it)
+                } == true
+            }
 
         internal fun isProcessLocalPendingUndoAuthority(token: String): Boolean =
             synchronized(undoAuthorityLock) {
-                when (undoAuthorities[token]?.state) {
+                val authority = undoAuthorities[token]
+                if (authority == null || !isReachableUndoPresentationOwner(authority)) {
+                    return@synchronized false
+                }
+                when (authority.state) {
                     UndoAuthorityState.PREPARED_UNPUBLISHED,
                     UndoAuthorityState.LIVE_UI,
                     UndoAuthorityState.RESOLVING_RESTORE,
@@ -3883,9 +3907,6 @@ class DownloadRepository(private val database: DBManager) {
                 true
             }
 
-        private fun undoAuthorityState(token: String): UndoAuthorityState? =
-            synchronized(undoAuthorityLock) { undoAuthorities[token]?.state }
-
         internal fun releaseLivePendingCancellationToken(token: String) {
             synchronized(undoAuthorityLock) {
                 val authority = undoAuthorities[token]
@@ -3898,10 +3919,16 @@ class DownloadRepository(private val database: DBManager) {
         internal fun clearLivePendingRemovalTokensForTest() {
             synchronized(undoAuthorityLock) {
                 undoAuthorities.clear()
+                activeUndoPresentationOwners.clear()
                 abandonedUndoOwners.clear()
                 pendingRemovalSnapshots.clear()
             }
         }
+
+        private fun isReachableUndoPresentationOwner(authority: UndoAuthority): Boolean =
+            authority.ownerId.isNotBlank() &&
+                activeUndoPresentationOwners[authority.ownerId] == authority.ownerGeneration
+
         private const val DOWNLOAD_WORK_NAME = "download"
         private const val SCHEDULED_DOWNLOAD_WORK_NAME = "scheduledDownload"
     }
