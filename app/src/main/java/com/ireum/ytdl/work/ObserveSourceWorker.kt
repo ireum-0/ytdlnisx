@@ -67,6 +67,9 @@ class ObserveSourceWorker(
         const val INPUT_SOURCE_ID = "id"
         const val INPUT_CONFIRMED_URL = "confirmedUrl"
         const val INPUT_CONFIRMATION_DECISION = "confirmationDecision"
+        const val INPUT_HANDOFF_ID = "handoffId"
+        const val INPUT_HANDOFF_REQUEST_ID = "handoffRequestId"
+        const val INPUT_CONFIG_FINGERPRINT = "configFingerprint"
         private const val OBS_DUP_LOG_TAG = "ObserveDuplicate"
     }
 
@@ -223,8 +226,24 @@ class ObserveSourceWorker(
     private suspend fun recoverFailedRun(error: Exception): Result {
         val sourceID = inputData.getLong(INPUT_SOURCE_ID, 0L)
         if (sourceID == 0L) return Result.failure()
+        val handoffId = inputData.getString(INPUT_HANDOFF_ID).orEmpty()
+        val handoffRequestId = inputData.getString(INPUT_HANDOFF_REQUEST_ID).orEmpty()
         return try {
             val dbManager = DBManager.getInstance(context)
+            if (handoffId.isNotBlank() && handoffRequestId.isNotBlank()) {
+                // A confirmed notification action has its own exact durable
+                // carrier.  Do not turn a fetch/queue failure into a normal
+                // observation successor: WorkManager must retry this same
+                // semantic Download decision.
+                val source = withContext(Dispatchers.IO) {
+                    dbManager.observeSourcesDao.getByIDOrNull(sourceID)
+                }
+                if (source == null || source.status == ObserveSourcesRepository.SourceStatus.STOPPED) {
+                    resolveConfirmedRetry(handoffId, handoffRequestId)
+                    return Result.success()
+                }
+                return Result.retry()
+            }
             val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
             val repo = ObserveSourcesRepository(
                 dbManager.observeSourcesDao,
@@ -255,6 +274,9 @@ class ObserveSourceWorker(
         if (sourceID == 0L) return Result.success()
         val confirmedCanonicalUrl = inputData.getString(INPUT_CONFIRMED_URL)?.let(::canonicalUrl)
         val confirmationDecision = inputData.getString(INPUT_CONFIRMATION_DECISION).orEmpty()
+        val handoffId = inputData.getString(INPUT_HANDOFF_ID).orEmpty()
+        val handoffRequestId = inputData.getString(INPUT_HANDOFF_REQUEST_ID).orEmpty()
+        val handoffConfigFingerprint = inputData.getString(INPUT_CONFIG_FINGERPRINT).orEmpty()
 
         val notificationUtil = NotificationUtil(App.instance)
         val dbManager = DBManager.getInstance(context)
@@ -269,7 +291,19 @@ class ObserveSourceWorker(
         val ytdlpUtil = YTDLPUtil(context, commandTemplateDao)
 
         val item = repo.getByID(sourceID)
+        if (
+            handoffId.isNotBlank() &&
+            handoffConfigFingerprint.isNotBlank() &&
+            WorkManagerHandoffRecovery.observeConfigFingerprint(item) != handoffConfigFingerprint
+        ) {
+            // Reconfiguration revokes the old notification generation.  It
+            // is an explicit stale/refused result, never permission to queue
+            // against the new source configuration.
+            resolveConfirmedRetry(handoffId, handoffRequestId)
+            return Result.success()
+        }
         if (item.status == ObserveSourcesRepository.SourceStatus.STOPPED){
+            resolveConfirmedRetry(handoffId, handoffRequestId)
             return Result.success()
         }
 
@@ -353,6 +387,9 @@ class ObserveSourceWorker(
                     )
                 }
             }
+            if (handoffId.isNotBlank()) {
+                throw error ?: IllegalStateException("Confirmed Observe Retry fetch failed")
+            }
             return finishRunAndSchedule(
                 repo = repo,
                 sharedPreferences = sharedPreferences,
@@ -411,6 +448,7 @@ class ObserveSourceWorker(
             .forEach { item.observedLinks.add(it) }
 
         if (!AutomaticKeywordCoveragePolicy.mayQueueDownloads(item.observationPurpose)) {
+            resolveConfirmedRetry(handoffId, handoffRequestId)
             return finishRunAndSchedule(
                 repo = repo,
                 sharedPreferences = sharedPreferences,
@@ -514,6 +552,7 @@ class ObserveSourceWorker(
                 context.getString(com.ireum.ytdl.R.string.observe_log_all_already_downloaded)
             }
 
+            resolveConfirmedRetry(handoffId, handoffRequestId)
             return finishRunAndSchedule(repo, sharedPreferences, sourceID, item, runMessage)
         }
 
@@ -879,6 +918,12 @@ class ObserveSourceWorker(
             queuedItems.forEach { rememberProcessedUrl(canonicalUrl(it.url)) }
         }
 
+        // The exact Download decision is complete only after the target was
+        // inserted or duplicate policy explicitly refused it.  Marking this
+        // before the recurring successor is scheduled prevents a process
+        // death/late failure from replaying the notification decision.
+        resolveConfirmedRetry(handoffId, handoffRequestId)
+
         val result = finishRunAndSchedule(
             repo = repo,
             sharedPreferences = sharedPreferences,
@@ -898,7 +943,8 @@ class ObserveSourceWorker(
                 sourceId = sourceID,
                 sourceName = item.name,
                 videoTitle = confirmationCandidate.title,
-                canonicalUrl = canonicalUrl(confirmationCandidate.url)
+                canonicalUrl = canonicalUrl(confirmationCandidate.url),
+                configFingerprint = WorkManagerHandoffRecovery.observeConfigFingerprint(item),
             )
             if (!shown) notificationUtil.cancelObserveRetryConfirmation(sourceID)
         } else {
@@ -906,6 +952,23 @@ class ObserveSourceWorker(
         }
 
         return result
+    }
+
+    private suspend fun resolveConfirmedRetry(
+        handoffId: String,
+        handoffRequestId: String,
+    ) {
+        if (handoffId.isBlank()) return
+        check(handoffRequestId.isNotBlank()) { "Observe Retry handoff has no request identity" }
+        check(
+            WorkManagerHandoffRecovery.markObserveRetryResolved(
+                context = context,
+                handoffId = handoffId,
+                requestId = handoffRequestId,
+            )
+        ) {
+            "Observe Retry handoff resolution was not exact: $handoffId/$handoffRequestId"
+        }
     }
 
     private fun automaticKeywordError(error: Throwable?): String {

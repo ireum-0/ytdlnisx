@@ -35,6 +35,8 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.database.viewmodel.YTDLPViewModel
 import com.ireum.ytdl.ui.adapter.QueuedDownloadAdapter
+import com.ireum.ytdl.ui.UndoPresentationLifetime
+import com.ireum.ytdl.ui.setManualUndoAction
 import com.ireum.ytdl.util.Extensions.enableFastScroll
 import com.ireum.ytdl.util.Extensions.forceFastScrollMode
 import com.ireum.ytdl.util.Extensions.toListString
@@ -68,6 +70,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
     private var totalSize: Int = 0
     private var actionMode : ActionMode? = null
     private var undoPresentationOwner: DownloadRepository.UndoPresentationOwner? = null
+    private val undoPresentationLifetime = UndoPresentationLifetime()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -85,6 +88,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
     @SuppressLint("SetTextI18n", "RestrictedApi")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        undoPresentationLifetime.attach(viewLifecycleOwner.lifecycleScope)
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
         fileSize = view.findViewById(R.id.filesize)
         dragHandleToggle = view.findViewById(R.id.drag)
@@ -148,43 +152,58 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
     }
 
     private fun removeItem(id: Long){
-        viewLifecycleOwner.lifecycleScope.launch {
+        val owner = undoPresentationOwner ?: return
+        val anchor = queuedRecyclerView
+        val presentationScope = undoPresentationLifetime.current() ?: return
+        val context = requireContext()
+        presentationScope.launch {
             val item = withContext(Dispatchers.IO){
                 downloadViewModel.getItemByID(id)
             }
-            val deleteDialog = MaterialAlertDialogBuilder(requireContext())
+            if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) return@launch
+            val deleteDialog = MaterialAlertDialogBuilder(context)
             deleteDialog.setTitle(getString(R.string.you_are_going_to_delete) + " \"" + item.title.ifEmpty { item.url } + "\"!")
             deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
             deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
                 val wasWaitingForMembership =
                     item.status == DownloadRepository.Status.WaitingForMembership.toString()
-                undoPresentationOwner?.let { owner ->
-                    viewLifecycleOwner.lifecycleScope.launch {
+                presentationScope.launch {
                         val pendingToken = withContext(Dispatchers.IO) {
                             downloadViewModel.beginUndoableCancellation(item.id, owner)
                         }
                         try {
+                            if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) {
+                                pendingToken?.let(downloadViewModel::abandonUndoCapabilityAfterConsumerFailure)
+                                return@launch
+                            }
                             var resolutionAccepted = false
+                            var selectedIntent: PendingUndoResolutionIntent? = null
                             lateinit var snackbar: Snackbar
                             snackbar = Snackbar.make(
-                                queuedRecyclerView,
+                                anchor,
                                 getString(R.string.cancelled) + ": " + item.title.ifEmpty { item.url },
                                 Snackbar.LENGTH_INDEFINITE,
-                            ).setAction(getString(R.string.undo)) {
+                            ).setManualUndoAction(getString(R.string.undo)) {
                                 if (pendingToken != null) {
                                     resolutionAccepted = downloadViewModel.undoPendingCancellation(
                                         item,
                                         pendingToken,
                                         owner,
                                     )
+                                    if (resolutionAccepted) {
+                                        selectedIntent = PendingUndoResolutionIntent.RESTORE
+                                    }
+                                    resolutionAccepted
                                 } else {
-                                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                                    presentationScope.launch(Dispatchers.IO) {
                                         if (wasWaitingForMembership) {
                                             downloadViewModel.restoreMembershipWaiting(item)
                                         } else {
                                             downloadViewModel.undoCancelledDownload(item)
                                         }
                                     }
+                                    selectedIntent = PendingUndoResolutionIntent.RESTORE
+                                    true
                                 }
                             }
                             if (pendingToken != null) {
@@ -194,7 +213,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                                     }
 
                                     override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
-                                        if (event != DISMISS_EVENT_ACTION) {
+                                        if (selectedIntent == null && event != DISMISS_EVENT_ACTION) {
                                             val committed = downloadViewModel.commitPendingCancellation(
                                                 item.id,
                                                 pendingToken,
@@ -215,7 +234,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                                                         )
                                                     }
                                             }
-                                        } else if (
+                                        } else if (selectedIntent == null &&
                                             !resolutionAccepted &&
                                             downloadViewModel.reofferCancellationUndoCapabilityAfterResolutionFailure(
                                                 pendingToken,
@@ -238,8 +257,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
                             pendingToken?.let(downloadViewModel::abandonUndoCapabilityAfterConsumerFailure)
                             throw failure
                         }
-                    }
-                }
+            }
             }
             deleteDialog.show()
         }
@@ -627,6 +645,7 @@ class QueuedDownloadsFragment : Fragment(), QueuedDownloadAdapter.OnItemClickLis
     }
 
     override fun onDestroyView() {
+        undoPresentationLifetime.cancel()
         if (::downloadViewModel.isInitialized) {
             undoPresentationOwner?.let(downloadViewModel::abandonPendingUndoCapabilitiesForView)
         }

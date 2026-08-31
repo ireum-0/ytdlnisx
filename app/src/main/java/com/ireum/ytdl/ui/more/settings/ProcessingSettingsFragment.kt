@@ -20,6 +20,7 @@ class ProcessingSettingsFragment : BaseSettingsFragment() {
         setPreferencesFromResource(R.xml.processing_preferences, rootKey)
         val prefs = PreferenceManager.getDefaultSharedPreferences(requireActivity())
         val editor = prefs.edit()
+        var latestHardSubHandoffId: String? = null
 
         val preferredFormatID : EditTextPreference? = findPreference("format_id")
         val preferredFormatIDAudio : EditTextPreference? = findPreference("format_id_audio")
@@ -43,8 +44,26 @@ class ProcessingSettingsFragment : BaseSettingsFragment() {
         }
 
         findPreference<Preference>("hard_sub_scan_now")?.setOnPreferenceClickListener {
-            HardSubScanWorker.enqueue(requireContext())
-            Toast.makeText(requireContext(), getString(R.string.hard_sub_scan_started), Toast.LENGTH_SHORT).show()
+            val context = requireContext()
+            // Invalidate the previous REPLACE generation before preparing the
+            // next one. A failed preparation must not leave an older
+            // operation eligible to report the new request's result.
+            latestHardSubHandoffId = null
+            HardSubScanWorker.enqueueWithGeneration(
+                context = context,
+                onPrepared = { handoffId -> latestHardSubHandoffId = handoffId },
+            ) { handoffId, outcome ->
+                if (handoffId != latestHardSubHandoffId) return@enqueueWithGeneration
+                if (!isAdded) return@enqueueWithGeneration
+                val message = if (outcome.accepted) {
+                    R.string.hard_sub_scan_started
+                } else if (!outcome.superseded) {
+                    R.string.hard_sub_scan_enqueue_failed
+                } else {
+                    return@enqueueWithGeneration
+                }
+                Toast.makeText(context, getString(message), Toast.LENGTH_SHORT).show()
+            }
             true
         }
 

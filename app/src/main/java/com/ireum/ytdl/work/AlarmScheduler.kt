@@ -7,11 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.preference.PreferenceManager
-import androidx.work.Constraints
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
+import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.receiver.CancelScheduleAlarmReceiver
 import com.ireum.ytdl.receiver.ScheduleAlarmReceiver
 import java.util.Calendar
@@ -24,15 +20,16 @@ class AlarmScheduler(private val context: Context) {
 
 
     fun scheduleAt(at: Long) {
-        alarmManager?.setExactAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
+        val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+            context,
+            WorkManagerHandoffCarrier.START_BOUNDARY,
             at,
-            PendingIntent.getBroadcast(
-                context,
-                1,
-                Intent(context, ScheduleAlarmReceiver::class.java),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+        )
+        setAlarm(
+            receiver = ScheduleAlarmReceiver::class.java,
+            requestCode = 1,
+            at = at,
+            handoffId = handoffId,
         )
     }
 
@@ -41,7 +38,6 @@ class AlarmScheduler(private val context: Context) {
     fun schedule() {
         cancel()
 
-        //schedule starting alarm
         val startingTime = preferences.getString("schedule_start", "00:00")!!
         val sTime = Calendar.getInstance()
         sTime.set(Calendar.HOUR_OF_DAY, startingTime.split(":")[0].toInt())
@@ -49,19 +45,18 @@ class AlarmScheduler(private val context: Context) {
         sTime.set(Calendar.SECOND, 0)
         val time = calculateNextTime(sTime)
 
-        //schedule starting work
-        alarmManager?.setExactAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
+        val startHandoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+            context,
+            WorkManagerHandoffCarrier.START_BOUNDARY,
             time.timeInMillis,
-            PendingIntent.getBroadcast(
-                context,
-                0,
-                Intent(context, ScheduleAlarmReceiver::class.java),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+        )
+        setAlarm(
+            receiver = ScheduleAlarmReceiver::class.java,
+            requestCode = 0,
+            at = time.timeInMillis,
+            handoffId = startHandoffId,
         )
 
-        //schedule closing work
         val endingTime = preferences.getString("schedule_end", "05:00")!!
         val eTime = Calendar.getInstance()
         eTime.set(Calendar.HOUR_OF_DAY, endingTime.split(":")[0].toInt())
@@ -69,22 +64,30 @@ class AlarmScheduler(private val context: Context) {
         sTime.set(Calendar.SECOND, 0)
         val calendar = calculateNextTime(eTime)
 
-        alarmManager?.setExactAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
+        val endHandoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+            context,
+            WorkManagerHandoffCarrier.END_BOUNDARY,
             calendar.timeInMillis,
-            PendingIntent.getBroadcast(
-                context,
-                0,
-                Intent(context, CancelScheduleAlarmReceiver::class.java),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+        )
+        setAlarm(
+            receiver = CancelScheduleAlarmReceiver::class.java,
+            requestCode = 0,
+            at = calendar.timeInMillis,
+            handoffId = endHandoffId,
         )
     }
 
     fun cancel() {
+        WorkManagerHandoffRecovery.cancelScheduledHandoffs(context)
         val intent = Intent(context, ScheduleAlarmReceiver::class.java)
         val pendingIntent = PendingIntent.getBroadcast(context, 0, intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
+        val oneShotPendingIntent = PendingIntent.getBroadcast(
+            context,
+            1,
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+        )
 
 
         val cancelIntent = Intent(context, CancelScheduleAlarmReceiver::class.java)
@@ -93,7 +96,39 @@ class AlarmScheduler(private val context: Context) {
 
         kotlin.runCatching {
             alarmManager?.cancel(pendingIntent)
+            alarmManager?.cancel(oneShotPendingIntent)
             alarmManager?.cancel(cancelPendingIntent)
+        }
+    }
+
+    private fun setAlarm(
+        receiver: Class<out android.content.BroadcastReceiver>,
+        requestCode: Int,
+        at: Long,
+        handoffId: String,
+    ) {
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            Intent(context, receiver).putExtra(
+                WorkManagerHandoffRecovery.EXTRA_HANDOFF_ID,
+                handoffId,
+            ),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        try {
+            alarmManager?.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                at,
+                pendingIntent,
+            )
+        } catch (_: Throwable) {
+            // The durable carrier remains the successor if exact-alarm
+            // publication itself is unavailable.
+            WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
+        }
+        if (alarmManager == null) {
+            WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
         }
     }
 

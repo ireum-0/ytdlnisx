@@ -16,6 +16,8 @@ data class PendingUndoCarrier(
     val authorityGeneration: Long = 0L,
     @ColumnInfo(defaultValue = "")
     val resolutionIntent: String = "",
+    @ColumnInfo(defaultValue = "'UNPUBLISHED'")
+    val presentationState: String = "UNPUBLISHED",
     @ColumnInfo(defaultValue = "0")
     val resolverGeneration: Long = 0L,
     @ColumnInfo(defaultValue = "")
@@ -30,6 +32,12 @@ data class PendingUndoCarrier(
         const val REMOVAL_KIND = "REMOVAL"
         const val RESTORE_INTENT = "RESTORE"
         const val COMMIT_INTENT = "COMMIT"
+        /** Explicitly means that no user resolution has been durably accepted. */
+        const val UNRESOLVED_INTENT = "UNRESOLVED"
+        const val RESTORE_INTENT_PENDING = "RESTORE_PENDING"
+        const val COMMIT_INTENT_PENDING = "COMMIT_PENDING"
+        const val UNPUBLISHED_PRESENTATION = "UNPUBLISHED"
+        const val PUBLISHED_PRESENTATION = "PUBLISHED"
     }
 }
 

@@ -47,6 +47,8 @@ import com.ireum.ytdl.database.viewmodel.ResultViewModel
 import com.ireum.ytdl.database.viewmodel.YTDLPViewModel
 import com.ireum.ytdl.ui.adapter.ActiveDownloadMinifiedAdapter
 import com.ireum.ytdl.ui.adapter.GenericDownloadAdapter
+import com.ireum.ytdl.ui.UndoPresentationLifetime
+import com.ireum.ytdl.ui.setManualUndoAction
 import com.ireum.ytdl.util.Extensions.setFullScreen
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.UiUtil
@@ -90,6 +92,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
     private lateinit var dialogView : View
     private lateinit var item: ResultItem
     private var undoPresentationOwner: DownloadRepository.UndoPresentationOwner? = null
+    private val undoPresentationLifetime = UndoPresentationLifetime()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -139,6 +142,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        undoPresentationLifetime.attach(viewLifecycleOwner.lifecycleScope)
 
         val i = if (Build.VERSION.SDK_INT >= 33){
             arguments?.getParcelable("result", ResultItem::class.java)
@@ -333,21 +337,29 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
     }
 
     override fun onCancel(dialog: DialogInterface) {
+        abandonUndoPresentation()
         super.onCancel(dialog)
         cleanUp()
     }
 
     override fun onDismiss(dialog: DialogInterface) {
+        abandonUndoPresentation()
         super.onDismiss(dialog)
         cleanUp()
     }
 
     override fun onDestroyView() {
+        abandonUndoPresentation()
+        super.onDestroyView()
+    }
+
+
+    private fun abandonUndoPresentation() {
+        undoPresentationLifetime.cancel()
         if (::downloadViewModel.isInitialized) {
             undoPresentationOwner?.let(downloadViewModel::abandonPendingUndoCapabilitiesForView)
         }
         undoPresentationOwner = null
-        super.onDestroyView()
     }
 
 
@@ -359,34 +371,61 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
     }
 
     private fun removeQueuedItem(id: Long){
-        lifecycleScope.launch {
+        val owner = undoPresentationOwner ?: return
+        val presentationScope = undoPresentationLifetime.current() ?: return
+        val anchor = view?.rootView ?: return
+        val context = requireContext()
+        removeQueuedItem(id, owner, presentationScope, anchor, context)
+    }
+
+    private fun removeQueuedItem(
+        id: Long,
+        owner: DownloadRepository.UndoPresentationOwner,
+        presentationScope: kotlinx.coroutines.CoroutineScope,
+        anchor: View,
+        context: Context,
+    ) {
+        if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) return
+        presentationScope.launch {
+            if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) return@launch
             val item = withContext(Dispatchers.IO){
                 downloadViewModel.getItemByID(id)
             }
-            val deleteDialog = MaterialAlertDialogBuilder(requireContext())
+            if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) return@launch
+            val deleteDialog = MaterialAlertDialogBuilder(context)
             deleteDialog.setTitle(getString(R.string.you_are_going_to_delete) + " \"" + item.title + "\"!")
             deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
             deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
-                val owner = undoPresentationOwner ?: return@setPositiveButton
-                lifecycleScope.launch {
+                presentationScope.launch {
                     val pendingToken = withContext(Dispatchers.IO) {
                         downloadViewModel.beginUndoableCancellation(item.id, owner)
                     }
                     try {
+                        if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) {
+                            pendingToken?.let(downloadViewModel::abandonUndoCapabilityAfterConsumerFailure)
+                            return@launch
+                        }
                         var resolutionAccepted = false
+                        var selectedIntent: PendingUndoResolutionIntent? = null
                         lateinit var snackbar: Snackbar
-                        snackbar = Snackbar.make(requireView().rootView, getString(R.string.cancelled) + ": " + item.title, Snackbar.LENGTH_LONG)
-                            .setAction(getString(R.string.undo)) {
+                        snackbar = Snackbar.make(anchor, getString(R.string.cancelled) + ": " + item.title, Snackbar.LENGTH_LONG)
+                            .setManualUndoAction(getString(R.string.undo)) {
                                 if (pendingToken != null) {
                                     resolutionAccepted = downloadViewModel.undoPendingCancellation(
                                         item,
                                         pendingToken,
                                         owner,
                                     )
+                                    if (resolutionAccepted) {
+                                        selectedIntent = PendingUndoResolutionIntent.RESTORE
+                                    }
+                                    resolutionAccepted
                                 } else {
-                                    lifecycleScope.launch(Dispatchers.IO) {
+                                    presentationScope.launch(Dispatchers.IO) {
                                         downloadViewModel.undoCancelledDownload(item)
                                     }
+                                    selectedIntent = PendingUndoResolutionIntent.RESTORE
+                                    true
                                 }
                             }
                         if (pendingToken != null) {
@@ -396,7 +435,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
                                 }
 
                                 override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
-                                    if (event != DISMISS_EVENT_ACTION) {
+                                    if (selectedIntent == null && event != DISMISS_EVENT_ACTION) {
                                         val committed = downloadViewModel.commitPendingCancellation(
                                             item.id,
                                             pendingToken,
@@ -417,7 +456,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
                                                     )
                                                 }
                                         }
-                                    } else if (
+                                    } else if (selectedIntent == null &&
                                         !resolutionAccepted &&
                                         downloadViewModel.reofferCancellationUndoCapabilityAfterResolutionFailure(
                                             pendingToken,
@@ -442,6 +481,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
                     }
                 }
             }
+            if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) return@launch
             deleteDialog.show()
         }
     }
@@ -462,12 +502,16 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
                 }
                 when (direction) {
                     ItemTouchHelper.LEFT -> {
-                        lifecycleScope.launch {
+                        val owner = undoPresentationOwner ?: return
+                        val presentationScope = undoPresentationLifetime.current() ?: return
+                        val anchor = view?.rootView ?: return
+                        val context = requireContext()
+                        presentationScope.launch {
                             val deletedItem = withContext(Dispatchers.IO){
                                 runCatching { downloadViewModel.getItemByID(itemID) }.getOrNull()
                             } ?: return@launch
                             if (position != RecyclerView.NO_POSITION) queuedAdapter.notifyItemChanged(position) else queuedAdapter.notifyDataSetChanged()
-                            removeQueuedItem(deletedItem.id)
+                            removeQueuedItem(deletedItem.id, owner, presentationScope, anchor, context)
                         }
                     }
 
@@ -520,20 +564,28 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
     }
 
     override fun onCardClick(itemID: Long) {
-        lifecycleScope.launch {
+        val owner = undoPresentationOwner ?: return
+        val presentationScope = undoPresentationLifetime.current() ?: return
+        val anchor = view?.rootView ?: return
+        val context = requireContext()
+        val activity = requireActivity()
+        presentationScope.launch {
             val item = withContext(Dispatchers.IO){
                 downloadViewModel.getItemByID(itemID)
             }
+            if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) return@launch
 
             UiUtil.showDownloadItemDetailsCard(
                 item,
-                requireActivity(),
+                activity,
                 DownloadRepository.Status.valueOf(item.status),
                 ytdlpViewModel,
                 sharedPreferences,
                 removeItem = { it: DownloadItem, sheet: BottomSheetDialog ->
-                    sheet.hide()
-                    removeQueuedItem(itemID)
+                    if (downloadViewModel.isUndoPresentationOwnerActive(owner)) {
+                        sheet.hide()
+                        removeQueuedItem(itemID, owner, presentationScope, anchor, context)
+                    }
                 },
                 downloadItem = {
                     lifecycleScope.launch(Dispatchers.IO) {

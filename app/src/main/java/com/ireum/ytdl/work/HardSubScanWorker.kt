@@ -8,10 +8,7 @@ import androidx.work.ForegroundInfo
 import androidx.preference.PreferenceManager
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
-import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
@@ -164,21 +161,38 @@ class HardSubScanWorker(
         private const val SCAN_NOTIFICATION_ID = 1000000002
         private const val PREF_HARD_SUB_RESCAN_DONE_ONCE = "hard_sub_rescan_done_once_v2"
 
-        fun enqueue(context: Context) {
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
+        internal fun enqueue(
+            context: Context,
+            completion: (WorkManagerHandoffRecovery.EnqueueOutcome) -> Unit = {},
+        ) = enqueueWithGeneration(context) { _, outcome -> completion(outcome) }
 
-            val request = OneTimeWorkRequestBuilder<HardSubScanWorker>()
-                .setConstraints(constraints)
-                .addTag(TAG)
-                .build()
-
-            WorkManager.getInstance(context).enqueueUniqueWork(
-                UNIQUE_WORK_NAME,
-                ExistingWorkPolicy.REPLACE,
-                request
-            )
+        /**
+         * Starts one exact Scan Now generation and reports its id with every
+         * completion.  The caller can therefore discard a late result from a
+         * superseded REPLACE request before showing user-facing state.
+         */
+        internal fun enqueueWithGeneration(
+            context: Context,
+            onPrepared: (String) -> Unit = {},
+            completion: (String, WorkManagerHandoffRecovery.EnqueueOutcome) -> Unit = { _, _ -> },
+        ): String? {
+            val handoffId = try {
+                WorkManagerHandoffRecovery.prepareHardSub(context)
+            } catch (failure: Throwable) {
+                completion(
+                    "",
+                    WorkManagerHandoffRecovery.EnqueueOutcome(
+                        WorkManagerHandoffRecovery.OutcomeKind.FAILED,
+                        failure,
+                    )
+                )
+                return null
+            }
+            onPrepared(handoffId)
+            WorkManagerHandoffRecovery.enqueueAndObserve(context, handoffId) { outcome ->
+                completion(handoffId, outcome)
+            }
+            return handoffId
         }
     }
 

@@ -56,6 +56,8 @@ import com.ireum.ytdl.database.viewmodel.YTDLPViewModel
 import com.ireum.ytdl.receiver.ShareActivity
 import com.ireum.ytdl.ui.BaseActivity
 import com.ireum.ytdl.ui.adapter.ConfigureMultipleDownloadsAdapter
+import com.ireum.ytdl.ui.UndoPresentationLifetime
+import com.ireum.ytdl.ui.setManualUndoAction
 import com.ireum.ytdl.util.Extensions.enableFastScroll
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.UiUtil
@@ -121,6 +123,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
     private lateinit var selectRangeBtn: MaterialButton
     private lateinit var selectItemsOpenBtn: MaterialButton
     private var undoPresentationOwner: DownloadRepository.UndoPresentationOwner? = null
+    private val undoPresentationLifetime = UndoPresentationLifetime()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -146,6 +149,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
         }
         val view = LayoutInflater.from(context).inflate(R.layout.download_multiple_bottom_sheet, null)
         dialog.setContentView(view)
+        undoPresentationLifetime.attach(lifecycleScope)
         dialog.window?.navigationBarColor = SurfaceColors.SURFACE_1.getColor(requireActivity())
         parentActivity = activity as BaseActivity
 
@@ -1196,14 +1200,18 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
     }
 
     override fun onDelete(id: Long) {
-        lifecycleScope.launch {
+        val owner = undoPresentationOwner ?: return
+        val presentationScope = undoPresentationLifetime.current() ?: return
+        val anchor = recyclerView
+        val context = requireContext()
+        presentationScope.launch {
             val deletedItem = withContext(Dispatchers.IO){
                 downloadViewModel.getItemByID(id)
             } ?: return@launch
+            if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) return@launch
 
-            UiUtil.showGenericDeleteDialog(requireContext(), deletedItem.title){
-                lifecycleScope.launch {
-                    val owner = undoPresentationOwner ?: return@launch
+            UiUtil.showGenericDeleteDialog(context, deletedItem.title){
+                presentationScope.launch {
                     val undoHandle = withContext(Dispatchers.IO) {
                         downloadViewModel.deleteDownloadForUndo(id, owner)
                     } ?: return@launch
@@ -1211,12 +1219,23 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
 
                     if (processingItemsCount > 0){
                         try {
+                            if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) {
+                                downloadViewModel.abandonUndoCapabilityAfterConsumerFailure(
+                                    undoHandle.token.value,
+                                )
+                                return@launch
+                            }
                             var resolutionAccepted = false
+                            var selectedIntent: PendingUndoResolutionIntent? = null
                             lateinit var snackbar: Snackbar
-                            snackbar = Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
-                                .setAction(getString(R.string.undo)) {
+                            snackbar = Snackbar.make(anchor, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
+                                .setManualUndoAction(getString(R.string.undo)) {
                                     resolutionAccepted = downloadViewModel.restoreDownloadUndoFromUi(undoHandle)
-                                    if (resolutionAccepted) processingItemsCount++
+                                    if (resolutionAccepted) {
+                                        selectedIntent = PendingUndoResolutionIntent.RESTORE
+                                        processingItemsCount++
+                                    }
+                                    resolutionAccepted
                                 }
                             snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
                                 override fun onShown(transientBottomBar: Snackbar?) {
@@ -1227,7 +1246,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                                 }
 
                                 override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
-                                    if (event != DISMISS_EVENT_ACTION) {
+                                    if (selectedIntent == null && event != DISMISS_EVENT_ACTION) {
                                         val committed = downloadViewModel.commitDownloadUndoFromUi(undoHandle)
                                         if (
                                             !committed &&
@@ -1244,7 +1263,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                                                     )
                                                 }
                                         }
-                                    } else if (
+                                    } else if (selectedIntent == null &&
                                         !resolutionAccepted &&
                                         downloadViewModel.reofferRemovalUndoCapabilityAfterResolutionFailure(
                                             undoHandle.token.value,
@@ -1292,10 +1311,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
     }
 
     override fun onDismiss(dialog: DialogInterface) {
-        if (::downloadViewModel.isInitialized) {
-            undoPresentationOwner?.let(downloadViewModel::abandonPendingUndoCapabilitiesForView)
-        }
-        undoPresentationOwner = null
+        abandonUndoPresentation()
         lifecycleScope.launch {
             withContext(Dispatchers.IO){
                 downloadViewModel.processingItemsJob?.cancel(CancellationException())
@@ -1305,6 +1321,19 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
         }
 
         super.onDismiss(dialog)
+    }
+
+    override fun onDestroyView() {
+        abandonUndoPresentation()
+        super.onDestroyView()
+    }
+
+    private fun abandonUndoPresentation() {
+        undoPresentationLifetime.cancel()
+        if (::downloadViewModel.isInitialized) {
+            undoPresentationOwner?.let(downloadViewModel::abandonPendingUndoCapabilitiesForView)
+        }
+        undoPresentationOwner = null
     }
 
     private var simpleCallback: ItemTouchHelper.SimpleCallback =
@@ -1323,8 +1352,10 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                 }
                 when (direction) {
                     ItemTouchHelper.LEFT -> {
-                        lifecycleScope.launch {
-                            val owner = undoPresentationOwner ?: return@launch
+                        val owner = undoPresentationOwner ?: return
+                        val anchor = recyclerView
+                        val presentationScope = undoPresentationLifetime.current() ?: return
+                        presentationScope.launch {
                             val deletedItem = withContext(Dispatchers.IO){
                                 runCatching { downloadViewModel.getItemByID(itemID) }.getOrNull()
                             } ?: return@launch
@@ -1336,12 +1367,23 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
 
                             if (processingItemsCount > 0) {
                                 try {
+                                    if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) {
+                                        downloadViewModel.abandonUndoCapabilityAfterConsumerFailure(
+                                            undoHandle.token.value,
+                                        )
+                                        return@launch
+                                    }
                                     var resolutionAccepted = false
+                                    var selectedIntent: PendingUndoResolutionIntent? = null
                                     lateinit var snackbar: Snackbar
-                                    snackbar = Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
-                                        .setAction(getString(R.string.undo)) {
+                                    snackbar = Snackbar.make(anchor, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
+                                        .setManualUndoAction(getString(R.string.undo)) {
                                             resolutionAccepted = downloadViewModel.restoreDownloadUndoFromUi(undoHandle)
-                                            if (resolutionAccepted) processingItemsCount++
+                                            if (resolutionAccepted) {
+                                                selectedIntent = PendingUndoResolutionIntent.RESTORE
+                                                processingItemsCount++
+                                            }
+                                            resolutionAccepted
                                         }
                                     snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
                                         override fun onShown(transientBottomBar: Snackbar?) {
@@ -1352,7 +1394,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                                         }
 
                                         override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
-                                            if (event != DISMISS_EVENT_ACTION) {
+                                            if (selectedIntent == null && event != DISMISS_EVENT_ACTION) {
                                                 val committed = downloadViewModel.commitDownloadUndoFromUi(undoHandle)
                                                 if (
                                                     !committed &&
@@ -1369,7 +1411,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                                                             )
                                                         }
                                                 }
-                                            } else if (
+                                            } else if (selectedIntent == null &&
                                                 !resolutionAccepted &&
                                                 downloadViewModel.reofferRemovalUndoCapabilityAfterResolutionFailure(
                                                     undoHandle.token.value,

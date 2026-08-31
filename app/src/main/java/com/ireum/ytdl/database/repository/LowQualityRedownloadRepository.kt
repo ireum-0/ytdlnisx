@@ -131,11 +131,27 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                 return false
             }
             if (DownloadRepository.isUndoResolverInFlight(token)) return false
+            val intent = DownloadRepository(database).pendingUndoResolutionIntent(token)
+            if (
+                intent == null &&
+                    durableCarrier.presentationState ==
+                    PendingUndoCarrier.PUBLISHED_PRESENTATION
+            ) {
+                // A published Snackbar with no durably accepted action is
+                // ambiguous after process death.  Keep an exact recovery
+                // owner for it; never turn a possibly selected RESTORE into
+                // COMMIT merely because every intent write failed.
+                DownloadRepository(database).ensureRecoveryAuthorityForPendingUndo(
+                    token = token,
+                    kind = durableCarrier.kind,
+                    ownerId = durableCarrier.ownerId,
+                    authorityGeneration = durableCarrier.authorityGeneration,
+                    resolutionIntent = intent,
+                )
+                return false
+            }
             return when (durableCarrier.kind) {
                 PendingUndoCarrier.REMOVAL_KIND -> {
-                    val intent = DownloadRepository(database)
-                        .pendingUndoResolutionIntent(token)
-                        ?: PendingUndoResolutionIntent.COMMIT
                     if (intent == PendingUndoResolutionIntent.RESTORE) {
                         DownloadRepository(database).restoreUndoForRecovery(token)
                         database.pendingUndoCarrierDao.get(token) == null
@@ -179,7 +195,22 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         val downloadId = item.downloadId ?: return false
         val downloadRepository = DownloadRepository(database)
         val intent = downloadRepository.pendingUndoResolutionIntent(item.reasonCode)
-            ?: PendingUndoResolutionIntent.COMMIT
+        val durableCarrier = database.pendingUndoCarrierDao.get(item.reasonCode)
+        if (
+            intent == null &&
+                durableCarrier?.presentationState ==
+                PendingUndoCarrier.PUBLISHED_PRESENTATION
+        ) {
+            downloadRepository.ensureRecoveryAuthorityForPendingUndo(
+                token = item.reasonCode,
+                kind = durableCarrier.kind,
+                ownerId = durableCarrier.ownerId,
+                authorityGeneration = durableCarrier.authorityGeneration,
+                resolutionIntent = intent,
+            )
+            return false
+        }
+        val effectiveIntent = intent ?: PendingUndoResolutionIntent.COMMIT
         when {
             isPendingUserCancellation(item) -> {
                 val operation = dao.getOperation(item.operationId)
@@ -195,7 +226,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                     // token until that owner resolves or abandons it.
                     return false
                 }
-                if (intent == PendingUndoResolutionIntent.RESTORE) {
+                if (effectiveIntent == PendingUndoResolutionIntent.RESTORE) {
                     downloadRepository.restorePendingCancellationForRecovery(
                         downloadId,
                         item.reasonCode,
@@ -220,7 +251,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                 if (database.downloadDao.getNullableDownloadById(downloadId) != null) {
                     return false
                 }
-                if (intent == PendingUndoResolutionIntent.RESTORE) {
+                if (effectiveIntent == PendingUndoResolutionIntent.RESTORE) {
                     downloadRepository.restoreUndoForRecovery(item.reasonCode)
                 } else if (database.pendingUndoCarrierDao.get(item.reasonCode) != null) {
                     downloadRepository.commitUndoForRecovery(item.reasonCode)
@@ -484,102 +515,111 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         state: LowQualityRedownloadItemState,
         reason: String = "",
         expectedExecutionId: String = "",
-    ): String? = database.withTransaction {
-        if (expectedExecutionId.isNotBlank()) {
-            val download = database.downloadDao.getNullableDownloadById(downloadId)
-            if (download?.executionId != expectedExecutionId) return@withTransaction null
-        }
-        val item = dao.getItemByDownloadId(downloadId) ?: return@withTransaction null
-        val operation = dao.getOperation(item.operationId) ?: return@withTransaction null
-        if (operation.stateValue.isTerminal) return@withTransaction null
-        val now = System.currentTimeMillis()
-        if (
-            isLivePendingUserCancellation(item) &&
-                !operation.cancelRequested
-        ) {
-            // Normal worker/reconciliation progress cannot consume a live
-            // item-level Undo authority.  The exact owner must resolve it or
-            // lifecycle abandonment must transfer it to recovery first.
-            return@withTransaction null
-        }
-        if (
-            operation.cancelRequested ||
-            item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED
-        ) {
-            if (operation.cancelRequested && isPendingUserCancellation(item)) {
-                DownloadRepository.releaseLivePendingCancellationToken(item.reasonCode)
+    ): String? {
+        val pendingTokensToRelease = linkedSetOf<String>()
+        val result = database.withTransaction {
+            if (expectedExecutionId.isNotBlank()) {
+                val download = database.downloadDao.getNullableDownloadById(downloadId)
+                if (download?.executionId != expectedExecutionId) return@withTransaction null
             }
-            dao.markCancelledByDownloadId(
-                downloadId = downloadId,
-                reason = REASON_USER_CANCELLED,
-                updatedAt = now,
-            )
+            val item = dao.getItemByDownloadId(downloadId) ?: return@withTransaction null
+            val operation = dao.getOperation(item.operationId) ?: return@withTransaction null
+            if (operation.stateValue.isTerminal) return@withTransaction null
+            val now = System.currentTimeMillis()
+            if (
+                isLivePendingUserCancellation(item) &&
+                    !operation.cancelRequested
+            ) {
+                // Normal worker/reconciliation progress cannot consume a live
+                // item-level Undo authority.  The exact owner must resolve it or
+                // lifecycle abandonment must transfer it to recovery first.
+                return@withTransaction null
+            }
+            if (
+                operation.cancelRequested ||
+                item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED
+            ) {
+                if (operation.cancelRequested && isPendingUserCancellation(item)) {
+                    pendingTokensToRelease += item.reasonCode
+                }
+                dao.markCancelledByDownloadId(
+                    downloadId = downloadId,
+                    reason = REASON_USER_CANCELLED,
+                    updatedAt = now,
+                )
+                finalizeIfReadyLocked(item.operationId, now)
+                return@withTransaction item.operationId
+            }
+            if (state == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
+                return@withTransaction null
+            }
+            if (dao.setItemStateByDownloadId(downloadId, state.name, reason, now) != 1) {
+                return@withTransaction null
+            }
             finalizeIfReadyLocked(item.operationId, now)
-            return@withTransaction item.operationId
+            item.operationId
         }
-        if (state == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
-            return@withTransaction null
-        }
-        if (dao.setItemStateByDownloadId(downloadId, state.name, reason, now) != 1) {
-            return@withTransaction null
-        }
-        finalizeIfReadyLocked(item.operationId, now)
-        item.operationId
+        pendingTokensToRelease.forEach(DownloadRepository::releaseLivePendingCancellationToken)
+        return result
     }
 
-    suspend fun finishNoCandidates(operationId: String) = database.withTransaction {
-        val operation = dao.getOperation(operationId) ?: return@withTransaction
-        if (operation.stateValue.isTerminal) return@withTransaction
-        val now = System.currentTimeMillis()
-        if (
-            !operation.cancelRequested &&
-                dao.getItems(operationId).any(::isLivePendingUserCancellation)
-        ) {
-            // A live item-level Undo keeps the operation nonterminal until
-            // that exact owner resolves or abandons its carrier.
-            return@withTransaction
-        }
-        if (operation.cancelRequested) {
-            // Cancellation is a durable winner once phase one committed.  Do
-            // not let the scan's no-candidate result overwrite it.
-            dao.getItems(operationId)
-                .filter(::isPendingUserCancellation)
-                .forEach { DownloadRepository.releaseLivePendingCancellationToken(it.reasonCode) }
-            dao.terminalizeNonterminalItems(
-                operationId,
-                LowQualityRedownloadItemState.CANCELLED.name,
-                REASON_USER_CANCELLED,
-                now,
-            )
-            check(
-                dao.finishCancelledOperation(
+    suspend fun finishNoCandidates(operationId: String) {
+        val pendingTokensToRelease = linkedSetOf<String>()
+        database.withTransaction {
+            val operation = dao.getOperation(operationId) ?: return@withTransaction
+            if (operation.stateValue.isTerminal) return@withTransaction
+            val now = System.currentTimeMillis()
+            if (
+                !operation.cancelRequested &&
+                    dao.getItems(operationId).any(::isLivePendingUserCancellation)
+            ) {
+                // A live item-level Undo keeps the operation nonterminal until
+                // that exact owner resolves or abandons its carrier.
+                return@withTransaction
+            }
+            if (operation.cancelRequested) {
+                // Cancellation is a durable winner once phase one committed.  Do
+                // not let the scan's no-candidate result overwrite it.
+                dao.getItems(operationId)
+                    .filter(::isPendingUserCancellation)
+                    .forEach { pendingTokensToRelease += it.reasonCode }
+                dao.terminalizeNonterminalItems(
                     operationId,
+                    LowQualityRedownloadItemState.CANCELLED.name,
                     REASON_USER_CANCELLED,
                     now,
+                )
+                check(
+                    dao.finishCancelledOperation(
+                        operationId,
+                        REASON_USER_CANCELLED,
+                        now,
+                    ) == 1
+                ) { "Low-quality cancellation lost the no-candidate terminal race" }
+                return@withTransaction
+            }
+            val allInspectionsFailed =
+                operation.scanProcessed > 0 && operation.scanFailures >= operation.scanProcessed
+            val state = if (allInspectionsFailed) {
+                LowQualityRedownloadOperationState.FAILED
+            } else {
+                LowQualityRedownloadOperationState.COMPLETED
+            }
+            val reason = when {
+                allInspectionsFailed -> REASON_SCAN_FAILED
+                operation.scanFailures > 0 -> REASON_NO_CANDIDATES_WITH_FAILURES
+                else -> REASON_NO_CANDIDATES
+            }
+            check(
+                dao.finishOperationIfCancellationNotRequested(
+                    operationId,
+                    state.name,
+                    reason,
+                    now,
                 ) == 1
-            ) { "Low-quality cancellation lost the no-candidate terminal race" }
-            return@withTransaction
+            ) { "Low-quality no-candidate terminalization lost operation ownership" }
         }
-        val allInspectionsFailed =
-            operation.scanProcessed > 0 && operation.scanFailures >= operation.scanProcessed
-        val state = if (allInspectionsFailed) {
-            LowQualityRedownloadOperationState.FAILED
-        } else {
-            LowQualityRedownloadOperationState.COMPLETED
-        }
-        val reason = when {
-            allInspectionsFailed -> REASON_SCAN_FAILED
-            operation.scanFailures > 0 -> REASON_NO_CANDIDATES_WITH_FAILURES
-            else -> REASON_NO_CANDIDATES
-        }
-        check(
-            dao.finishOperationIfCancellationNotRequested(
-                operationId,
-                state.name,
-                reason,
-                now,
-            ) == 1
-        ) { "Low-quality no-candidate terminalization lost operation ownership" }
+        pendingTokensToRelease.forEach(DownloadRepository::releaseLivePendingCancellationToken)
     }
 
     suspend fun requestCancellation(operationId: String): List<Long> {
@@ -689,6 +729,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                     downloadRepository.convergeHistoryReplacementRefusalInCurrentTransaction(
                         id = downloadId,
                         forceError = true,
+                        pendingTokensToRelease = pendingTokensToRelease,
                     )
                 }
                 if (dao.getOperation(operationId)?.stateValue == LowQualityRedownloadOperationState.RUNNING) {
@@ -799,6 +840,7 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
                     downloadRepository.convergeHistoryReplacementRefusalInCurrentTransaction(
                         id = downloadId,
                         forceError = true,
+                        pendingTokensToRelease = pendingTokensToRelease,
                     )
                 }
                 if (dao.getOperation(operationId)?.stateValue == LowQualityRedownloadOperationState.RUNNING) {
@@ -983,94 +1025,121 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
         finalizeIfReady(operationId)
     }
 
-    suspend fun reconcileLinkedDownloads(operationId: String): List<DownloadItem> =
-        database.withTransaction {
-        val items = dao.getItems(operationId).filter { it.downloadId != null && !it.stateValue.isTerminal }
-        if (items.isEmpty()) {
-            finalizeIfReadyLocked(operationId, System.currentTimeMillis())
-            return@withTransaction emptyList()
-        }
-        val ids = items.mapNotNull(LowQualityRedownloadItem::downloadId)
-        val downloads = database.downloadDao.getDownloadsByIdsSuspend(ids)
-        val byId = downloads.associateBy(DownloadItem::id)
-        val now = System.currentTimeMillis()
-        items.forEach { item ->
-            val id = item.downloadId ?: return@forEach
-            val download = byId[id]
-            if (
-                download == null &&
-                    item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
-                    item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX)
-            ) {
-                if (DownloadRepository.isProcessLocalPendingUndoAuthority(item.reasonCode)) {
-                    // A live Snackbar Undo token is still authoritative.  A
-                    // routine reconcile must not consume it before the exact
-                    // Undo action or explicit commit gets to run.
+    suspend fun reconcileLinkedDownloads(operationId: String): List<DownloadItem> {
+        val pendingTokensToRelease = linkedSetOf<String>()
+        val undoRepository = DownloadRepository(database)
+        val result = database.withTransaction {
+            val items = dao.getItems(operationId)
+                .filter { it.downloadId != null && !it.stateValue.isTerminal }
+            if (items.isEmpty()) {
+                finalizeIfReadyLocked(operationId, System.currentTimeMillis())
+                return@withTransaction emptyList()
+            }
+            val ids = items.mapNotNull(LowQualityRedownloadItem::downloadId)
+            val downloads = database.downloadDao.getDownloadsByIdsSuspend(ids)
+            val byId = downloads.associateBy(DownloadItem::id)
+            val now = System.currentTimeMillis()
+            items.forEach { item ->
+                val id = item.downloadId ?: return@forEach
+                val download = byId[id]
+                if (
+                    download == null &&
+                        item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
+                        item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX)
+                ) {
+                    if (DownloadRepository.isProcessLocalPendingUndoAuthority(item.reasonCode)) {
+                        // A live Snackbar Undo token is still authoritative.  A
+                        // routine reconcile must not consume it before the exact
+                        // Undo action or explicit commit gets to run.
+                        return@forEach
+                    }
+                    val durableCarrier = database.pendingUndoCarrierDao.get(item.reasonCode)
+                    val selectedIntent = undoRepository.pendingUndoResolutionIntent(item.reasonCode)
+                    if (
+                        selectedIntent == PendingUndoResolutionIntent.RESTORE ||
+                            (
+                                selectedIntent == null &&
+                                    durableCarrier?.presentationState ==
+                                    PendingUndoCarrier.PUBLISHED_PRESENTATION
+                                )
+                    ) {
+                        // A selected RESTORE, including one retained by the
+                        // exact fallback barrier after process death, must not
+                        // be converted into a missing-row COMMIT by ordinary
+                        // linked reconciliation.  A published carrier with no
+                        // selected intent is likewise still unresolved debt.
+                        return@forEach
+                    }
+                    // A process death or coordinator reconciliation commits an
+                    // unresolved delete-for-Undo token rather than inventing a
+                    // generic failure for the missing, intentionally hidden row.
+                    dao.markCancelledByDownloadId(
+                        id,
+                        DownloadRepository.REASON_USER_REMOVED,
+                        now,
+                    )
                     return@forEach
                 }
-                // A process death or coordinator reconciliation commits an
-                // unresolved delete-for-Undo token rather than inventing a
-                // generic failure for the missing, intentionally hidden row.
-                dao.markCancelledByDownloadId(
-                    id,
-                    DownloadRepository.REASON_USER_REMOVED,
-                    now,
-                )
-                return@forEach
-            }
-            val operation = dao.getOperation(item.operationId)
-            if (
-                isLivePendingUserCancellation(item) &&
-                    operation?.cancelRequested != true &&
-                    operation?.stateValue?.isTerminal != true
-            ) {
-                // Ordinary linked reconciliation is not allowed to turn a
-                // still-live exact Undo token into terminal cancellation.
-                return@forEach
-            }
-            if (
-                (operation?.cancelRequested == true || operation?.stateValue?.isTerminal == true) &&
-                    isPendingUserCancellation(item)
-            ) {
-                // Operation-wide cancellation is stronger than item-level
-                // Undo and explicitly revokes its process-local authority.
-                DownloadRepository.releaseLivePendingCancellationToken(item.reasonCode)
-            }
-            val terminalState = if (
-                operation?.cancelRequested == true || operation?.stateValue?.isTerminal == true
-            ) {
-                LowQualityRedownloadItemState.CANCELLED
-            } else {
-                LowQualityRedownloadLinkedDownloadPolicy.reconciledState(
-                    currentState = item.stateValue,
-                    downloadStatus = download?.status,
-                )
-            }
-            if (terminalState != null) {
-                val reason = when {
-                    operation?.cancelRequested == true -> REASON_USER_CANCELLED
-                    download == null -> REASON_MISSING_DOWNLOAD
-                    terminalState == LowQualityRedownloadItemState.SKIPPED ->
-                        DownloadRepository.REASON_SAVED_FOR_LATER
-                    terminalState == LowQualityRedownloadItemState.CANCELLED &&
-                        item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
-                        item.reasonCode.startsWith(
-                            DownloadRepository.PENDING_CANCELLATION_TOKEN_PREFIX
-                        ) -> REASON_USER_CANCELLED
-                    else -> ""
+                val operation = dao.getOperation(item.operationId)
+                if (
+                    isLivePendingUserCancellation(item) &&
+                        operation?.cancelRequested != true &&
+                        operation?.stateValue?.isTerminal != true
+                ) {
+                    // Ordinary linked reconciliation is not allowed to turn a
+                    // still-live exact Undo token into terminal cancellation.
+                    return@forEach
                 }
-                val changed = if (terminalState == LowQualityRedownloadItemState.CANCELLED) {
-                    dao.markCancelledByDownloadId(id, reason, now)
+                if (
+                    (operation?.cancelRequested == true || operation?.stateValue?.isTerminal == true) &&
+                        isPendingUserCancellation(item)
+                ) {
+                    // Operation-wide cancellation is stronger than item-level
+                    // Undo and explicitly revokes its process-local authority
+                    // only after this enclosing Room transaction commits.
+                    pendingTokensToRelease += item.reasonCode
+                }
+                val terminalState = if (
+                    operation?.cancelRequested == true || operation?.stateValue?.isTerminal == true
+                ) {
+                    LowQualityRedownloadItemState.CANCELLED
                 } else {
-                    dao.setItemStateByDownloadId(id, terminalState.name, reason, now)
+                    LowQualityRedownloadLinkedDownloadPolicy.reconciledState(
+                        currentState = item.stateValue,
+                        downloadStatus = download?.status,
+                    )
                 }
-                if (changed == 0 && item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
-                    dao.markCancelledByDownloadId(id, REASON_USER_CANCELLED, now)
+                if (terminalState != null) {
+                    val reason = when {
+                        operation?.cancelRequested == true -> REASON_USER_CANCELLED
+                        download == null -> REASON_MISSING_DOWNLOAD
+                        terminalState == LowQualityRedownloadItemState.SKIPPED ->
+                            DownloadRepository.REASON_SAVED_FOR_LATER
+                        terminalState == LowQualityRedownloadItemState.CANCELLED &&
+                            item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
+                            item.reasonCode.startsWith(
+                                DownloadRepository.PENDING_CANCELLATION_TOKEN_PREFIX
+                            ) -> REASON_USER_CANCELLED
+                        else -> ""
+                    }
+                    val changed = if (terminalState == LowQualityRedownloadItemState.CANCELLED) {
+                        dao.markCancelledByDownloadId(id, reason, now)
+                    } else {
+                        dao.setItemStateByDownloadId(id, terminalState.name, reason, now)
+                    }
+                    if (
+                        changed == 0 &&
+                        item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED
+                    ) {
+                        dao.markCancelledByDownloadId(id, REASON_USER_CANCELLED, now)
+                    }
                 }
             }
+            finalizeIfReadyLocked(operationId, now)
+            downloads
         }
-        finalizeIfReadyLocked(operationId, now)
-        downloads
+        pendingTokensToRelease.forEach(DownloadRepository::releaseLivePendingCancellationToken)
+        return result
     }
 
     suspend fun progress(operationId: String): LowQualityRedownloadProgress? {
@@ -1093,61 +1162,69 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
      * the live-process recovery debt created when the Download terminal write
      * commits but the independent ledger write fails.
      */
-    suspend fun reconcileDownload(downloadId: Long): String? = database.withTransaction {
-        val item = dao.getItemByDownloadId(downloadId) ?: return@withTransaction null
-        val operation = dao.getOperation(item.operationId) ?: return@withTransaction null
-        val download = database.downloadDao.getNullableDownloadById(downloadId)
-        val now = System.currentTimeMillis()
-        if (
-            isLivePendingUserCancellation(item) &&
-                !operation.cancelRequested &&
-                !operation.stateValue.isTerminal
-        ) {
-            // Preserve a live exact Snackbar authority across single-item
-            // recovery; only abandoned debt may be terminalized here.
-            return@withTransaction item.operationId
-        }
-        if (operation.cancelRequested || item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
+    suspend fun reconcileDownload(downloadId: Long): String? {
+        val pendingTokensToRelease = linkedSetOf<String>()
+        val result = database.withTransaction {
+            val item = dao.getItemByDownloadId(downloadId) ?: return@withTransaction null
+            val operation = dao.getOperation(item.operationId) ?: return@withTransaction null
+            val download = database.downloadDao.getNullableDownloadById(downloadId)
+            val now = System.currentTimeMillis()
             if (
-                (operation.cancelRequested || operation.stateValue.isTerminal) &&
-                    isPendingUserCancellation(item)
+                isLivePendingUserCancellation(item) &&
+                    !operation.cancelRequested &&
+                    !operation.stateValue.isTerminal
             ) {
-                DownloadRepository.releaseLivePendingCancellationToken(item.reasonCode)
+                // Preserve a live exact Snackbar authority across single-item
+                // recovery; only abandoned debt may be terminalized here.
+                return@withTransaction item.operationId
             }
-            dao.markCancelledByDownloadId(downloadId, REASON_USER_CANCELLED, now)
-        } else if (isMembershipRetryAuthority(download, item, operation)) {
-            // MEMBERSHIP_REQUIRED is a transient waiting/retry authority
-            // while the exact Download/child/operation/source tuple is
-            // coherent.  It must not be reclassified as terminal debt before
-            // the production claim consumes it.
-        } else if (
-            !download?.lastIssueCode.isNullOrBlank() &&
-                !item.stateValue.isTerminal
-        ) {
-            // The Download's durable terminal issue is the convergence fact;
-            // do not infer a fresh operation from a later mutable queue state.
-            dao.setItemStateByDownloadId(
-                downloadId,
-                LowQualityRedownloadItemState.FAILED.name,
-                download?.lastIssueCode.orEmpty(),
-                now,
-            )
-        } else if (operation.stateValue.isTerminal && item.stateValue.isTerminal) {
-            return@withTransaction item.operationId
-        } else {
-            LowQualityRedownloadLinkedDownloadPolicy.reconciledState(
-                currentState = item.stateValue,
-                downloadStatus = download?.status,
-            )?.let { state ->
-                if (state == LowQualityRedownloadItemState.CANCELLED) {
-                    dao.markCancelledByDownloadId(downloadId, REASON_USER_CANCELLED, now)
-                } else {
-                    dao.setItemStateByDownloadId(downloadId, state.name, "", now)
+            if (
+                operation.cancelRequested ||
+                item.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED
+            ) {
+                if (
+                    (operation.cancelRequested || operation.stateValue.isTerminal) &&
+                        isPendingUserCancellation(item)
+                ) {
+                    pendingTokensToRelease += item.reasonCode
+                }
+                dao.markCancelledByDownloadId(downloadId, REASON_USER_CANCELLED, now)
+            } else if (isMembershipRetryAuthority(download, item, operation)) {
+                // MEMBERSHIP_REQUIRED is a transient waiting/retry authority
+                // while the exact Download/child/operation/source tuple is
+                // coherent.  It must not be reclassified as terminal debt before
+                // the production claim consumes it.
+            } else if (
+                !download?.lastIssueCode.isNullOrBlank() &&
+                    !item.stateValue.isTerminal
+            ) {
+                // The Download's durable terminal issue is the convergence fact;
+                // do not infer a fresh operation from a later mutable queue state.
+                dao.setItemStateByDownloadId(
+                    downloadId,
+                    LowQualityRedownloadItemState.FAILED.name,
+                    download?.lastIssueCode.orEmpty(),
+                    now,
+                )
+            } else if (operation.stateValue.isTerminal && item.stateValue.isTerminal) {
+                return@withTransaction item.operationId
+            } else {
+                LowQualityRedownloadLinkedDownloadPolicy.reconciledState(
+                    currentState = item.stateValue,
+                    downloadStatus = download?.status,
+                )?.let { state ->
+                    if (state == LowQualityRedownloadItemState.CANCELLED) {
+                        dao.markCancelledByDownloadId(downloadId, REASON_USER_CANCELLED, now)
+                    } else {
+                        dao.setItemStateByDownloadId(downloadId, state.name, "", now)
+                    }
                 }
             }
+            finalizeIfReadyLocked(item.operationId, now)
+            item.operationId
         }
-        finalizeIfReadyLocked(item.operationId, now)
-        item.operationId
+        pendingTokensToRelease.forEach(DownloadRepository::releaseLivePendingCancellationToken)
+        return result
     }
 
     /**

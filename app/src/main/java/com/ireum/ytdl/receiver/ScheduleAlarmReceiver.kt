@@ -3,36 +3,39 @@
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import androidx.preference.PreferenceManager
-import androidx.work.Constraints
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
-import com.ireum.ytdl.work.DownloadWorker
-import java.util.concurrent.TimeUnit
+import android.util.Log
+import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
+import com.ireum.ytdl.work.WorkManagerHandoffRecovery
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class ScheduleAlarmReceiver : BroadcastReceiver() {
-    override fun onReceive(ctx: Context?, p1: Intent?) {
-        ctx?.apply {
-            val workConstraints = Constraints.Builder()
-            val preferences = PreferenceManager.getDefaultSharedPreferences(this)
-            val allowMeteredNetworks = preferences.getBoolean("metered_networks", true)
-            if (!allowMeteredNetworks) workConstraints.setRequiredNetworkType(NetworkType.UNMETERED)
-
-
-            val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
-                .addTag("scheduledDownload")
-                .addTag("download")
-                .setConstraints(workConstraints.build())
-                .setInitialDelay(0L, TimeUnit.MILLISECONDS)
-
-            WorkManager.getInstance(this).enqueueUniqueWork(
-                System.currentTimeMillis().toString(),
-                ExistingWorkPolicy.REPLACE,
-                workRequest.build()
-            )
+    override fun onReceive(ctx: Context?, intent: Intent?) {
+        val context = ctx?.applicationContext ?: return
+        val pendingResult = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val handoffId = intent?.getStringExtra(WorkManagerHandoffRecovery.EXTRA_HANDOFF_ID)
+                    ?: WorkManagerHandoffRecovery.prepareLegacySchedulerBoundary(
+                        context,
+                        WorkManagerHandoffCarrier.START_BOUNDARY,
+                    )
+                val outcome = WorkManagerHandoffRecovery
+                    .enqueueAndAwait(context, handoffId)
+                    .await()
+                if (!outcome.accepted && !outcome.superseded) {
+                    Log.w(TAG, "Scheduled-download start handoff remains recoverable", outcome.failure)
+                }
+            } catch (failure: Throwable) {
+                Log.w(TAG, "Scheduled-download start handoff failed", failure)
+            } finally {
+                pendingResult.finish()
+            }
         }
+    }
 
+    companion object {
+        private const val TAG = "ScheduleAlarmReceiver"
     }
 }

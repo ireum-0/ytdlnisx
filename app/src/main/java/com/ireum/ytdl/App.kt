@@ -14,6 +14,7 @@ import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.HistoryDateFetchManager
 import com.ireum.ytdl.work.DownloadExecutionRecovery
+import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.yausername.aria2c.Aria2c
 import com.yausername.youtubedl_android.YoutubeDL
@@ -78,6 +79,15 @@ class App : Application() {
                 DownloadExecutionRecovery.reconcile(this@App)
             } catch (failure: Exception) {
                 Log.w(TAG, "Download execution/finalization recovery failed", failure)
+            }
+        }
+        applicationScope.launch(Dispatchers.IO) {
+            try {
+                // One-shot click/alarm/notification handoffs are independent
+                // of optional native/runtime initialization.
+                WorkManagerHandoffRecovery.reconcile(this@App)
+            } catch (failure: Exception) {
+                Log.w(TAG, "WorkManager handoff recovery failed", failure)
             }
         }
         applicationScope.launch(Dispatchers.IO) {

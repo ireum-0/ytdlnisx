@@ -38,6 +38,8 @@ import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.database.viewmodel.YTDLPViewModel
 import com.ireum.ytdl.ui.adapter.GenericDownloadAdapter
 import com.ireum.ytdl.ui.adapter.ScheduledDownloadAdapter
+import com.ireum.ytdl.ui.UndoPresentationLifetime
+import com.ireum.ytdl.ui.setManualUndoAction
 import com.ireum.ytdl.util.Extensions.enableFastScroll
 import com.ireum.ytdl.util.Extensions.forceFastScrollMode
 import com.ireum.ytdl.util.Extensions.toListString
@@ -71,6 +73,7 @@ class ScheduledDownloadsFragment : Fragment(), ScheduledDownloadAdapter.OnItemCl
     private lateinit var count : TextView
     private lateinit var headerMenuBtn : TextView
     private var undoPresentationOwner: DownloadRepository.UndoPresentationOwner? = null
+    private val undoPresentationLifetime = UndoPresentationLifetime()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -89,6 +92,7 @@ class ScheduledDownloadsFragment : Fragment(), ScheduledDownloadAdapter.OnItemCl
     @SuppressLint("RestrictedApi", "SetTextI18n")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        undoPresentationLifetime.attach(viewLifecycleOwner.lifecycleScope)
 
         adapter =
             ScheduledDownloadAdapter(
@@ -392,18 +396,31 @@ class ScheduledDownloadsFragment : Fragment(), ScheduledDownloadAdapter.OnItemCl
                 }
                 when (direction) {
                     ItemTouchHelper.LEFT -> {
-                        lifecycleScope.launch {
-                            val owner = undoPresentationOwner ?: return@launch
+                        val owner = undoPresentationOwner ?: return
+                        val anchor = scheduledRecyclerView
+                        val presentationScope = undoPresentationLifetime.current() ?: return
+                        presentationScope.launch {
                             val undoHandle = withContext(Dispatchers.IO) {
                                 downloadViewModel.deleteDownloadForUndo(itemID, owner)
                             } ?: return@launch
                             try {
+                                if (!downloadViewModel.isUndoPresentationOwnerActive(owner)) {
+                                    downloadViewModel.abandonUndoCapabilityAfterConsumerFailure(
+                                        undoHandle.token.value,
+                                    )
+                                    return@launch
+                                }
                                 val deletedItem = undoHandle.item
                                 var resolutionAccepted = false
+                                var selectedIntent: PendingUndoResolutionIntent? = null
                                 lateinit var snackbar: Snackbar
-                                snackbar = Snackbar.make(scheduledRecyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title.ifEmpty { deletedItem.url }, Snackbar.LENGTH_INDEFINITE)
-                                    .setAction(getString(R.string.undo)) {
+                                snackbar = Snackbar.make(anchor, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title.ifEmpty { deletedItem.url }, Snackbar.LENGTH_INDEFINITE)
+                                    .setManualUndoAction(getString(R.string.undo)) {
                                         resolutionAccepted = downloadViewModel.restoreDownloadUndoFromUi(undoHandle)
+                                        if (resolutionAccepted) {
+                                            selectedIntent = PendingUndoResolutionIntent.RESTORE
+                                        }
+                                        resolutionAccepted
                                     }
                                 snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
                                     override fun onShown(transientBottomBar: Snackbar?) {
@@ -411,7 +428,7 @@ class ScheduledDownloadsFragment : Fragment(), ScheduledDownloadAdapter.OnItemCl
                                     }
 
                                     override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
-                                        if (event != DISMISS_EVENT_ACTION) {
+                                        if (selectedIntent == null && event != DISMISS_EVENT_ACTION) {
                                             val committed = downloadViewModel.commitDownloadUndoFromUi(undoHandle)
                                             if (
                                                 !committed &&
@@ -428,7 +445,7 @@ class ScheduledDownloadsFragment : Fragment(), ScheduledDownloadAdapter.OnItemCl
                                                         )
                                                     }
                                             }
-                                        } else if (
+                                        } else if (selectedIntent == null &&
                                             !resolutionAccepted &&
                                             downloadViewModel.reofferRemovalUndoCapabilityAfterResolutionFailure(
                                                 undoHandle.token.value,
@@ -504,6 +521,7 @@ class ScheduledDownloadsFragment : Fragment(), ScheduledDownloadAdapter.OnItemCl
         }
 
     override fun onDestroyView() {
+        undoPresentationLifetime.cancel()
         if (::downloadViewModel.isInitialized) {
             undoPresentationOwner?.let(downloadViewModel::abandonPendingUndoCapabilitiesForView)
         }

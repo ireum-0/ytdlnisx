@@ -456,6 +456,41 @@ object Migrations {
                     "`updatedAt` INTEGER NOT NULL DEFAULT 0, " +
                     "PRIMARY KEY(`token`))"
             )
+        },
+        Migration(59, 60) { database ->
+            database.execSQL(
+                "ALTER TABLE pending_undo_carriers " +
+                    "ADD COLUMN presentationState TEXT NOT NULL DEFAULT 'UNPUBLISHED'"
+            )
+        },
+        Migration(60, 61) { database ->
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `work_manager_handoff_carriers` (" +
+                    "`handoffId` TEXT NOT NULL, " +
+                    "`kind` TEXT NOT NULL, " +
+                    "`generationId` TEXT NOT NULL, " +
+                    "`requestId` TEXT NOT NULL, " +
+                    "`uniqueWorkName` TEXT NOT NULL, " +
+                    "`state` TEXT NOT NULL DEFAULT 'PENDING_ENQUEUE', " +
+                    "`sourceId` INTEGER NOT NULL DEFAULT 0, " +
+                    "`confirmedUrl` TEXT NOT NULL DEFAULT '', " +
+                    "`decision` TEXT NOT NULL DEFAULT '', " +
+                    "`configFingerprint` TEXT NOT NULL DEFAULT '', " +
+                    "`boundary` TEXT NOT NULL DEFAULT '', " +
+                    "`notBeforeAt` INTEGER NOT NULL DEFAULT 0, " +
+                    "`attempt` INTEGER NOT NULL DEFAULT 0, " +
+                    "`createdAt` INTEGER NOT NULL DEFAULT 0, " +
+                    "`updatedAt` INTEGER NOT NULL DEFAULT 0, " +
+                    "PRIMARY KEY(`handoffId`))"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_work_manager_handoff_carriers_kind_boundary_state` " +
+                    "ON `work_manager_handoff_carriers` (`kind`, `boundary`, `state`)"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_work_manager_handoff_carriers_sourceId_confirmedUrl_configFingerprint_decision_kind` " +
+                    "ON `work_manager_handoff_carriers` (`sourceId`, `confirmedUrl`, `configFingerprint`, `decision`, `kind`)"
+            )
         }
     )
 

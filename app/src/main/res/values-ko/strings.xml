@@ -71,6 +71,7 @@
     <string name="hard_sub_scan_now">하드서브 점검 실행</string>
     <string name="hard_sub_scan_now_summary">히스토리 영상을 점검하고 필요 시 하드서브 재다운로드를 큐에 추가합니다</string>
     <string name="hard_sub_scan_started">하드서브 점검을 시작했습니다</string>
+    <string name="hard_sub_scan_enqueue_failed">하드서브 점검 예약에 실패했습니다. 다시 시도합니다</string>
     <string name="history_is_empty">기록이 비어 있습니다</string>
     <string name="you_are_going_to_delete">삭제</string>
     <string name="url">URL</string>
