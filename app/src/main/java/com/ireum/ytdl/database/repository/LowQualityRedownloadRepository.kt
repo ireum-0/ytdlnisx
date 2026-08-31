@@ -85,46 +85,111 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
      */
     suspend fun reconcileAbandonedUndoDebts(): Set<String> {
         val affectedOperationIds = linkedSetOf<String>()
-        dao.getPendingUndoItems().forEach { item ->
-            val downloadId = item.downloadId ?: return@forEach
-            when {
-                isPendingUserCancellation(item) -> {
-                    val operation = dao.getOperation(item.operationId)
-                    val strongerOperationAuthority =
-                        operation?.cancelRequested == true ||
-                            operation?.stateValue?.isTerminal == true
-                    if (
-                        isLivePendingUserCancellation(item) &&
-                            !strongerOperationAuthority
-                    ) {
-                        // A live Snackbar owner is positive authority, not
-                        // abandoned debt.  Startup recovery must leave its
-                        // exact token untouched until the owner resolves or
-                        // abandons it.
-                        return@forEach
-                    }
-                    affectedOperationIds += if (strongerOperationAuthority) {
-                        DownloadRepository(database)
-                            .commitPendingCancellationForRecovery(downloadId, item.reasonCode)
-                    } else {
-                        DownloadRepository(database)
-                            .commitPendingCancellation(downloadId, item.reasonCode)
-                    }
-                }
-                item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX) &&
-                    !DownloadRepository.isLivePendingRemovalToken(item.reasonCode) &&
-                    database.downloadDao.getNullableDownloadById(downloadId) == null -> {
-                    affectedOperationIds += commitAbandonedPendingRemoval(item)
+        getPendingUndoItemsForRecovery()
+            .filter(::isSupportedAbandonedUndoToken)
+            .forEach { item ->
+                if (reconcileAbandonedUndoItem(item)) {
+                    affectedOperationIds += item.operationId
                 }
             }
-        }
         return affectedOperationIds
+    }
+
+    /**
+     * Reconciles one exact abandoned Undo carrier for the process-local
+     * successor owner.  A true result means that the exact carrier is no
+     * longer pending; false means the caller must retain ownership and retry.
+     * The token is the only selection key, so a retry owner cannot consume a
+     * different Snackbar token or sibling operation.
+     */
+    internal suspend fun reconcileAbandonedUndoDebt(token: String): Boolean {
+        val item = getPendingUndoItemsForRecovery()
+            .firstOrNull { it.reasonCode == token }
+            ?: return true
+        if (!isSupportedAbandonedUndoToken(item)) return true
+        val resolved = reconcileAbandonedUndoItem(item)
+        if (!resolved) return false
+        val downloadId = item.downloadId ?: return false
+        val current = dao.getItemByDownloadId(downloadId)
+        return !isSamePendingUndoCarrier(current, token)
+    }
+
+    private suspend fun reconcileAbandonedUndoItem(
+        item: LowQualityRedownloadItem,
+    ): Boolean {
+        val downloadId = item.downloadId ?: return false
+        when {
+            isPendingUserCancellation(item) -> {
+                val operation = dao.getOperation(item.operationId)
+                val strongerOperationAuthority =
+                    operation?.cancelRequested == true ||
+                        operation?.stateValue?.isTerminal == true
+                if (
+                    isLivePendingUserCancellation(item) &&
+                        !strongerOperationAuthority
+                ) {
+                    // A live Snackbar owner is positive authority, not
+                    // abandoned debt.  Recovery must preserve its exact
+                    // token until that owner resolves or abandons it.
+                    return false
+                }
+                if (strongerOperationAuthority) {
+                    DownloadRepository(database)
+                        .commitPendingCancellationForRecovery(downloadId, item.reasonCode)
+                } else {
+                    DownloadRepository(database)
+                        .commitPendingCancellation(downloadId, item.reasonCode)
+                }
+            }
+            item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX) -> {
+                if (DownloadRepository.isLivePendingRemovalToken(item.reasonCode)) {
+                    return false
+                }
+                // A pending-removal carrier is expected to have lost its
+                // primary row atomically.  Do not consume a token against a
+                // row that may have been restored by a still-live owner.
+                if (database.downloadDao.getNullableDownloadById(downloadId) != null) {
+                    return false
+                }
+                commitAbandonedPendingRemoval(item)
+            }
+            else -> return true
+        }
+        return !isSamePendingUndoCarrier(
+            dao.getItemByDownloadId(downloadId),
+            item.reasonCode,
+        )
+    }
+
+    private fun isSupportedAbandonedUndoToken(item: LowQualityRedownloadItem): Boolean =
+        isPendingUserCancellation(item) ||
+            item.reasonCode.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX)
+
+    private fun isSamePendingUndoCarrier(
+        item: LowQualityRedownloadItem?,
+        token: String,
+    ): Boolean =
+        item?.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED &&
+            item.reasonCode == token
+
+    private suspend fun getPendingUndoItemsForRecovery(): List<LowQualityRedownloadItem> {
+        while (true) {
+            val remaining = pendingUndoItemsReadFailureCount.get()
+            if (remaining <= 0) break
+            if (pendingUndoItemsReadFailureCount.compareAndSet(remaining, remaining - 1)) {
+                throw IllegalStateException(
+                    "Injected transient pending Undo read failure",
+                )
+            }
+        }
+        return dao.getPendingUndoItems()
     }
 
     private suspend fun commitAbandonedPendingRemoval(
         item: LowQualityRedownloadItem,
     ): Set<String> = database.withTransaction {
         val downloadId = item.downloadId ?: return@withTransaction emptySet()
+        abandonedPendingRemovalCommitFailureForTesting?.invoke()?.let { throw it }
         if (
             dao.commitUndoableLinkedItem(
                 downloadId = downloadId,
@@ -822,14 +887,19 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
 
     suspend fun markLinkedCancelled(operationId: String, downloadIds: List<Long>) {
         downloadIds.forEach { id ->
-            dao.getItemByDownloadId(id)
-                ?.takeIf(::isPendingUserCancellation)
-                ?.let { DownloadRepository.releaseLivePendingCancellationToken(it.reasonCode) }
-            dao.markCancelledByDownloadId(
+            val item = dao.getItemByDownloadId(id)
+            val changed = dao.markCancelledByDownloadId(
                 id,
                 REASON_USER_CANCELLED,
                 System.currentTimeMillis()
             )
+            if (changed == 1 && item != null && isPendingUserCancellation(item)) {
+                // The exact stronger cancellation is durable only after the
+                // DAO mutation commits.  This method is also used by callers
+                // that can throw after the mutation, so do not revoke the
+                // non-transactional Undo owner before that boundary.
+                DownloadRepository.releaseLivePendingCancellationToken(item.reasonCode)
+            }
         }
         finalizeIfReady(operationId)
     }
@@ -1059,11 +1129,22 @@ class LowQualityRedownloadRepository(private val database: DBManager) {
     companion object {
         /** Deterministic Room-read fault seam for the production convergence owner. */
         private val getItemsFailureCount = AtomicInteger(0)
+        private val pendingUndoItemsReadFailureCount = AtomicInteger(0)
+
+        /** Test seam for the first abandoned pending-removal commit. */
+        @Volatile
+        internal var abandonedPendingRemovalCommitFailureForTesting: (() -> Exception?)? = null
 
         internal var getItemsFailureCountForTesting: Int
             get() = getItemsFailureCount.get()
             set(value) {
                 getItemsFailureCount.set(value.coerceAtLeast(0))
+            }
+
+        internal var pendingUndoItemsReadFailureCountForTesting: Int
+            get() = pendingUndoItemsReadFailureCount.get()
+            set(value) {
+                pendingUndoItemsReadFailureCount.set(value.coerceAtLeast(0))
             }
 
         const val REASON_NO_CANDIDATES = "NO_CANDIDATES"

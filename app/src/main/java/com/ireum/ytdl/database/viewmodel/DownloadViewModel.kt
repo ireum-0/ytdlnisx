@@ -129,6 +129,11 @@ class DownloadViewModel private constructor(
         super.onCleared()
     }
 
+    /** Invokes the production lifecycle handoff for deterministic instrumentation coverage. */
+    internal fun clearForTesting() {
+        onCleared()
+    }
+
     val allDownloads : Flow<PagingData<DownloadItem>>
     val queuedDownloads : Flow<PagingData<DownloadItemSimple>>
     val activeDownloads : Flow<List<DownloadItem>>

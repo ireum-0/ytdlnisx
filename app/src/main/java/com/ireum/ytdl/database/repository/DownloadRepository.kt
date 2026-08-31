@@ -36,6 +36,7 @@ import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorker
+import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
 import kotlinx.coroutines.flow.Flow
@@ -297,53 +298,61 @@ class DownloadRepository(private val database: DBManager) {
         id: Long,
         captureUndo: Boolean,
         pendingUndoToken: String? = null,
-    ): DownloadRemovalResult? = database.withTransaction {
-        val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction null
-        val barrier = database.historyReplacementBarrierDao.getByDownloadId(id)
-        val linkedItem = database.lowQualityRedownloadDao.getItemByDownloadId(id)
-        val ledgerDao = database.lowQualityRedownloadDao
-        val pendingLinkedItem = if (
-            captureUndo &&
-                pendingUndoToken != null &&
-                linkedItem != null &&
-                !linkedItem.stateValue.isTerminal &&
-                linkedItem.stateValue in setOf(
-                    LowQualityRedownloadItemState.QUEUED,
-                    LowQualityRedownloadItemState.ACTIVE,
-                    LowQualityRedownloadItemState.WAITING,
-                ) &&
-                ledgerDao.markPendingUserRemoval(
-                    downloadId = id,
-                    token = pendingUndoToken,
-                    updatedAt = System.currentTimeMillis(),
-                ) == 1
-        ) {
-            pendingUndoToken
-        } else {
-            null
+    ): DownloadRemovalResult? {
+        val pendingTokensToRelease = linkedSetOf<String>()
+        val result = database.withTransaction {
+            val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction null
+            val barrier = database.historyReplacementBarrierDao.getByDownloadId(id)
+            val linkedItem = database.lowQualityRedownloadDao.getItemByDownloadId(id)
+            val ledgerDao = database.lowQualityRedownloadDao
+            val pendingLinkedItem = if (
+                captureUndo &&
+                    pendingUndoToken != null &&
+                    linkedItem != null &&
+                    !linkedItem.stateValue.isTerminal &&
+                    linkedItem.stateValue in setOf(
+                        LowQualityRedownloadItemState.QUEUED,
+                        LowQualityRedownloadItemState.ACTIVE,
+                        LowQualityRedownloadItemState.WAITING,
+                    ) &&
+                    ledgerDao.markPendingUserRemoval(
+                        downloadId = id,
+                        token = pendingUndoToken,
+                        updatedAt = System.currentTimeMillis(),
+                    ) == 1
+            ) {
+                pendingUndoToken
+            } else {
+                null
+            }
+            val affectedOperationIds = if (pendingLinkedItem != null) {
+                setOf(linkedItem!!.operationId)
+            } else {
+                terminalizeLinkedChildren(
+                    downloadIds = listOf(id),
+                    reason = REASON_USER_REMOVED,
+                    now = System.currentTimeMillis(),
+                    pendingTokensToRelease = pendingTokensToRelease,
+                )
+            }
+            val snapshot = if (captureUndo) {
+                DownloadRemovalSnapshot(
+                    download = item,
+                    barrier = barrier,
+                    linkedItem = linkedItem,
+                    pendingUndoToken = pendingLinkedItem,
+                )
+            } else {
+                null
+            }
+            database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
+            downloadDao.delete(id)
+            DownloadRemovalResult(item, affectedOperationIds, snapshot)
         }
-        val affectedOperationIds = if (pendingLinkedItem != null) {
-            setOf(linkedItem!!.operationId)
-        } else {
-            terminalizeLinkedChildren(
-                downloadIds = listOf(id),
-                reason = REASON_USER_REMOVED,
-                now = System.currentTimeMillis(),
-            )
-        }
-        val snapshot = if (captureUndo) {
-            DownloadRemovalSnapshot(
-                download = item,
-                barrier = barrier,
-                linkedItem = linkedItem,
-                pendingUndoToken = pendingLinkedItem,
-            )
-        } else {
-            null
-        }
-        database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
-        downloadDao.delete(id)
-        DownloadRemovalResult(item, affectedOperationIds, snapshot)
+        // The transaction owns the stronger terminal meaning.  Keep the
+        // process-local Undo owner intact until Room has committed it.
+        pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
+        return result
     }
 
     private fun deleteCache(items: List<DownloadItem>) {
@@ -392,17 +401,32 @@ class DownloadRepository(private val database: DBManager) {
 
     /**
      * Releases Undo ownership when the process-level ViewModel that can still
-     * resolve the Snackbar is destroyed.  The durable pending-removal token
-     * is deliberately unregistered before best-effort commitment, so a
-     * later reconciliation can recover it even if this cleanup write fails.
+     * resolve the Snackbar is destroyed.  A token-scoped same-process
+     * successor is published before the old owner is released.  The durable
+     * carrier therefore remains recoverable in this process even if the
+     * immediate convergence read or write fails.
      */
     suspend fun abandonPendingUndoSnapshots() {
-        val abandoned = pendingRemovalSnapshots.entries.mapNotNull { entry ->
-            if (
-                entry.value.ownerId == undoOwnerId &&
-                    pendingRemovalSnapshots.remove(entry.key, entry.value)
-            ) {
-                unregisterLivePendingRemovalToken(entry.key)
+        val ownedRemovalEntries = pendingRemovalSnapshots.entries
+            .filter { it.value.ownerId == undoOwnerId }
+        val cancellationTokens = livePendingCancellationTokensOwnedBy(undoOwnerId)
+        val successorTokens = ownedRemovalEntries
+            .mapNotNull { it.value.pendingUndoToken }
+            .plus(cancellationTokens)
+            .distinct()
+
+        // Establish the replacement executor while the old process-local
+        // authority still exists.  Only after this succeeds do we relinquish
+        // the UI owner below.
+        successorTokens.forEach { token ->
+            LowQualityRedownloadLedger.scheduleAbandonedUndoConvergence(
+                dbManager = database,
+                token = token,
+            )
+        }
+
+        val abandoned = ownedRemovalEntries.mapNotNull { entry ->
+            if (pendingRemovalSnapshots.remove(entry.key, entry.value)) {
                 entry.value
             } else {
                 null
@@ -410,26 +434,18 @@ class DownloadRepository(private val database: DBManager) {
         }
         val abandonedCancellationTokens = abandonLivePendingCancellationTokens(undoOwnerId)
         abandoned.forEach { snapshot ->
+            snapshot.pendingUndoToken?.let(::unregisterLivePendingRemovalToken)
             runCatching { commitRemovalSnapshot(snapshot) }
         }
         if (abandonedCancellationTokens.isNotEmpty()) {
-            val pendingItems = runCatching {
-                database.lowQualityRedownloadDao.getPendingUndoItems()
-            }.getOrElse { emptyList() }
             abandonedCancellationTokens.forEach { token ->
-                pendingItems
-                    .firstOrNull { it.reasonCode == token }
-                    ?.downloadId
-                    ?.let { downloadId ->
-                        // Ownership is released before this best-effort
-                        // commitment.  A failed write therefore remains
-                        // eligible for the runtime-independent recovery
-                        // owner rather than being stranded behind a dead
-                        // ViewModel.
-                        runCatching {
-                            commitPendingCancellation(downloadId, token)
-                        }
-                    }
+                // The successor is already registered.  This immediate pass
+                // is only latency optimization; any read/write failure is
+                // owned by the token-scoped retry loop.
+                runCatching {
+                    LowQualityRedownloadRepository(database)
+                        .reconcileAbandonedUndoDebt(token)
+                }
             }
         }
     }
@@ -446,6 +462,7 @@ class DownloadRepository(private val database: DBManager) {
         val linkedSnapshot = snapshot.linkedItem ?: return emptySet()
         val pendingToken = snapshot.pendingUndoToken ?: return emptySet()
         val ledgerDao = database.lowQualityRedownloadDao
+        pendingRemovalCommitFailureForTesting?.invoke()?.let { throw it }
         if (
             ledgerDao.commitUndoableLinkedItem(
                 downloadId = snapshot.download.id,
@@ -1264,71 +1281,95 @@ class DownloadRepository(private val database: DBManager) {
         return publications.toList()
     }
 
-    suspend fun saveForLater(item: DownloadItem): SavedDownloadResult = database.withTransaction {
-        if (item.id > 0L && downloadDao.getNullableDownloadById(item.id)?.let {
-                isCommittedHistoryReplacementLocked(it)
-            } == true) {
-            return@withTransaction SavedDownloadResult(
-                downloadId = item.id,
-                affectedOperationIds = emptySet(),
+    suspend fun saveForLater(item: DownloadItem): SavedDownloadResult {
+        val pendingTokensToRelease = linkedSetOf<String>()
+        val result = database.withTransaction {
+            if (item.id > 0L && downloadDao.getNullableDownloadById(item.id)?.let {
+                    isCommittedHistoryReplacementLocked(it)
+                } == true) {
+                return@withTransaction SavedDownloadResult(
+                    downloadId = item.id,
+                    affectedOperationIds = emptySet(),
+                )
+            }
+            if (item.id > 0L && persistedHistoryRefusalLocked(item.id) != null) {
+                return@withTransaction SavedDownloadResult(
+                    downloadId = item.id,
+                    affectedOperationIds = convergeHistoryReplacementRefusalLocked(
+                        id = item.id,
+                        expectedExecutionId = downloadDao.getNullableDownloadById(item.id)
+                            ?.executionId.orEmpty(),
+                        forceError = true,
+                    ).affectedOperationIds,
+                )
+            }
+            if (item.id > 0L && isLowQualityCancellationRequestedLocked(item.id)) {
+                val affectedOperationIds = terminalizeLinkedChildren(
+                    downloadIds = listOf(item.id),
+                    reason = REASON_USER_CANCELLED,
+                    now = System.currentTimeMillis(),
+                    pendingTokensToRelease = pendingTokensToRelease,
+                )
+                downloadDao.setStatus(item.id, Status.Cancelled.name)
+                return@withTransaction SavedDownloadResult(
+                    downloadId = item.id,
+                    affectedOperationIds = affectedOperationIds,
+                )
+            }
+            item.status = Status.Saved.name
+            val upsertResult = if (item.id <= 0L) downloadDao.insert(item) else downloadDao.update(item)
+            val downloadId = item.id.takeIf { it > 0L } ?: upsertResult
+            SavedDownloadResult(
+                downloadId = downloadId,
+                affectedOperationIds = markLinkedDownloadSaved(
+                    downloadId,
+                    System.currentTimeMillis(),
+                    pendingTokensToRelease,
+                )
             )
         }
-        if (item.id > 0L && persistedHistoryRefusalLocked(item.id) != null) {
-            return@withTransaction SavedDownloadResult(
-                downloadId = item.id,
-                affectedOperationIds = convergeHistoryReplacementRefusalLocked(
-                    id = item.id,
-                    expectedExecutionId = downloadDao.getNullableDownloadById(item.id)
-                        ?.executionId.orEmpty(),
+        pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
+        return result
+    }
+
+    suspend fun moveToSaved(id: Long): Set<String> {
+        val pendingTokensToRelease = linkedSetOf<String>()
+        val result = database.withTransaction {
+            val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction emptySet()
+            if (isCommittedHistoryReplacementLocked(item)) return@withTransaction emptySet()
+            if (persistedHistoryRefusalLocked(id) != null) {
+                return@withTransaction convergeHistoryReplacementRefusalLocked(
+                    id = id,
+                    expectedExecutionId = item.executionId,
                     forceError = true,
-                ).affectedOperationIds,
+                ).affectedOperationIds
+            }
+            if (isLowQualityCancellationRequestedLocked(id)) {
+                val affectedOperationIds = terminalizeLinkedChildren(
+                    downloadIds = listOf(id),
+                    reason = REASON_USER_CANCELLED,
+                    now = System.currentTimeMillis(),
+                    pendingTokensToRelease = pendingTokensToRelease,
+                )
+                downloadDao.setStatus(id, Status.Cancelled.name)
+                return@withTransaction affectedOperationIds
+            }
+            downloadDao.setStatus(item.id, Status.Saved.name)
+            markLinkedDownloadSaved(
+                item.id,
+                System.currentTimeMillis(),
+                pendingTokensToRelease,
             )
         }
-        if (item.id > 0L && isLowQualityCancellationRequestedLocked(item.id)) {
-            val affectedOperationIds = terminalizeLinkedChildren(
-                downloadIds = listOf(item.id),
-                reason = REASON_USER_CANCELLED,
-                now = System.currentTimeMillis(),
-            )
-            downloadDao.setStatus(item.id, Status.Cancelled.name)
-            return@withTransaction SavedDownloadResult(
-                downloadId = item.id,
-                affectedOperationIds = affectedOperationIds,
-            )
-        }
-        item.status = Status.Saved.name
-        val upsertResult = if (item.id <= 0L) downloadDao.insert(item) else downloadDao.update(item)
-        val downloadId = item.id.takeIf { it > 0L } ?: upsertResult
-        SavedDownloadResult(
-            downloadId = downloadId,
-            affectedOperationIds = markLinkedDownloadSaved(downloadId, System.currentTimeMillis())
-        )
+        pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
+        return result
     }
 
-    suspend fun moveToSaved(id: Long): Set<String> = database.withTransaction {
-        val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction emptySet()
-        if (isCommittedHistoryReplacementLocked(item)) return@withTransaction emptySet()
-        if (persistedHistoryRefusalLocked(id) != null) {
-            return@withTransaction convergeHistoryReplacementRefusalLocked(
-                id = id,
-                expectedExecutionId = item.executionId,
-                forceError = true,
-            ).affectedOperationIds
-        }
-        if (isLowQualityCancellationRequestedLocked(id)) {
-            val affectedOperationIds = terminalizeLinkedChildren(
-                downloadIds = listOf(id),
-                reason = REASON_USER_CANCELLED,
-                now = System.currentTimeMillis(),
-            )
-            downloadDao.setStatus(id, Status.Cancelled.name)
-            return@withTransaction affectedOperationIds
-        }
-        downloadDao.setStatus(item.id, Status.Saved.name)
-        markLinkedDownloadSaved(item.id, System.currentTimeMillis())
-    }
-
-    private suspend fun markLinkedDownloadSaved(downloadId: Long, now: Long): Set<String> {
+    private suspend fun markLinkedDownloadSaved(
+        downloadId: Long,
+        now: Long,
+        pendingTokensToRelease: MutableSet<String>,
+    ): Set<String> {
         val ledgerDao = database.lowQualityRedownloadDao
         val ledgerItem = ledgerDao.getItemByDownloadId(downloadId) ?: return emptySet()
         val operation = ledgerDao.getOperation(ledgerItem.operationId)
@@ -1336,14 +1377,14 @@ class DownloadRepository(private val database: DBManager) {
             operation?.cancelRequested == true ||
                 ledgerItem.stateValue == LowQualityRedownloadItemState.CANCELLATION_REQUESTED
         ) {
-            if (isPendingUserCancellationItem(ledgerItem)) {
-                releaseLivePendingCancellationToken(ledgerItem.reasonCode)
-            }
-            ledgerDao.markCancelledByDownloadId(
+            val changed = ledgerDao.markCancelledByDownloadId(
                 downloadId,
                 REASON_USER_CANCELLED,
                 now,
             )
+            if (changed == 1 && isPendingUserCancellationItem(ledgerItem)) {
+                pendingTokensToRelease += ledgerItem.reasonCode
+            }
             if (operation != null && !operation.stateValue.isTerminal) {
                 LowQualityRedownloadCompletionPolicy.terminalState(
                     operation,
@@ -1509,6 +1550,7 @@ class DownloadRepository(private val database: DBManager) {
             return UserCancellationResult()
         }
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
+        val pendingTokensToRelease = linkedSetOf<String>()
         val affectedOperationIds = database.withTransaction {
             val item = downloadDao.getNullableDownloadById(id)
                 ?: return@withTransaction emptySet()
@@ -1544,9 +1586,11 @@ class DownloadRepository(private val database: DBManager) {
             terminalizeLinkedChildren(
                 downloadIds = listOf(item.id),
                 reason = REASON_USER_CANCELLED,
-                now = System.currentTimeMillis()
+                now = System.currentTimeMillis(),
+                pendingTokensToRelease = pendingTokensToRelease,
             )
         }
+        pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
         return UserCancellationResult(
             affectedOperationIds = affectedOperationIds,
             publication = publications.singleOrNull(),
@@ -1750,6 +1794,7 @@ class DownloadRepository(private val database: DBManager) {
         expectedExecutionId: String? = null,
     ): UndoableCancellation {
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
+        val pendingTokensToRelease = linkedSetOf<String>()
         var registeredPendingCancellationToken: String? = null
         val result = try {
             database.withTransaction {
@@ -1846,7 +1891,8 @@ class DownloadRepository(private val database: DBManager) {
                 affectedOperationIds = terminalizeLinkedChildren(
                     downloadIds = listOf(id),
                     reason = REASON_USER_CANCELLED,
-                    now = System.currentTimeMillis()
+                    now = System.currentTimeMillis(),
+                    pendingTokensToRelease = pendingTokensToRelease,
                 ),
                 changed = changed,
             )
@@ -1860,6 +1906,7 @@ class DownloadRepository(private val database: DBManager) {
             }
             throw error
         }
+        pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
         DownloadCancellationRegistry.publish(publications)
         return result
     }
@@ -2042,6 +2089,7 @@ class DownloadRepository(private val database: DBManager) {
             }
             if (changed != 1) return emptySet()
         }
+        pendingCancellationCommitFailureForTesting?.invoke()?.let { throw it }
         if (
             ledgerDao.commitPendingUserCancellation(
                 id,
@@ -2073,13 +2121,20 @@ class DownloadRepository(private val database: DBManager) {
     private suspend fun deleteKnownUserRemoval(items: List<DownloadItem>): Set<String> {
         if (items.isEmpty()) return emptySet()
         val ids = items.map(DownloadItem::id).distinct()
+        val pendingTokensToRelease = linkedSetOf<String>()
         val operationIds = database.withTransaction {
             val now = System.currentTimeMillis()
-            val affected = terminalizeLinkedChildren(ids, REASON_USER_REMOVED, now)
+            val affected = terminalizeLinkedChildren(
+                downloadIds = ids,
+                reason = REASON_USER_REMOVED,
+                now = now,
+                pendingTokensToRelease = pendingTokensToRelease,
+            )
             database.historyReplacementBarrierDao.deleteForDownloadIds(ids)
             downloadDao.deleteAllWithIDs(ids)
             affected
         }
+        pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
         deleteCache(items)
         return operationIds
     }
@@ -2087,28 +2142,30 @@ class DownloadRepository(private val database: DBManager) {
     private suspend fun terminalizeLinkedChildren(
         downloadIds: List<Long>,
         reason: String,
-        now: Long
+        now: Long,
+        pendingTokensToRelease: MutableSet<String>,
     ): Set<String> {
         val ledgerDao = database.lowQualityRedownloadDao
         val changedOperationIds = linkedSetOf<String>()
         ledgerDao.getNonterminalItemsByDownloadIds(downloadIds).forEach { item ->
             val downloadId = item.downloadId ?: return@forEach
-            if (isPendingUserCancellationItem(item)) {
-                // This path is an explicit stronger terminal authority (for
-                // example user removal or a saved/refused transition).  It
-                // must revoke the exact Snackbar owner as it consumes the
-                // pending child, otherwise a resolved carrier could remain
-                // falsely live in this process.
-                releaseLivePendingCancellationToken(item.reasonCode)
-            }
             if (
                 ledgerDao.markCancelledByDownloadId(
                     downloadId,
                     reason,
-                    now
+                    now,
                 ) == 1
             ) {
+                if (isPendingUserCancellationItem(item)) {
+                    // The stronger meaning becomes durable only when the
+                    // enclosing Room transaction commits.  Stage the
+                    // process-local release for the caller instead of
+                    // destroying the Undo owner inside a rollback-capable
+                    // transaction.
+                    pendingTokensToRelease += item.reasonCode
+                }
                 changedOperationIds += item.operationId
+                terminalizeLinkedChildrenFailureForTesting?.invoke()?.let { throw it }
             }
         }
         val notificationOperationIds = linkedSetOf<String>()
@@ -2480,6 +2537,18 @@ class DownloadRepository(private val database: DBManager) {
         @Volatile
         internal var userStopWriteNoOpForTesting: ((Long, Status) -> Boolean)? = null
 
+        /** Test seam for a pending-cancellation commit failure. */
+        @Volatile
+        internal var pendingCancellationCommitFailureForTesting: (() -> Exception?)? = null
+
+        /** Test seam for a pending-removal commit failure. */
+        @Volatile
+        internal var pendingRemovalCommitFailureForTesting: (() -> Exception?)? = null
+
+        /** Test seam for a later failure in a rollback-capable child terminalization transaction. */
+        @Volatile
+        internal var terminalizeLinkedChildrenFailureForTesting: (() -> Exception?)? = null
+
         internal fun isLivePendingRemovalToken(token: String): Boolean =
             livePendingRemovalTokens.contains(token)
 
@@ -2496,6 +2565,11 @@ class DownloadRepository(private val database: DBManager) {
         private fun unregisterLivePendingCancellationToken(token: String, ownerId: String) {
             livePendingCancellationOwners.remove(token, ownerId)
         }
+
+        private fun livePendingCancellationTokensOwnedBy(ownerId: String): List<String> =
+            livePendingCancellationOwners.entries
+                .filter { it.value == ownerId }
+                .map { it.key }
 
         internal fun releaseLivePendingCancellationToken(token: String) {
             livePendingCancellationOwners.remove(token)

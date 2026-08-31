@@ -274,6 +274,8 @@ internal suspend fun dispatchLowQualityRedownloadRecovery(
 object LowQualityRedownloadLedger {
     private val convergenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val cancellationJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+    private val abandonedUndoJobs =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
     suspend fun transition(
         context: Context,
@@ -367,6 +369,64 @@ object LowQualityRedownloadLedger {
                 retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
             }
         }
+    }
+
+    /**
+     * Installs a token-scoped successor owner before a lifecycle owner drops
+     * its live Undo authority.  This owner is deliberately independent from
+     * runtime/native readiness and retries the exact durable carrier until it
+     * is resolved or a stronger authority consumes it.
+     */
+    fun scheduleAbandonedUndoConvergence(
+        dbManager: DBManager,
+        token: String,
+    ) {
+        if (
+            !token.startsWith(DownloadRepository.PENDING_REMOVAL_TOKEN_PREFIX) &&
+                !DownloadRepository.isValidPendingCancellationToken(token)
+        ) {
+            return
+        }
+        abandonedUndoJobs.computeIfAbsent(token) {
+            convergenceScope.launch {
+                val ownerJob = coroutineContext[Job]
+                var retryDelayMs = 100L
+                try {
+                    while (true) {
+                        val resolved = try {
+                            LowQualityRedownloadRepository(dbManager)
+                                .reconcileAbandonedUndoDebt(token)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            android.util.Log.w(
+                                "LowQualityRedownload",
+                                "Abandoned Undo convergence retry failed token=$token",
+                                error,
+                            )
+                            false
+                        }
+                        if (resolved) return@launch
+                        delay(retryDelayMs)
+                        retryDelayMs = (retryDelayMs * 2).coerceAtMost(5_000L)
+                    }
+                } finally {
+                    if (ownerJob != null) abandonedUndoJobs.remove(token, ownerJob)
+                }
+            }
+        }
+    }
+
+    internal fun isAbandonedUndoConvergenceActiveForTesting(token: String): Boolean =
+        abandonedUndoJobs[token]?.isActive == true
+
+    internal fun cancelAbandonedUndoConvergenceForTesting(token: String) {
+        abandonedUndoJobs.remove(token)?.cancel()
+    }
+
+    internal fun cancelAllAbandonedUndoConvergenceJobsForTesting() {
+        abandonedUndoJobs.values.forEach { it.cancel() }
+        abandonedUndoJobs.clear()
     }
 
     /**
