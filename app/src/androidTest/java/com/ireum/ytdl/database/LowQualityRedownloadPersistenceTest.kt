@@ -99,6 +99,7 @@ class LowQualityRedownloadPersistenceTest {
         DownloadRepository.pendingCancellationCommitFailureForTesting = null
         DownloadRepository.pendingRemovalCommitFailureForTesting = null
         DownloadRepository.pendingRemovalRestoreFailureForTesting = null
+        DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
         DownloadRepository.pendingRemovalAfterTransactionForTesting = null
         DownloadRepository.pendingCancellationAfterTransactionForTesting = null
         DownloadRepository.pendingRemovalResolverClaimedForTesting = null
@@ -129,6 +130,7 @@ class LowQualityRedownloadPersistenceTest {
         DownloadRepository.pendingCancellationCommitFailureForTesting = null
         DownloadRepository.pendingRemovalCommitFailureForTesting = null
         DownloadRepository.pendingRemovalRestoreFailureForTesting = null
+        DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
         DownloadRepository.pendingRemovalAfterTransactionForTesting = null
         DownloadRepository.pendingCancellationAfterTransactionForTesting = null
         DownloadRepository.pendingRemovalResolverClaimedForTesting = null
@@ -2803,6 +2805,518 @@ class LowQualityRedownloadPersistenceTest {
         assertEquals(LowQualityRedownloadItemState.CANCELLED, children[commitId]?.stateValue)
         assertNull(database.pendingUndoCarrierDao.get(restore.token.value))
         assertNull(database.pendingUndoCarrierDao.get(commit.token.value))
+    }
+
+    @Test
+    fun removalRestoreIntentFirstWriteFailureThenProcessDeath() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 344, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val owner = viewModel.beginUndoPresentationOwner()
+        val handle = checkNotNull(viewModel.deleteDownloadForUndo(downloadId, owner))
+        viewModel.acknowledgeUndoPublication(handle.token.value, owner)
+        val firstWriteFailure = AtomicBoolean(true)
+        DownloadRepository.pendingUndoResolutionWriteFailureForTesting = {
+            if (firstWriteFailure.compareAndSet(true, false)) {
+                IllegalStateException("injected first removal intent write failure")
+            } else {
+                null
+            }
+        }
+        val resolverBoundary = CompletableDeferred<Unit>()
+        val releaseResolver = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalBeforeResolverClaimedForTesting = {
+            resolverBoundary.complete(Unit)
+            releaseResolver.await()
+        }
+
+        try {
+            assertTrue(viewModel.restoreDownloadUndoFromUi(handle))
+            resolverBoundary.await()
+            assertEquals(
+                PendingUndoResolutionIntent.RESTORE,
+                database.pendingUndoCarrierDao.get(handle.token.value)?.resolutionIntent
+                    ?.let { PendingUndoResolutionIntent.valueOf(it) },
+            )
+
+            // The exact durable intent was accepted before the asynchronous
+            // resolver claim. Clearing process-local ownership therefore
+            // cannot reinterpret RESTORE as removal COMMIT.
+            DownloadRepository.clearLivePendingRemovalTokensForTest()
+            runStartupUndoRecovery(context)
+            assertTrue(database.downloadDao.getNullableDownloadById(downloadId) != null)
+            assertEquals(
+                LowQualityRedownloadItemState.QUEUED,
+                repository.getItems(operation.operationId).single().stateValue,
+            )
+        } finally {
+            releaseResolver.complete(Unit)
+            DownloadRepository.pendingRemovalBeforeResolverClaimedForTesting = null
+            DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+        }
+    }
+
+    @Test
+    fun cancellationRestoreIntentFirstWriteFailureThenProcessDeath() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 345, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val owner = viewModel.beginUndoPresentationOwner()
+        val original = database.downloadDao.getDownloadById(downloadId)
+        val token = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(
+                id = downloadId,
+                owner = owner,
+            ).pendingToken
+        )
+        viewModel.acknowledgeUndoPublication(token, owner)
+        val firstWriteFailure = AtomicBoolean(true)
+        DownloadRepository.pendingUndoResolutionWriteFailureForTesting = {
+            if (firstWriteFailure.compareAndSet(true, false)) {
+                IllegalStateException("injected first cancellation intent write failure")
+            } else {
+                null
+            }
+        }
+        val resolverBoundary = CompletableDeferred<Unit>()
+        val releaseResolver = CompletableDeferred<Unit>()
+        DownloadRepository.pendingCancellationBeforeResolverClaimedForTesting = {
+            resolverBoundary.complete(Unit)
+            releaseResolver.await()
+        }
+
+        try {
+            assertTrue(viewModel.undoPendingCancellation(original, token, owner))
+            resolverBoundary.await()
+            assertEquals(
+                PendingUndoResolutionIntent.RESTORE,
+                database.pendingUndoCarrierDao.get(token)?.resolutionIntent
+                    ?.let { PendingUndoResolutionIntent.valueOf(it) },
+            )
+            DownloadRepository.clearLivePendingRemovalTokensForTest()
+            runStartupUndoRecovery(context)
+            assertEquals(
+                DownloadRepository.Status.Queued.name,
+                database.downloadDao.getDownloadById(downloadId).status,
+            )
+            assertEquals(
+                LowQualityRedownloadItemState.QUEUED,
+                repository.getItems(operation.operationId).single().stateValue,
+            )
+        } finally {
+            releaseResolver.complete(Unit)
+            DownloadRepository.pendingCancellationBeforeResolverClaimedForTesting = null
+            DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+        }
+    }
+
+    @Test
+    fun removalCommitIntentFirstWriteFailure() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 346, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(
+            ApplicationProvider.getApplicationContext(),
+            database,
+            true,
+        )
+        val owner = viewModel.beginUndoPresentationOwner()
+        val handle = checkNotNull(viewModel.deleteDownloadForUndo(downloadId, owner))
+        viewModel.acknowledgeUndoPublication(handle.token.value, owner)
+        val firstWriteFailure = AtomicBoolean(true)
+        DownloadRepository.pendingUndoResolutionWriteFailureForTesting = {
+            if (firstWriteFailure.compareAndSet(true, false)) {
+                IllegalStateException("injected first removal COMMIT intent write failure")
+            } else {
+                null
+            }
+        }
+        val resolverBoundary = CompletableDeferred<Unit>()
+        val releaseResolver = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalResolverClaimedForTesting = {
+            resolverBoundary.complete(Unit)
+            releaseResolver.await()
+        }
+        try {
+            assertTrue(viewModel.commitDownloadUndoFromUi(handle))
+            resolverBoundary.await()
+            assertEquals(
+                PendingUndoResolutionIntent.COMMIT,
+                database.pendingUndoCarrierDao.get(handle.token.value)?.resolutionIntent
+                    ?.let { PendingUndoResolutionIntent.valueOf(it) },
+            )
+        } finally {
+            releaseResolver.complete(Unit)
+            DownloadRepository.pendingRemovalResolverClaimedForTesting = null
+            DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+        }
+    }
+
+    @Test
+    fun cancellationCommitIntentFirstWriteFailure() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 347, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(
+            ApplicationProvider.getApplicationContext(),
+            database,
+            true,
+        )
+        val owner = viewModel.beginUndoPresentationOwner()
+        val token = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(
+                id = downloadId,
+                owner = owner,
+            ).pendingToken
+        )
+        viewModel.acknowledgeUndoPublication(token, owner)
+        val firstWriteFailure = AtomicBoolean(true)
+        DownloadRepository.pendingUndoResolutionWriteFailureForTesting = {
+            if (firstWriteFailure.compareAndSet(true, false)) {
+                IllegalStateException("injected first cancellation COMMIT intent write failure")
+            } else {
+                null
+            }
+        }
+        val resolverBoundary = CompletableDeferred<Unit>()
+        val releaseResolver = CompletableDeferred<Unit>()
+        DownloadRepository.pendingCancellationResolverClaimedForTesting = {
+            resolverBoundary.complete(Unit)
+            releaseResolver.await()
+        }
+        try {
+            assertTrue(viewModel.commitPendingCancellation(downloadId, token, owner))
+            resolverBoundary.await()
+            assertEquals(
+                PendingUndoResolutionIntent.COMMIT,
+                database.pendingUndoCarrierDao.get(token)?.resolutionIntent
+                    ?.let { PendingUndoResolutionIntent.valueOf(it) },
+            )
+        } finally {
+            releaseResolver.complete(Unit)
+            DownloadRepository.pendingCancellationResolverClaimedForTesting = null
+            DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+        }
+    }
+
+    @Test
+    fun undoIntentFirstWriteFailureAndRecoveryWriteFailureRetainsIntent() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val downloadId = linkDownload(operation.operationId, 348, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val owner = viewModel.beginUndoPresentationOwner()
+        val handle = checkNotNull(viewModel.deleteDownloadForUndo(downloadId, owner))
+        viewModel.acknowledgeUndoPublication(handle.token.value, owner)
+        val twoWriteFailures = AtomicInteger(2)
+        DownloadRepository.pendingUndoResolutionWriteFailureForTesting = {
+            val remaining = twoWriteFailures.get()
+            if (remaining > 0 && twoWriteFailures.compareAndSet(remaining, remaining - 1)) {
+                IllegalStateException("injected intent barrier failure $remaining")
+            } else {
+                null
+            }
+        }
+        val resolverBoundary = CompletableDeferred<Unit>()
+        val releaseResolver = CompletableDeferred<Unit>()
+        DownloadRepository.pendingRemovalBeforeResolverClaimedForTesting = {
+            resolverBoundary.complete(Unit)
+            releaseResolver.await()
+        }
+        try {
+            assertTrue(viewModel.restoreDownloadUndoFromUi(handle))
+            resolverBoundary.await()
+            assertEquals(
+                PendingUndoResolutionIntent.RESTORE,
+                database.pendingUndoCarrierDao.get(handle.token.value)?.resolutionIntent
+                    ?.let { PendingUndoResolutionIntent.valueOf(it) },
+            )
+            DownloadRepository.clearLivePendingRemovalTokensForTest()
+            runStartupUndoRecovery(context)
+            assertTrue(database.downloadDao.getNullableDownloadById(downloadId) != null)
+        } finally {
+            releaseResolver.complete(Unit)
+            DownloadRepository.pendingRemovalBeforeResolverClaimedForTesting = null
+            DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+        }
+    }
+
+    @Test
+    fun intentBarrierSiblingIsolation() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val restoreId = linkDownload(operation.operationId, 349, DownloadRepository.Status.Queued)
+        val commitId = linkDownload(operation.operationId, 350, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val owner = viewModel.beginUndoPresentationOwner()
+        val restore = checkNotNull(viewModel.deleteDownloadForUndo(restoreId, owner))
+        val commit = checkNotNull(viewModel.deleteDownloadForUndo(commitId, owner))
+        viewModel.acknowledgeUndoPublication(restore.token.value, owner)
+        viewModel.acknowledgeUndoPublication(commit.token.value, owner)
+        val firstWriteFailure = AtomicBoolean(true)
+        DownloadRepository.pendingUndoResolutionWriteFailureForTesting = {
+            if (firstWriteFailure.compareAndSet(true, false)) {
+                IllegalStateException("injected sibling RESTORE intent failure")
+            } else {
+                null
+            }
+        }
+        try {
+            assertTrue(
+                viewModel.repository.acceptRemovalUndoResolution(
+                    restore.token.value,
+                    PendingUndoResolutionIntent.RESTORE,
+                    owner,
+                )
+            )
+            assertTrue(
+                viewModel.repository.acceptRemovalUndoResolution(
+                    commit.token.value,
+                    PendingUndoResolutionIntent.COMMIT,
+                    owner,
+                )
+            )
+            assertEquals(
+                PendingUndoResolutionIntent.RESTORE,
+                viewModel.repository.pendingUndoResolutionIntent(restore.token.value),
+            )
+            assertEquals(
+                PendingUndoResolutionIntent.COMMIT,
+                viewModel.repository.pendingUndoResolutionIntent(commit.token.value),
+            )
+            DownloadRepository.clearLivePendingRemovalTokensForTest()
+            runStartupUndoRecovery(context)
+            assertTrue(database.downloadDao.getNullableDownloadById(restoreId) != null)
+            assertNull(database.downloadDao.getNullableDownloadById(commitId))
+        } finally {
+            DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+        }
+    }
+
+    @Test
+    fun twoActivityScopedViewsKeepIndependentUndoOwners() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val firstId = linkDownload(operation.operationId, 351, DownloadRepository.Status.Queued)
+        val secondId = linkDownload(operation.operationId, 352, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val ownerA = viewModel.beginUndoPresentationOwner()
+        val ownerB = viewModel.beginUndoPresentationOwner()
+        val tokenA = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = firstId, owner = ownerA).pendingToken
+        )
+        val tokenB = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = secondId, owner = ownerB).pendingToken
+        )
+        viewModel.acknowledgeUndoPublication(tokenA, ownerA)
+        viewModel.acknowledgeUndoPublication(tokenB, ownerB)
+        assertNotEquals(ownerA, ownerB)
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(tokenA))
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(tokenB))
+    }
+
+    @Test
+    fun creatingSecondOwnerDoesNotInvalidateFirstSnackbar() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val firstId = linkDownload(operation.operationId, 353, DownloadRepository.Status.Queued)
+        val secondId = linkDownload(operation.operationId, 354, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val ownerA = viewModel.beginUndoPresentationOwner()
+        val handleA = checkNotNull(viewModel.deleteDownloadForUndo(firstId, ownerA))
+        viewModel.acknowledgeUndoPublication(handleA.token.value, ownerA)
+        val ownerB = viewModel.beginUndoPresentationOwner()
+        viewModel.repository.beginUndoableCancellation(id = secondId, owner = ownerB)
+        assertEquals(firstId, viewModel.restoreDownloadUndo(handleA))
+    }
+
+    @Test
+    fun destroyingFirstViewDoesNotAbandonSecondOwner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val firstId = linkDownload(operation.operationId, 355, DownloadRepository.Status.Queued)
+        val secondId = linkDownload(operation.operationId, 356, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val ownerA = viewModel.beginUndoPresentationOwner()
+        val ownerB = viewModel.beginUndoPresentationOwner()
+        val tokenA = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = firstId, owner = ownerA).pendingToken
+        )
+        val tokenB = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = secondId, owner = ownerB).pendingToken
+        )
+        viewModel.acknowledgeUndoPublication(tokenA, ownerA)
+        viewModel.acknowledgeUndoPublication(tokenB, ownerB)
+        viewModel.abandonPendingUndoCapabilitiesForView(ownerA)
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(tokenA))
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(tokenB))
+        assertEquals(
+            DownloadRepository.Status.Queued,
+            viewModel.repository.undoPendingCancellation(
+                secondId,
+                tokenB,
+                DownloadRepository.Status.Queued,
+                ownerB,
+            ).restoredStatus,
+        )
+    }
+
+    @Test
+    fun destroyingSecondViewDoesNotAbandonFirstOwner() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val firstId = linkDownload(operation.operationId, 357, DownloadRepository.Status.Queued)
+        val secondId = linkDownload(operation.operationId, 358, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val ownerA = viewModel.beginUndoPresentationOwner()
+        val ownerB = viewModel.beginUndoPresentationOwner()
+        val tokenA = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = firstId, owner = ownerA).pendingToken
+        )
+        val tokenB = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = secondId, owner = ownerB).pendingToken
+        )
+        viewModel.acknowledgeUndoPublication(tokenA, ownerA)
+        viewModel.acknowledgeUndoPublication(tokenB, ownerB)
+        viewModel.abandonPendingUndoCapabilitiesForView(ownerB)
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(tokenA))
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(tokenB))
+        assertEquals(
+            DownloadRepository.Status.Queued,
+            viewModel.repository.undoPendingCancellation(
+                firstId,
+                tokenA,
+                DownloadRepository.Status.Queued,
+                ownerA,
+            ).restoredStatus,
+        )
+    }
+
+    @Test
+    fun crossOwnerAckAndResolutionFailClosed() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val firstId = linkDownload(operation.operationId, 359, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(
+            ApplicationProvider.getApplicationContext(),
+            database,
+            true,
+        )
+        val ownerA = viewModel.beginUndoPresentationOwner()
+        val ownerB = viewModel.beginUndoPresentationOwner()
+        val tokenA = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = firstId, owner = ownerA).pendingToken
+        )
+        viewModel.acknowledgeUndoPublication(tokenA, ownerB)
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(tokenA))
+        viewModel.acknowledgeUndoPublication(tokenA, ownerA)
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(tokenA))
+        assertFalse(
+            viewModel.repository.acceptCancellationUndoResolution(
+                tokenA,
+                PendingUndoResolutionIntent.RESTORE,
+                ownerB,
+            )
+        )
+        viewModel.abandonPendingUndoCapabilitiesForView(ownerB)
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(tokenA))
+        assertEquals(
+            DownloadRepository.Status.Queued,
+            viewModel.repository.undoPendingCancellation(
+                firstId,
+                tokenA,
+                DownloadRepository.Status.Queued,
+                ownerA,
+            ).restoredStatus,
+        )
+    }
+
+    @Test
+    fun activityViewModelClearAbandonsAllIssuedOwners() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val operation = repository.createOrReconnect(now = 100)
+        val firstId = linkDownload(operation.operationId, 360, DownloadRepository.Status.Queued)
+        val secondId = linkDownload(operation.operationId, 361, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(context, database, true)
+        val ownerA = viewModel.beginUndoPresentationOwner()
+        val ownerB = viewModel.beginUndoPresentationOwner()
+        val tokenA = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = firstId, owner = ownerA).pendingToken
+        )
+        val tokenB = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = secondId, owner = ownerB).pendingToken
+        )
+        viewModel.acknowledgeUndoPublication(tokenA, ownerA)
+        viewModel.acknowledgeUndoPublication(tokenB, ownerB)
+        DownloadRepository.pendingCancellationCommitFailureForTesting = {
+            IllegalStateException("hold clear successor convergence")
+        }
+        viewModel.clearForTesting()
+        awaitAbandonedUndoOwnerActive(tokenA)
+        awaitAbandonedUndoOwnerActive(tokenB)
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(tokenA))
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(tokenB))
+        DownloadRepository.pendingCancellationCommitFailureForTesting = null
+        runStartupUndoRecovery(context)
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).first { it.downloadId == firstId }.stateValue,
+        )
+        assertEquals(
+            LowQualityRedownloadItemState.CANCELLED,
+            repository.getItems(operation.operationId).first { it.downloadId == secondId }.stateValue,
+        )
+    }
+
+    @Test
+    fun viewPagerLikeOwnerLifecycleKeepsExactPresentationAssignments() = runBlocking {
+        val operation = repository.createOrReconnect(now = 100)
+        val firstId = linkDownload(operation.operationId, 362, DownloadRepository.Status.Queued)
+        val secondId = linkDownload(operation.operationId, 363, DownloadRepository.Status.Queued)
+        val thirdId = linkDownload(operation.operationId, 364, DownloadRepository.Status.Queued)
+        val viewModel = DownloadViewModel(
+            ApplicationProvider.getApplicationContext(),
+            database,
+            true,
+        )
+        val ownerA = viewModel.beginUndoPresentationOwner()
+        val ownerB = viewModel.beginUndoPresentationOwner()
+        val tokenA = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = firstId, owner = ownerA).pendingToken
+        )
+        val tokenB = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = secondId, owner = ownerB).pendingToken
+        )
+        viewModel.acknowledgeUndoPublication(tokenA, ownerA)
+        viewModel.acknowledgeUndoPublication(tokenB, ownerB)
+        val ownerC = viewModel.beginUndoPresentationOwner()
+        val tokenC = checkNotNull(
+            viewModel.repository.beginUndoableCancellation(id = thirdId, owner = ownerC).pendingToken
+        )
+        viewModel.acknowledgeUndoPublication(tokenC, ownerC)
+
+        viewModel.abandonPendingUndoCapabilitiesForView(ownerB)
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(tokenA))
+        assertFalse(DownloadRepository.isLivePendingCancellationToken(tokenB))
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(tokenC))
+        assertEquals(
+            DownloadRepository.Status.Queued,
+            viewModel.repository.undoPendingCancellation(
+                firstId,
+                tokenA,
+                DownloadRepository.Status.Queued,
+                ownerA,
+            ).restoredStatus,
+        )
+        assertTrue(DownloadRepository.isLivePendingCancellationToken(tokenC))
+        assertEquals(
+            DownloadRepository.Status.Queued,
+            viewModel.repository.undoPendingCancellation(
+                thirdId,
+                tokenC,
+                DownloadRepository.Status.Queued,
+                ownerC,
+            ).restoredStatus,
+        )
     }
 
     @Test

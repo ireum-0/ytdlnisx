@@ -123,6 +123,7 @@ class DownloadViewModel private constructor(
     private val ytdlpUtil: YTDLPUtil
     private val resources : Resources
     private val downloadPresetStore: DownloadPresetStore
+    private var legacyUndoPresentationOwner: DownloadRepository.UndoPresentationOwner? = null
 
     override fun onCleared() {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
@@ -136,14 +137,25 @@ class DownloadViewModel private constructor(
         onCleared()
     }
 
-    /** Transfers exact Undo capabilities when only this Fragment's view disappears. */
+    /** Transfers only the exact capabilities issued to this Fragment view. */
+    internal fun abandonPendingUndoCapabilitiesForView(
+        owner: DownloadRepository.UndoPresentationOwner,
+    ) {
+        repository.abandonPendingUndoCapabilitiesForView(owner)
+    }
+
+    /** Compatibility overload for older callers; production views retain the returned handle. */
     internal fun abandonPendingUndoCapabilitiesForView() {
         repository.abandonPendingUndoCapabilitiesForView()
     }
 
     /** Gives a recreated Fragment view a distinct process-local Undo owner. */
-    internal fun beginUndoPresentationOwner() {
-        repository.beginUndoPresentationOwner()
+    internal fun beginUndoPresentationOwner(): DownloadRepository.UndoPresentationOwner {
+        return repository.beginUndoPresentationOwner().also {
+            // Only the compatibility overloads use this slot.  Production
+            // callers pass the returned immutable handle at every boundary.
+            legacyUndoPresentationOwner = it
+        }
     }
 
     /** A Snackbar becomes positive UI authority only after its onShown callback. */
@@ -151,10 +163,60 @@ class DownloadViewModel private constructor(
         repository.acknowledgeUndoPublication(token)
     }
 
+    internal fun acknowledgeUndoPublication(
+        token: String,
+        owner: DownloadRepository.UndoPresentationOwner,
+    ) {
+        repository.acknowledgeUndoPublication(token, owner)
+    }
+
     /** Closes the exact producer-to-Snackbar handoff on consumer failure. */
     internal fun abandonUndoCapabilityAfterConsumerFailure(token: String) {
         repository.abandonUndoCapabilityAfterProducerFailure(token)
     }
+
+    /** Re-delivers a removal capability when durable intent acceptance failed. */
+    internal fun reofferRemovalUndoCapabilityAfterResolutionFailure(
+        token: String,
+        intent: PendingUndoResolutionIntent,
+        owner: DownloadRepository.UndoPresentationOwner,
+    ): Boolean {
+        return try {
+            runBlocking(Dispatchers.IO) {
+                repository.reofferRemovalUndoCapabilityAfterResolutionFailure(
+                    token = token,
+                    intent = intent,
+                    owner = owner,
+                )
+            }
+        } catch (failure: Throwable) {
+            repository.abandonUndoCapabilityAfterProducerFailure(token)
+            false
+        }
+    }
+
+    /** Re-delivers a cancellation capability when durable intent acceptance failed. */
+    internal fun reofferCancellationUndoCapabilityAfterResolutionFailure(
+        token: String,
+        intent: PendingUndoResolutionIntent,
+        owner: DownloadRepository.UndoPresentationOwner,
+    ): Boolean {
+        return try {
+            runBlocking(Dispatchers.IO) {
+                repository.reofferCancellationUndoCapabilityAfterResolutionFailure(
+                    token = token,
+                    intent = intent,
+                    owner = owner,
+                )
+            }
+        } catch (failure: Throwable) {
+            repository.abandonUndoCapabilityAfterProducerFailure(token)
+            false
+        }
+    }
+
+    private fun legacyUndoOwner(): DownloadRepository.UndoPresentationOwner =
+        legacyUndoPresentationOwner ?: beginUndoPresentationOwner()
 
     val allDownloads : Flow<PagingData<DownloadItem>>
     val queuedDownloads : Flow<PagingData<DownloadItemSimple>>
@@ -302,11 +364,17 @@ class DownloadViewModel private constructor(
         notificationUtil.cancelMembershipWaitingNotification(id)
     }
 
-    suspend fun deleteDownloadForUndo(id: Long): DownloadRepository.DownloadUndoHandle? {
+    suspend fun deleteDownloadForUndo(id: Long): DownloadRepository.DownloadUndoHandle? =
+        deleteDownloadForUndo(id, legacyUndoOwner())
+
+    suspend fun deleteDownloadForUndo(
+        id: Long,
+        owner: DownloadRepository.UndoPresentationOwner,
+    ): DownloadRepository.DownloadUndoHandle? {
         var committedHandle: DownloadRepository.DownloadUndoHandle? = null
         return try {
             withContext(Dispatchers.IO) {
-                val handle = repository.deleteForUndo(id) ?: return@withContext null
+                val handle = repository.deleteForUndo(id, owner) ?: return@withContext null
                 // Keep this outside the withContext success boundary.  If the
                 // caller is cancelled while the dispatcher is returning the
                 // result, the durable carrier still gets an exact successor.
@@ -317,7 +385,7 @@ class DownloadViewModel private constructor(
         } catch (cancelled: CancellationException) {
             committedHandle?.let { repository.abandonUndoCapabilityAfterProducerFailure(it.token.value) }
             throw cancelled
-        } catch (failure: Exception) {
+        } catch (failure: Throwable) {
             committedHandle?.let { repository.abandonUndoCapabilityAfterProducerFailure(it.token.value) }
             throw failure
         }
@@ -325,49 +393,63 @@ class DownloadViewModel private constructor(
 
     suspend fun restoreDownloadUndo(handle: DownloadRepository.DownloadUndoHandle): Long? =
         withContext(Dispatchers.IO) {
-            val restoredId = repository.restoreUndo(handle.token)
+            val restoredId = repository.restoreUndo(handle.token, handle.owner)
             if (restoredId != null) {
                 LowQualityRedownloadLedger.refresh(application, handle.affectedOperationIds)
             }
             restoredId
         }
 
-    fun restoreDownloadUndoFromUi(handle: DownloadRepository.DownloadUndoHandle) {
-        val accepted = runCatching {
+    fun restoreDownloadUndoFromUi(handle: DownloadRepository.DownloadUndoHandle): Boolean {
+        val accepted = try {
             runBlocking(Dispatchers.IO) {
                 repository.acceptRemovalUndoResolution(
                     handle.token.value,
                     PendingUndoResolutionIntent.RESTORE,
+                    handle.owner,
                 )
             }
-        }.getOrDefault(false)
-        if (!accepted) return
+        } catch (failure: Throwable) {
+            // The callback must not silently consume an action whose intent
+            // failed every synchronous durable acceptance attempt.  The
+            // repository has already transferred this exact carrier to its
+            // selected-intent recovery owner.
+            repository.abandonUndoCapabilityAfterProducerFailure(handle.token.value)
+            false
+        }
+        if (!accepted) return false
         viewModelScope.launch(Dispatchers.IO) {
             restoreDownloadUndo(handle)
         }
+        return true
     }
 
     suspend fun commitDownloadUndo(handle: DownloadRepository.DownloadUndoHandle) =
         withContext(Dispatchers.IO) {
             LowQualityRedownloadLedger.refresh(
                 application,
-                repository.commitUndo(handle.token),
+                repository.commitUndo(handle.token, handle.owner),
             )
         }
 
-    fun commitDownloadUndoFromUi(handle: DownloadRepository.DownloadUndoHandle) {
-        val accepted = runCatching {
+    fun commitDownloadUndoFromUi(handle: DownloadRepository.DownloadUndoHandle): Boolean {
+        val accepted = try {
             runBlocking(Dispatchers.IO) {
                 repository.acceptRemovalUndoResolution(
                     handle.token.value,
                     PendingUndoResolutionIntent.COMMIT,
+                    handle.owner,
                 )
             }
-        }.getOrDefault(false)
-        if (!accepted) return
+        } catch (failure: Throwable) {
+            repository.abandonUndoCapabilityAfterProducerFailure(handle.token.value)
+            false
+        }
+        if (!accepted) return false
         viewModelScope.launch(Dispatchers.IO) {
             commitDownloadUndo(handle)
         }
+        return true
     }
 
     suspend fun updateDownload(item: DownloadItem){
@@ -3054,7 +3136,13 @@ class DownloadViewModel private constructor(
         }
     }
 
-    suspend fun beginUndoableCancellation(id: Long): String? {
+    suspend fun beginUndoableCancellation(id: Long): String? =
+        beginUndoableCancellation(id, legacyUndoOwner())
+
+    suspend fun beginUndoableCancellation(
+        id: Long,
+        owner: DownloadRepository.UndoPresentationOwner,
+    ): String? {
         var recoveryRecorded = false
         var unpublishedUndoToken: String? = null
         return try {
@@ -3079,7 +3167,13 @@ class DownloadViewModel private constructor(
                             }
                             recoveryRecorded = true
                         }
-                        repository.beginUndoableCancellation(id, expectedExecutionId)
+                        repository.beginUndoableCancellation(
+                            id = id,
+                            expectedExecutionId = expectedExecutionId,
+                            owner = owner,
+                        ).also { outcome ->
+                            outcome.pendingToken?.let { unpublishedUndoToken = it }
+                        }
                     }
                     // Capture the exact durable Undo carrier before any
                     // native quiescence, ledger refresh, or dispatcher
@@ -3198,7 +3292,7 @@ class DownloadViewModel private constructor(
                 )
             }
             throw cancelled
-        } catch (failure: Exception) {
+        } catch (failure: Throwable) {
             unpublishedUndoToken?.let(repository::abandonUndoCapabilityAfterProducerFailure)
             if (recoveryRecorded) {
                 DownloadExecutionRecovery.retainRecoveryResponsibility(
@@ -3267,16 +3361,27 @@ class DownloadViewModel private constructor(
         }
     }
 
-    fun undoPendingCancellation(item: DownloadItem, token: String) {
-        val accepted = runCatching {
+    fun undoPendingCancellation(item: DownloadItem, token: String) =
+        undoPendingCancellation(item, token, legacyUndoOwner())
+
+    fun undoPendingCancellation(
+        item: DownloadItem,
+        token: String,
+        owner: DownloadRepository.UndoPresentationOwner,
+    ): Boolean {
+        val accepted = try {
             runBlocking(Dispatchers.IO) {
                 repository.acceptCancellationUndoResolution(
                     token,
                     PendingUndoResolutionIntent.RESTORE,
+                    owner,
                 )
             }
-        }.getOrDefault(false)
-        if (!accepted) return
+        } catch (failure: Throwable) {
+            repository.abandonUndoCapabilityAfterProducerFailure(token)
+            false
+        }
+        if (!accepted) return false
         viewModelScope.launch(Dispatchers.IO) {
             val originalStatus = runCatching {
                 DownloadRepository.Status.valueOf(item.status)
@@ -3309,6 +3414,7 @@ class DownloadViewModel private constructor(
                             item.id,
                             token,
                             originalStatus,
+                            owner,
                         )
                     }
                 }
@@ -3337,24 +3443,37 @@ class DownloadViewModel private constructor(
                 else -> Unit
             }
         }
+        return true
     }
 
-    fun commitPendingCancellation(id: Long, token: String) {
-        val accepted = runCatching {
+    fun commitPendingCancellation(id: Long, token: String) =
+        commitPendingCancellation(id, token, legacyUndoOwner())
+
+    fun commitPendingCancellation(
+        id: Long,
+        token: String,
+        owner: DownloadRepository.UndoPresentationOwner,
+    ): Boolean {
+        val accepted = try {
             runBlocking(Dispatchers.IO) {
                 repository.acceptCancellationUndoResolution(
                     token,
                     PendingUndoResolutionIntent.COMMIT,
+                    owner,
                 )
             }
-        }.getOrDefault(false)
-        if (!accepted) return
+        } catch (failure: Throwable) {
+            repository.abandonUndoCapabilityAfterProducerFailure(token)
+            false
+        }
+        if (!accepted) return false
         viewModelScope.launch(Dispatchers.IO) {
             LowQualityRedownloadLedger.refresh(
                 application,
-                repository.commitPendingCancellation(id, token)
+                repository.commitPendingCancellation(id, token, owner)
             )
         }
+        return true
     }
 
     suspend fun pauseDownload(id: Long)  {

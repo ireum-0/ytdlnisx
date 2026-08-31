@@ -39,6 +39,7 @@ import androidx.work.WorkManager
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.database.models.PendingUndoResolutionIntent
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
@@ -88,6 +89,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
     private lateinit var sharedPreferences: SharedPreferences
     private lateinit var dialogView : View
     private lateinit var item: ResultItem
+    private var undoPresentationOwner: DownloadRepository.UndoPresentationOwner? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -106,6 +108,7 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
     ): View {
         // Inflate the layout to use as dialog or embedded fragment
         dialogView =  inflater.inflate(R.layout.result_card_details, container, false)
+        undoPresentationOwner = downloadViewModel.beginUndoPresentationOwner()
         return dialogView
     }
 
@@ -339,6 +342,14 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
         cleanUp()
     }
 
+    override fun onDestroyView() {
+        if (::downloadViewModel.isInitialized) {
+            undoPresentationOwner?.let(downloadViewModel::abandonPendingUndoCapabilitiesForView)
+        }
+        undoPresentationOwner = null
+        super.onDestroyView()
+    }
+
 
     private fun cleanUp(){
         kotlin.runCatching {
@@ -356,30 +367,79 @@ class ResultCardDetailsDialog : BottomSheetDialogFragment(), GenericDownloadAdap
             deleteDialog.setTitle(getString(R.string.you_are_going_to_delete) + " \"" + item.title + "\"!")
             deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
             deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
+                val owner = undoPresentationOwner ?: return@setPositiveButton
                 lifecycleScope.launch {
                     val pendingToken = withContext(Dispatchers.IO) {
-                        downloadViewModel.beginUndoableCancellation(item.id)
+                        downloadViewModel.beginUndoableCancellation(item.id, owner)
                     }
-                    val snackbar = Snackbar.make(requireView().rootView, getString(R.string.cancelled) + ": " + item.title, Snackbar.LENGTH_LONG)
-                        .setAction(getString(R.string.undo)) {
-                            if (pendingToken != null) {
-                                downloadViewModel.undoPendingCancellation(item, pendingToken)
-                            } else {
-                                lifecycleScope.launch(Dispatchers.IO) {
-                                    downloadViewModel.undoCancelledDownload(item)
+                    try {
+                        var resolutionAccepted = false
+                        lateinit var snackbar: Snackbar
+                        snackbar = Snackbar.make(requireView().rootView, getString(R.string.cancelled) + ": " + item.title, Snackbar.LENGTH_LONG)
+                            .setAction(getString(R.string.undo)) {
+                                if (pendingToken != null) {
+                                    resolutionAccepted = downloadViewModel.undoPendingCancellation(
+                                        item,
+                                        pendingToken,
+                                        owner,
+                                    )
+                                } else {
+                                    lifecycleScope.launch(Dispatchers.IO) {
+                                        downloadViewModel.undoCancelledDownload(item)
+                                    }
                                 }
                             }
+                        if (pendingToken != null) {
+                            snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
+                                override fun onShown(transientBottomBar: Snackbar?) {
+                                    downloadViewModel.acknowledgeUndoPublication(pendingToken, owner)
+                                }
+
+                                override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
+                                    if (event != DISMISS_EVENT_ACTION) {
+                                        val committed = downloadViewModel.commitPendingCancellation(
+                                            item.id,
+                                            pendingToken,
+                                            owner,
+                                        )
+                                        if (
+                                            !committed &&
+                                            downloadViewModel.reofferCancellationUndoCapabilityAfterResolutionFailure(
+                                                pendingToken,
+                                                PendingUndoResolutionIntent.COMMIT,
+                                                owner,
+                                            )
+                                        ) {
+                                            runCatching { snackbar.show() }
+                                                .onFailure {
+                                                    downloadViewModel.abandonUndoCapabilityAfterConsumerFailure(
+                                                        pendingToken,
+                                                    )
+                                                }
+                                        }
+                                    } else if (
+                                        !resolutionAccepted &&
+                                        downloadViewModel.reofferCancellationUndoCapabilityAfterResolutionFailure(
+                                            pendingToken,
+                                            PendingUndoResolutionIntent.RESTORE,
+                                            owner,
+                                        )
+                                    ) {
+                                        runCatching { snackbar.show() }
+                                            .onFailure {
+                                                downloadViewModel.abandonUndoCapabilityAfterConsumerFailure(
+                                                    pendingToken,
+                                                )
+                                            }
+                                    }
+                                }
+                            })
                         }
-                    if (pendingToken != null) {
-                        snackbar.addCallback(object : BaseTransientBottomBar.BaseCallback<Snackbar>() {
-                            override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
-                                if (event != DISMISS_EVENT_ACTION) {
-                                    downloadViewModel.commitPendingCancellation(item.id, pendingToken)
-                                }
-                            }
-                        })
+                        snackbar.show()
+                    } catch (failure: Throwable) {
+                        pendingToken?.let(downloadViewModel::abandonUndoCapabilityAfterConsumerFailure)
+                        throw failure
                     }
-                    snackbar.show()
                 }
             }
             deleteDialog.show()

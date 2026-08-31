@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -153,12 +154,25 @@ class DownloadRepository(private val database: DBManager) {
         val changed: Boolean = false,
     )
 
+    /**
+     * Immutable authority for one Fragment/view presentation generation.
+     *
+     * The UUID is the exact owner identity used by the process-local Undo
+     * registry.  The generation prevents a stale handle from being confused
+     * with a later handle even if a caller retains it across view recreation.
+     */
+    data class UndoPresentationOwner(
+        val id: String,
+        val generation: Long,
+    )
+
     data class DownloadUndoToken(val value: String)
 
     data class DownloadUndoHandle(
         val token: DownloadUndoToken,
         val item: DownloadItem,
         val affectedOperationIds: Set<String> = emptySet(),
+        val owner: UndoPresentationOwner,
     )
 
     data class DownloadRemovalSnapshot(
@@ -198,6 +212,7 @@ class DownloadRepository(private val database: DBManager) {
 
     private data class UndoAuthority(
         val ownerId: String,
+        val ownerGeneration: Long = 0L,
         val kind: UndoAuthorityKind,
         val generation: Long,
         val state: UndoAuthorityState,
@@ -218,11 +233,13 @@ class DownloadRepository(private val database: DBManager) {
     )
 
     /**
-     * The process-level Undo owner keeps an exact snapshot resolvable even if
-     * the repository instance that created the Snackbar is discarded.  A
-     * ViewModel owner explicitly abandons only the tokens it created.
+     * Every view receives its own immutable owner.  This registry is scoped
+     * to this repository/ViewModel instance so onCleared() can abandon all
+     * owners it issued without touching owners issued to another shared
+     * ViewModel instance.
      */
-    private var undoOwnerId = UUID.randomUUID().toString()
+    private val issuedUndoPresentationOwners = mutableMapOf<String, UndoPresentationOwner>()
+    private var legacyUndoPresentationOwnerHandle: UndoPresentationOwner? = null
 
     data class PendingCancellationResolution(
         val restoredStatus: Status? = null,
@@ -296,15 +313,22 @@ class DownloadRepository(private val database: DBManager) {
      * been registered.  UI Undo actions must retain this token instead of
      * replaying an old DownloadItem by numeric id.
      */
-    suspend fun deleteForUndo(id: Long): DownloadUndoHandle? {
+    /** Compatibility entry point for non-UI callers; production UI passes its exact owner. */
+    suspend fun deleteForUndo(id: Long): DownloadUndoHandle? =
+        deleteForUndo(id, legacyUndoPresentationOwner())
+
+    /** Deletes one Download under the exact view owner that requested it. */
+    suspend fun deleteForUndo(
+        id: Long,
+        owner: UndoPresentationOwner,
+    ): DownloadUndoHandle? {
         val token = DownloadUndoToken("$PENDING_REMOVAL_TOKEN_PREFIX${UUID.randomUUID()}")
-        val ownerId = currentUndoOwnerId()
-        if (registerPreparedUndoAuthority(token.value, ownerId, UndoAuthorityKind.REMOVAL)) {
+        if (registerPreparedUndoAuthority(token.value, owner, UndoAuthorityKind.REMOVAL)) {
             scheduleRecoveryForUndoToken(token.value)
         }
         var durableCarrierCommitted = false
         try {
-            val result = removeDownloadWithSnapshot(id, token.value, ownerId)
+            val result = removeDownloadWithSnapshot(id, token.value, owner.id)
             val snapshot = result?.snapshot
             if (snapshot == null) {
                 resolveUndoWithoutCarrier(token.value)
@@ -315,7 +339,7 @@ class DownloadRepository(private val database: DBManager) {
             durableCarrierCommitted = true
             publishPendingRemovalSnapshot(
                 token = token.value,
-                snapshot = snapshot.copy(ownerId = ownerId),
+                snapshot = snapshot.copy(ownerId = owner.id),
             )
             // Publish the exact carrier before synchronous cache cleanup.  A
             // lifecycle owner can therefore always inventory either this
@@ -325,8 +349,9 @@ class DownloadRepository(private val database: DBManager) {
                 token = token,
                 item = snapshot.download,
                 affectedOperationIds = result.affectedOperationIds,
+                owner = owner,
             )
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             if (durableCarrierCommitted || isUndoCarrierCommitted(token.value)) {
                 transferUndoTokenToRecovery(token.value)
                 scheduleRecoveryForUndoToken(token.value)
@@ -462,18 +487,34 @@ class DownloadRepository(private val database: DBManager) {
      * invoke the resolver from a coroutine.
      */
     suspend fun restoreUndo(token: DownloadUndoToken): Long? {
-        if (!acceptRemovalUndoResolution(token.value, PendingUndoResolutionIntent.RESTORE)) {
+        val owner = undoOwnerForToken(token.value) ?: return null
+        return restoreUndo(token, owner)
+    }
+
+    suspend fun restoreUndo(
+        token: DownloadUndoToken,
+        owner: UndoPresentationOwner,
+    ): Long? {
+        if (!acceptRemovalUndoResolution(token.value, PendingUndoResolutionIntent.RESTORE, owner)) {
             return null
         }
-        return resolveSelectedRemovalUndo(token.value, PendingUndoResolutionIntent.RESTORE)
+        return resolveSelectedRemovalUndo(token.value, PendingUndoResolutionIntent.RESTORE, owner)
     }
 
     /** Commits a pending Undo removal when its Snackbar is dismissed. */
     suspend fun commitUndo(token: DownloadUndoToken): Set<String> {
-        if (!acceptRemovalUndoResolution(token.value, PendingUndoResolutionIntent.COMMIT)) {
+        val owner = undoOwnerForToken(token.value) ?: return emptySet()
+        return commitUndo(token, owner)
+    }
+
+    suspend fun commitUndo(
+        token: DownloadUndoToken,
+        owner: UndoPresentationOwner,
+    ): Set<String> {
+        if (!acceptRemovalUndoResolution(token.value, PendingUndoResolutionIntent.COMMIT, owner)) {
             return emptySet()
         }
-        return resolveSelectedRemovalCommitUndo(token.value)
+        return resolveSelectedRemovalCommitUndo(token.value, owner)
     }
 
     /** Retries a durably selected removal RESTORE intent after owner loss. */
@@ -531,17 +572,36 @@ class DownloadRepository(private val database: DBManager) {
     internal suspend fun acceptRemovalUndoResolution(
         token: String,
         intent: PendingUndoResolutionIntent,
-    ): Boolean = acceptUndoResolution(token, UndoAuthorityKind.REMOVAL, intent)
+    ): Boolean {
+        val owner = undoOwnerForToken(token) ?: return false
+        return acceptRemovalUndoResolution(token, intent, owner)
+    }
+
+    internal suspend fun acceptRemovalUndoResolution(
+        token: String,
+        intent: PendingUndoResolutionIntent,
+        owner: UndoPresentationOwner,
+    ): Boolean = acceptUndoResolution(token, UndoAuthorityKind.REMOVAL, intent, owner)
 
     /** Synchronously records the cancellation Snackbar's selected intent. */
     internal suspend fun acceptCancellationUndoResolution(
         token: String,
         intent: PendingUndoResolutionIntent,
-    ): Boolean = acceptUndoResolution(token, UndoAuthorityKind.CANCELLATION, intent)
+    ): Boolean {
+        val owner = undoOwnerForToken(token) ?: return false
+        return acceptCancellationUndoResolution(token, intent, owner)
+    }
+
+    internal suspend fun acceptCancellationUndoResolution(
+        token: String,
+        intent: PendingUndoResolutionIntent,
+        owner: UndoPresentationOwner,
+    ): Boolean = acceptUndoResolution(token, UndoAuthorityKind.CANCELLATION, intent, owner)
 
     private suspend fun resolveSelectedRemovalUndo(
         token: String,
         intent: PendingUndoResolutionIntent,
+        owner: UndoPresentationOwner,
     ): Long? {
         try {
             pendingRemovalBeforeResolverClaimedForTesting?.invoke()
@@ -554,6 +614,7 @@ class DownloadRepository(private val database: DBManager) {
             token = token,
             kind = UndoAuthorityKind.REMOVAL,
             intent = intent,
+            owner = owner,
         ) ?: return null
         val snapshot = pendingRemovalSnapshot(token) ?: loadPersistedRemovalSnapshot(token) ?: run {
             finishUndoResolverFailure(claim)
@@ -582,12 +643,16 @@ class DownloadRepository(private val database: DBManager) {
         }
     }
 
-    private suspend fun resolveSelectedRemovalCommitUndo(token: String): Set<String> {
+    private suspend fun resolveSelectedRemovalCommitUndo(
+        token: String,
+        owner: UndoPresentationOwner,
+    ): Set<String> {
         val intent = PendingUndoResolutionIntent.COMMIT
         val claim = claimSelectedUndoResolver(
             token = token,
             kind = UndoAuthorityKind.REMOVAL,
             intent = intent,
+            owner = owner,
         ) ?: return emptySet()
         val snapshot = pendingRemovalSnapshot(token) ?: loadPersistedRemovalSnapshot(token) ?: run {
             finishUndoResolverFailure(claim)
@@ -616,7 +681,7 @@ class DownloadRepository(private val database: DBManager) {
      * immediate convergence read or write fails.
      */
     suspend fun abandonPendingUndoSnapshots() {
-        val tokens = abandonCurrentUndoOwner(rotateForFutureUi = false)
+        val tokens = abandonAllUndoPresentationOwners()
         tokens.forEach { token ->
             // The successor is already registered.  This immediate pass is
             // only latency optimization; failures remain owned by the exact
@@ -628,16 +693,26 @@ class DownloadRepository(private val database: DBManager) {
         }
     }
 
-    /** Starts a new owner generation for a newly created Fragment view. */
-    internal fun beginUndoPresentationOwner() {
-        synchronized(undoAuthorityLock) {
-            undoOwnerId = UUID.randomUUID().toString()
+    /** Starts an independent owner generation for one newly created view. */
+    internal fun beginUndoPresentationOwner(): UndoPresentationOwner {
+        val owner = synchronized(undoAuthorityLock) {
+            val next = UndoPresentationOwner(
+                id = UUID.randomUUID().toString(),
+                generation = nextUndoPresentationGeneration.incrementAndGet(),
+            )
+            issuedUndoPresentationOwners[next.id] = next
+            next
         }
+        // Keep the no-owner compatibility overloads usable by older tests and
+        // non-UI callers.  Production UI retains and passes [owner] directly;
+        // no correctness boundary consults this compatibility slot.
+        legacyUndoPresentationOwnerHandle = owner
+        return owner
     }
 
-    /** Transfers all capabilities owned by the disappearing view. */
-    internal fun abandonPendingUndoCapabilitiesForView() {
-        val tokens = abandonCurrentUndoOwner(rotateForFutureUi = false)
+    /** Transfers only capabilities issued to the disappearing view. */
+    internal fun abandonPendingUndoCapabilitiesForView(owner: UndoPresentationOwner) {
+        val tokens = abandonUndoPresentationOwner(owner)
         tokens.forEach { token ->
             kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
                 runCatching {
@@ -648,22 +723,33 @@ class DownloadRepository(private val database: DBManager) {
         }
     }
 
+    /** Compatibility overload; production callers pass the immutable owner. */
+    internal fun abandonPendingUndoCapabilitiesForView() {
+        abandonPendingUndoCapabilitiesForView(legacyUndoPresentationOwner())
+    }
+
     internal fun acknowledgeUndoPublication(token: String) {
-        val ownerId = currentUndoOwnerId()
+        val owner = undoOwnerForToken(token) ?: return
+        acknowledgeUndoPublication(token, owner)
+    }
+
+    internal fun acknowledgeUndoPublication(
+        token: String,
+        owner: UndoPresentationOwner,
+    ) {
         synchronized(undoAuthorityLock) {
             val authority = undoAuthorities[token] ?: return
             if (
-                authority.ownerId == ownerId &&
+                authority.ownerId == owner.id &&
+                    authority.ownerGeneration == owner.generation &&
+                    issuedUndoPresentationOwners[owner.id]?.generation == owner.generation &&
+                    !abandonedUndoOwners.contains(owner.id) &&
                     authority.state == UndoAuthorityState.PREPARED_UNPUBLISHED &&
                     authority.durableCarrierCommitted
             ) {
                 undoAuthorities[token] = authority.copy(state = UndoAuthorityState.LIVE_UI)
             }
         }
-    }
-
-    private fun currentUndoOwnerId(): String = synchronized(undoAuthorityLock) {
-        undoOwnerId
     }
 
     private fun scheduleRecoveryForUndoToken(token: String) {
@@ -682,30 +768,117 @@ class DownloadRepository(private val database: DBManager) {
         scheduleRecoveryForUndoToken(token)
     }
 
-    private fun abandonCurrentUndoOwner(rotateForFutureUi: Boolean): List<String> {
-        val ownerId: String
+    /**
+     * Re-publishes an exact UI capability after its selected intent could not
+     * pass the synchronous durable acceptance barrier.  This is deliberately
+     * limited to the same still-issued owner and to a carrier that is still
+     * blank on disk.  A durable intent, an abandoned owner, or a resolver that
+     * has already claimed the token can never be turned back into LIVE_UI.
+     */
+    private suspend fun reofferUndoCapabilityAfterResolutionFailure(
+        token: String,
+        kind: UndoAuthorityKind,
+        intent: PendingUndoResolutionIntent,
+        owner: UndoPresentationOwner,
+    ): Boolean {
+        val persistedIntent = database.pendingUndoCarrierDao.get(token)
+            ?.resolutionIntent
+            ?.let(::parseUndoResolutionIntent)
+        if (persistedIntent != null) return false
+        return synchronized(undoAuthorityLock) {
+            val authority = undoAuthorities[token] ?: return@synchronized false
+            if (
+                authority.kind != kind ||
+                    authority.ownerId != owner.id ||
+                    authority.ownerGeneration != owner.generation ||
+                    issuedUndoPresentationOwners[owner.id]?.generation != owner.generation ||
+                    abandonedUndoOwners.contains(owner.id) ||
+                    authority.resolutionIntent != intent ||
+                    authority.resolverGeneration != null ||
+                    authority.resolverClaimed ||
+                    authority.state != recoveryStateFor(intent) ||
+                    !authority.durableCarrierCommitted
+            ) {
+                return@synchronized false
+            }
+            // Retain the selected intent in process-local authority while the
+            // exact same Snackbar is re-delivered.  If this view disappears
+            // before onShown, abandonment converts this PREPARED state back
+            // to the same intent-specific recovery state.
+            undoAuthorities[token] = authority.copy(
+                state = UndoAuthorityState.PREPARED_UNPUBLISHED,
+                resolverGeneration = null,
+                resolverClaimed = false,
+            )
+            true
+        }
+    }
+
+    internal suspend fun reofferRemovalUndoCapabilityAfterResolutionFailure(
+        token: String,
+        intent: PendingUndoResolutionIntent,
+        owner: UndoPresentationOwner,
+    ): Boolean = reofferUndoCapabilityAfterResolutionFailure(
+        token = token,
+        kind = UndoAuthorityKind.REMOVAL,
+        intent = intent,
+        owner = owner,
+    )
+
+    internal suspend fun reofferCancellationUndoCapabilityAfterResolutionFailure(
+        token: String,
+        intent: PendingUndoResolutionIntent,
+        owner: UndoPresentationOwner,
+    ): Boolean = reofferUndoCapabilityAfterResolutionFailure(
+        token = token,
+        kind = UndoAuthorityKind.CANCELLATION,
+        intent = intent,
+        owner = owner,
+    )
+
+    private fun legacyUndoPresentationOwner(): UndoPresentationOwner = synchronized(undoAuthorityLock) {
+        legacyUndoPresentationOwnerHandle?.let { existing ->
+            if (issuedUndoPresentationOwners[existing.id]?.generation == existing.generation) {
+                return@synchronized existing
+            }
+        }
+        val next = UndoPresentationOwner(
+            id = UUID.randomUUID().toString(),
+            generation = nextUndoPresentationGeneration.incrementAndGet(),
+        )
+        issuedUndoPresentationOwners[next.id] = next
+        legacyUndoPresentationOwnerHandle = next
+        next
+    }
+
+    private fun undoOwnerForToken(token: String): UndoPresentationOwner? = synchronized(undoAuthorityLock) {
+        val authority = undoAuthorities[token] ?: return@synchronized null
+        issuedUndoPresentationOwners[authority.ownerId]?.takeIf {
+            it.generation == authority.ownerGeneration
+        } ?: authority.ownerId.takeIf(String::isNotBlank)?.let {
+            UndoPresentationOwner(it, authority.ownerGeneration)
+        }
+    }
+
+    private fun abandonUndoPresentationOwner(owner: UndoPresentationOwner): List<String> {
         val tokens: List<String>
         synchronized(undoAuthorityLock) {
-            ownerId = undoOwnerId
-            abandonedUndoOwners += ownerId
+            val issued = issuedUndoPresentationOwners[owner.id]
+            if (issued == null || issued.generation != owner.generation) return emptyList()
+            issuedUndoPresentationOwners.remove(owner.id)
+            abandonedUndoOwners += owner.id
             tokens = undoAuthorities.entries
                 .filter { (_, authority) ->
-                    authority.ownerId == ownerId &&
+                    authority.ownerId == owner.id &&
+                        authority.ownerGeneration == owner.generation &&
                         authority.state != UndoAuthorityState.RESOLVED
                 }
                 .map { it.key }
-            if (rotateForFutureUi) {
-                undoOwnerId = UUID.randomUUID().toString()
-            }
-        }
-        tokens.forEach { token ->
-            scheduleRecoveryForUndoToken(token)
-        }
-        synchronized(undoAuthorityLock) {
             tokens.forEach { token ->
                 val authority = undoAuthorities[token] ?: return@forEach
                 if (
-                    authority.ownerId == ownerId &&
+                    authority.ownerId == owner.id &&
+                        authority.ownerGeneration == owner.generation &&
                         authority.state != UndoAuthorityState.RESOLVED
                 ) {
                     undoAuthorities[token] = authority.copy(
@@ -716,17 +889,51 @@ class DownloadRepository(private val database: DBManager) {
                 }
             }
         }
+        tokens.forEach { token ->
+            scheduleRecoveryForUndoToken(token)
+        }
+        return tokens
+    }
+
+    private fun abandonAllUndoPresentationOwners(): List<String> {
+        val tokens: List<String>
+        synchronized(undoAuthorityLock) {
+            val owners = issuedUndoPresentationOwners.values.toList()
+            issuedUndoPresentationOwners.clear()
+            owners.forEach { abandonedUndoOwners += it.id }
+            val ownerKeys = owners.map { it.id to it.generation }.toSet()
+            tokens = undoAuthorities.entries
+                .filter { (_, authority) ->
+                    (authority.ownerId to authority.ownerGeneration) in ownerKeys &&
+                        authority.state != UndoAuthorityState.RESOLVED
+                }
+                .map { it.key }
+            tokens.forEach { token ->
+                val authority = undoAuthorities[token] ?: return@forEach
+                if (authority.state != UndoAuthorityState.RESOLVED) {
+                    undoAuthorities[token] = authority.copy(
+                        state = recoveryStateFor(authority.resolutionIntent),
+                        resolverGeneration = null,
+                        resolverClaimed = false,
+                    )
+                }
+            }
+        }
+        tokens.forEach(::scheduleRecoveryForUndoToken)
         return tokens
     }
 
     private fun registerPreparedUndoAuthority(
         token: String,
-        ownerId: String,
+        owner: UndoPresentationOwner,
         kind: UndoAuthorityKind,
     ): Boolean = synchronized(undoAuthorityLock) {
-        val recoveryOwned = abandonedUndoOwners.contains(ownerId)
+        val issued = issuedUndoPresentationOwners[owner.id]
+        val ownerWasIssued = issued?.generation == owner.generation
+        val recoveryOwned = abandonedUndoOwners.contains(owner.id) || !ownerWasIssued
         undoAuthorities[token] = UndoAuthority(
-            ownerId = ownerId,
+            ownerId = owner.id,
+            ownerGeneration = owner.generation,
             kind = kind,
             generation = nextUndoGeneration.incrementAndGet(),
             state = if (recoveryOwned) {
@@ -741,12 +948,13 @@ class DownloadRepository(private val database: DBManager) {
     private fun replacePreparedUndoAuthority(
         oldToken: String,
         newToken: String,
-        ownerId: String,
+        owner: UndoPresentationOwner,
     ): Boolean = synchronized(undoAuthorityLock) {
         val authority = undoAuthorities[oldToken]
         if (
             authority == null ||
-                authority.ownerId != ownerId ||
+                authority.ownerId != owner.id ||
+                authority.ownerGeneration != owner.generation ||
                 authority.kind != UndoAuthorityKind.CANCELLATION ||
                 authority.durableCarrierCommitted ||
                 authority.state == UndoAuthorityState.RESOLVED
@@ -921,6 +1129,10 @@ class DownloadRepository(private val database: DBManager) {
                 database.pendingUndoCarrierDao.insert(replacement)
             }
         }
+        // This is deliberately immediately before the exact Room write.  It
+        // lets production-wiring tests exercise the acceptance barrier while
+        // keeping the production default a no-op.
+        pendingUndoResolutionWriteFailureForTesting?.invoke()?.let { throw it }
         database.pendingUndoCarrierDao.recordResolution(
             token = token,
             kind = kind.carrierKind,
@@ -930,18 +1142,53 @@ class DownloadRepository(private val database: DBManager) {
         )
     }
 
+    /**
+     * The Snackbar action is a synchronous authority handoff.  A transient
+     * Room failure is retried immediately, while the action callback is still
+     * allowed to finish, so a consumed action can never rely on a later
+     * best-effort coroutine to preserve RESTORE versus COMMIT.  The final
+     * attempt runs non-cancellably because cancellation is itself a lifecycle
+     * boundary that must not interrupt the durable intent barrier.
+     */
+    private suspend fun persistSelectedUndoIntentWithBarrier(
+        token: String,
+        kind: UndoAuthorityKind,
+        selected: UndoAuthority,
+        intent: PendingUndoResolutionIntent,
+    ): Boolean = withContext(NonCancellable) {
+        var lastFailure: Throwable? = null
+        repeat(3) {
+            try {
+                val recorded = acceptUndoResolutionCarrier(
+                    token = token,
+                    kind = kind,
+                    selected = selected,
+                    intent = intent,
+                )
+                return@withContext recorded == 1
+            } catch (failure: CancellationException) {
+                lastFailure = failure
+            } catch (failure: Exception) {
+                lastFailure = failure
+            }
+        }
+        lastFailure?.let { throw it }
+        false
+    }
+
     private suspend fun acceptUndoResolution(
         token: String,
         kind: UndoAuthorityKind,
         intent: PendingUndoResolutionIntent,
+        owner: UndoPresentationOwner,
     ): Boolean {
         val selected = synchronized(undoAuthorityLock) {
-            val ownerId = currentUndoOwnerId()
             val authority = undoAuthorities[token] ?: return@synchronized null
             if (
                 authority.kind != kind ||
-                    authority.ownerId != ownerId ||
-                    abandonedUndoOwners.contains(ownerId) ||
+                    authority.ownerId != owner.id ||
+                    authority.ownerGeneration != owner.generation ||
+                    abandonedUndoOwners.contains(owner.id) ||
                     !authority.durableCarrierCommitted
             ) {
                 return@synchronized null
@@ -967,12 +1214,12 @@ class DownloadRepository(private val database: DBManager) {
         } ?: return false
 
         return try {
-            val recorded = acceptUndoResolutionCarrier(
+            val recorded = persistSelectedUndoIntentWithBarrier(
                 token = token,
                 kind = kind,
                 selected = selected,
                 intent = intent,
-            ) == 1
+            )
             if (!recorded) {
                 transferUndoTokenToRecovery(token)
                 scheduleRecoveryForUndoToken(token)
@@ -992,13 +1239,14 @@ class DownloadRepository(private val database: DBManager) {
         token: String,
         kind: UndoAuthorityKind,
         intent: PendingUndoResolutionIntent,
+        owner: UndoPresentationOwner,
     ): UndoResolverClaim? = synchronized(undoAuthorityLock) {
-        val ownerId = currentUndoOwnerId()
         val authority = undoAuthorities[token] ?: return@synchronized null
         if (
             authority.kind != kind ||
-                authority.ownerId != ownerId ||
-                abandonedUndoOwners.contains(ownerId) ||
+                authority.ownerId != owner.id ||
+                authority.ownerGeneration != owner.generation ||
+                abandonedUndoOwners.contains(owner.id) ||
                 !authority.durableCarrierCommitted ||
                 authority.state != resolvingStateFor(intent) ||
                 authority.resolutionIntent != intent ||
@@ -1010,7 +1258,7 @@ class DownloadRepository(private val database: DBManager) {
         undoAuthorities[token] = authority.copy(resolverClaimed = true)
         UndoResolverClaim(
             token = token,
-            ownerId = ownerId,
+            ownerId = owner.id,
             generation = authority.generation,
             resolverGeneration = checkNotNull(authority.resolverGeneration),
             kind = kind,
@@ -2513,6 +2761,16 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun beginUndoableCancellation(
         id: Long,
         expectedExecutionId: String? = null,
+    ): UndoableCancellation = beginUndoableCancellation(
+        id = id,
+        expectedExecutionId = expectedExecutionId,
+        owner = legacyUndoPresentationOwner(),
+    )
+
+    suspend fun beginUndoableCancellation(
+        id: Long,
+        expectedExecutionId: String? = null,
+        owner: UndoPresentationOwner,
     ): UndoableCancellation {
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         val pendingTokensToRelease = linkedSetOf<String>()
@@ -2524,10 +2782,10 @@ class DownloadRepository(private val database: DBManager) {
             }
         }
         val pendingToken = createPendingCancellationToken(pendingStatus ?: Status.Queued)
-        val ownerId = currentUndoOwnerId()
+        val ownerId = owner.id
         if (registerPreparedUndoAuthority(
                 pendingToken,
-                ownerId,
+                owner,
                 UndoAuthorityKind.CANCELLATION,
             )
         ) {
@@ -2599,7 +2857,7 @@ class DownloadRepository(private val database: DBManager) {
                     val recoveryOwned = replacePreparedUndoAuthority(
                         oldToken = pendingToken,
                         newToken = replacement,
-                        ownerId = ownerId,
+                        owner = owner,
                     )
                     registeredPendingCancellationTokens += replacement
                     if (recoveryOwned) scheduleRecoveryForUndoToken(replacement)
@@ -2654,7 +2912,7 @@ class DownloadRepository(private val database: DBManager) {
                 changed = changed,
             )
             }
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             registeredPendingCancellationTokens.forEach { token ->
                 if (durableCarrierCommitted || isUndoCarrierCommitted(token)) {
                     transferUndoTokenToRecovery(token)
@@ -2687,7 +2945,7 @@ class DownloadRepository(private val database: DBManager) {
                 }
             }
             throw cancelled
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             result.pendingToken?.let { token ->
                 if (durableCarrierCommitted || isUndoCarrierCommitted(token)) {
                     transferUndoTokenToRecovery(token)
@@ -2712,8 +2970,19 @@ class DownloadRepository(private val database: DBManager) {
         @Suppress("UNUSED_PARAMETER")
         originalStatus: Status
     ): PendingCancellationResolution {
+        val owner = undoOwnerForToken(token) ?: return PendingCancellationResolution()
+        return undoPendingCancellation(id, token, originalStatus, owner)
+    }
+
+    suspend fun undoPendingCancellation(
+        id: Long,
+        token: String,
+        @Suppress("UNUSED_PARAMETER")
+        originalStatus: Status,
+        owner: UndoPresentationOwner,
+    ): PendingCancellationResolution {
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
-        if (!acceptCancellationUndoResolution(token, PendingUndoResolutionIntent.RESTORE)) {
+        if (!acceptCancellationUndoResolution(token, PendingUndoResolutionIntent.RESTORE, owner)) {
             return PendingCancellationResolution()
         }
         try {
@@ -2727,6 +2996,7 @@ class DownloadRepository(private val database: DBManager) {
             token,
             UndoAuthorityKind.CANCELLATION,
             PendingUndoResolutionIntent.RESTORE,
+            owner,
         ) ?: return PendingCancellationResolution()
         return try {
             pendingCancellationResolverClaimedForTesting?.invoke()
@@ -2825,13 +3095,23 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun commitPendingCancellation(id: Long, token: String): Set<String> {
-        if (!acceptCancellationUndoResolution(token, PendingUndoResolutionIntent.COMMIT)) {
+        val owner = undoOwnerForToken(token) ?: return emptySet()
+        return commitPendingCancellation(id, token, owner)
+    }
+
+    suspend fun commitPendingCancellation(
+        id: Long,
+        token: String,
+        owner: UndoPresentationOwner,
+    ): Set<String> {
+        if (!acceptCancellationUndoResolution(token, PendingUndoResolutionIntent.COMMIT, owner)) {
             return emptySet()
         }
         val claim = claimSelectedUndoResolver(
             token,
             UndoAuthorityKind.CANCELLATION,
             PendingUndoResolutionIntent.COMMIT,
+            owner,
         ) ?: return emptySet()
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         return try {
@@ -3458,6 +3738,7 @@ class DownloadRepository(private val database: DBManager) {
         private const val PENDING_CANCELLATION_TOKEN_VERSION = "v1"
         private val undoAuthorityLock = Any()
         private val nextUndoGeneration = AtomicLong(0L)
+        private val nextUndoPresentationGeneration = AtomicLong(0L)
         private val undoAuthorities = mutableMapOf<String, UndoAuthority>()
         private val abandonedUndoOwners = mutableSetOf<String>()
         private val pendingRemovalSnapshots = ConcurrentHashMap<String, DownloadRemovalSnapshot>()
@@ -3500,6 +3781,10 @@ class DownloadRepository(private val database: DBManager) {
         /** Test seam for a pending-cancellation restore failure. */
         @Volatile
         internal var pendingCancellationRestoreFailureForTesting: (() -> Exception?)? = null
+
+        /** Test seam immediately before the durable Undo intent write. */
+        @Volatile
+        internal var pendingUndoResolutionWriteFailureForTesting: (() -> Exception?)? = null
 
         /** Test seam for a pending-removal commit failure. */
         @Volatile
