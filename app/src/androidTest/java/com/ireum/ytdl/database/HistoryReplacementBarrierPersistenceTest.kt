@@ -935,8 +935,13 @@ class HistoryReplacementBarrierPersistenceTest {
                 replacementOperationId = typeItem.operationId,
             ),
         )
-        val typeRestoredId = DownloadRepository(db)
-            .restoreUndo(DownloadRepository(db).deleteForUndo(typeItem.id)!!.token)!!
+        // Undo authority is scoped to the repository/ViewModel instance that
+        // issued the compatibility handle.  Keep both sides of this
+        // repository-level round trip on that same instance; production UI
+        // likewise resolves through its shared DownloadViewModel repository.
+        val typeRepository = DownloadRepository(db)
+        val typeHandle = typeRepository.deleteForUndo(typeItem.id)!!
+        val typeRestoredId = typeRepository.restoreUndo(typeHandle.token)!!
         assertEquals(
             HistoryReplacementAuthorization.TypeMismatch,
             repository().authorizeHistoryReplacement(

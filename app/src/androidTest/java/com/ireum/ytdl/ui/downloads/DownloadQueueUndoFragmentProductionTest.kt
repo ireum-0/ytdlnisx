@@ -9,8 +9,12 @@ import android.view.MotionEvent
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.assertion.ViewAssertions.matches
 import androidx.test.espresso.matcher.ViewMatchers.withId
 import androidx.test.espresso.matcher.ViewMatchers.withText
+import androidx.test.espresso.matcher.ViewMatchers.hasDescendant
+import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
+import androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.viewpager2.widget.ViewPager2
@@ -27,6 +31,7 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.PendingUndoCarrier
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
+import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
@@ -40,6 +45,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.hamcrest.Matchers.allOf
+import org.hamcrest.Matchers.containsString
 import java.util.UUID
 
 /**
@@ -86,8 +92,18 @@ class DownloadQueueUndoFragmentProductionTest {
     @After
     fun tearDown() {
         runBlocking {
-            activityScenario?.close()
+            val scenario = activityScenario
+            var viewModel: DownloadViewModel? = null
+            scenario?.onActivity { activity ->
+                viewModel = androidx.lifecycle.ViewModelProvider(activity)[DownloadViewModel::class.java]
+            }
+            scenario?.close()
             activityScenario = null
+            // ActivityScenario invokes ViewModel.onCleared() asynchronously
+            // relative to this test thread.  Join the production ViewModel
+            // scope before clearing process-local Undo state so a previous
+            // test cannot finish a stale resolver during the next test.
+            viewModel?.clearForTesting()
             LowQualityRedownloadLedger.cancelAllAbandonedUndoConvergenceJobsAndJoinForTesting()
             LowQualityRedownloadLedger.cancelAllCancellationConvergenceJobsAndJoinForTesting()
             LowQualityRedownloadLedger.cancelAllEnqueueConvergenceJobsAndJoinForTesting()
@@ -143,6 +159,13 @@ class DownloadQueueUndoFragmentProductionTest {
         val cancelledId = insertDownload(DownloadRepository.Status.Cancelled)
         val savedId = insertDownload(DownloadRepository.Status.Saved)
         val scenario = launchQueueAt(3)
+        scenario.onActivity { activity ->
+            // Keep all peer pages materialized while the second page publishes
+            // its own capability.  The test then destroys only the first real
+            // child Fragment view through FragmentManager.
+            activity.findViewById<ViewPager2>(R.id.download_viewpager)
+                .offscreenPageLimit = 5
+        }
 
         awaitDownloadVisible(cancelledId)
         swipeFirstVisibleDownload(cancelledId)
@@ -150,11 +173,21 @@ class DownloadQueueUndoFragmentProductionTest {
         val abandonedCarrier = awaitRemovalCarrier(cancelledId)
         assertEquals(PendingUndoCarrier.PUBLISHED_PRESENTATION, abandonedCarrier.presentationState)
 
-        // Move to Saved, then explicitly remove only the real Cancelled child
-        // Fragment.  This invokes its production onDestroyView path while the
-        // Saved peer remains the active presentation owner.
+        // Move to Saved while the peer pages remain materialized, then publish
+        // the Saved capability under its independent owner.
         selectQueuePage(scenario, 5)
         awaitFragment<SavedDownloadsFragment>(scenario)
+        awaitDownloadVisible(savedId)
+        swipeFirstVisibleDownload(savedId)
+        val savedCarrier = awaitRemovalCarrier(savedId)
+        assertTrue(
+            "Saved carrier was not live before its peer was abandoned",
+            DownloadRepository.isLivePendingRemovalToken(savedCarrier.token),
+        )
+
+        // Destroy only the first real child Fragment view.  This invokes the
+        // production onDestroyView path while the current Saved peer remains
+        // attached and owns its live capability.
         destroyFragmentForTesting<CancelledDownloadsFragment>(scenario)
         awaitDatabase {
             database.pendingUndoCarrierDao.get(abandonedCarrier.token)?.presentationState !=
@@ -163,13 +196,21 @@ class DownloadQueueUndoFragmentProductionTest {
         }
 
         // The exact peer owner remains usable after page 3's owner is gone.
-        awaitDownloadVisible(savedId)
-        swipeFirstVisibleDownload(savedId)
-        val savedCarrier = awaitRemovalCarrier(savedId)
+        val savedLive = DownloadRepository.isLivePendingRemovalToken(savedCarrier.token)
+        assertTrue(
+            "Saved carrier was not live before its own Undo action " +
+                "(processLocal=${DownloadRepository.isProcessLocalPendingUndoAuthority(savedCarrier.token)}, " +
+                "cancelledLive=${DownloadRepository.isLivePendingRemovalToken(abandonedCarrier.token)}, " +
+                "savedLive=$savedLive)",
+            savedLive,
+        )
         onView(
             allOf(
                 withId(MaterialR.id.snackbar_action),
                 withText(R.string.undo),
+                isDescendantOfA(
+                    hasDescendant(withText(containsString("$testPrefix-Saved")))
+                ),
             )
         ).perform(androidx.test.espresso.action.ViewActions.click())
         awaitDatabase {
@@ -245,6 +286,11 @@ class DownloadQueueUndoFragmentProductionTest {
         launchQueueAt(1)
         awaitDownloadVisible(id)
         swipeFirstVisibleDownload(id)
+        awaitUi {
+            runCatching {
+                onView(withText(R.string.ok)).check(matches(isDisplayed()))
+            }.isSuccess
+        }
         onView(withText(R.string.ok)).perform(androidx.test.espresso.action.ViewActions.click())
 
         val carrier = awaitCancellationCarrier(id)
@@ -418,9 +464,8 @@ class DownloadQueueUndoFragmentProductionTest {
     private fun swipeFirstVisibleDownload(id: Long) {
         val bounds = Rect()
         activityScenario?.onActivity { activity ->
-            val recycler = activity.findViewById<androidx.recyclerview.widget.RecyclerView>(
-                R.id.download_recyclerview,
-            )
+            val recycler = currentDownloadRecyclerView(activity)
+                ?: error("Selected download page has no RecyclerView")
             val holder = recycler.findViewHolderForAdapterPosition(0)
                 ?: error("RecyclerView has no bound download card")
             check(holder.itemView.tag == id.toString()) {
@@ -469,11 +514,34 @@ class DownloadQueueUndoFragmentProductionTest {
         awaitUi {
             var visible = false
             activityScenario?.onActivity { activity ->
-                val recycler = activity.findViewById<androidx.recyclerview.widget.RecyclerView>(R.id.download_recyclerview)
-                visible = recycler.findViewHolderForAdapterPosition(0)?.itemView?.tag == id.toString()
+                visible = currentDownloadRecyclerView(activity)
+                    ?.findViewHolderForAdapterPosition(0)
+                    ?.itemView
+                    ?.tag == id.toString()
             }
             visible
         }
+    }
+
+    private fun currentDownloadRecyclerView(
+        activity: MainActivity,
+    ): androidx.recyclerview.widget.RecyclerView? {
+        val pager = activity.findViewById<ViewPager2>(R.id.download_viewpager)
+        val navHost = activity.supportFragmentManager.findFragmentById(R.id.frame_layout)
+            as? androidx.navigation.fragment.NavHostFragment
+        val queue = navHost?.childFragmentManager?.primaryNavigationFragment
+            as? DownloadQueueMainFragment
+        val expectedType: Class<out androidx.fragment.app.Fragment>? = when (pager.currentItem) {
+            1 -> QueuedDownloadsFragment::class.java
+            3 -> CancelledDownloadsFragment::class.java
+            4 -> ErroredDownloadsFragment::class.java
+            5 -> SavedDownloadsFragment::class.java
+            else -> null
+        }
+        val selected = queue?.childFragmentManager?.fragments?.firstOrNull { fragment ->
+            fragment.view != null && (expectedType == null || expectedType.isInstance(fragment))
+        }
+        return selected?.view?.findViewById(R.id.download_recyclerview)
     }
 
     private fun awaitRemovalCarrier(id: Long): PendingUndoCarrier = awaitValue {
