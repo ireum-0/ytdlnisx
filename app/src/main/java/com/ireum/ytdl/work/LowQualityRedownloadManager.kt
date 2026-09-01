@@ -323,7 +323,7 @@ class LowQualityRedownloadManager private constructor(
         internal fun createForTesting(
             context: Context,
             database: DBManager,
-            enqueue: (String, ExistingWorkPolicy, OneTimeWorkRequest) -> Operation,
+            enqueue: ((String, ExistingWorkPolicy, OneTimeWorkRequest) -> Operation)? = null,
         ): LowQualityRedownloadManager = LowQualityRedownloadManager(
             context = context,
             databaseOverride = database,
@@ -542,6 +542,10 @@ object LowQualityRedownloadLedger {
         abandonedUndoJobs.clear()
     }
 
+    internal suspend fun cancelAllAbandonedUndoConvergenceJobsAndJoinForTesting() {
+        cancelAndJoinJobsForTesting(abandonedUndoJobs)
+    }
+
     /**
      * Owns the exact durable low-quality phase until WorkManager's Operation
      * has accepted the unique work.  It is intentionally independent of the
@@ -636,6 +640,10 @@ object LowQualityRedownloadLedger {
     internal fun cancelAllEnqueueConvergenceJobsForTesting() {
         enqueueJobs.values.forEach { it.cancel() }
         enqueueJobs.clear()
+    }
+
+    internal suspend fun cancelAllEnqueueConvergenceJobsAndJoinForTesting() {
+        cancelAndJoinJobsForTesting(enqueueJobs)
     }
 
     /**
@@ -794,6 +802,19 @@ object LowQualityRedownloadLedger {
     internal fun cancelAllCancellationConvergenceJobsForTesting() {
         cancellationJobs.values.forEach { it.cancel() }
         cancellationJobs.clear()
+    }
+
+    internal suspend fun cancelAllCancellationConvergenceJobsAndJoinForTesting() {
+        cancelAndJoinJobsForTesting(cancellationJobs)
+    }
+
+    private suspend fun cancelAndJoinJobsForTesting(
+        jobs: java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>,
+    ) {
+        val snapshot = jobs.values.toList()
+        snapshot.forEach { it.cancel() }
+        snapshot.forEach { it.join() }
+        jobs.clear()
     }
 
     suspend fun refresh(context: Context, operationIds: Collection<String>) {

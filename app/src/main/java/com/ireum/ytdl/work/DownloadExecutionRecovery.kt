@@ -2670,6 +2670,13 @@ internal object DownloadExecutionRecovery {
         retryJobs.clear()
     }
 
+    internal suspend fun cancelAllRecoveryJobsAndJoinForTesting() {
+        val snapshot = retryJobs.values.toList()
+        snapshot.forEach { it.cancel() }
+        snapshot.forEach { it.join() }
+        retryJobs.clear()
+    }
+
     /** Test-only teardown for the durable recovery carrier. */
     internal fun clearForTesting(context: Context) {
         beforeCandidateRecoveryLeaseForTesting = null

@@ -83,6 +83,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -133,7 +134,12 @@ class DownloadViewModel private constructor(
     }
 
     /** Invokes the production lifecycle handoff for deterministic instrumentation coverage. */
-    internal fun clearForTesting() {
+    internal suspend fun clearForTesting() {
+        // Mirror the lifecycle-owned cancellation that accompanies
+        // ViewModel.onCleared(), while retaining the production handoff seam
+        // used by these deterministic tests.
+        viewModelScope.cancel()
+        viewModelScope.coroutineContext[Job]?.join()
         onCleared()
     }
 

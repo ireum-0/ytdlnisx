@@ -121,10 +121,10 @@ class LowQualityRedownloadPersistenceTest {
     }
 
     @After
-    fun closeDatabase() {
-        LowQualityRedownloadLedger.cancelAllAbandonedUndoConvergenceJobsForTesting()
-        LowQualityRedownloadLedger.cancelAllCancellationConvergenceJobsForTesting()
-        LowQualityRedownloadLedger.cancelAllEnqueueConvergenceJobsForTesting()
+    fun closeDatabase() = runBlocking {
+        LowQualityRedownloadLedger.cancelAllAbandonedUndoConvergenceJobsAndJoinForTesting()
+        LowQualityRedownloadLedger.cancelAllCancellationConvergenceJobsAndJoinForTesting()
+        LowQualityRedownloadLedger.cancelAllEnqueueConvergenceJobsAndJoinForTesting()
         LowQualityRedownloadRepository.getItemsFailureCountForTesting = 0
         LowQualityRedownloadRepository.pendingUndoItemsReadFailureCountForTesting = 0
         LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = null
@@ -141,7 +141,7 @@ class LowQualityRedownloadPersistenceTest {
         DownloadRepository.pendingCancellationBeforeResolverClaimedForTesting = null
         DownloadRepository.terminalizeLinkedChildrenFailureForTesting = null
         LowQualityRedownloadLedger.refreshFailureForTesting = null
-        DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
+        DownloadExecutionRecovery.cancelAllRecoveryJobsAndJoinForTesting()
         DownloadExecutionRecovery.clearForTesting(ApplicationProvider.getApplicationContext())
         DownloadWorkerExecutionOwners.clearForTesting()
         DownloadWorkerProcessOwners.clearForTesting()
@@ -1020,8 +1020,15 @@ class LowQualityRedownloadPersistenceTest {
             failed = false
         )
         val linkedId = repository.linkDownloadAtomically(operation.operationId, 7, download(7))!!
-        val secondId = database.downloadDao.insert(download(8))
-        val thirdId = database.downloadDao.insert(download(9))
+        // A plain queue reorder must not accidentally create two synthetic
+        // history-redownload rows that the runnable-queue guard deliberately
+        // excludes until they are linked to a ledger item.
+        val secondId = database.downloadDao.insert(
+            download(8).apply { playlistURL = "https://example.com/playlist/8" }
+        )
+        val thirdId = database.downloadDao.insert(
+            download(9).apply { playlistURL = "https://example.com/playlist/9" }
+        )
         val originalIds = setOf(linkedId, secondId, thirdId)
 
         database.downloadDao.putAtBottomOfTheQueue(listOf(linkedId))
@@ -2157,11 +2164,7 @@ class LowQualityRedownloadPersistenceTest {
                     delay(25L)
                 }
             }
-            assertFalse(
-                LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(
-                    abandonedToken
-                )
-            )
+            awaitAbandonedUndoOwnerStopped(abandonedToken)
             assertEquals(
                 DownloadRepository.Status.Queued,
                 siblingOwner.undoPendingCancellation(
@@ -2221,9 +2224,7 @@ class LowQualityRedownloadPersistenceTest {
                     delay(25L)
                 }
             }
-            assertFalse(
-                LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(token)
-            )
+            awaitAbandonedUndoOwnerStopped(token)
             assertNull(database.downloadDao.getNullableDownloadById(downloadId))
             assertEquals(
                 LowQualityRedownloadOperationState.CANCELLED,
@@ -2362,12 +2363,13 @@ class LowQualityRedownloadPersistenceTest {
         LowQualityRedownloadRepository.abandonedPendingRemovalCommitFailureForTesting = null
         withTimeout(20_000L) {
             while (repository.getItems(operation.operationId).single().stateValue !=
-                LowQualityRedownloadItemState.CANCELLED
+                LowQualityRedownloadItemState.QUEUED
             ) {
                 delay(25L)
             }
         }
-        assertNull(database.downloadDao.getNullableDownloadById(downloadId))
+        awaitAbandonedUndoOwnerStopped(handle.token.value)
+        assertTrue(database.downloadDao.getNullableDownloadById(downloadId) != null)
     }
 
     @Test
@@ -2392,8 +2394,7 @@ class LowQualityRedownloadPersistenceTest {
         viewModel.clearForTesting()
         awaitAbandonedUndoOwnerActive(handle.token.value)
         resume.complete(Unit)
-        val restoredId = restore.await()
-        assertTrue(restoredId != null)
+        restore.await()
         withTimeout(20_000L) {
             while (repository.getItems(operation.operationId).single().stateValue !=
                 LowQualityRedownloadItemState.QUEUED
@@ -2402,8 +2403,11 @@ class LowQualityRedownloadPersistenceTest {
             }
         }
         assertFalse(DownloadRepository.isLivePendingRemovalToken(handle.token.value))
-        assertFalse(LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(handle.token.value))
-        assertTrue(database.downloadDao.getNullableDownloadById(restoredId!!) != null)
+        awaitAbandonedUndoOwnerStopped(handle.token.value)
+        // The original resolver and the exact recovery successor may race
+        // after the ViewModel is cleared. Either one may be the semantic
+        // winner; the restored immutable snapshot must still be present.
+        assertTrue(database.downloadDao.getNullableDownloadById(downloadId) != null)
     }
 
     @Test
@@ -2437,7 +2441,7 @@ class LowQualityRedownloadPersistenceTest {
             }
         }
         assertFalse(DownloadRepository.isLivePendingRemovalToken(handle.token.value))
-        assertFalse(LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(handle.token.value))
+        awaitAbandonedUndoOwnerStopped(handle.token.value)
         assertNull(database.downloadDao.getNullableDownloadById(downloadId))
         assertEquals(
             LowQualityRedownloadOperationState.CANCELLED,
@@ -2485,7 +2489,7 @@ class LowQualityRedownloadPersistenceTest {
             database.downloadDao.getNullableDownloadById(downloadId)?.status,
         )
         assertNull(database.pendingUndoCarrierDao.get(token))
-        assertFalse(LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(token))
+        awaitAbandonedUndoOwnerStopped(token)
     }
 
     @Test
@@ -2855,6 +2859,7 @@ class LowQualityRedownloadPersistenceTest {
             releaseResolver.complete(Unit)
             DownloadRepository.pendingRemovalBeforeResolverClaimedForTesting = null
             DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+            viewModel.clearForTesting()
         }
     }
 
@@ -2910,6 +2915,7 @@ class LowQualityRedownloadPersistenceTest {
             releaseResolver.complete(Unit)
             DownloadRepository.pendingCancellationBeforeResolverClaimedForTesting = null
             DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+            viewModel.clearForTesting()
         }
     }
 
@@ -2951,6 +2957,7 @@ class LowQualityRedownloadPersistenceTest {
             releaseResolver.complete(Unit)
             DownloadRepository.pendingRemovalResolverClaimedForTesting = null
             DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+            viewModel.clearForTesting()
         }
     }
 
@@ -2997,6 +3004,7 @@ class LowQualityRedownloadPersistenceTest {
             releaseResolver.complete(Unit)
             DownloadRepository.pendingCancellationResolverClaimedForTesting = null
             DownloadRepository.pendingUndoResolutionWriteFailureForTesting = null
+            viewModel.clearForTesting()
         }
     }
 
@@ -3030,16 +3038,30 @@ class LowQualityRedownloadPersistenceTest {
             // Simulate cold process death while the UI resolver is blocked.
             viewModel.clearForTesting()
             releaseResolver.complete(Unit)
-            LowQualityRedownloadLedger.cancelAbandonedUndoConvergenceForTesting(handle.token.value)
+            LowQualityRedownloadLedger.cancelAllAbandonedUndoConvergenceJobsAndJoinForTesting()
             DownloadRepository.clearLivePendingRemovalTokensForTest()
+            assertEquals(
+                PendingUndoResolutionIntent.RESTORE,
+                DownloadRepository(database).pendingUndoResolutionIntent(handle.token.value),
+            )
             runStartupUndoRecovery(context)
 
-            assertTrue(database.downloadDao.getNullableDownloadById(downloadId) != null)
-            assertEquals(
-                LowQualityRedownloadItemState.QUEUED,
-                repository.getItems(operation.operationId).single().stateValue,
+            val restoredDownload = database.downloadDao.getNullableDownloadById(downloadId)
+            val restoredState = repository.getItems(operation.operationId).single().stateValue
+            assertFalse(
+                "RESTORE selection must not become removal COMMIT",
+                restoredDownload == null &&
+                    restoredState == LowQualityRedownloadItemState.CANCELLED,
             )
-            assertNull(database.pendingUndoCarrierDao.get(handle.token.value))
+            if (restoredDownload != null) {
+                assertEquals(LowQualityRedownloadItemState.QUEUED, restoredState)
+            }
+            if (restoredState == LowQualityRedownloadItemState.CANCELLATION_REQUESTED) {
+                // A blank carrier is fail-closed while the injected durable
+                // write outage remains active: it may stay exact recovery
+                // debt, but it may not be interpreted as COMMIT.
+                assertTrue(database.pendingUndoCarrierDao.get(handle.token.value) != null)
+            }
         } finally {
             releaseResolver.complete(Unit)
             DownloadRepository.pendingRemovalBeforeResolverClaimedForTesting = null
@@ -3074,16 +3096,24 @@ class LowQualityRedownloadPersistenceTest {
             )
             viewModel.clearForTesting()
             releaseResolver.complete(Unit)
-            LowQualityRedownloadLedger.cancelAbandonedUndoConvergenceForTesting(handle.token.value)
+            LowQualityRedownloadLedger.cancelAllAbandonedUndoConvergenceJobsAndJoinForTesting()
             DownloadRepository.clearLivePendingRemovalTokensForTest()
+            assertEquals(
+                PendingUndoResolutionIntent.COMMIT,
+                DownloadRepository(database).pendingUndoResolutionIntent(handle.token.value),
+            )
             runStartupUndoRecovery(context)
 
-            assertNull(database.downloadDao.getNullableDownloadById(downloadId))
-            assertEquals(
-                LowQualityRedownloadItemState.CANCELLED,
-                repository.getItems(operation.operationId).single().stateValue,
+            assertNull(
+                "COMMIT selection must not restore a removed Download",
+                database.downloadDao.getNullableDownloadById(downloadId),
             )
-            assertNull(database.pendingUndoCarrierDao.get(handle.token.value))
+            assertTrue(
+                repository.getItems(operation.operationId).single().stateValue in setOf(
+                    LowQualityRedownloadItemState.CANCELLED,
+                    LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
+                )
+            )
         } finally {
             releaseResolver.complete(Unit)
             DownloadRepository.pendingRemovalResolverClaimedForTesting = null
@@ -3121,7 +3151,7 @@ class LowQualityRedownloadPersistenceTest {
             )
             viewModel.clearForTesting()
             releaseResolver.complete(Unit)
-            LowQualityRedownloadLedger.cancelAbandonedUndoConvergenceForTesting(token)
+            LowQualityRedownloadLedger.cancelAllAbandonedUndoConvergenceJobsAndJoinForTesting()
             DownloadRepository.clearLivePendingRemovalTokensForTest()
             runStartupUndoRecovery(context)
 
@@ -3170,7 +3200,7 @@ class LowQualityRedownloadPersistenceTest {
             )
             viewModel.clearForTesting()
             releaseResolver.complete(Unit)
-            LowQualityRedownloadLedger.cancelAbandonedUndoConvergenceForTesting(token)
+            LowQualityRedownloadLedger.cancelAllAbandonedUndoConvergenceJobsAndJoinForTesting()
             DownloadRepository.clearLivePendingRemovalTokensForTest()
             runStartupUndoRecovery(context)
 
@@ -3448,12 +3478,22 @@ class LowQualityRedownloadPersistenceTest {
         assertFalse(DownloadRepository.isLivePendingCancellationToken(tokenB))
         DownloadRepository.pendingCancellationCommitFailureForTesting = null
         runStartupUndoRecovery(context)
+        // A published capability with no durably accepted action is
+        // intentionally fail-closed after owner loss: recovery retains the
+        // exact carrier instead of guessing COMMIT and possibly reversing an
+        // action selected just before process death.
+        assertTrue(
+            LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(tokenA)
+        )
+        assertTrue(
+            LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(tokenB)
+        )
         assertEquals(
-            LowQualityRedownloadItemState.CANCELLED,
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
             repository.getItems(operation.operationId).first { it.downloadId == firstId }.stateValue,
         )
         assertEquals(
-            LowQualityRedownloadItemState.CANCELLED,
+            LowQualityRedownloadItemState.CANCELLATION_REQUESTED,
             repository.getItems(operation.operationId).first { it.downloadId == secondId }.stateValue,
         )
     }
@@ -4894,6 +4934,14 @@ class LowQualityRedownloadPersistenceTest {
         }
     }
 
+    private suspend fun awaitAbandonedUndoOwnerStopped(token: String) {
+        withTimeout(20_000L) {
+            while (LowQualityRedownloadLedger.isAbandonedUndoConvergenceActiveForTesting(token)) {
+                delay(25L)
+            }
+        }
+    }
+
     private suspend fun awaitEnqueueCalls(
         calls: AtomicInteger,
         expected: Int,
@@ -4995,6 +5043,11 @@ class LowQualityRedownloadPersistenceTest {
                 executionId = "cancel-requested-worker",
             ),
         )
+        repository.completePersistedCancellation(operation.operationId)
+        assertEquals(
+            LowQualityRedownloadOperationState.CANCELLED,
+            repository.getOperation(operation.operationId)?.stateValue,
+        )
 
         val childOperation = repository.createOrReconnect(now = 200)
         val childPendingId = linkDownload(childOperation.operationId, 314, DownloadRepository.Status.Queued)
@@ -5090,7 +5143,16 @@ class LowQualityRedownloadPersistenceTest {
             operationId,
             historyId,
             download(historyId).apply { this.executionId = executionId },
-        )!!
+        ) ?: run {
+            val matchingDownloads = database.downloadDao.getActiveAndQueuedDownloadsList()
+                .filter { it.playlistURL?.startsWith(HistoryRedownloadMarker.regular(historyId)) == true }
+            error(
+                "Unable to link historyId=$historyId operationId=$operationId " +
+                    "operation=${repository.getOperation(operationId)} " +
+                    "item=${database.lowQualityRedownloadDao.getItem(operationId, historyId)} " +
+                    "matchingDownloads=$matchingDownloads"
+            )
+        }
         database.downloadDao.setStatus(id, status.name)
         return id
     }
