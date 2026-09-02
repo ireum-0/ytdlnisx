@@ -1091,22 +1091,9 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     ): String {
         val normalizedDownloadPath = FileUtil.formatPath(downloadItem.downloadPath)
         val canWriteDirectly = FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
-        val writtenPath = downloadItem.type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
         val cacheDownloadsEnabled = sharedPreferences.getBoolean("cache_downloads", true)
-        val requiresVerifiedQualityStaging = VideoQualityPolicy.requiresVerifiedStaging(
-            isVideo = downloadItem.type == DownloadType.video,
-            format = downloadItem.format,
-            sourceFormats = downloadItem.allFormats,
-            isQualityReplacement = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
-                ?.isQualityReplacement == true
-        ) || (
-            downloadItem.type == DownloadType.video &&
-                downloadItem.url.isYoutubeURL() &&
-                YoutubeMediaAccessPolicy.containsRawFormatOverride(downloadItem.extraCommands)
-            )
-        val noCache = writtenPath || (
-            !requiresVerifiedQualityStaging && !cacheDownloadsEnabled && canWriteDirectly
-            )
+        val writtenPath = downloadItem.type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
+        val noCache = writtenPath
         val tempDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
         val ffmpegPayload = App.instance.getFfmpegPayloadDiagnostics()
         val ffmpegResolution = buildYtDlpFfmpegResolutionDiagnostics()
@@ -1664,30 +1651,25 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         val type = downloadItem.type
 
         val downDir : File
-        val canWrite = FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
         val writtenPath = type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
-
-        val requiresVerifiedQualityStaging = VideoQualityPolicy.requiresVerifiedStaging(
-            isVideo = downloadItem.type == DownloadType.video,
-            format = downloadItem.format,
-            sourceFormats = downloadItem.allFormats,
-            isQualityReplacement = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
-                ?.isQualityReplacement == true
-        ) || (
-            downloadItem.type == DownloadType.video &&
-                downloadItem.url.isYoutubeURL() &&
-                YoutubeMediaAccessPolicy.containsRawFormatOverride(downloadItem.extraCommands)
-            )
-        if (writtenPath || (!requiresVerifiedQualityStaging && !sharedPreferences.getBoolean("cache_downloads", true) && canWrite)){
+        if (writtenPath){
             downDir = File(FileUtil.formatPath(downloadItem.downloadPath))
             request.addOption("--no-quiet")
             request.addOption("--no-simulate")
-            request.addOption("--print", "after_move:'%(filepath,_filename)s'")
+            request.addOption("--print", "after_move:'__YTDLNISX_OUTPUT__%(filepath,_filename)s'")
         }else{
             val cacheDir = FileUtil.getCachePath(context)
-            downDir = File(cacheDir, downloadItem.id.toString())
-            downDir.delete()
+            downDir = if (selectionOnly) {
+                File(cacheDir, "${downloadItem.id}/selection")
+            } else {
+                File(cacheDir, downloadItem.id.toString())
+            }
+            if (!selectionOnly) downDir.delete()
             downDir.mkdirs()
+            // The marker gives the worker an explicit output carrier even
+            // when yt-dlp does not emit a Destination/Merging line for the
+            // final post-processed artifact.
+            request.addOption("--print", "after_move:'__YTDLNISX_OUTPUT__%(filepath,_filename)s'")
         }
 
         val aria2 = sharedPreferences.getBoolean("aria2", false)

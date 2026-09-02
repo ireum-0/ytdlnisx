@@ -19,11 +19,6 @@ import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import androidx.preference.PreferenceManager
-import com.anggrayudi.storage.callback.FileCallback
-import com.anggrayudi.storage.callback.FolderCallback
-import com.anggrayudi.storage.file.copyFolderTo
-import com.anggrayudi.storage.file.getAbsolutePath
-import com.anggrayudi.storage.file.moveFileTo
 import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.util.storage.OpenStoredLocationResult
@@ -39,7 +34,6 @@ import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.util.Locale
@@ -383,7 +377,36 @@ object FileUtil {
     }
 
     @Throws(Exception::class)
-     suspend fun moveFile(originDir: File, context: Context, destDir: String, keepCache: Boolean, progress: (p: Int) -> Unit) : List<String> {
+    suspend fun moveFile(
+        originDir: File,
+        context: Context,
+        destDir: String,
+        keepCache: Boolean,
+        progress: (p: Int) -> Unit
+    ): List<String> = moveFile(
+        originDir = originDir,
+        context = context,
+        destDir = destDir,
+        keepCache = keepCache,
+        progress = progress,
+        onOutput = {},
+        sourceFiles = null,
+    )
+
+    @Throws(Exception::class)
+     suspend fun moveFile(
+        originDir: File,
+        context: Context,
+        destDir: String,
+        keepCache: Boolean,
+        progress: (p: Int) -> Unit,
+        onOutput: (String) -> Unit,
+        sourceFiles: List<File>? = null,
+    ) : List<String> {
+        fun notifyOutput(path: String) {
+            runCatching { onOutput(path) }
+                .onFailure { error -> Log.w("FileUtil", "Move output observer failed", error) }
+        }
         return withContext(Dispatchers.Main){
             lastMoveFailureDetails = null
             val fileList = mutableListOf<String>()
@@ -396,13 +419,20 @@ object FileUtil {
             val shouldPreferPrimaryMediaStore = !destDir.startsWith("content://") && isPrimarySharedStoragePath(normalizedDestDir)
             if (!directFileWrite && shouldPreferPrimaryMediaStore) {
                 val mediaStoreMoved = runCatching {
-                    moveFilesToPrimaryMediaStore(originDir, context, normalizedDestDir, progress)
+                    moveFilesToPrimaryMediaStore(
+                        originDir = originDir,
+                        context = context,
+                        normalizedDestDir = normalizedDestDir,
+                        progress = progress,
+                        onOutput = ::notifyOutput,
+                        sourceFiles = sourceFiles,
+                    )
                 }.onFailure { e ->
                     moveErrors.add("MediaStore raw-path move failed raw=$destDir normalized=$normalizedDestDir error=${e.message}")
                 }.getOrNull()
                 if (mediaStoreMoved != null) {
                     if (!keepCache) {
-                        originDir.deleteRecursively()
+                        cleanupMovedSourceTree(originDir, sourceFiles)
                     }
                     val scanned = scanMedia(mediaStoreMoved, context)
                     return@withContext scanned.ifEmpty { mediaStoreMoved }
@@ -414,13 +444,20 @@ object FileUtil {
             if (!directFileWrite && safDestinationDir == null) {
                 if (!shouldPreferPrimaryMediaStore) {
                     val mediaStoreMoved = runCatching {
-                        moveFilesToPrimaryMediaStore(originDir, context, normalizedDestDir, progress)
+                        moveFilesToPrimaryMediaStore(
+                            originDir = originDir,
+                            context = context,
+                            normalizedDestDir = normalizedDestDir,
+                            progress = progress,
+                            onOutput = ::notifyOutput,
+                            sourceFiles = sourceFiles,
+                        )
                     }.onFailure { e ->
                         moveErrors.add("MediaStore fallback failed raw=$destDir normalized=$normalizedDestDir error=${e.message}")
                     }.getOrNull()
                     if (mediaStoreMoved != null) {
                         if (!keepCache) {
-                            originDir.deleteRecursively()
+                            cleanupMovedSourceTree(originDir, sourceFiles)
                         }
                         val scanned = scanMedia(mediaStoreMoved, context)
                         return@withContext scanned.ifEmpty { mediaStoreMoved }
@@ -429,161 +466,73 @@ object FileUtil {
 
                 moveErrors.add("resolveDestinationDocumentDir failed raw=$destDir normalized=$normalizedDestDir perms=${describePersistedUriPermissions(context)}")
             }
-            originDir.walk().forEach {
-                if (it.isDirectory && it.absolutePath == originDir.absolutePath) return@forEach
-                var destFile: DocumentFile
-                try {
-                    if (
-                        it.name.matches("(^config.*.\\.txt\$)|(rList)|(.*.part-Frag.*)|(.*.live_chat)|(.*.ytdl)".toRegex())
-                        || it.length() == 0L
-                        ){
-                        return@forEach
-                    }
-
-                    runCatching {
-                        if (directFileWrite){
-                            val files = it.listFiles()?.filter { fil -> !fil.isDirectory }?.toTypedArray() ?: arrayOf(it)
-                            for (ff in files){
-                                val newFile =  File(dir.absolutePath + "/${ff.absolutePath.removePrefix(originDir.absolutePath)}")
-                                runCatching {
-                                    newFile.parentFile?.mkdirs()
-                                }
-                                if (Build.VERSION.SDK_INT >= 26 ) {
-                                    var newFileName = newFile.absolutePath
-                                    var counter = 1
-                                    while (Files.exists(File(newFileName).toPath())) {
-                                        // If the file already exists in the destination directory, add a number to differentiate it
-                                        newFileName = newFile.absolutePath.replace(newFile.nameWithoutExtension, newFile.nameWithoutExtension+" ($counter)")
-                                        counter++
-                                    }
-
-                                    fileList.add(Files.move(
-                                        ff.toPath(),
-                                        File(newFileName).toPath(),
-                                        StandardCopyOption.REPLACE_EXISTING
-                                    ).absolutePathString())
-                                    ff.delete()
-                                    fileList.add(newFileName)
-                                }else{
-                                    var newFileName = newFile.absolutePath
-                                    var counter = 1
-                                    while (File(newFileName).exists()) {
-                                        // If the file already exists in the destination directory, add a number to differentiate it
-                                        newFileName = newFile.absolutePath.replace(newFile.nameWithoutExtension, newFile.nameWithoutExtension+" ($counter)")
-                                        counter++
-                                    }
-
-                                    ff.copyTo(File(newFileName),false)
-                                    ff.delete()
-                                    fileList.add(newFileName)
-                                }
-                            }
-                            return@forEach
-                        }
-                    }
-
-                    val curr = DocumentFile.fromFile(it)
-                    val dst = safDestinationDir
-                        ?: throw IOException("Invalid URI: $destDir (no writable SAF tree permission)")
-
-                    if (it.isDirectory){
-                        withContext(Dispatchers.IO){
-                            curr.copyFolderTo(context, dst, skipEmptyFiles = false, callback = object : FolderCallback() {
-                                override fun onStart(folder: DocumentFile, totalFilesToCopy: Int, workerThread: Thread): Long {
-                                    return 500 // update progress every half second
-                                }
-
-                                override fun onParentConflict(destinationFolder: DocumentFile, action: ParentFolderConflictAction, canMerge: Boolean) {
-                                    if (canMerge){
-                                        action.confirmResolution(ConflictResolution.MERGE)
-                                    }else{
-                                        action.confirmResolution(ConflictResolution.CREATE_NEW)
-                                    }
-                                }
-
-                                override fun onReport(report: Report) {
-                                    progress(report.progress.toInt())
-                                }
-
-                                override fun onCompleted(result: Result) {
-                                    fileList.addAll(result.folder.listFiles().map { f -> f.getAbsolutePath(context) })
-                                    it.deleteRecursively()
-                                }
-
-                                override fun onFailed(errorCode: ErrorCode) {
-                                    //if its usb?
-                                    val recovered = runCatching {
-                                        var copiedAny = false
-                                        it.walkTopDown().forEach { f ->
-                                            if (f.isDirectory) return@forEach
-                                            val destUri = moveFileInputStream(f, context, dst) ?: return@forEach
-                                            fileList.add(DocumentFile.fromSingleUri(context, destUri)!!.getAbsolutePath(context))
-                                            copiedAny = true
-                                        }
-
-                                        it.deleteRecursively()
-                                        copiedAny
-                                    }.getOrDefault(false)
-                                    if (!recovered) {
-                                        hasMoveFailure = true
-                                        moveErrors.add("copyFolderTo failed for ${it.absolutePath} with $errorCode")
-                                    }
-                                    super.onFailed(errorCode)
-                                }
-
-                            })
-                        }
-                    }else{
-                        withContext(Dispatchers.IO){
-                            curr.moveFileTo(context, dst, callback = object : FileCallback() {
-                                override fun onFailed(errorCode: ErrorCode) {
-                                    //if its usb?
-                                    val recovered = runCatching {
-                                        val destUri = moveFileInputStream(it, context, dst) ?: return
-                                        fileList.add(DocumentFile.fromSingleUri(context, destUri)!!.getAbsolutePath(context))
-                                        it.delete()
-                                        true
-                                    }.getOrDefault(false)
-                                    if (!recovered) {
-                                        hasMoveFailure = true
-                                        moveErrors.add("moveFileTo failed for ${it.absolutePath} with $errorCode")
-                                    }
-                                    super.onFailed(errorCode)
-                                }
-
-                                override fun onConflict(
-                                    destinationFile: DocumentFile,
-                                    action: FileConflictAction
-                                ) {
-                                    action.confirmResolution(ConflictResolution.CREATE_NEW)
-                                }
-
-                                override fun onStart(file: Any, workerThread: Thread): Long {
-                                    return 500 // update progress every 1 second
-                                }
-
-                                override fun onReport(report: Report) {
-                                    progress(report.progress.toInt())
-                                }
-
-                                override fun onCompleted(result: Any) {
-                                    destFile = (result as DocumentFile)
-                                    fileList.add(destFile.getAbsolutePath(context))
-                                    it.delete()
-                                    super.onCompleted(result)
-                                }
-                            })
-                        }
-                    }
-                }catch (e: Exception) {
+            if (!directFileWrite && safDestinationDir != null) {
+                val safResult = moveFilesToSafWithExactOutputs(
+                    originDir = originDir,
+                    context = context,
+                    destinationDir = safDestinationDir,
+                    progress = progress,
+                    onOutput = ::notifyOutput,
+                    sourceFiles = sourceFiles,
+                )
+                fileList.addAll(safResult.paths)
+                if (safResult.errors.isNotEmpty()) {
                     hasMoveFailure = true
-                    moveErrors.add("${it.absolutePath}: ${e.message}")
-                    Log.e("error", e.message.toString())
+                    moveErrors.addAll(safResult.errors)
                 }
-
+                if (!keepCache && !hasMoveFailure) {
+                    cleanupMovedSourceTree(originDir, sourceFiles)
+                }
+                if (fileList.isEmpty()) {
+                    val detail = moveErrors.joinToString(limit = 3, separator = " | ")
+                    throw IOException("moveFile produced no outputs${if (detail.isNotBlank()) ": $detail" else ""}")
+                }
+                val normalized = fileList
+                    .asSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .toList()
+                if (hasMoveFailure) {
+                    lastMoveFailureDetails = moveErrors.joinToString(limit = 8, separator = " | ")
+                }
+                val scanned = scanMedia(normalized, context)
+                return@withContext scanned.ifEmpty { normalized }
             }
+            if (!directFileWrite) {
+                val detail = moveErrors.joinToString(limit = 3, separator = " | ")
+                throw IOException("No writable destination for $destDir${if (detail.isNotBlank()) ": $detail" else ""}")
+            }
+            val skipPattern = "(^config.*.\\.txt\$)|(rList)|(.*.part-Frag.*)|(.*.live_chat)|(.*.ytdl)".toRegex()
+            (sourceFiles ?: originDir.walkTopDown().filter { it.isFile }.toList())
+                .filter { isFileInside(it, originDir) && it.isFile }
+                .forEach { source ->
+                    try {
+                        if (source.name.matches(skipPattern) || source.length() == 0L) return@forEach
+                        val relativePath = source.relativeTo(originDir).path
+                        val target = uniqueDestinationFile(File(dir, relativePath))
+                        target.parentFile?.mkdirs()
+                        if (Build.VERSION.SDK_INT >= 26) {
+                            val movedPath = Files.move(
+                                source.toPath(),
+                                target.toPath(),
+                            ).absolutePathString()
+                            fileList.add(movedPath)
+                            notifyOutput(movedPath)
+                        } else {
+                            source.copyTo(target, false)
+                            source.delete()
+                            fileList.add(target.absolutePath)
+                            notifyOutput(target.absolutePath)
+                        }
+                    } catch (e: Exception) {
+                        hasMoveFailure = true
+                        moveErrors.add("${source.absolutePath}: ${e.message}")
+                        Log.e("error", e.message.toString())
+                    }
+                }
             if (!keepCache && !hasMoveFailure){
-                originDir.deleteRecursively()
+                cleanupMovedSourceTree(originDir, sourceFiles)
             } else if (hasMoveFailure) {
                 val detail = moveErrors.joinToString(limit = 8, separator = " | ")
                 lastMoveFailureDetails = detail
@@ -607,6 +556,120 @@ object FileUtil {
             // In that case, return the moved paths directly so downstream hard-sub logic can continue.
             return@withContext normalized
         }
+    }
+
+    private data class ExactSafMoveResult(
+        val paths: List<String>,
+        val errors: List<String>,
+    )
+
+    /**
+     * Copy each source file through the provider and retain the exact
+     * document URI returned by createDocument. A merged destination folder
+     * is never rescanned, because its pre-existing children are not outputs
+     * of this move operation.
+     */
+    private suspend fun moveFilesToSafWithExactOutputs(
+        originDir: File,
+        context: Context,
+        destinationDir: DocumentFile,
+        progress: (p: Int) -> Unit,
+        onOutput: (String) -> Unit,
+        sourceFiles: List<File>? = null,
+    ): ExactSafMoveResult = withContext(Dispatchers.IO) {
+        val skipPattern = "(^config.*.\\.txt\$)|(rList)|(.*.part-Frag.*)|(.*.live_chat)|(.*.ytdl)".toRegex()
+        val files = (sourceFiles ?: originDir.walkTopDown().filter { it.isFile }.toList())
+            .filter { isFileInside(it, originDir) && it.isFile && it.length() > 0L && !it.name.matches(skipPattern) }
+            .toList()
+        val outputs = mutableListOf<String>()
+        val errors = mutableListOf<String>()
+        val directoryCache = mutableMapOf("" to destinationDir)
+
+        files.forEachIndexed { index, source ->
+            try {
+                val relativeParent = runCatching {
+                    source.relativeTo(originDir).parent.orEmpty()
+                        .replace('\\', '/')
+                        .trim('/')
+                }.getOrElse {
+                    throw IOException("Could not resolve SAF relative source path: ${source.absolutePath}", it)
+                }
+                val targetDir = resolveSafOutputDirectory(
+                    root = destinationDir,
+                    relativeParent = relativeParent,
+                    cache = directoryCache,
+                ) ?: throw IOException("Could not create SAF destination directory for ${source.absolutePath}")
+                val destinationUri = moveFileInputStream(source, context, targetDir)
+                    ?: throw IOException("Could not create SAF output for ${source.absolutePath}")
+                val storedPath = destinationUri.toString()
+                outputs.add(storedPath)
+                onOutput(storedPath)
+                if (!source.delete()) {
+                    errors.add("Failed to delete moved SAF source ${source.absolutePath}")
+                }
+            } catch (error: Exception) {
+                errors.add("${source.absolutePath}: ${error.message ?: error.javaClass.simpleName}")
+            }
+            progress((((index + 1).toDouble() / files.size.toDouble()) * 100).toInt())
+        }
+
+        ExactSafMoveResult(outputs, errors)
+    }
+
+    private fun resolveSafOutputDirectory(
+        root: DocumentFile,
+        relativeParent: String,
+        cache: MutableMap<String, DocumentFile>,
+    ): DocumentFile? {
+        if (relativeParent.isBlank()) return root
+        var current = root
+        var cacheKey = ""
+        relativeParent.split('/').filter { it.isNotBlank() }.forEach { segment ->
+            cacheKey = if (cacheKey.isBlank()) segment else "$cacheKey/$segment"
+            current = cache[cacheKey] ?: run {
+                val existing = current.findFile(segment)
+                when {
+                    existing?.isDirectory == true -> existing
+                    existing != null -> return null
+                    else -> current.createDirectory(segment)
+                }
+            } ?: return null
+            cache[cacheKey] = current
+        }
+        return current
+    }
+
+    private fun uniqueDestinationFile(target: File): File {
+        if (!target.exists()) return target
+        val base = target.nameWithoutExtension
+        val extension = target.extension.takeIf { it.isNotBlank() }?.let { ".${it}" }.orEmpty()
+        var counter = 1
+        var candidate = File(target.parentFile, "$base ($counter)$extension")
+        while (candidate.exists()) {
+            counter += 1
+            candidate = File(target.parentFile, "$base ($counter)$extension")
+        }
+        return candidate
+    }
+
+    /**
+     * Legacy callers own the complete origin directory. Provenance-aware
+     * callers pass an exact source set, so only empty directories may be
+     * removed; an unproven sibling must survive for recovery/diagnostics.
+     */
+    private fun cleanupMovedSourceTree(originDir: File, sourceFiles: List<File>?) {
+        if (sourceFiles == null) {
+            originDir.deleteRecursively()
+            return
+        }
+        if (!originDir.exists() || !originDir.isDirectory) return
+        originDir.walkBottomUp()
+            .filter { it.isDirectory }
+            .forEach { directory ->
+                if (directory.listFiles()?.isEmpty() == true) {
+                    directory.delete()
+                }
+            }
     }
 
     private fun describePersistedUriPermissions(context: Context): String {
@@ -700,7 +763,9 @@ object FileUtil {
         originDir: File,
         context: Context,
         normalizedDestDir: String,
-        progress: (p: Int) -> Unit
+        progress: (p: Int) -> Unit,
+        onOutput: (String) -> Unit,
+        sourceFiles: List<File>? = null,
     ): List<String>? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
 
@@ -715,9 +780,10 @@ object FileUtil {
         if (destRelativeRoot.isBlank()) return null
 
         return withContext(Dispatchers.IO) {
-            val files = originDir.walkTopDown()
+            val files = (sourceFiles ?: originDir.walkTopDown().filter { it.isFile }.toList())
                 .filter { file ->
-                    file.isFile &&
+                    isFileInside(file, originDir) &&
+                        file.isFile &&
                         file.length() > 0L &&
                         !file.name.matches("(^config.*.\\.txt\$)|(rList)|(.*.part-Frag.*)|(.*.live_chat)|(.*.ytdl)".toRegex())
                 }
@@ -737,6 +803,7 @@ object FileUtil {
                     .trim('/')
                 val storedPath = moveSingleFileToPrimaryMediaStore(context, source, targetRelativeDir)
                 outputs.add(storedPath)
+                onOutput(storedPath)
                 source.delete()
                 progress((((index + 1).toDouble() / files.size.toDouble()) * 100).toInt())
             }
@@ -827,12 +894,13 @@ object FileUtil {
 
     private fun moveFileInputStream(it: File, context: Context, dst: DocumentFile) : Uri? {
         val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.extension) ?: "*/*"
+        val displayName = resolveUniqueDocumentName(dst, it.name)
 
         val destUri = DocumentsContract.createDocument(
             context.contentResolver,
             dst.uri,
             mimeType,
-            it.name
+            displayName
         ) ?: return null
 
         val inputStream = it.inputStream()
@@ -843,6 +911,20 @@ object FileUtil {
         outputStream.closeQuietly()
 
         return destUri
+    }
+
+    private fun resolveUniqueDocumentName(destinationDir: DocumentFile, filename: String): String {
+        if (destinationDir.findFile(filename) == null) return filename
+        val dot = filename.lastIndexOf('.')
+        val base = if (dot > 0) filename.substring(0, dot) else filename
+        val extension = if (dot > 0) filename.substring(dot) else ""
+        var counter = 1
+        var candidate = "$base ($counter)$extension"
+        while (destinationDir.findFile(candidate) != null) {
+            counter += 1
+            candidate = "$base ($counter)$extension"
+        }
+        return candidate
     }
 
     fun scanMedia(files: List<String>, context: Context) : List<String> {
