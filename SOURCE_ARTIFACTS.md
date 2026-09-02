@@ -28,8 +28,10 @@ The correctness-remediation project uses the following documents as governing re
 - File: `CURRENT_STATUS.md`
 - Role: current ledger status overlay applied on top of the historical `TASKS.md` baseline and append-only `TASKS_DELTA.md` finding records.
 - Initial status-overlay commit: `67e5b971e3291e21337dffd2fba180f0addb212f`.
-- Current Finding-A semantic-clean checkpoint recorded by the overlay: `checkpoint/pre-baseline-review@648d2c8044e9d67f8a7367c54e3185f28206b636`.
-- Current Finding-A closure evidence: `evidence/FINDING_A_CLOSURE_2026-08-28_648D2C80.md`.
+- Historical Finding-A semantic-clean checkpoint: `checkpoint/pre-baseline-review@648d2c8044e9d67f8a7367c54e3185f28206b636`.
+- Historical Finding-A closure evidence: `evidence/FINDING_A_CLOSURE_2026-08-28_648D2C80.md`.
+- Current Finding-A semantic-clean checkpoint recorded by the overlay: `checkpoint/pre-baseline-review@70437f76ede9cf0e69fb08d694dd3baf7bd8bfac`.
+- Current Finding-A closure evidence: `evidence/FINDING_A_CLOSURE_2026-09-03_70437F76.md`.
 
 `CURRENT_STATUS.md` is intentionally a mutable ledger-status index rather than a frozen governing artifact. It may record only status/closure decisions already established by exact review evidence; it must not originate new blocker-impacting classifications, attributions, waivers, or semantic findings.
 

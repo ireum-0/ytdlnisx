@@ -5,31 +5,36 @@ This file is the current status overlay for the correctness-remediation ledger. 
 ## Authority
 
 - Production branch: `checkpoint/pre-baseline-review`
-- Current reviewed implementation checkpoint: `29d48d71d1df9744bd408f9a1c2113ccb0841571`
+- Current reviewed implementation checkpoint: `70437f76ede9cf0e69fb08d694dd3baf7bd8bfac`
 - Historical semantic-clean Finding-A checkpoint: `648d2c8044e9d67f8a7367c54e3185f28206b636`
 - Accepted semantic-neutral build stabilization checkpoint: `30df7058cf5232daf315813f961c6a736a75fed5`
 - Governing review checklist: `REVIEW_CHECKLIST_V6_OPERATIONAL.md`
 - Historical Finding-A closure evidence: `evidence/FINDING_A_CLOSURE_2026-08-28_648D2C80.md`
-- Current independent review evidence: `evidence/FINDING_A_REVIEW_2026-08-29_29D48D71.md`
-- Current Finding-A independent verdict: **REOPENED / NOT CLEAN**
-- Current confirmed remediation-regression P1 blockers: **0**
-- Current confirmed remediation-regression P2 blocker families: **2**
-  - `BUG-CANCEL-04` — still OPEN at the live-worker consumer/effect boundary.
-  - A9/A12 post-commit History regression — existing canonical Finding-A post-commit/late-stop scope reopened; no duplicate `BUG-HISTORY-*` ID created.
+- Historical superseded Finding-A review evidence: `evidence/FINDING_A_REVIEW_2026-08-29_29D48D71.md`
+- Current Finding-A closure evidence: `evidence/FINDING_A_CLOSURE_2026-09-03_70437F76.md`
+- Current Finding-A independent verdict: **CLEAN**
+- Current confirmed Finding-A P1 blockers: **0**
+- Current confirmed Finding-A P2 blockers: **0**
 - Waivers: **none**
 
-The historical `648d2c80...` closure remains valid evidence for the state reviewed at that checkpoint. It is not the current workflow authority after later implementation changes and later confirmed remediation regressions.
+The historical `648d2c80...` closure remains valid evidence for the state reviewed at that checkpoint. The later `29d48d71...` review/status material remains preserved historical context and is superseded for current workflow status by the already-established CLEAN result at `70437f76...`.
+
+This current status update records that established result only; it does not
+introduce a new blocker classification, attribution decision, waiver, semantic
+finding, or correctness conclusion.
 
 ## Current workflow phase
 
-- Finding A implementation/remediation: **REOPENED / NOT CLEAN**.
-- Finding B: **not started** and must not begin until Finding A is independently CLEAN again.
+- Finding A implementation/remediation: **CLOSED / independently CLEAN**.
+- Finding B: **OPEN / not started** and remains outside this closure.
 - `30df7058...` remains accepted as a semantic-neutral build/verification stabilization change.
-- `29d48d71...` is the current reviewed implementation candidate. It materially improves operation-aware user-stop recovery but is not adopted as a clean Finding-A semantic baseline.
+- `70437f76...` is the current reviewed implementation checkpoint recorded by the established Finding-A closure result.
 
-## Current Finding-A remediation-regression status
+## Historical Finding-A remediation-regression status at `29d48d71...` (superseded)
 
-The frozen A1-A12 historical closure remains preserved at `648d2c80...`; the current NOT CLEAN verdict records regressions/incomplete closure at later implementation checkpoints rather than rewriting that historical decision.
+The following material preserves the prior `29d48d71...` review as historical
+evidence. It is superseded for current workflow status by the current CLEAN
+closure at `70437f76...` and is not re-applied by this metadata-only update.
 
 - `BUG-ADMISSION-01` — **CLOSED** at `648d2c8044e9d67f8a7367c54e3185f28206b636`.
 - Later live-owner recovery P1 found during final second-opinion review — **CLOSED** at the same checkpoint; no duplicate canonical ID was created.
@@ -44,7 +49,7 @@ The frozen A1-A12 historical closure remains preserved at `648d2c80...`; the cur
 
 `BUG-PAUSE-03` remains separately tracked baseline debt and is not counted as a current-change Finding-A remediation blocker.
 
-## Review of `29d48d71...`
+## Historical review of `29d48d71...` (superseded)
 
 Independent source review confirms several useful parts of the remediation:
 
@@ -60,7 +65,7 @@ Independent source review confirms several useful parts of the remediation:
 
 The remaining source blockers are consumer/authority-precedence failures of the strengthened operation-aware recovery contract, not absence of the new journal fields themselves.
 
-## Verification state for `29d48d71...`
+## Historical verification state for `29d48d71...` (superseded)
 
 Implementation handoff reported fresh execution:
 
@@ -129,13 +134,10 @@ These counts are metadata only. They do not make the reopened A9/A12 current sem
 
 ## Next gate
 
-Finding A cannot become CLEAN from `29d48d71...`.
+Finding A is **CLEAN** at `70437f76...` for the already-established reviewed
+scope. Finding B remains **OPEN / not started** and is not part of this
+metadata-only closure.
 
-The next implementation must:
-
-1. finish `BUG-CANCEL-04` by propagating exact USER_CANCEL/USER_PAUSE `SEMANTIC_STOP_PENDING` authority to the still-live E1 worker's side-effect/success boundaries without violating the required semantic-write-before-native-termination ordering;
-2. restore A9/A12 precedence so an already-authoritative committed History replacement supersedes/rejects speculative late user-stop recovery authority and finalization remains recoverable;
-3. add deterministic production-path tests for both cells, including live owner and process-death windows;
-4. preserve the exact-quiescence, live-generation, sibling-isolation, async receiver, and lock-order guarantees already established;
-5. resolve or independently classify the six full connected-suite failures;
-6. receive another fresh full Finding-A review under checklist v6 before any Finding B work begins.
+Any later semantic implementation change requires its own exact-checkpoint
+review. This closure does not authorize or begin Finding B, `BUG-OUTPUT-01`,
+`BUG-PAUSE-03`, or unrelated remediation work.

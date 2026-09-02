@@ -34,17 +34,24 @@ For an exact current active count or current Finding status, read `CURRENT_STATU
 
 ## Current remediation closure
 
-- Finding A: **CLOSED / independently CLEAN** in the preserved closure record.
-- Semantic-clean reviewed checkpoint: `checkpoint/pre-baseline-review@648d2c8044e9d67f8a7367c54e3185f28206b636`.
-- Governing checklist for that closure review: `REVIEW_CHECKLIST_V5_OPERATIONAL.md`.
+- Finding A: **CLOSED / independently CLEAN** at the current reviewed checkpoint.
+- Current semantic-clean reviewed checkpoint: `checkpoint/pre-baseline-review@70437f76ede9cf0e69fb08d694dd3baf7bd8bfac`.
+- Historical semantic-clean checkpoint: `checkpoint/pre-baseline-review@648d2c8044e9d67f8a7367c54e3185f28206b636`.
+- Governing checklist for the current closure review: `REVIEW_CHECKLIST_V6_OPERATIONAL.md`.
+- Governing checklist for the historical closure: `REVIEW_CHECKLIST_V5_OPERATIONAL.md`.
 - Current status overlay: `CURRENT_STATUS.md`.
-- Closure evidence: `evidence/FINDING_A_CLOSURE_2026-08-28_648D2C80.md`.
+- Current closure evidence: `evidence/FINDING_A_CLOSURE_2026-09-03_70437F76.md`.
+- Historical closure evidence: `evidence/FINDING_A_CLOSURE_2026-08-28_648D2C80.md`.
 - Finding-A current-change P1/P2 blockers at that closure: **0**.
 - Waivers: **none**.
 - Build/verification performance stabilization may proceed as a separate semantic-neutral activity.
-- Finding B has not been started by the closure record.
+- Finding B remains **OPEN / not started** and is not included in this metadata-only closure.
 
-This closure section preserves the already-established historical closure decision and the checklist that governed it. Later reviewed findings or status overrides must be read from `TASKS_DELTA.md`, `CURRENT_STATUS.md`, and exact later evidence; adopting a newer review checklist does not retroactively rewrite the historical closure.
+This closure section records the already-established current closure result. The
+historical closure and later review evidence remain preserved. Later reviewed
+findings or status overrides must be read from `TASKS_DELTA.md`,
+`CURRENT_STATUS.md`, and exact later evidence; adopting a newer review checklist
+does not retroactively rewrite historical closure evidence.
 
 ## Files
 
