@@ -644,6 +644,356 @@ class MigrationSmokeTest {
         }
     }
 
+    @Test
+    fun migrateFromVersion58ToCurrentValidatesFindingACarrierTailAndPreservesState() {
+        val historyId = 5801L
+        val downloadId = 5802L
+        val operationId = "migration-58-operation"
+        helper.createDatabase(TEST_DB, 58).apply {
+            execSQL(
+                """
+                INSERT INTO history (
+                    id, url, title, author, artist, duration, durationSeconds, thumb,
+                    type, time, lastWatched, downloadPath, website, format, filesize,
+                    downloadId, command, playbackPositionMs, localTreeUri, localTreePath,
+                    keywords, customThumb, hardSubScanRemoved, hardSubDone, mediaPublishedAt
+                ) VALUES (
+                    $historyId, 'https://example.com/migration-58-history',
+                    'Migrated history', 'Creator', 'Artist', '00:02:03', 123,
+                    '', 'video', 5801000, 0, '[]', 'example.com', '{}', 5800,
+                    $downloadId, '--format 137', 17, '', '', 'Legacy, Refusal', '', 0, 0, 5801
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO downloads (
+                    id, url, title, author, thumb, duration, type, format, container,
+                    downloadSections, allFormats, downloadPath, website, downloadSize,
+                    playlistTitle, audioPreferences, videoPreferences, extraCommands,
+                    customFileNameTemplate, SaveThumb, status, downloadStartTime, logID,
+                    playlistURL, playlistIndex, incognito, availableSubtitles, rowNumber,
+                    observeSourceId, operationId, retryAttempt, retryStrategy,
+                    lastIssueCode, lastIssueStage, executionId, mediaPublishedAt, orderPosition
+                ) VALUES (
+                    $downloadId, 'https://example.com/migration-58-download',
+                    'Migrated download', 'Creator', '', '00:01:00', 'video', '{}', 'mp4',
+                    '', '[]', '/downloads', 'example.com', '', '', '{}', '{}', '',
+                    '%(title)s', 0, 'Queued', 5800, NULL, '', NULL, 0, '[]', $downloadId,
+                    0, '$operationId', 2, 'ORIGINAL', '', '', 'execution-58', 5802, $downloadId
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO low_quality_redownload_operations (
+                    operationId, phase, state, scanUpperBoundHistoryId,
+                    scanCursorHistoryId, scanTotal, scanProcessed, scanFailures,
+                    cancelRequested, createdAt, updatedAt, completedAt, terminalReason
+                ) VALUES (
+                    '$operationId', 'PREPARING', 'RUNNING', $historyId, 5800, 1, 0, 0,
+                    0, 5800, 5801, 0, ''
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO low_quality_redownload_items (
+                    operationId, historyId, intendedSourceUrl, intendedType,
+                    candidateReason, mediaState, actualHeight, requestedHeight,
+                    expectedHeight, sourceMaxHeight, selected, itemState, reasonCode,
+                    downloadId, updatedAt
+                ) VALUES (
+                    '$operationId', $historyId,
+                    'https://example.com/migration-58-history', 'video',
+                    'LOW_QUALITY', 'AVAILABLE', 360, 720, 1080, 1080, 1,
+                    'CHECKING', '', $downloadId, 5801
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO history_replacement_barriers (
+                    downloadId, operationId, historyId, expectedSourceUrl, expectedType,
+                    issueCode, issueStage, createdAt
+                ) VALUES (
+                    $downloadId, '$operationId', $historyId,
+                    'https://example.com/migration-58-history', 'video',
+                    'HISTORY_REPLACEMENT_SOURCE_MISMATCH', 'HISTORY', 5801
+                )
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(
+            TEST_DB,
+            61,
+            true,
+            *Migrations.migrationList,
+        )
+
+        db.use {
+            val tables = tableNames(it)
+            assertTrue(
+                tables.containsAll(
+                    setOf(
+                        "pending_undo_carriers",
+                        "work_manager_handoff_carriers",
+                    )
+                )
+            )
+            assertTrue(
+                tableColumnDefaults(it, "pending_undo_carriers").keys.containsAll(
+                    listOf(
+                        "token",
+                        "kind",
+                        "ownerId",
+                        "authorityGeneration",
+                        "resolutionIntent",
+                        "presentationState",
+                        "resolverGeneration",
+                        "snapshotJson",
+                        "createdAt",
+                        "updatedAt",
+                    )
+                )
+            )
+            assertTrue(
+                tableColumnDefaults(it, "work_manager_handoff_carriers").keys.containsAll(
+                    listOf(
+                        "handoffId",
+                        "kind",
+                        "generationId",
+                        "requestId",
+                        "uniqueWorkName",
+                        "state",
+                        "boundary",
+                        "notBeforeAt",
+                        "attempt",
+                    )
+                )
+            )
+            it.query("SELECT COUNT(*) FROM pending_undo_carriers").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                // 58 -> 59 creates the schema only; it must not invent a user
+                // Undo carrier from unrelated legacy rows.
+                assertEquals(0, cursor.getInt(0))
+            }
+            it.query("SELECT COUNT(*) FROM work_manager_handoff_carriers").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(0, cursor.getInt(0))
+            }
+            it.query(
+                "SELECT title, status, operationId, retryAttempt, executionId, " +
+                    "mediaPublishedAt, orderPosition FROM downloads WHERE id = $downloadId"
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("Migrated download", cursor.getString(0))
+                assertEquals("Queued", cursor.getString(1))
+                assertEquals(operationId, cursor.getString(2))
+                assertEquals(2, cursor.getInt(3))
+                assertEquals("execution-58", cursor.getString(4))
+                assertEquals(5802L, cursor.getLong(5))
+                assertEquals(downloadId, cursor.getLong(6))
+            }
+            it.query(
+                "SELECT phase, state, scanUpperBoundHistoryId FROM " +
+                    "low_quality_redownload_operations WHERE operationId = '$operationId'"
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("PREPARING", cursor.getString(0))
+                assertEquals("RUNNING", cursor.getString(1))
+                assertEquals(historyId, cursor.getLong(2))
+            }
+            it.query(
+                "SELECT intendedSourceUrl, intendedType, selected, itemState, downloadId " +
+                    "FROM low_quality_redownload_items WHERE operationId = '$operationId'"
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("https://example.com/migration-58-history", cursor.getString(0))
+                assertEquals("video", cursor.getString(1))
+                assertEquals(1, cursor.getInt(2))
+                assertEquals("CHECKING", cursor.getString(3))
+                assertEquals(downloadId, cursor.getLong(4))
+            }
+            it.query(
+                "SELECT issueCode, issueStage FROM history_replacement_barriers " +
+                    "WHERE downloadId = $downloadId"
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("HISTORY_REPLACEMENT_SOURCE_MISMATCH", cursor.getString(0))
+                assertEquals("HISTORY", cursor.getString(1))
+            }
+        }
+
+        val upgraded = Room.databaseBuilder(
+            InstrumentationRegistry.getInstrumentation().targetContext,
+            DBManager::class.java,
+            TEST_DB,
+        )
+            .addTypeConverter(Converters())
+            .addMigrations(*Migrations.migrationList)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            runBlocking {
+                assertEquals(
+                    "Migrated download",
+                    upgraded.downloadDao.getNullableDownloadById(downloadId)?.title,
+                )
+                assertEquals(
+                    operationId,
+                    upgraded.lowQualityRedownloadDao.getOperation(operationId)?.operationId,
+                )
+                assertEquals(
+                    downloadId,
+                    upgraded.lowQualityRedownloadDao.getItem(operationId, historyId)?.downloadId,
+                )
+                assertTrue(upgraded.pendingUndoCarrierDao.getAll().isEmpty())
+                assertTrue(upgraded.workManagerHandoffCarrierDao.getOutstanding().isEmpty())
+            }
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun migrateFromVersion48ToCurrentPreservesSupportedLegacyStateAndCurrentCarriers() {
+        // Schema 48 is the oldest exported generation present in the public
+        // release history (v1.8.8.2); exercise that supported upgrade path
+        // rather than substituting an arbitrary development schema.
+        val historyId = 4801L
+        val downloadId = 4802L
+        helper.createDatabase(TEST_DB, 48).apply {
+            execSQL(
+                """
+                INSERT INTO history (
+                    id, url, title, author, artist, duration, durationSeconds, thumb,
+                    type, time, lastWatched, downloadPath, website, format, filesize,
+                    downloadId, command, playbackPositionMs, localTreeUri, localTreePath,
+                    keywords, customThumb, hardSubScanRemoved, hardSubDone
+                ) VALUES (
+                    $historyId, 'https://example.com/migration-48-history',
+                    'Legacy history', 'Creator', 'Artist', '00:01:02', 62, '', 'video',
+                    4801000, 0, '[]', 'example.com', '{}', 4800, $downloadId,
+                    '--format 137', 9, '', '', 'Legacy, Refusal', '', 0, 0
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO downloads (
+                    id, url, title, author, thumb, duration, type, format, container,
+                    downloadSections, allFormats, downloadPath, website, downloadSize,
+                    playlistTitle, audioPreferences, videoPreferences, extraCommands,
+                    customFileNameTemplate, SaveThumb, status, downloadStartTime, logID,
+                    playlistURL, playlistIndex, incognito, availableSubtitles, rowNumber,
+                    observeSourceId
+                ) VALUES (
+                    $downloadId, 'https://example.com/migration-48-download',
+                    'Legacy download', 'Creator', '', '00:01:00', 'video', '{}', 'mp4',
+                    '', '[]', '/downloads', 'example.com', '', '', '{}', '{}', '',
+                    '%(title)s', 0, 'Error', 4800, NULL, '', NULL, 0, '[]', $downloadId, 0
+                )
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(
+            TEST_DB,
+            61,
+            true,
+            *Migrations.migrationList,
+        )
+
+        db.use {
+            val tables = tableNames(it)
+            assertTrue(
+                tables.containsAll(
+                    setOf(
+                        "low_quality_redownload_operations",
+                        "low_quality_redownload_items",
+                        "history_replacement_barriers",
+                        "pending_undo_carriers",
+                        "work_manager_handoff_carriers",
+                    )
+                )
+            )
+            it.query(
+                "SELECT title, durationSeconds, keywords FROM history WHERE id = $historyId"
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("Legacy history", cursor.getString(0))
+                assertEquals(62L, cursor.getLong(1))
+                assertEquals("Legacy, Refusal", cursor.getString(2))
+            }
+            it.query(
+                "SELECT title, status, operationId, retryAttempt, retryStrategy, " +
+                    "lastIssueCode, lastIssueStage, executionId, mediaPublishedAt, orderPosition " +
+                    "FROM downloads WHERE id = $downloadId"
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("Legacy download", cursor.getString(0))
+                assertEquals("Error", cursor.getString(1))
+                assertEquals("", cursor.getString(2))
+                assertEquals(0, cursor.getInt(3))
+                assertEquals("ORIGINAL", cursor.getString(4))
+                assertEquals("", cursor.getString(5))
+                assertEquals("", cursor.getString(6))
+                assertEquals("", cursor.getString(7))
+                assertEquals(0L, cursor.getLong(8))
+                assertEquals(downloadId, cursor.getLong(9))
+            }
+            assertTrue(
+                tableColumnDefaults(it, "pending_undo_carriers").keys.containsAll(
+                    listOf("token", "resolutionIntent", "presentationState", "snapshotJson")
+                )
+            )
+            assertTrue(
+                tableColumnDefaults(it, "work_manager_handoff_carriers").keys.containsAll(
+                    listOf("handoffId", "generationId", "requestId", "uniqueWorkName", "state")
+                )
+            )
+            it.query("SELECT COUNT(*) FROM pending_undo_carriers").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(0, cursor.getInt(0))
+            }
+            it.query("SELECT COUNT(*) FROM work_manager_handoff_carriers").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(0, cursor.getInt(0))
+            }
+        }
+
+        val upgraded = Room.databaseBuilder(
+            InstrumentationRegistry.getInstrumentation().targetContext,
+            DBManager::class.java,
+            TEST_DB,
+        )
+            .addTypeConverter(Converters())
+            .addMigrations(*Migrations.migrationList)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            runBlocking {
+                assertEquals(
+                    "Legacy download",
+                    upgraded.downloadDao.getNullableDownloadById(downloadId)?.title,
+                )
+                assertEquals(
+                    "Legacy history",
+                    upgraded.historyDao.getAll().firstOrNull { it.id == historyId }?.title,
+                )
+                assertTrue(upgraded.lowQualityRedownloadDao.getOperation("missing") == null)
+                assertTrue(upgraded.pendingUndoCarrierDao.getAll().isEmpty())
+                assertTrue(upgraded.workManagerHandoffCarrierDao.getOutstanding().isEmpty())
+            }
+        } finally {
+            upgraded.close()
+        }
+    }
+
     private fun tableColumnDefaults(
         db: SupportSQLiteDatabase,
         tableName: String
@@ -657,6 +1007,14 @@ class MigrationSmokeTest {
             }
         }
         return columns
+    }
+
+    private fun tableNames(db: SupportSQLiteDatabase): Set<String> {
+        val tables = linkedSetOf<String>()
+        db.query("SELECT name FROM sqlite_master WHERE type = 'table'").use { cursor ->
+            while (cursor.moveToNext()) tables += cursor.getString(0)
+        }
+        return tables
     }
 
     private fun tableIndices(

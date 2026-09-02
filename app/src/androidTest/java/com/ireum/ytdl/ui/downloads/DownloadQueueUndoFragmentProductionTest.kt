@@ -3,9 +3,11 @@ package com.ireum.ytdl.ui.downloads
 import android.Manifest
 import android.content.Context
 import android.graphics.Rect
+import android.os.Bundle
 import android.os.Build
 import android.os.SystemClock
 import android.view.MotionEvent
+import android.view.View
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.Espresso.onView
@@ -17,6 +19,8 @@ import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.FragmentManager
 import androidx.viewpager2.widget.ViewPager2
 import com.google.android.material.R as MaterialR
 import com.ireum.ytdl.MainActivity
@@ -48,6 +52,9 @@ import org.hamcrest.Matchers.allOf
 import org.hamcrest.Matchers.containsString
 import java.util.UUID
 
+private fun compactIdentity(value: Any?): String =
+    value?.let { "${it.javaClass.simpleName}@${System.identityHashCode(it)}" } ?: "null"
+
 /**
  * Exercises the real Activity -> ViewPager2 -> child Fragment -> Snackbar
  * wiring.  Repository-only owner tests cannot detect a peer Fragment creating
@@ -62,6 +69,81 @@ class DownloadQueueUndoFragmentProductionTest {
     private val createdDownloadIds = mutableListOf<Long>()
     private val testPrefix = "undo-ui-${UUID.randomUUID()}"
     private var previousSwipeGestures: Set<String>? = null
+
+    private data class QueueFragmentLifecycleEvent(
+        val kind: String,
+        val fragment: Fragment,
+        val view: View?,
+        val savedTokenLive: Boolean?,
+        val savedTokenProcessLocal: Boolean?,
+        val savedResolverInFlight: Boolean?,
+        val savedSnackbarActionVisible: Boolean,
+        val savedSnackbarMessage: String?,
+    ) {
+        companion object {
+            const val SAVED_VIEW_CREATED = "Saved.onFragmentViewCreated"
+            const val SAVED_VIEW_DESTROYED = "Saved.onFragmentViewDestroyed"
+            const val CANCELLED_VIEW_CREATED = "Cancelled.onFragmentViewCreated"
+            const val CANCELLED_VIEW_DESTROYED = "Cancelled.onFragmentViewDestroyed"
+        }
+
+        override fun toString(): String =
+            "$kind:${compactIdentity(fragment)}:${compactIdentity(view)}" +
+                ":savedAuthority=$savedTokenLive/$savedTokenProcessLocal/$savedResolverInFlight" +
+                ":savedSnackbar=$savedSnackbarActionVisible/$savedSnackbarMessage"
+    }
+
+    private data class UndoPeerDiagnostic(
+        val savedFragmentPresent: Boolean,
+        val savedViewPresent: Boolean,
+        val savedViewDestroyed: Boolean,
+        val savedFragmentLifecycleState: String,
+        val savedViewLifecycleState: String,
+        val savedOwnerIdentity: String,
+        val cancelledOwnerIdentity: String,
+        val savedOwnerActive: Boolean,
+        val savedTokenLive: Boolean,
+        val savedTokenProcessLocal: Boolean,
+        val savedResolverInFlight: Boolean,
+        val savedAuthorityKnown: Boolean,
+        val savedCarrierCommitted: Boolean,
+        val savedCarrierPresentationState: String?,
+        val savedCarrierResolutionIntent: String?,
+        val savedSnackbarActionVisible: Boolean,
+        val savedSnackbarMessage: String?,
+        val abandonedTokenLive: Boolean,
+        val abandonedTokenProcessLocal: Boolean,
+        val cancelledOwnerActive: Boolean,
+        val cancelledViewPresent: Boolean,
+        val cancelledViewDestroyed: Boolean,
+        val abandonedCarrierPresentationState: String?,
+        val abandonedCarrierResolutionIntent: String?,
+        val lifecycleEvents: String,
+    ) {
+        override fun toString(): String =
+            "savedFragmentPresent=$savedFragmentPresent," +
+                "savedViewPresent=$savedViewPresent," +
+                "savedViewDestroyed=$savedViewDestroyed," +
+            "savedFragmentState=$savedFragmentLifecycleState," +
+                "savedViewState=$savedViewLifecycleState," +
+                "savedOwner=$savedOwnerIdentity," +
+                "cancelledOwner=$cancelledOwnerIdentity," +
+                "savedOwnerActive=$savedOwnerActive," +
+                "savedLive=$savedTokenLive," +
+                "savedProcessLocal=$savedTokenProcessLocal," +
+                "savedResolverInFlight=$savedResolverInFlight," +
+                "savedAuthorityKnown=$savedAuthorityKnown," +
+                "savedCarrierCommitted=$savedCarrierCommitted," +
+                "savedCarrier=$savedCarrierPresentationState/$savedCarrierResolutionIntent," +
+                "savedSnackbar=$savedSnackbarActionVisible/$savedSnackbarMessage," +
+                "abandonedLive=$abandonedTokenLive," +
+                "abandonedProcessLocal=$abandonedTokenProcessLocal," +
+                "cancelledOwnerActive=$cancelledOwnerActive," +
+                "cancelledViewPresent=$cancelledViewPresent," +
+                "cancelledViewDestroyed=$cancelledViewDestroyed," +
+                "abandonedCarrier=$abandonedCarrierPresentationState/$abandonedCarrierResolutionIntent," +
+                "events=[$lifecycleEvents]"
+    }
 
     @Before
     fun setUp() {
@@ -130,7 +212,7 @@ class DownloadQueueUndoFragmentProductionTest {
         awaitDownloadVisible(id)
         swipeFirstVisibleDownload(id)
         awaitDatabase { database.downloadDao.getNullableDownloadById(id) == null }
-        val carrier = awaitRemovalCarrier(id)
+        val carrier = awaitRemovalCarrier(id, expectedPage = 4)
         assertEquals(PendingUndoCarrier.PUBLISHED_PRESENTATION, carrier.presentationState)
         assertNull(database.downloadDao.getNullableDownloadById(id))
 
@@ -158,74 +240,231 @@ class DownloadQueueUndoFragmentProductionTest {
     fun destroyedPeerViewAbandonsOnlyItsOwnerAndKeepsSecondOwnerUsable() = runBlocking {
         val cancelledId = insertDownload(DownloadRepository.Status.Cancelled)
         val savedId = insertDownload(DownloadRepository.Status.Saved)
-        val scenario = launchQueueAt(3)
+        val lifecycleEvents = mutableListOf<QueueFragmentLifecycleEvent>()
+        var savedTokenForLifecycle: String? = null
+        val lifecycleCallbacks = queueFragmentLifecycleCallbacks(
+            events = lifecycleEvents,
+            savedTokenProvider = { savedTokenForLifecycle },
+        )
+        var queueChildFragmentManager: FragmentManager? = null
+        val scenario = launchQueueAt(
+            page = 3,
+            onQueueChildFragmentManagerReady = { fragmentManager ->
+                queueChildFragmentManager = fragmentManager
+                fragmentManager.registerFragmentLifecycleCallbacks(
+                    lifecycleCallbacks,
+                    false,
+                )
+            },
+        )
         scenario.onActivity { activity ->
-            // Keep all peer pages materialized while the second page publishes
-            // its own capability.  The test then destroys only the first real
-            // child Fragment view through FragmentManager.
+            // Keep all peer pages materialized while each page publishes its
+            // own capability.  The peer is later evicted by ViewPager2 itself.
             activity.findViewById<ViewPager2>(R.id.download_viewpager)
                 .offscreenPageLimit = 5
         }
 
-        awaitDownloadVisible(cancelledId)
-        swipeFirstVisibleDownload(cancelledId)
-        awaitDatabase { database.downloadDao.getNullableDownloadById(cancelledId) == null }
-        val abandonedCarrier = awaitRemovalCarrier(cancelledId)
-        assertEquals(PendingUndoCarrier.PUBLISHED_PRESENTATION, abandonedCarrier.presentationState)
+        try {
+            awaitDownloadVisible(cancelledId)
+            swipeFirstVisibleDownload(cancelledId)
+            awaitDatabase { database.downloadDao.getNullableDownloadById(cancelledId) == null }
+            val abandonedCarrier = awaitRemovalCarrier(cancelledId, expectedPage = 3)
+            assertEquals(PendingUndoCarrier.PUBLISHED_PRESENTATION, abandonedCarrier.presentationState)
 
-        // Move to Saved while the peer pages remain materialized, then publish
-        // the Saved capability under its independent owner.
-        selectQueuePage(scenario, 5)
-        awaitFragment<SavedDownloadsFragment>(scenario)
-        awaitDownloadVisible(savedId)
-        swipeFirstVisibleDownload(savedId)
-        val savedCarrier = awaitRemovalCarrier(savedId)
-        assertTrue(
-            "Saved carrier was not live before its peer was abandoned",
-            DownloadRepository.isLivePendingRemovalToken(savedCarrier.token),
-        )
+            // Move to Saved while the peer pages remain materialized, then
+            // publish the Saved capability under its independent owner.
+            selectQueuePage(scenario, 5)
+            awaitFragment<SavedDownloadsFragment>(scenario)
+            awaitDownloadVisible(savedId)
+            swipeFirstVisibleDownload(savedId)
+            val savedCarrier = awaitRemovalCarrier(savedId, expectedPage = 5)
+            savedTokenForLifecycle = savedCarrier.token
 
-        // Destroy only the first real child Fragment view.  This invokes the
-        // production onDestroyView path while the current Saved peer remains
-        // attached and owns its live capability.
-        destroyFragmentForTesting<CancelledDownloadsFragment>(scenario)
-        awaitDatabase {
-            database.pendingUndoCarrierDao.get(abandonedCarrier.token)?.presentationState !=
-                PendingUndoCarrier.PUBLISHED_PRESENTATION ||
-                !DownloadRepository.isLivePendingRemovalToken(abandonedCarrier.token)
-        }
+            val savedFragment = checkNotNull(findQueueFragment<SavedDownloadsFragment>(scenario)) {
+                "SavedDownloadsFragment was not materialized before peer eviction"
+            }
+            val savedView = checkNotNull(savedFragment.view) {
+                "SavedDownloadsFragment view was not materialized before peer eviction"
+            }
+            val cancelledFragment = checkNotNull(findQueueFragment<CancelledDownloadsFragment>(scenario)) {
+                "CancelledDownloadsFragment was not retained while offscreen limit was high"
+            }
+            val cancelledView = checkNotNull(cancelledFragment.view) {
+                "CancelledDownloadsFragment view was not retained while offscreen limit was high"
+            }
+            val savedOwner = checkNotNull(undoPresentationOwnerForTest(savedFragment)) {
+                "Saved view did not expose its exact UndoPresentationOwner"
+            }
+            val cancelledOwner = checkNotNull(undoPresentationOwnerForTest(cancelledFragment)) {
+                "Cancelled view did not expose its exact UndoPresentationOwner"
+            }
+            var activityViewModel: DownloadViewModel? = null
+            scenario.onActivity { activity ->
+                activityViewModel = androidx.lifecycle.ViewModelProvider(activity)[DownloadViewModel::class.java]
+            }
+            val viewModel = checkNotNull(activityViewModel)
 
-        // The exact peer owner remains usable after page 3's owner is gone.
-        val savedLive = DownloadRepository.isLivePendingRemovalToken(savedCarrier.token)
-        assertTrue(
-            "Saved carrier was not live before its own Undo action " +
-                "(processLocal=${DownloadRepository.isProcessLocalPendingUndoAuthority(savedCarrier.token)}, " +
-                "cancelledLive=${DownloadRepository.isLivePendingRemovalToken(abandonedCarrier.token)}, " +
-                "savedLive=$savedLive)",
-            savedLive,
-        )
-        onView(
-            allOf(
-                withId(MaterialR.id.snackbar_action),
-                withText(R.string.undo),
-                isDescendantOfA(
-                    hasDescendant(withText(containsString("$testPrefix-Saved")))
-                ),
+            val savedCarrierBeforeEviction = database.pendingUndoCarrierDao.get(savedCarrier.token)
+                ?: throw AssertionError(
+                    "Saved carrier disappeared before peer eviction: " +
+                        captureUndoPeerDiagnostic(
+                            scenario = scenario,
+                            savedFragment = savedFragment,
+                            savedView = savedView,
+                            savedOwner = savedOwner,
+                            cancelledFragment = cancelledFragment,
+                            cancelledView = cancelledView,
+                            cancelledOwner = cancelledOwner,
+                            viewModel = viewModel,
+                            savedToken = savedCarrier.token,
+                            abandonedToken = abandonedCarrier.token,
+                            lifecycleEvents = lifecycleEvents,
+                        )
+                )
+            assertEquals(
+                PendingUndoCarrier.PUBLISHED_PRESENTATION,
+                savedCarrierBeforeEviction.presentationState,
             )
-        ).perform(androidx.test.espresso.action.ViewActions.click())
-        awaitDatabase {
-            database.downloadDao.getNullableDownloadById(savedId)?.status ==
-                DownloadRepository.Status.Saved.name &&
-                database.pendingUndoCarrierDao.get(savedCarrier.token) == null
-        }
+            assertEquals(
+                PendingUndoCarrier.UNRESOLVED_INTENT,
+                savedCarrierBeforeEviction.resolutionIntent,
+            )
+            assertTrue(
+                "Saved carrier was not process-local authority before peer eviction",
+                DownloadRepository.isProcessLocalPendingUndoAuthority(savedCarrier.token),
+            )
+            assertTrue(
+                "Saved carrier was not live UI authority before peer eviction",
+                DownloadRepository.isLivePendingRemovalToken(savedCarrier.token),
+            )
+            assertTrue(
+                "Saved exact owner was not active before peer eviction",
+                viewModel.isUndoPresentationOwnerActive(savedOwner),
+            )
+            assertFalse(
+                "Saved and Cancelled unexpectedly share an Undo owner: " +
+                    "saved=${savedOwner.id}/${savedOwner.generation}, " +
+                    "cancelled=${cancelledOwner.id}/${cancelledOwner.generation}",
+                savedOwner == cancelledOwner,
+            )
+            val beforePeerEvictionDiagnostic = captureUndoPeerDiagnostic(
+                scenario = scenario,
+                savedFragment = savedFragment,
+                savedView = savedView,
+                savedOwner = savedOwner,
+                cancelledFragment = cancelledFragment,
+                cancelledView = cancelledView,
+                cancelledOwner = cancelledOwner,
+                viewModel = viewModel,
+                savedToken = savedCarrier.token,
+                abandonedToken = abandonedCarrier.token,
+                lifecycleEvents = lifecycleEvents,
+            )
+            assertTrue(
+                "Cancelled peer was not still authoritative before ViewPager2 eviction: " +
+                    beforePeerEvictionDiagnostic,
+                beforePeerEvictionDiagnostic.cancelledOwnerActive &&
+                    beforePeerEvictionDiagnostic.cancelledViewPresent,
+            )
 
-        // The original page's owner was abandoned/recovered; it did not
-        // damage the second owner's exact carrier or restore another row.
-        assertTrue(
-            database.downloadDao.getNullableDownloadById(cancelledId) == null ||
-                database.downloadDao.getNullableDownloadById(cancelledId)?.status ==
-                    DownloadRepository.Status.Cancelled.name
-        )
+            // Reducing the retention range while Saved is current is the real
+            // FragmentStateAdapter/ViewPager2 path for destroying only the
+            // distant Cancelled view.  The wait observes only that exact
+            // lifecycle callback; it never polls Saved authority.
+            scenario.onActivity { activity ->
+                val pager = activity.findViewById<ViewPager2>(R.id.download_viewpager)
+                // RecyclerView may keep an already detached
+                // FragmentStateAdapter holder in its item cache.  That cache
+                // delays onViewRecycled/onDestroyView even after the
+                // offscreen range has shrunk.  Disable only this test's cache
+                // so the real adapter eviction reaches the production view
+                // lifecycle synchronously and observably.
+                (pager.getChildAt(0) as? androidx.recyclerview.widget.RecyclerView)
+                    ?.setItemViewCacheSize(0)
+                pager.offscreenPageLimit = 1
+            }
+            try {
+                awaitUi {
+                    lifecycleEvents.any {
+                        it.kind == QueueFragmentLifecycleEvent.CANCELLED_VIEW_DESTROYED &&
+                            it.fragment === cancelledFragment
+                    }
+                }
+            } catch (failure: AssertionError) {
+                val timeoutDiagnostic = captureUndoPeerDiagnostic(
+                    scenario = scenario,
+                    savedFragment = savedFragment,
+                    savedView = savedView,
+                    savedOwner = savedOwner,
+                    cancelledFragment = cancelledFragment,
+                    cancelledView = cancelledView,
+                    cancelledOwner = cancelledOwner,
+                    viewModel = viewModel,
+                    savedToken = savedCarrier.token,
+                    abandonedToken = abandonedCarrier.token,
+                    lifecycleEvents = lifecycleEvents,
+                )
+                throw AssertionError(
+                    "ViewPager2 did not destroy the exact Cancelled peer view: " +
+                        timeoutDiagnostic,
+                    failure,
+                )
+            }
+
+            // This is a one-shot classification immediately after the real
+            // Cancelled onDestroyView callback.  A later poll is deliberately
+            // not allowed to hide a transient Saved-owner loss.
+            val diagnostic = captureUndoPeerDiagnostic(
+                scenario = scenario,
+                savedFragment = savedFragment,
+                savedView = savedView,
+                savedOwner = savedOwner,
+                cancelledFragment = cancelledFragment,
+                cancelledView = cancelledView,
+                cancelledOwner = cancelledOwner,
+                viewModel = viewModel,
+                savedToken = savedCarrier.token,
+                abandonedToken = abandonedCarrier.token,
+                lifecycleEvents = lifecycleEvents,
+            )
+            assertTrue("Undo peer lifecycle classification: $diagnostic", diagnostic.cancelledViewDestroyed)
+            assertTrue("Undo peer lifecycle classification: $diagnostic", diagnostic.savedFragmentPresent)
+            assertTrue("Undo peer lifecycle classification: $diagnostic", diagnostic.savedViewPresent)
+            assertFalse("Undo peer lifecycle classification: $diagnostic", diagnostic.savedViewDestroyed)
+            assertTrue("Undo peer lifecycle classification: $diagnostic", diagnostic.savedOwnerActive)
+            assertTrue("Undo peer lifecycle classification: $diagnostic", diagnostic.savedTokenLive)
+            assertTrue("Undo peer lifecycle classification: $diagnostic", diagnostic.savedTokenProcessLocal)
+            assertFalse("Undo peer lifecycle classification: $diagnostic", diagnostic.abandonedTokenLive)
+            assertFalse("Undo peer lifecycle classification: $diagnostic", diagnostic.abandonedTokenProcessLocal)
+            assertFalse("Undo peer lifecycle classification: $diagnostic", diagnostic.cancelledOwnerActive)
+            assertFalse("Undo peer lifecycle classification: $diagnostic", diagnostic.cancelledViewPresent)
+
+            // The exact Saved Snackbar action must still resolve only its own
+            // carrier after the Cancelled owner has been abandoned.
+            onView(
+                allOf(
+                    withId(MaterialR.id.snackbar_action),
+                    withText(R.string.undo),
+                    isDescendantOfA(
+                        hasDescendant(withText(containsString("$testPrefix-Saved")))
+                    ),
+                )
+            ).perform(androidx.test.espresso.action.ViewActions.click())
+            awaitDatabase {
+                database.downloadDao.getNullableDownloadById(savedId)?.status ==
+                    DownloadRepository.Status.Saved.name &&
+                    database.pendingUndoCarrierDao.get(savedCarrier.token) == null
+            }
+
+            // The abandoned peer did not restore or corrupt the Saved row.
+            assertTrue(
+                database.downloadDao.getNullableDownloadById(cancelledId) == null ||
+                    database.downloadDao.getNullableDownloadById(cancelledId)?.status ==
+                        DownloadRepository.Status.Cancelled.name
+            )
+        } finally {
+            queueChildFragmentManager?.unregisterFragmentLifecycleCallbacks(lifecycleCallbacks)
+        }
     }
 
     @Test
@@ -235,7 +474,7 @@ class DownloadQueueUndoFragmentProductionTest {
         awaitDownloadVisible(id)
         swipeFirstVisibleDownload(id)
         awaitDatabase { database.downloadDao.getNullableDownloadById(id) == null }
-        val carrier = awaitRemovalCarrier(id)
+        val carrier = awaitRemovalCarrier(id, expectedPage = 4)
         assertEquals(PendingUndoCarrier.PUBLISHED_PRESENTATION, carrier.presentationState)
 
         scenario.recreate()
@@ -293,7 +532,7 @@ class DownloadQueueUndoFragmentProductionTest {
         }
         onView(withText(R.string.ok)).perform(androidx.test.espresso.action.ViewActions.click())
 
-        val carrier = awaitCancellationCarrier(id)
+        val carrier = awaitCancellationCarrier(id, expectedPage = 1)
         assertEquals(PendingUndoCarrier.PUBLISHED_PRESENTATION, carrier.presentationState)
         onView(
             allOf(
@@ -352,7 +591,10 @@ class DownloadQueueUndoFragmentProductionTest {
         return id
     }
 
-    private fun launchQueueAt(page: Int): ActivityScenario<MainActivity> {
+    private fun launchQueueAt(
+        page: Int,
+        onQueueChildFragmentManagerReady: ((FragmentManager) -> Unit)? = null,
+    ): ActivityScenario<MainActivity> {
         val scenario = ActivityScenario.launch(MainActivity::class.java)
         activityScenario = scenario
         scenario.onActivity { activity ->
@@ -372,8 +614,30 @@ class DownloadQueueUndoFragmentProductionTest {
         }
         scenario.onActivity { activity ->
             val navHost = activity.supportFragmentManager.findFragmentById(R.id.frame_layout)
-                as androidx.navigation.fragment.NavHostFragment
+            as androidx.navigation.fragment.NavHostFragment
             navHost.navController.navigate(R.id.downloadQueueMainFragment)
+        }
+        if (onQueueChildFragmentManagerReady != null) {
+            awaitUi {
+                var ready = false
+                scenario.onActivity { activity ->
+                    val navHost = activity.supportFragmentManager.findFragmentById(R.id.frame_layout)
+                        as? androidx.navigation.fragment.NavHostFragment
+                    val queue = navHost?.childFragmentManager?.primaryNavigationFragment
+                        as? DownloadQueueMainFragment
+                    ready = queue?.view?.findViewById<ViewPager2>(R.id.download_viewpager) != null
+                }
+                ready
+            }
+            scenario.onActivity { activity ->
+                val navHost = activity.supportFragmentManager.findFragmentById(R.id.frame_layout)
+                    as? androidx.navigation.fragment.NavHostFragment
+                val queue = checkNotNull(
+                    navHost?.childFragmentManager?.primaryNavigationFragment
+                        as? DownloadQueueMainFragment
+                )
+                onQueueChildFragmentManagerReady(queue.childFragmentManager)
+            }
         }
         selectQueuePage(scenario, page)
         return scenario
@@ -439,26 +703,172 @@ class DownloadQueueUndoFragmentProductionTest {
         }
     }
 
-    private inline fun <reified T : androidx.fragment.app.Fragment> destroyFragmentForTesting(
+    private inline fun <reified T : Fragment> findQueueFragment(
         scenario: ActivityScenario<MainActivity>,
-    ) {
-        var fragment: T? = null
+    ): T? {
+        var found: T? = null
         scenario.onActivity { activity ->
             val navHost = activity.supportFragmentManager.findFragmentById(R.id.frame_layout)
                 as? androidx.navigation.fragment.NavHostFragment
-            val queue = checkNotNull(
-                navHost?.childFragmentManager?.primaryNavigationFragment
-                    as? DownloadQueueMainFragment
-            )
-            val selected = checkNotNull(
-                queue.childFragmentManager.fragments.firstOrNull { it is T } as? T
-            ) { "${T::class.java.simpleName} was not created" }
-            fragment = selected
-            queue.childFragmentManager.beginTransaction()
-                .remove(selected)
-                .commitNow()
+            val queue = navHost?.childFragmentManager?.primaryNavigationFragment
+                as? DownloadQueueMainFragment
+            found = queue?.childFragmentManager?.fragments
+                ?.firstOrNull { it is T } as? T
         }
-        awaitUi { fragment?.view == null }
+        return found
+    }
+
+    private fun queueFragmentLifecycleCallbacks(
+        events: MutableList<QueueFragmentLifecycleEvent>,
+        savedTokenProvider: () -> String?,
+    ): FragmentManager.FragmentLifecycleCallbacks =
+        object : FragmentManager.FragmentLifecycleCallbacks() {
+            private fun isTracked(fragment: Fragment): Boolean =
+                fragment is SavedDownloadsFragment || fragment is CancelledDownloadsFragment
+
+            private fun event(
+                kind: String,
+                fragment: Fragment,
+                view: View?,
+            ): QueueFragmentLifecycleEvent {
+                val savedToken = savedTokenProvider()
+                val activity = fragment.activity
+                val snackbarAction = activity?.window?.decorView
+                    ?.findViewById<View>(MaterialR.id.snackbar_action)
+                val snackbarMessage = activity?.window?.decorView
+                    ?.findViewById<View>(MaterialR.id.snackbar_text)
+                    ?.let { (it as? android.widget.TextView)?.text?.toString() }
+                return QueueFragmentLifecycleEvent(
+                    kind = kind,
+                    fragment = fragment,
+                    view = view,
+                    savedTokenLive = savedToken?.let(DownloadRepository::isLivePendingRemovalToken),
+                    savedTokenProcessLocal = savedToken?.let(
+                        DownloadRepository::isProcessLocalPendingUndoAuthority
+                    ),
+                    savedResolverInFlight = savedToken?.let(DownloadRepository::isUndoResolverInFlight),
+                    savedSnackbarActionVisible = snackbarAction?.isShown == true,
+                    savedSnackbarMessage = snackbarMessage,
+                )
+            }
+
+            override fun onFragmentViewCreated(
+                fragmentManager: FragmentManager,
+                fragment: Fragment,
+                view: View,
+                savedInstanceState: Bundle?,
+            ) {
+                if (!isTracked(fragment)) return
+                val kind = when (fragment) {
+                    is SavedDownloadsFragment -> QueueFragmentLifecycleEvent.SAVED_VIEW_CREATED
+                    is CancelledDownloadsFragment -> QueueFragmentLifecycleEvent.CANCELLED_VIEW_CREATED
+                    else -> return
+                }
+                events += event(kind, fragment, view)
+            }
+
+            override fun onFragmentViewDestroyed(
+                fragmentManager: FragmentManager,
+                fragment: Fragment,
+            ) {
+                if (!isTracked(fragment)) return
+                val kind = when (fragment) {
+                    is SavedDownloadsFragment -> QueueFragmentLifecycleEvent.SAVED_VIEW_DESTROYED
+                    is CancelledDownloadsFragment -> QueueFragmentLifecycleEvent.CANCELLED_VIEW_DESTROYED
+                    else -> return
+                }
+                events += event(kind, fragment, null)
+            }
+        }
+
+    private fun undoPresentationOwnerForTest(
+        fragment: Fragment,
+    ): DownloadRepository.UndoPresentationOwner? {
+        val field = fragment.javaClass.getDeclaredField("undoPresentationOwner")
+        field.isAccessible = true
+        return field.get(fragment) as? DownloadRepository.UndoPresentationOwner
+    }
+
+    private suspend fun captureUndoPeerDiagnostic(
+        scenario: ActivityScenario<MainActivity>,
+        savedFragment: SavedDownloadsFragment,
+        savedView: View,
+        savedOwner: DownloadRepository.UndoPresentationOwner,
+        cancelledFragment: CancelledDownloadsFragment,
+        cancelledView: View,
+        cancelledOwner: DownloadRepository.UndoPresentationOwner,
+        viewModel: DownloadViewModel,
+        savedToken: String,
+        abandonedToken: String,
+        lifecycleEvents: List<QueueFragmentLifecycleEvent>,
+    ): UndoPeerDiagnostic {
+        var savedFragmentPresent = false
+        var savedViewPresent = false
+        var savedFragmentLifecycleState = "UNKNOWN"
+        var savedViewLifecycleState = "UNKNOWN"
+        var cancelledViewPresent = false
+        var savedSnackbarActionVisible = false
+        var savedSnackbarMessage: String? = null
+        scenario.onActivity { activity ->
+            val navHost = activity.supportFragmentManager.findFragmentById(R.id.frame_layout)
+                as? androidx.navigation.fragment.NavHostFragment
+            val queue = navHost?.childFragmentManager?.primaryNavigationFragment
+                as? DownloadQueueMainFragment
+            val currentSaved = queue?.childFragmentManager?.fragments
+                ?.firstOrNull { it is SavedDownloadsFragment }
+            savedFragmentPresent = currentSaved === savedFragment
+            savedViewPresent = savedFragment.view === savedView
+            savedFragmentLifecycleState = savedFragment.lifecycle.currentState.name
+            savedViewLifecycleState = savedFragment.viewLifecycleOwnerLiveData.value
+                ?.lifecycle
+                ?.currentState
+                ?.name
+                ?: "NONE"
+            cancelledViewPresent = cancelledFragment.view === cancelledView
+            val snackbarAction = activity.window.decorView
+                .findViewById<View>(MaterialR.id.snackbar_action)
+            savedSnackbarActionVisible = snackbarAction?.isShown == true
+            savedSnackbarMessage = activity.window.decorView
+                .findViewById<View>(MaterialR.id.snackbar_text)
+                ?.let { (it as? android.widget.TextView)?.text?.toString() }
+        }
+
+        val savedCarrier = database.pendingUndoCarrierDao.get(savedToken)
+        val abandonedCarrier = database.pendingUndoCarrierDao.get(abandonedToken)
+        return UndoPeerDiagnostic(
+            savedFragmentPresent = savedFragmentPresent,
+            savedViewPresent = savedViewPresent,
+            savedViewDestroyed = lifecycleEvents.any {
+                it.kind == QueueFragmentLifecycleEvent.SAVED_VIEW_DESTROYED &&
+                    it.fragment === savedFragment
+            },
+            savedFragmentLifecycleState = savedFragmentLifecycleState,
+            savedViewLifecycleState = savedViewLifecycleState,
+            savedOwnerIdentity = "${savedOwner.id}/${savedOwner.generation}",
+            cancelledOwnerIdentity = "${cancelledOwner.id}/${cancelledOwner.generation}",
+            savedOwnerActive = viewModel.isUndoPresentationOwnerActive(savedOwner),
+            savedTokenLive = DownloadRepository.isLivePendingRemovalToken(savedToken),
+            savedTokenProcessLocal = DownloadRepository.isProcessLocalPendingUndoAuthority(savedToken),
+            savedResolverInFlight = DownloadRepository.isUndoResolverInFlight(savedToken),
+            savedAuthorityKnown = DownloadRepository.isUndoAuthorityKnown(savedToken),
+            savedCarrierCommitted = DownloadRepository.isUndoCarrierCommitted(savedToken),
+            savedCarrierPresentationState = savedCarrier?.presentationState,
+            savedCarrierResolutionIntent = savedCarrier?.resolutionIntent,
+            savedSnackbarActionVisible = savedSnackbarActionVisible,
+            savedSnackbarMessage = savedSnackbarMessage,
+            abandonedTokenLive = DownloadRepository.isLivePendingRemovalToken(abandonedToken),
+            abandonedTokenProcessLocal = DownloadRepository.isProcessLocalPendingUndoAuthority(abandonedToken),
+            cancelledOwnerActive = viewModel.isUndoPresentationOwnerActive(cancelledOwner),
+            cancelledViewPresent = cancelledViewPresent,
+            cancelledViewDestroyed = lifecycleEvents.any {
+                it.kind == QueueFragmentLifecycleEvent.CANCELLED_VIEW_DESTROYED &&
+                    it.fragment === cancelledFragment
+            } && !cancelledViewPresent,
+            abandonedCarrierPresentationState = abandonedCarrier?.presentationState,
+            abandonedCarrierResolutionIntent = abandonedCarrier?.resolutionIntent,
+            lifecycleEvents = lifecycleEvents.joinToString("|")
+                .ifEmpty { "none" },
+        )
     }
 
     private fun swipeFirstVisibleDownload(id: Long) {
@@ -531,29 +941,37 @@ class DownloadQueueUndoFragmentProductionTest {
             as? androidx.navigation.fragment.NavHostFragment
         val queue = navHost?.childFragmentManager?.primaryNavigationFragment
             as? DownloadQueueMainFragment
-        val expectedType: Class<out androidx.fragment.app.Fragment>? = when (pager.currentItem) {
-            1 -> QueuedDownloadsFragment::class.java
-            3 -> CancelledDownloadsFragment::class.java
-            4 -> ErroredDownloadsFragment::class.java
-            5 -> SavedDownloadsFragment::class.java
-            else -> null
-        }
+        val expectedType = expectedQueueFragmentType(pager.currentItem)
         val selected = queue?.childFragmentManager?.fragments?.firstOrNull { fragment ->
             fragment.view != null && (expectedType == null || expectedType.isInstance(fragment))
         }
         return selected?.view?.findViewById(R.id.download_recyclerview)
     }
 
-    private fun awaitRemovalCarrier(id: Long): PendingUndoCarrier = awaitValue {
+    private fun awaitRemovalCarrier(
+        id: Long,
+        expectedPage: Int,
+    ): PendingUndoCarrier = awaitValue {
+        val expectedUrl = "https://example.com/$testPrefix/${createdDownloadIds.indexOf(id)}"
         database.pendingUndoCarrierDao.getAll().firstOrNull {
             it.kind == PendingUndoCarrier.REMOVAL_KIND &&
                 it.snapshotJson.contains("$testPrefix") &&
-                it.snapshotJson.contains(id.toString()) &&
+                it.snapshotJson.contains("\"url\":\"$expectedUrl\"") &&
                 it.presentationState == PendingUndoCarrier.PUBLISHED_PRESENTATION
+        }?.takeIf {
+            // Room publication precedes the process-local PREPARED_UNPUBLISHED
+            // -> LIVE_UI transition.  Wait for both sides of that real
+            // publication boundary, plus the still-attached view surface, so
+            // this test never samples the legal intermediate state.
+            DownloadRepository.isLivePendingRemovalToken(it.token) &&
+                isQueuePageReady(expectedPage)
         }
     }
 
-    private fun awaitCancellationCarrier(id: Long): PendingUndoCarrier {
+    private fun awaitCancellationCarrier(
+        id: Long,
+        expectedPage: Int,
+    ): PendingUndoCarrier {
         return awaitValue {
             val token = database.lowQualityRedownloadDao.getItemByDownloadId(id)?.reasonCode
             token?.let { database.pendingUndoCarrierDao.get(it) }
@@ -561,7 +979,42 @@ class DownloadQueueUndoFragmentProductionTest {
                     it.kind == PendingUndoCarrier.CANCELLATION_KIND &&
                         it.presentationState == PendingUndoCarrier.PUBLISHED_PRESENTATION
                 }
+                ?.takeIf {
+                    DownloadRepository.isLivePendingCancellationToken(it.token) &&
+                        isQueuePageReady(expectedPage)
+                }
         }
+    }
+
+    private fun isQueuePageReady(expectedPage: Int): Boolean {
+        var ready = false
+        activityScenario?.onActivity { activity ->
+            val pager = activity.findViewById<ViewPager2>(R.id.download_viewpager)
+            if (pager.currentItem != expectedPage) return@onActivity
+            val navHost = activity.supportFragmentManager.findFragmentById(R.id.frame_layout)
+                as? androidx.navigation.fragment.NavHostFragment
+            val queue = navHost?.childFragmentManager?.primaryNavigationFragment
+                as? DownloadQueueMainFragment
+            val expectedType = expectedQueueFragmentType(expectedPage)
+                ?: return@onActivity
+            ready = queue?.childFragmentManager?.fragments?.any { fragment ->
+                expectedType.isInstance(fragment) &&
+                    fragment.view?.findViewById<androidx.recyclerview.widget.RecyclerView>(
+                        R.id.download_recyclerview,
+                    ) != null
+            } == true
+        }
+        return ready
+    }
+
+    private fun expectedQueueFragmentType(
+        page: Int,
+    ): Class<out androidx.fragment.app.Fragment>? = when (page) {
+        1 -> QueuedDownloadsFragment::class.java
+        3 -> CancelledDownloadsFragment::class.java
+        4 -> ErroredDownloadsFragment::class.java
+        5 -> SavedDownloadsFragment::class.java
+        else -> null
     }
 
     private fun <T> awaitValue(read: suspend () -> T?): T {
