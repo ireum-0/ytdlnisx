@@ -1,0 +1,260 @@
+Cancellation, resumable ledger, idempotent terminalization, metrics/cleanup.
+
+### Tests
+Mixed, all-failed, retryable, exhausted, process recreation, cancellation during retry, terminal notification uniqueness.
+
+---
+
+## F17 — BUG-HISTORY-01
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+Playlist-reference deletion and History deletion are separate operations; record Undo does not restore playlist membership.
+
+### Invariant
+History existence and playlist membership converge atomically; Undo restores the relationship state it claims.
+
+### Correction
+Introduce `HistoryUndoSnapshot` that owns at least:
+
+- History row;
+- keyword assignments;
+- playlist refs.
+
+Capture/delete and restore atomically via Room transaction.
+Route bulk and file-backed record-removal through the same relationship primitive.
+
+### Preserve
+File ownership checks, retained references, bulk behavior, non-file Undo UX.
+
+### Tests
+Multi-playlist Undo, injected transaction failure, bulk delete, file-backed delete followed by DB failure, unrelated membership.
+
+---
+
+## F18 — BUG-KEYWORD-02
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`  
+**Hard prerequisite:** F17 atomic HistoryUndoSnapshot.
+
+### Root cause
+Undo restores RULE-derived assignments by numeric rule ID even when the rule was edited/deleted/recreated with different meaning.
+
+### Invariant
+Manual state comes from snapshot; RULE-derived state comes from **current rules**.
+
+### Correction
+Restore non-RULE snapshot assignments, then recompute RULE assignments from currently enabled rules and current keyword sets inside the atomic Undo contract.
+
+### Tests
+Rule edit, delete/recreate, changed condition/keywords, disabled/new rule, unchanged rule.
+
+---
+
+## F19 — BUG-DUPLICATE-01
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+Duplicate configuration matching includes raw URL spelling where canonical media identity should be used.
+
+### Invariant
+Equivalent forms of one supported media ID share duplicate identity; distinct media/configuration remain distinct.
+
+### Correction
+Separate canonical media identity from configuration fields. Normalize only source identity semantics,
+without collapsing meaningful format/path/subtitle/config differences.
+
+### Preserve
+Archive behavior and intentional redownload bypass.
+
+### Tests
+Queue/History/Observe with youtu.be/watch/mobile/music forms, different IDs, changed configuration, non-YouTube URLs.
+
+---
+
+## F20 — BUG-LOCALADD-01
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+A bare extensionless filename/basename can be treated as identity, causing distinct local files to be skipped.
+
+### Invariant
+Filename stem alone never discards a local file.
+
+### Correction
+Use actual local identity, such as:
+
+- tree URI + relative path;
+- provider-scoped document identity;
+- normalized full URI.
+
+Same-name ambiguity should proceed rather than be silently dropped.
+
+### Preserve
+Exact URI/tree dedupe, URL match detection, session recovery, cancellation.
+
+### Tests
+Same name across directories/providers, earlier accepted batch item, unresolved candidate, exact repeated URI, provider-scoped IDs.
+
+---
+
+## F21 — BUG-PLAYER-01
+**Historical mode:** `CONDITIONAL_FOCUSED_PLAN_THEN_LUNA`
+
+### Root cause
+Independent lifecycle IO coroutines can persist playback positions out of logical order, and Activity destruction can cancel pending saves.
+
+### Invariant
+The final durable playback position for a History item equals the latest logical save.
+
+### Preferred correction
+Application-scoped ordered/coalescing writer with per-History logical ordering:
+
+- queue/cache update at submission;
+- serialize Room persistence per History item;
+- completion zero is a later ordered event and cannot be overtaken;
+- avoid new schema unless focused inspection proves serialization insufficient.
+
+### Preserve
+Resume threshold, near-end reset, seek/pause/stop, PiP/background, queue transitions.
+
+### Tests
+Delayed earlier write then zero, rapid seeks, pause/stop/destruction, ID transitions, Activity recreation, cache/Room convergence.
+
+---
+
+## F22 — BUG-QUEUE-01
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+Contextual selection can include `WaitingForMembership`, but DAO reorder affects only `Queued`, silently applying to only part of the selected set.
+
+### Invariant
+A visible reorder action applies to the entire selected set.
+
+### Correction
+- hide/disable Up/Down when resolved selection includes waiting rows;
+- revalidate immediately before execution to close async status/menu races;
+- apply to direct, inverted, select-all and select-between selections.
+
+### Preserve
+Waiting rows remain selectable for delete/copy; queued-only reorder remains valid.
+
+### Tests
+Direct waiting, mixed, inverted, select-all, select-between, status race, queued-only.
+
+---
+
+
+## 10.1 Reconciliation rules for overlapping/new defect families
+
+### Player family
+
+Track separately until current-source evidence proves a shared root cause:
+
+- `CURRENT-PLAYER-TIMELINE-INDEX` — stale timeline/index/callback crash family from 9.3;
+- `BUG-PLAYER-01` — ordered/coalesced playback-position persistence from the historical F21 dossier.
+
+A single implementation commit may close both only if the same current state owner and correction invariant genuinely cover both and tests independently prove both behaviors. Otherwise use separate commits.
+
+### Queue family
+
+Track separately:
+
+- `BUG-QUEUE-03` — scheduler acceptance/durable reconciliation concern from 9.9;
+- `BUG-QUEUE-01` — waiting-row contextual selection/reorder mismatch from historical F22.
+
+Do not use a fix for one as evidence that the other is closed.
+
+### Duplicate/identity family
+
+Track relationship, not equivalence:
+
+- canonical media/source identity from 9.7 defines stronger shared identity primitives;
+- History title-only duplicate deletion from 9.8 is a destructive consumer that may depend on those primitives;
+- historical `BUG-DUPLICATE-01` retains its own exact root cause/tests from the legacy dossier.
+
+If current source shows the historical duplicate defect and title-only deletion are the same call path, merge only after recording that evidence.
+
+### Backup/Finding B family
+
+Finding B remains a follow-up within the semantic closure of `BUG-BACKUP-01`. The legacy downstream backup defects must not dilute its gate: source-less command replacement must be independently CLEAN before any restore coordinator relies on the replacement-marker authorization contract.
+
+
+# 11. Final implementation-runner protocol — fix as much as safely possible
+
+This section defines how a high-capability implementation model such as Sol Ultra should use this plan. The goal is not to spend a session re-planning every defect. The goal is to convert as much of the prioritized queue as possible into attributable, tested, reviewable implementation candidates.
+
+## 11.1 Bootstrap
+
+At the beginning of every long implementation run:
+
+1. fresh-fetch `plan/remediation`;
+2. resolve the exact remote Plan SHA and read this entire plan by concatenating every file under `remediation/master-plan/parts/` in lexical filename order at that SHA;
+3. pin and record that Plan SHA for the run;
+4. fresh-fetch `checkpoint/pre-baseline-review`;
+5. fresh-fetch `review/remediation`;
+6. fresh-fetch `ledger/remediation`;
+7. record exact remote implementation/review/ledger HEADs and the implementation parent;
+8. inspect whether any new independent review targets an already-pushed implementation SHA or unlocks a dependency;
+9. resolve the highest-priority actionable correction;
+10. read current production source for that correction before editing.
+
+Do not silently adopt a newer `plan/remediation` commit mid-run. The review, implementation, and ledger refs remain live/fresh inputs during the run; the Plan SHA is a pinned governance snapshot unless the user explicitly instructs otherwise.
+
+Do not spend the session generating a replacement master plan unless current source proves a material plan error. Record discrepancies in the implementation report and continue with the invariant-supported correction.
+
+## 11.2 Dependency-aware work-conserving defect loop
+
+Repeat this loop for as many defects as can be completed safely. Independent review and implementation may progress asynchronously, but dependency gates remain hard.
+
+```text
+select highest-priority ACTIONABLE correction
+    ↓
+fresh-read its current producer/authority/consumer path
+    ↓
+confirm or revise root-cause hypothesis
+    ↓
+implement smallest complete semantic correction
+    ↓
+add focused negative + positive tests
+    ↓
+run focused verification
+    ↓
+run required neighboring regressions
+    ↓
+self-review current modified source from scratch
+    ↓
+fix any same-domain P0/P1/P2 found by self-review
+    ↓
+commit additive candidate
+    ↓
+push
+    ↓
+fresh-fetch implementation + review + ledger heads
+    ↓
+new independent blocker available?
+    ├── yes → prioritize under 11.5 and remediate additively
+    └── no  → select next highest-priority defect whose dependencies are satisfied
+```
+
+`ACTIONABLE` means all hard semantic/review dependencies for that correction are already satisfied. Therefore:
+
+- BUG-OUTPUT-01 may be implemented now;
+- Finding B is **not actionable** until BUG-OUTPUT-01 is independently CLEAN;
+- an unrelated Player or historical defect may still be actionable while BUG-OUTPUT-01 review is pending;
+- a downstream backup/restore defect that requires full F1 closure is not actionable until Finding B is independently CLEAN **and** the mandatory F1 close-out review/ledger closure has completed.
+
+A blocked or pending defect blocks only itself and its semantic dependents. It is **not** a reason to stop the implementation run while unrelated actionable work remains. If the currently selected item becomes `BLOCKED_BY_DEPENDENCY`, `BLOCKED_BY_EVIDENCE`, or `BLOCKED_BY_PRODUCT_DECISION`, leave the working tree coherent, record the exact blocker, rescan the queue, and immediately continue with the highest-priority unrelated `ACTIONABLE` correction.
+
+A pending independent review is **not** permission to treat the candidate as CLEAN, but neither is it a global stop-the-world barrier for unrelated work. An unchanged `review/remediation` branch is not a reason to poll, wait, or terminate the run.
+
+### 11.2.1 Global no-idle / no-wait rule
+
+The implementation runner must not wait for an independent review, product decision, unavailable evidence, device, CI result, or dependency when unrelated actionable remediation work remains.
+
+Whenever the selected item becomes non-actionable:
+
+1. record its exact blocked/pending state and dependency/evidence/product-decision reason;
+2. leave the implementation working tree at a coherent state;
+3. fresh-fetch implementation, `review/remediation`, and ledger;
+4. rescan unresolved independent-review blockers, including blockers for older candidate SHAs;

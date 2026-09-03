@@ -1,0 +1,217 @@
+- `authorizeHistoryReplacementBlocking` or current equivalent;
+- History transaction/replacement;
+- rejected-quality cleanup;
+- old-media deletion;
+- process death/recovery;
+- cancellation terminal carriers.
+
+### 9.2.5 Restore requirements
+
+Restore must:
+
+- map only the numeric History target ID through old→new mapping;
+- preserve the source-less command target fingerprint unchanged;
+- fail safely if a replacement marker requires a target mapping that does not exist;
+- never reconstruct authority from the new numeric ID alone;
+- preserve enough diagnostic state to explain why a restored queued operation was refused.
+
+Do not throw a late restore-wide exception after unrelated data has already been destructively mutated merely because one replacement marker is unmappable. Before the later atomic Reset coordinator exists, refuse the affected operation safely and locally.
+
+### 9.2.6 Command-editing requirement
+
+If a user legitimately edits the replacement command after the privileged operation was created:
+
+- the replacement payload may change;
+- the original-target authorization identity must not change;
+- the worker must still prove it is replacing the same History target that originally granted authority.
+
+Do not fingerprint the mutable replacement command and mistake it for target identity.
+
+### 9.2.7 Required tests
+
+At minimum:
+
+- source-less command History target + correct durable identity authorizes;
+- correct numeric History ID + missing identity rejects;
+- correct numeric ID + wrong identity rejects;
+- current target changed from command to non-command rejects;
+- blank-URL non-command target rejects ID-only fallback;
+- command edit preserves original-target authority;
+- restore remaps target ID and preserves identity;
+- restore with unmappable target fails safely without authorizing the stale ID;
+- process death/recovery preserves identity;
+- replacement transaction returns/uses exact authorized previous target for cleanup;
+- mismatched target cannot authorize quality-rejection cleanup or old-media deletion;
+- existing URL-backed replacement authorization remains correct;
+- Finding-A cancellation/terminal behavior is not weakened.
+
+### 9.2.8 Forbidden fixes
+
+Do not:
+
+- use raw command text itself as the durable identity without a strong reason and explicit review;
+- use only numeric History ID;
+- treat blank expected URL as unconditional authorization;
+- recompute target identity from the mutable replacement command;
+- silently discard an unmappable marker and execute it as an ordinary download if that would erase the privileged-operation meaning;
+- broaden History deletion permissions to compensate for missing identity.
+
+### 9.2.9 Independent CLEAN criteria
+
+Finding B is independently CLEAN only when every source-less command replacement/destructive consumer is gated by stable original-target identity and exact operation/execution authority, restore preserves that contract, negative tests cover missing/mismatched identity, and no ID-only fallback remains.
+
+### 9.2.10 Mandatory F1 close-out after Finding B
+
+Finding B independent CLEAN is not the end of F1 by itself. Once an exact Finding B candidate is independently CLEAN:
+
+1. fresh-fetch the then-current implementation, review, and ledger heads;
+2. re-review the full current `BUG-BACKUP-01` / F1 semantic domain, including Finding A regression surfaces and all Finding-B authorization consumers;
+3. confirm no in-scope P0/P1/P2 blocker remains anywhere in F1 regardless of whether it is newly introduced, pre-existing, or merely newly discovered;
+4. only then seal the full F1 closure in the ledger according to Section 13.
+
+Downstream backup/restore defects must not rely on `BUG-BACKUP-01` as fully closed before this close-out is complete. Unrelated defect implementation that advanced asynchronously while review was pending does not need to be rebased or discarded. **While the mandatory F1 close-out review/ledger closure is pending, only F1-dependent backup/restore work is blocked; the implementation runner must continue unrelated actionable defects under Section 11.2.1 rather than waiting for the reviewer.**
+
+---
+
+## 9.3 Player timeline/index crash — current P1 priority
+
+**Priority:** high P1 after the current download-authority work; independently actionable while a gated download candidate awaits review unless fresh dependency evidence says otherwise  
+**Source confidence:** `ROOT-CAUSE HYPOTHESIS / REVIEW-HISTORY-GROUNDED — REQUIRES FRESH SOURCE CONFIRMATION`  
+**Relation to original `BUG-PLAYER-01`:** **separate defect unless fresh current-source evidence proves the same state machine and invariant**
+
+### 9.3.1 Known concern
+
+Prior review history identified a player crash family involving timeline/window/index state becoming stale across asynchronous player callbacks, queue/playlist mutation, or timeline transitions.
+
+The historical `BUG-PLAYER-01` in F21 is **not** a seek/drag/controller-hide defect. It is the ordered/coalesced durable playback-position persistence defect: independent lifecycle IO writes may reach Room out of logical order, and Activity destruction may cancel pending saves. Keep that persistence defect separate from this stale timeline/index crash unless current source proves one exact shared state owner and a single correction genuinely closes both invariants.
+
+### 9.3.2 Required fresh-source investigation
+
+Inspect current player activity/controller/adapters and Media3 callbacks for:
+
+- current media index reads;
+- timeline/window count changes;
+- playlist replacement/removal;
+- queue mutation around the active item;
+- position-discontinuity callbacks;
+- timeline-changed callbacks;
+- media-item transition/end-of-item callbacks;
+- UI callbacks posted after lifecycle/state changes;
+- adapter positions or media indices captured before asynchronous work;
+- index use after queue mutation;
+- empty timeline transitions;
+- restored playback index after recreation;
+- any cross-thread/coroutine callback that combines an index from one snapshot with a timeline/list from another.
+
+Identify the exact crash-producing sequence before writing broad defensive guards.
+
+### 9.3.3 Invariants
+
+- Never index a timeline/window/playlist with a value that has not been validated against the same current state snapshot.
+- A callback carrying old timeline/index identity must not mutate UI/state as if it belonged to the new timeline.
+- Empty/no-current-item is a first-class state.
+- A correctness guard must not silently select a different item merely to keep an index in range.
+- Legitimate playback transitions must continue to update UI/player state exactly once without permanent desynchronization.
+- This crash correction must not change the independent F21 durable playback-position ordering contract unless a separately tested shared-root-cause correction is explicitly established.
+
+### 9.3.4 Preferred correction shape
+
+Prefer a small centralized state-validation/snapshot boundary rather than scattered `try/catch`, unconditional `coerceIn`, or “if index in range” patches that hide generation drift without defining ownership.
+
+If the crash is caused by asynchronous generation drift, use an explicit snapshot/generation relation so the callback either:
+
+- operates on the exact current timeline/list state to which its index belongs; or
+- is ignored/recomputed from authoritative current player state without attributing the stale index to a different item.
+
+If fresh source proves that the timeline crash and historical F21 persistence bug share one exact state owner, tests must still independently prove both crash safety and latest-logical-save durability before one commit may claim both defect IDs. Otherwise keep separate commits.
+
+### 9.3.5 Required tests
+
+After exact source confirmation, cover the real failure sequence plus the relevant deterministic matrix:
+
+- empty timeline;
+- one-item timeline;
+- remove current item;
+- remove an item before the current index;
+- replace playlist while a callback is queued;
+- queue reorder/mutation while an old index is captured;
+- next/previous/media-item transition;
+- callback from old timeline after new timeline installation;
+- activity recreation if it participates in the crash;
+- stale adapter position if the UI adapter is part of the causal path;
+- no accidental selection of a neighboring item merely because an invalid index was clamped.
+
+Do **not** add seek-drag/controller-hide tests here unless fresh current-source investigation independently discovers such a defect and records it as a separate or proven-shared finding.
+
+Prefer deterministic player-state/unit tests where possible and targeted instrumentation for lifecycle/player callback ordering where the production boundary requires it.
+
+### 9.3.6 Forbidden fixes
+
+Do not:
+
+- swallow `IndexOutOfBoundsException` globally;
+- clamp an invalid index without proving which item should own the operation;
+- reset playback state on every callback;
+- conflate this crash with F21 playback-position persistence because both touch player code;
+- couple this correction to unrelated UI redesign;
+- classify the exact root cause before reading current source.
+
+---
+
+## 9.4 Crash evidence preservation
+
+**Priority:** must precede speculative MainActivity startup/lifecycle correction  
+**Source confidence:** `REQUIRES FRESH SOURCE CONFIRMATION`
+
+### 9.4.1 Goal
+
+Before attempting to “fix” an intermittent startup/lifecycle crash, ensure the application preserves enough causal evidence to identify the real throwable and execution context.
+
+### 9.4.2 Evidence invariants
+
+A captured crash report should preserve, subject to existing sensitive-data redaction:
+
+- actual throwable class;
+- message;
+- full useful stack trace within reasonable storage limits;
+- `cause` chain;
+- relevant `suppressed` exceptions;
+- thread name/identity;
+- application/activity lifecycle context if already available without creating new crash risk;
+- timestamp/version/build identifiers available locally;
+- the distinction between original crash and a secondary crash in the crash reporter itself.
+
+Do not flatten everything to a generic string in a way that loses causal structure before persistence.
+
+### 9.4.3 Fresh-source investigation
+
+Trace:
+
+```text
+uncaught exception source
+    ↓
+CrashListener / default handler
+    ↓
+redaction
+    ↓
+persistence model
+    ↓
+DB/log storage
+    ↓
+crash-history/detail UI/export
+```
+
+Check whether any stage:
+
+- replaces the original throwable;
+- records only `message`;
+- drops cause/suppressed chains;
+- truncates from the wrong end;
+- crashes while formatting;
+- performs unsafe UI/DB work on a dying process;
+- leaks secrets through arguments/URLs/tokens.
+
+### 9.4.4 Correction boundary
+
+This defect should improve evidence fidelity and crash-handler robustness. It must not simultaneously guess at the MainActivity root cause.
+

@@ -1,0 +1,261 @@
+- hard-sub/ffmpeg temporary and replacement outputs;
+- app-generated config values that can route any of the above.
+
+**B. Ancillary state/log/config filesystem writes — audit for bypass relevance, but do not automatically absorb into BUG-OUTPUT-01**
+
+Examples may include archive/state/log/cache/config destinations. These become current BUG-OUTPUT-01 blockers only if they can:
+
+- alter media/side-artifact publication authority;
+- bypass the operation-owned output confinement contract;
+- become provenance/History/quality/deletion authority; or
+- violate an explicit app-level filesystem safety contract within this correction domain.
+
+Otherwise record a distinct finding rather than expanding BUG-OUTPUT-01 without bound.
+
+External config-location options and batch-input mechanisms must still be checked as **option-injection/bypass surfaces**, even when their own file destination is ancillary, because they may introduce an in-scope output destination.
+
+If a newly discovered mechanism belongs to this same confinement/provenance domain, fix it before leaving BUG-OUTPUT-01 when safely possible.
+
+### 9.1.7 Production authority chain to reconstruct
+
+Every self-review and independent review must trace this end to end:
+
+```text
+raw DownloadItem/custom command
+    ↓
+command parsing / path-map / output-template policy
+    ↓
+request construction
+    ↓
+argument sanitization / app-generated config allowlist
+    ↓
+final native yt-dlp argv
+    ↓
+execution + exact Download/execution ownership
+    ↓
+operation-owned staging root
+    ↓
+yt-dlp reported output evidence
+    ↓
+DownloadOutputProvenance current-attempt set
+    ↓
+exact move/copy publication result
+    ↓
+optional hard-sub / ffmpeg / merge / remux / recode lineage
+    ↓
+finalPaths
+    ↓
+verified-quality consumer
+    ↓
+media scan/publication
+    ↓
+History insert or authorized replacement
+    ↓
+rejected-replacement cleanup / old-media deletion
+    ↓
+exact marker and empty-parent cleanup
+```
+
+No downstream consumer may independently rediscover authority from the public destination.
+
+### 9.1.8 Adversarial race/failure matrix
+
+At minimum reason about and, where practical, test:
+
+- unrelated recent file appears in final destination during download;
+- same basename already exists;
+- same basename is created by another actor after attempt start;
+- baseline snapshot fails;
+- first move creates one destination and then throws;
+- callback returns fewer paths than sources;
+- partial retry leaves one authoritative source in staging;
+- another execution token exists under `.ytdlnisx-output`;
+- current marker is malformed or mismatched;
+- unexpected sibling exists beside current marker;
+- process dies before publication;
+- process dies after partial publication;
+- pause/cancel commits while move/publication is running;
+- verified-quality replacement rejects output;
+- History target disappears or changes;
+- cache and no-cache modes;
+- custom home and custom temp differ;
+- SAF/content URI final destination;
+- hard-sub before move and after move;
+- split/multi-output commands;
+- download-archive no-output success.
+
+### 9.1.9 Forbidden fixes
+
+Do not:
+
+- accept an escaped path into provenance merely because the user authored it;
+- rescan the public destination to recover a lost path;
+- authorize by filename equality;
+- authorize by mtime/newness;
+- authorize by “did not exist at attempt start” in a shared destination;
+- recursively delete an unproven direct-output tree;
+- weaken current execution/operation ownership to make tests pass;
+- disable all custom output templates when a narrower proven-safe policy is possible;
+- make a product-contract decision about unrelated quality degradation in this correction.
+
+### 9.1.10 Required focused tests
+
+Parser/policy tests must cover at least:
+
+1. safe relative `-o`;
+2. safe `--output`;
+3. equals form;
+4. attached short form if supported;
+5. repeated default output declarations;
+6. typed output declarations;
+7. repeated typed keys;
+8. comma-separated types if supported;
+9. absolute output rejection;
+10. `../` traversal rejection;
+11. normalized nested traversal rejection;
+12. malformed specification;
+13. safe nested relative template;
+14. safe authored `--paths home/temp` + relative output;
+15. unsafe absolute output + `--paths` cannot bypass confinement;
+16. output-specific template escape;
+17. stdout/special output form such as `-o -`, explicitly classified against the actual runtime;
+18. typed empty/suppression template semantics, explicitly classified when supported;
+19. tokens after `--` are interpreted consistently with actual yt-dlp option semantics;
+18. external config cannot introduce an unmodeled destination route.
+
+### 9.1.11 Required production-boundary tests
+
+Add/retain real Worker/WorkManager tests proving:
+
+**Negative output-template boundary**
+
+- unsafe absolute or traversing custom output is supplied;
+- rejection happens before the native/output-producing boundary;
+- escaped target is not created or overwritten;
+- no successful History record is published;
+- no History replacement is committed;
+- no old-media deletion authority is gained.
+
+**Positive safe-relative boundary**
+
+- safe relative custom output template;
+- real Worker path uses current operation-owned staging;
+- only exact current output enters provenance;
+- exact publication result becomes final path;
+- History sees only the published authoritative path;
+- current marker/token namespace is cleaned only after full success.
+
+Retain the existing production coverage for:
+
+- ambient/same-name rejection;
+- baseline failure;
+- exact direct/no-cache publication;
+- custom home/temp path handling;
+- custom output outside effective destination rejection;
+- verified-quality ambient high-quality rejection;
+- authoritative verified-quality success;
+- unproven output cannot reach History replacement or old-media deletion.
+
+### 9.1.12 Finding-A regressions
+
+Because BUG-OUTPUT-01 touches `DownloadWorker` and execution ownership boundaries, run the smallest relevant Finding-A regression set, including current equivalents of:
+
+- `DownloadWorkerOwnershipRecoveryTest`;
+- `HistoryReplacementTerminalRecoveryTest`;
+- `DownloadWorkerBatchIsolationTest`;
+- any focused current test directly covering user-stop/cancellation authority changed by the patch.
+
+A Finding-A regression caused by this patch is part of the current correction and must be fixed. A clearly unrelated pre-existing harness issue must be reported without falsifying its status.
+
+### 9.1.13 Self-review exit questions
+
+Before marking the candidate ready for independent review, answer all of these from current modified source:
+
+- Can raw command syntax bypass the output-template parser?
+- Does parser ordering match the actual yt-dlp runtime?
+- Can generated config change effective ordering?
+- Can sanitizer removal/addition change the destination semantics after validation?
+- Can a typed artifact escape even if primary media cannot?
+- Can a dynamic relative template normalize outside staging?
+- Can a postprocessor create/move outside staging?
+- Can an escaped/unproven file later gain authority through a transform or move callback?
+- Can a retry inherit stale output authority?
+- Can success cleanup erase an unproven sibling or another token?
+- Can failure cleanup erase evidence?
+- Can SAF/no-cache/custom path handling bypass a filesystem assumption?
+- Can quality, History, or deletion consume anything that did not pass exact provenance?
+
+### 9.1.14 Independent CLEAN criteria
+
+BUG-OUTPUT-01 may be independently CLEAN only when:
+
+- no open in-scope P0/P1/P2 blocker remains in the output-provenance/confinement domain, regardless of attribution;
+- the known `-o/--output` escape is source-level closed;
+- the full current producer→destructive-consumer chain has been independently reconstructed;
+- no destination/mtime/basename heuristic has semantic authority;
+- unsafe output destinations fail before native output production;
+- legitimate safe custom output behavior is preserved where provably safe;
+- exact move/transform lineage remains intact;
+- real production Worker evidence covers negative and positive output-template cases;
+- existing quality/History/deletion production evidence remains valid;
+- relevant Finding-A regressions do not show a current semantic regression;
+- execution evidence is labeled truthfully.
+
+---
+
+## 9.2 Finding B / BUG-BACKUP-01 follow-up — source-less command replacement identity
+
+**Priority:** first gated follow-up after BUG-OUTPUT-01 independent CLEAN  
+**Severity:** correctness/destructive-authorization domain; treat any ID-only replacement/deletion authority as high priority  
+**Implementation status:** `BLOCKED_BY_DEPENDENCY`  
+**Independent-review status:** `PENDING`  
+**Closure:** part of the remaining F1/BUG-BACKUP-01 semantic closure, not Finding A
+
+### 9.2.1 Problem statement
+
+Restore remaps History IDs and can recreate queued redownload operations. `DownloadType.command` History rows may legitimately have blank source URLs. A replacement authorization contract that treats blank expected source as “no source check” can accidentally make the restore-local numeric History ID the only durable authority.
+
+Numeric History ID alone is not sufficient authority for a privileged replacement or cleanup operation.
+
+### 9.2.2 Required durable identity contract
+
+For source-less command redownloads, introduce/confirm an explicit durable command identity with all of these properties:
+
+- derived from the **original History target** when the privileged operation is created;
+- opaque/fingerprinted rather than storing raw command text as an authority secret;
+- stable across serialization/restore;
+- preserved when restore remaps the numeric History ID;
+- not overwritten merely because the queued replacement command is edited later;
+- checked against the **current** History target before replacement/destructive cleanup;
+- current target must still be `DownloadType.command`;
+- identity mismatch rejects replacement;
+- source-less marker without the required identity must fail closed;
+- blank-URL non-command rows must not enter an ID-only fallback;
+- an authorized command replacement may still legitimately have a blank URL.
+
+### 9.2.3 Authorization invariant
+
+For every replacement/cleanup path:
+
+```text
+numeric History ID
+    + stable original-target identity
+    + compatible current target type
+    + exact replacement operation/execution ownership
+    = authorization candidate
+```
+
+No subset that drops the stable target identity may authorize source-less command replacement.
+
+### 9.2.4 Producer-to-consumer chain to inspect
+
+Fresh source review must trace:
+
+- History row / original command authority;
+- queue/redownload marker creation;
+- low-quality and ordinary redownload variants if both can reach command type;
+- backup serialization;
+- restore ID remapping;
+- command editing/reconfiguration;
+- Download row persistence;
+- worker marker parsing;

@@ -1,0 +1,53 @@
+| History title-only duplicate deletion | destructive correctness risk | pending | historical observation; fresh confirm | 9.8 |
+| BUG-QUEUE-03 | queue durability correctness | pending | prior-review hypothesis; fresh confirm | 9.9 |
+| Preset/LayoutParams crash | UI crash | pending | fresh confirm | 9.10 |
+| Quality degradation semantics | product-contract dependent | BLOCKED_BY_PRODUCT_DECISION | explicit product decision required | 9.11 |
+| Worker/foreground anomaly | evidence-dependent | BLOCKED_BY_EVIDENCE | synchronized evidence required | 9.12 |
+| BUG-OBSERVE-01 | historical P0 | pending/current status must be revalidated | historical plan | F3 |
+| BUG-BACKUP-04 | historical P1 | pending/current status must be revalidated | historical plan | F4 |
+| BUG-BACKUP-02 | historical P2 | pending/current status must be revalidated | historical plan | F5 |
+| BUG-BACKUP-06 | historical P2 | pending/current status must be revalidated | historical plan | F6 |
+| BUG-BACKUP-08 | historical P2 | pending/current status must be revalidated | historical plan | F7 |
+| BUG-BACKUP-05 | historical P2 | pending/current status must be revalidated | historical plan | F8 |
+| BUG-BACKUP-07 | historical P2 | pending/current status must be revalidated | historical plan | F9 |
+| BUG-CLEANUP-01 | historical P2 | pending/current status must be revalidated | historical plan | F10 |
+| BUG-BACKUP-03 | historical P0 | pending/current status must be revalidated | historical plan | F11 |
+| BUG-KEYWORD-01 | historical P1 | pending/current status must be revalidated | historical plan | F12 |
+| BUG-METADATA-02 | historical P2 | pending/current status must be revalidated | historical plan | F13 |
+| BUG-METADATA-01 | historical P1 | pending/current status must be revalidated | historical plan | F14 |
+| BUG-DATE-01 | historical P2 | pending/current status must be revalidated | historical plan | F15 |
+| BUG-DATE-02 | historical P2 | pending/current status must be revalidated | historical plan | F16 |
+| BUG-HISTORY-01 | historical P2 | pending/current status must be revalidated | historical plan | F17 |
+| BUG-KEYWORD-02 | historical P2 | pending/current status must be revalidated | historical plan | F18 |
+| BUG-DUPLICATE-01 | historical P2 | pending/current status must be revalidated | historical plan | F19 |
+| BUG-LOCALADD-01 | historical P2 | pending/current status must be revalidated | historical plan | F20 |
+| BUG-PLAYER-01 | historical P2 | pending/current status must be revalidated; separate from timeline crash unless proven same | historical plan | F21 |
+| BUG-QUEUE-01 | historical P3 | pending/current status must be revalidated; separate from BUG-QUEUE-03 | historical plan | F22 |
+| Token auto-extractor | feature, not defect remediation | DEFERRED until download correctness gate | feature boundary | 18 |
+
+# Appendix B. Minimum information to preserve across conversations/models
+
+A fresh model receiving only this plan and the repository should be able to continue if it preserves these facts:
+
+- at run bootstrap, fresh-fetch `plan/remediation`, pin the exact Plan SHA, and read the complete canonical plan by concatenating `remediation/master-plan/parts/*.part` in lexical order;
+- do not silently switch Plan SHA mid-run; implementation/review/ledger remain live-fetched, while the Plan SHA is the pinned governance snapshot unless the user explicitly changes it;
+- always fresh-fetch implementation, `review/remediation`, and ledger branches during remediation/review cycles;
+- current SHAs written in this document are anchors, never assumed latest;
+- Finding A is independently CLEAN and ledger-closed unless fresh regression evidence exists;
+- BUG-OUTPUT-01 is the current first gate at plan generation;
+- Finding B is gated behind BUG-OUTPUT-01 independent CLEAN, but unrelated actionable defects may proceed asynchronously while review is pending;
+- after Finding B independent CLEAN, full current-source F1 / BUG-BACKUP-01 close-out is mandatory before downstream backup/restore work relies on F1 closure;
+- implementation history is additive only;
+- self-review never equals independent CLEAN;
+- an ancestor SHA's independent CLEAN may unlock a dependency on a later current HEAD only after Section 11.5.1's intervening-commit carry-forward guard succeeds; shared-domain changes require current-candidate regression evidence and, when semantic preservation is uncertain, a new independent review;
+- `review/remediation` is the official additive independent-review history and targets exact implementation SHAs;
+- a later review-fix for an older defect is added on current HEAD rather than rebasing history;
+- no pending review, dependency, evidence gap, product decision, device, or unchanged review branch may idle the runner while unrelated actionable work exists; before stopping for lack of work, exhaustively rescan the full registry and open review-fixes under Section 11.2.1;
+- `NO_CHANGE_REQUIRED_CURRENT_HEAD` and `NOT_APPLICABLE_CURRENT_HEAD` permit the runner to move on but never substitute for independent CLEAN;
+- ledger closure records only already-established independent decisions;
+- legacy F3–F22 invariants remain available even when the current priority queue differs;
+- current source beats planning hypotheses;
+- evidence vocabulary must remain exact;
+- Samsung unavailable wording is `NOT EXECUTED — DEVICE UNAVAILABLE`;
+- after correctness remediation, token auto-extractor is separate feature work.
+

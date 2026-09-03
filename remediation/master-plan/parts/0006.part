@@ -1,0 +1,272 @@
+Any persistence performed from the uncaught-exception path must remain best-effort and must eventually delegate/terminate consistently with the app's established crash behavior; do not create an infinite recursive handler.
+
+### 9.4.5 Tests
+
+Cover:
+
+- throwable with nested cause;
+- multiple suppressed exceptions;
+- null/blank messages;
+- formatter/redactor failure fallback;
+- long stack trace truncation while preserving the causal beginning/end policy chosen;
+- sensitive URL/token redaction;
+- persistence failure does not replace the original crash with recursive crash handling;
+- displayed/exported report retains the same causal chain that was stored.
+
+---
+
+## 9.5 MainActivity startup/lifecycle crash — evidence-driven root cause only
+
+**Priority:** after crash evidence preservation unless exact causal evidence already exists  
+**Source confidence:** `ROOT-CAUSE UNKNOWN UNTIL EVIDENCE`
+
+### 9.5.1 Rule
+
+Do not make a broad defensive MainActivity patch merely because a stack trace points somewhere in startup/lifecycle code.
+
+The correction begins only when a complete causal chain identifies:
+
+- the exact failing state;
+- the lifecycle phase;
+- the owner of the stale/null/invalid resource;
+- the ordering that makes it reachable.
+
+### 9.5.2 Investigation matrix
+
+Depending on fresh evidence, inspect:
+
+- intent/share/deep-link processing during creation/resume;
+- fragment/navigation restoration;
+- saved-instance state;
+- permissions/activity-result callbacks;
+- WorkManager/foreground/startup callbacks;
+- preferences/configuration changes;
+- UI view availability across `onCreate`/`onStart`/`onResume`/`onNewIntent`;
+- process-death restoration;
+- delayed handlers/coroutines observing destroyed activity;
+- service/notification intents.
+
+### 9.5.3 Invariants
+
+- lifecycle-invalid work must not mutate destroyed/uninitialized UI state;
+- a new intent must be attributed to the current activity generation;
+- process-death restoration must not assume process-local singleton state survived;
+- defensive null/index guards may prevent a crash only when the resulting behavior is semantically correct and observable, not silent state loss.
+
+### 9.5.4 Tests
+
+Tests are determined by the confirmed cause. At minimum reproduce the exact evidence-backed sequence and add neighboring lifecycle transitions that could race it.
+
+### 9.5.5 Stop condition
+
+If crash evidence is still insufficient after improving preservation, leave this defect `BLOCKED_BY_EVIDENCE` rather than inventing a root cause.
+
+
+---
+
+## 9.6 Link input/share handling — normalized extraction contract
+
+**Priority:** high after crash/player safety work, before canonical identity consumers  
+**Source confidence:** `REVIEW-HISTORY-GROUNDED — REQUIRES FRESH SOURCE CONFIRMATION`  
+**Scope split:** this dossier owns input extraction/normalization only; canonical media/source identity is 9.7
+
+### 9.6.1 Problem boundary
+
+The app accepts media/source input through multiple Android surfaces, potentially including:
+
+- direct text entry;
+- clipboard-assisted input;
+- `ACTION_SEND` text shares;
+- `ACTION_VIEW` deep links;
+- `onNewIntent` while an existing activity is alive;
+- text that contains surrounding prose or multiple URLs;
+- supported non-HTTP source forms if current product behavior allows them.
+
+Historically these paths have not necessarily shared one extraction contract. The first correction must normalize **what candidate source string enters the app**, without simultaneously deciding canonical media identity.
+
+### 9.6.2 Invariants
+
+- All supported Android entry surfaces feed one explicit extraction/normalization contract.
+- Intent action and MIME type are validated rather than assumed.
+- Null/blank/malformed intent payload is a normal rejected-input result, not a crash.
+- Surrounding prose does not become part of a URL.
+- Multiple candidates are handled by an explicit product rule; do not accidentally concatenate or choose an arbitrary substring.
+- URL decoding/normalization must not destroy semantically meaningful query parameters before the canonical-identity layer evaluates them.
+- Share handling must not accidentally treat intent extras or filenames as trusted media identity.
+- A new intent on an existing activity must not reuse stale previous input.
+
+### 9.6.3 Required source trace
+
+Fresh-read:
+
+```text
+Android intent / user text
+    ↓
+MainActivity or share/deep-link receiver
+    ↓
+input extraction helper(s)
+    ↓
+result/search/download-card entry point
+    ↓
+ResultRepository/extractor dispatch
+```
+
+Locate every independent regex/string-split/parser implementation and decide whether it belongs in a shared extractor.
+
+### 9.6.4 Preferred result model
+
+Prefer an explicit typed result rather than returning an empty string for every failure, for example conceptually:
+
+- one valid candidate;
+- multiple candidates;
+- unsupported input;
+- malformed input;
+- no candidate.
+
+The exact type must fit current architecture; do not add abstraction solely for aesthetics.
+
+### 9.6.5 Test matrix
+
+At minimum cover current supported behavior for:
+
+- direct plain URL;
+- URL surrounded by text;
+- `ACTION_SEND` plain text;
+- `ACTION_VIEW` URI;
+- `onNewIntent` replacing prior input;
+- blank/null extra;
+- malformed URI;
+- multiple URLs;
+- YouTube watch/share/short URL spellings without prematurely canonicalizing identity;
+- query parameters containing encoded delimiters;
+- trailing punctuation from prose;
+- unsupported scheme;
+- text-file/batch source path if current command workflow supports it.
+
+### 9.6.6 Forbidden fixes
+
+Do not:
+
+- solve canonical media identity here by stripping every query parameter;
+- add a permissive regex that accepts arbitrary whitespace-delimited text as a URL;
+- silently select the previous intent when current input is invalid;
+- mix share extraction with History duplicate deletion.
+
+### 9.6.7 CLEAN criteria
+
+Every current supported input surface uses the normalized extraction contract, malformed input is fail-safe, and downstream code receives a clear source candidate without hidden surface-specific parsing differences.
+
+---
+
+## 9.7 Canonical media/source identity — explicit identity layers
+
+**Priority:** after input extraction contract; before title-based/destructive duplicate corrections  
+**Source confidence:** `REVIEW-HISTORY-GROUNDED — REQUIRES FRESH SOURCE CONFIRMATION`
+
+### 9.7.1 Problem statement
+
+Several correctness domains can incorrectly treat a URL spelling, title, numeric database row, or mutable source snapshot as interchangeable notions of identity.
+
+The remediation must distinguish at least:
+
+1. **requested source** — what the user/source supplied;
+2. **canonical media identity** — stable identity of the actual media where the extractor can prove one;
+3. **source membership/provenance** — which observe/feed/playlist/source produced the request;
+4. **History row identity** — local persistence identity, not by itself proof of media equivalence;
+5. **privileged replacement identity** — authority to replace/delete a specific prior target.
+
+These layers may share fields for some providers but must not be conflated semantically.
+
+### 9.7.2 Invariants
+
+- URL textual equality is neither universally required nor universally sufficient for media equality.
+- Title equality never proves media identity.
+- Local numeric row ID proves only local row selection, not external media equivalence.
+- Provider-specific canonicalization occurs only when supported by a proven parser/extractor contract.
+- Unknown providers retain conservative source identity rather than being aggressively normalized into collisions.
+- Destructive consumers require stronger authority than duplicate-display heuristics.
+- Redirected/short/share URLs may map to the same canonical media only when the app can prove the mapping.
+- Source membership and media identity remain separately recoverable when Observe/playlist behavior needs both.
+
+### 9.7.3 Fresh-source audit targets
+
+Search current source for equivalence logic based on:
+
+- raw URL equality;
+- lowercasing/trimming URLs;
+- YouTube ID extraction;
+- `title.trim()`;
+- filename stem;
+- History ID;
+- playlist/source IDs;
+- website/provider fields;
+- format/media IDs;
+- duplicate-prevention archive keys.
+
+Classify each consumer by required authority strength:
+
+- display grouping;
+- duplicate warning;
+- duplicate suppression;
+- queue coalescing;
+- History merge;
+- replacement;
+- filesystem deletion.
+
+One identity helper must not be reused across stronger consumers unless its contract is actually strong enough.
+
+### 9.7.4 Preferred design principle
+
+Prefer a structured canonical identity with provider/type namespace rather than one global normalized string. The exact representation must follow current architecture and persistence needs.
+
+For providers without stable IDs, conservative canonical URL/source identity is preferable to false merging.
+
+Do not introduce a schema migration unless persistence across process death/backup genuinely requires it and the migration is the smallest correct mechanism.
+
+### 9.7.5 Tests
+
+Build an equivalence/non-equivalence matrix from actual supported sources, including:
+
+- equivalent YouTube URL forms with same media ID;
+- playlist URL vs item URL;
+- two distinct media with same title;
+- same URL spelling but incompatible media type where type matters;
+- unknown-provider URLs differing only in semantically meaningful query parameters;
+- source/feed membership differences for same canonical media;
+- local files with same filename in different storage locations;
+- redownload/replacement consumer requiring stronger identity than duplicate warning.
+
+### 9.7.6 CLEAN criteria
+
+All consumers touched by the correction state which identity layer they require, and no destructive/privileged consumer relies on title or weak textual coincidence as authority.
+
+---
+
+## 9.8 History title-only duplicate deletion
+
+**Priority:** after canonical identity contract  
+**Severity:** destructive correctness risk  
+**Historical observation:** duplicate cleanup/grouping has been observed using `title.trim()` equality and retaining the newest row while deleting older grouped rows; fresh source must reconfirm exact current implementation. **Never describe this behavior as “keeps oldest.”**
+
+### 9.8.1 Invariant
+
+Two History items with the same normalized title are not proven duplicates.
+
+Any automatic deletion/merge must be justified by an identity contract strong enough for destructive action.
+
+### 9.8.2 Required fresh-source trace
+
+Locate:
+
+- duplicate-history query/group construction;
+- title normalization;
+- sorting/retained-row choice;
+- filesystem deletion, if any;
+- keyword/playlist/reference cleanup;
+- UI-triggered duplicate cleanup;
+- undo/recovery behavior.
+
+Determine whether the path deletes only DB rows or can also delete media; severity and proof requirements increase for filesystem effects.
+
+### 9.8.3 Correction
+

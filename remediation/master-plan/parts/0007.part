@@ -1,0 +1,244 @@
+Replace title-only destructive grouping with explicit canonical media/source identity where available.
+
+For records whose strong identity cannot be proven:
+
+- do not automatically delete them;
+- they may remain visible as potential duplicates for user choice if current product behavior supports that;
+- preserve same-title distinct media.
+
+Retention ordering (currently historically newest retained) is secondary to identity safety and must be preserved only after current behavior is confirmed.
+
+### 9.8.4 Tests
+
+At minimum:
+
+- same title, different canonical media → both preserved;
+- same canonical media, different URL spelling → duplicate policy behaves as designed;
+- same title, different provider → preserved;
+- duplicate set with current newest/oldest ordering → correct retained member after identity is proven;
+- referenced media/file must not be deleted if retained by another History reference;
+- keyword/playlist relationships remain consistent;
+- undo behavior, if applicable, restores exact prior state.
+
+### 9.8.5 Forbidden fixes
+
+Do not:
+
+- replace title equality with filename equality;
+- replace title equality with raw URL equality and call the problem solved;
+- infer identity from filesize/duration alone for destructive deletion;
+- change newest/oldest retention semantics accidentally while fixing identity.
+
+---
+
+## 9.9 BUG-QUEUE-03 — durable WorkManager enqueue acceptance/recovery
+
+**Priority:** after higher destructive/input identity corrections  
+**Source confidence:** `ROOT-CAUSE HYPOTHESIS FROM PRIOR REVIEW — REQUIRES FRESH SOURCE CONFIRMATION`  
+**Do not conflate with original `BUG-QUEUE-01`, which concerns SQL/status or waiting-selection queue behavior depending the current baseline.**
+
+### 9.9.1 Known concern
+
+A Download may be durably marked `Queued` in Room while the corresponding WorkManager enqueue operation fails asynchronously. If code treats the enqueue API call itself as success and does not observe the returned asynchronous operation, the DB can claim runnable work that WorkManager never accepted.
+
+### 9.9.2 Invariant
+
+A durable queue state must have one of:
+
+- confirmed scheduler acceptance;
+- a durable reconciliation/retry responsibility that will attempt scheduling again;
+- an explicit terminal/diagnostic state explaining why scheduling could not be established.
+
+There must not be a silent state where Room says `Queued` indefinitely but no scheduler responsibility exists.
+
+### 9.9.3 Source trace
+
+Fresh-read:
+
+```text
+UI/repository queue request
+    ↓
+Room state transition to Queued
+    ↓
+WorkManager enqueue / unique work request
+    ↓
+returned Operation / future/result
+    ↓
+success or failure
+    ↓
+reconciliation/retry carrier
+    ↓
+startup/worker admission recovery
+```
+
+Inspect all callers, not only the primary enqueue helper.
+
+### 9.9.4 Preferred correction principles
+
+- Observe actual WorkManager enqueue completion/failure where the API exposes it.
+- Preserve transaction boundaries: do not hold a Room transaction while waiting for arbitrary WorkManager execution.
+- If scheduler submission fails after DB state changed, establish deterministic compensating state/retry responsibility.
+- Repeated scheduling/recovery must be idempotent.
+- Unique-work policy must not accidentally cancel or replace a valid worker belonging to another correction.
+- Process death between DB mutation and scheduler acknowledgement must converge on restart.
+
+The exact mechanism must be selected from current architecture; do not invent a new journal if an existing recovery carrier already provides the right durability.
+
+### 9.9.5 Tests
+
+At minimum:
+
+- successful enqueue establishes queued+runnable state;
+- asynchronous enqueue failure does not leave orphan `Queued` state without recovery;
+- process death/restart between DB write and acknowledgement converges;
+- repeated recovery does not create duplicate semantic executions;
+- existing active worker is not incorrectly replaced;
+- priority-download enqueue path;
+- scheduled-download path if separate;
+- cancellation/pause racing scheduler submission;
+- test the actual WorkManager boundary, not only a mocked boolean wrapper.
+
+### 9.9.6 CLEAN criteria
+
+Every persisted queued state has scheduler acceptance or explicit durable retry/reconciliation ownership, including asynchronous failure and restart boundaries.
+
+---
+
+## 9.10 Preset/LayoutParams crash
+
+**Priority:** medium/high UI crash after higher correctness risks  
+**Source confidence:** `REQUIRES FRESH SOURCE CONFIRMATION`
+
+### 9.10.1 Known class of defect
+
+Prior project review identified a crash involving assumptions about a View's concrete `LayoutParams` subtype while applying a preset or reconfiguring the download UI.
+
+Do not assume the exact cast or layout container until current XML and runtime code are inspected.
+
+### 9.10.2 Investigation
+
+Trace:
+
+- preset application;
+- affected fragment/dialog/card inflation path;
+- XML parent containers for every relevant configuration/layout variant;
+- orientation/screen-size variants;
+- runtime view reparenting, if any;
+- concrete `layoutParams` reads/casts;
+- configuration changes and restored fragments.
+
+### 9.10.3 Invariant
+
+UI code may mutate only layout parameters supported by the view's actual current parent/layout contract. A preset must not depend on a specific LayoutParams subtype unless the layout structure guarantees it across all supported resource variants.
+
+### 9.10.4 Preferred correction
+
+Prefer parent-agnostic view properties or guarded subtype-specific updates with a correct fallback. If the layout should structurally guarantee a parent type, fix the resource/code contract rather than blindly casting.
+
+### 9.10.5 Tests
+
+Reproduce on the exact configuration that triggers the crash and cover:
+
+- relevant orientation/resource variants;
+- fresh fragment;
+- restored fragment;
+- preset switch after initial layout;
+- quick-download context if it uses alternate layout;
+- no visual regression in width/height/margins that the cast originally intended.
+
+---
+
+## 9.11 Quality degradation semantics — product-contract gate
+
+**Priority:** do not implement semantic change until product decision is explicit  
+**Status:** `BLOCKED_BY_PRODUCT_DECISION` unless a current written contract already exists
+
+### 9.11.1 Problem boundary
+
+The current downloader has correctness machinery distinguishing verified requested quality, fallback routes, warnings, and replacement refusal. A remaining question is when ordinary downloads may legitimately succeed at degraded quality versus fail/retry.
+
+This is partly product semantics, not merely an implementation bug.
+
+### 9.11.2 Decisions required before implementation
+
+Specify at minimum:
+
+- ordinary download: may lower-than-requested quality succeed?
+- verified quality replacement: must remain fail-closed below target? (current correctness contract says yes unless explicitly changed)
+- how many retries/routes are allowed;
+- authenticated vs public fallback priority;
+- user-visible warning/notification requirements;
+- whether a user can opt into strict quality;
+- how unavailable exact format differs from extractor/network failure.
+
+### 9.11.3 Invariants that remain regardless of product choice
+
+- unproven/ambient file can never satisfy quality validation;
+- quality probe consumes exact authoritative current output only;
+- a failed quality replacement cannot replace History or delete original media;
+- warnings must not be reported as exact requested-quality success;
+- retries must not inherit stale output authority.
+
+### 9.11.4 Stop rule
+
+Do not let an implementation model decide the product contract implicitly by changing fallback branches until the contract is recorded.
+
+---
+
+## 9.12 Worker/foreground anomaly — synchronized evidence only
+
+**Priority:** later, after a reproducible synchronized evidence set  
+**Status:** `BLOCKED_BY_EVIDENCE` until then
+
+### 9.12.1 Rule
+
+Foreground/worker anomalies can arise from WorkManager lifecycle, Android foreground-service restrictions, notification timing, process death, user cancellation, or app-specific ownership logic. Do not patch based on a single unsynchronized log line.
+
+### 9.12.2 Required evidence set
+
+Before implementation, gather one reproduction with aligned:
+
+- wall-clock timestamps;
+- Download ID and execution ID;
+- WorkRequest/worker ID;
+- DB status transitions;
+- WorkManager state transitions;
+- foreground-service/notification events;
+- process start/stop/death evidence;
+- user pause/cancel actions;
+- native yt-dlp/ffmpeg process ownership markers where relevant.
+
+### 9.12.3 Invariants
+
+- a worker may publish foreground/terminal state only for its exact owned execution;
+- stale notifications cannot keep newer/older executions semantically alive;
+- Android platform compliance changes must not weaken Download correctness ownership;
+- a cosmetic lingering notification and a live worker are different defects and must not be conflated.
+
+### 9.12.4 Stop rule
+
+If evidence cannot distinguish platform behavior from app ownership error, record the anomaly and defer rather than making speculative lifecycle changes.
+
+
+# 10. Legacy baseline defect contracts carried forward
+
+The following F3–F22 dossiers are carried forward from the prior authoritative master plan because they contain established defect framing, invariants, correction boundaries, and focused-test requirements that must not be lost merely because the execution queue has evolved.
+
+Rules for this section:
+
+- These are planning contracts, not claims that the defect still exists unchanged at the latest HEAD.
+- Fresh current-source confirmation is mandatory immediately before implementation.
+- If a prior defect has already been fixed by an intervening commit, do not recreate it; record the evidence and move it to independent review/closure as appropriate.
+- If the current source contradicts a historical root-cause detail, preserve the correctness invariant and update the implementation boundary.
+- `BUG-PLAYER-01` below is the historical ordered playback-position persistence defect. Do not automatically merge it with the newer timeline/index crash dossier in 9.3.
+- `BUG-QUEUE-01` below is the historical waiting-selection reorder defect. Do not automatically merge it with `BUG-QUEUE-03` in 9.9.
+- Historical severity labels from the earlier plan do not override fresh evidence.
+- Historical `Mode:` labels are archival model-selection metadata only. They do **not** control the current implementation runner. Section 11 supersedes them: under the current project decision, the designated high-capability implementation model may directly inspect, implement, test, self-review, commit, and push unless this plan explicitly records a product/evidence/dependency gate.
+
+## F3 — BUG-OBSERVE-01
+**Historical mode:** `CONDITIONAL_FOCUSED_PLAN_THEN_LUNA`
+
+### Root cause
+A plain item list cannot distinguish complete source state from yt-dlp ignored errors, parse drops,
+or incomplete NewPipe pagination.
+

@@ -1,0 +1,286 @@
+Before each independent review, fresh-fetch the implementation, review, and ledger histories and reconstruct the full correctness path from current source. Independent review records remain exact-SHA scoped.
+
+## 2.2 One correction domain at a time
+
+A commit should represent one attributable correctness correction or one same-domain review fix. Do not mix unrelated bug families merely because they are nearby in a file.
+
+Same-domain defects discovered while implementing a correction may be fixed in the same commit if:
+
+- they are necessary to make the correction coherent;
+- they share the same correctness invariant;
+- attribution remains understandable;
+- tests distinguish the behaviors.
+
+If discovered after the first commit, add a new child commit. Never amend.
+
+## 2.3 Additive Git history only
+
+Forbidden during the remediation:
+
+- amend;
+- rebase of referenced work;
+- squash of referenced work;
+- force-push;
+- rewriting historical remediation SHAs.
+
+Expected shape:
+
+```text
+base
+  ├─ fix: defect A implementation
+  ├─ fix: defect A review follow-up
+  ├─ fix: defect B implementation
+  ├─ fix: defect A later independent-review follow-up
+  └─ ...
+```
+
+A later fix for an older defect may appear after newer defect commits. Its commit body/report must identify the reviewed checkpoint and defect ID.
+
+## 2.4 External review precedence
+
+If a new independent review for an already-pushed exact SHA becomes available while later work is in progress:
+
+1. finish the current working tree into a coherent, non-broken state;
+2. fresh-fetch the new review record and current remote code;
+3. prioritize review blockers by severity;
+4. address the old defect with an additive review-fix commit on current HEAD;
+5. rerun its relevant regression set;
+6. return it to `Independent review: PENDING`.
+
+Priority rule:
+
+1. fresh independent-review P0 blocker;
+2. fresh independent-review P1 blocker;
+3. current in-progress correction if already at a coherent completion boundary;
+4. fresh independent-review P2 blocker;
+5. next planned defect.
+
+A destructive/data-loss P0 may interrupt earlier if continuing the current work would increase risk.
+
+## 2.5 Implementation model may self-review, but may not self-close
+
+After each pushed candidate commit, the implementation model should perform a second pass from the modified source and actively search for bypasses. The final report must use language such as:
+
+`SELF-REVIEWED / READY FOR INDEPENDENT REVIEW`
+
+and must not claim:
+
+`CLEAN`
+
+unless reporting a previously established independent closure from the ledger.
+
+## 2.6 Closure record rule
+
+After an exact implementation SHA is independently CLEAN, create/record a closure containing only decisions already established by review/evidence.
+
+A closure record should include:
+
+- defect ID;
+- final verdict;
+- implementation start SHA;
+- final semantic implementation SHA;
+- review-fix SHAs;
+- exact reviewed checkpoint;
+- blocker history and disposition;
+- executed tests and results;
+- unexecuted tests;
+- emulator evidence;
+- physical-device evidence;
+- residual non-blockers;
+- next dependency pointer.
+
+A closure commit must **not** introduce a new blocker-impacting classification, attribution decision, waiver, or semantic finding decision.
+
+---
+
+# 3. Evidence vocabulary and execution discipline
+
+Use only accurate evidence labels:
+
+- `PASS`
+- `FAIL`
+- `ATTEMPTED NOT COMPLETED`
+- `FAIL BEFORE EXECUTION`
+- `ADDED NOT EXECUTED`
+- `NOT EXECUTED`
+- `SOURCE-LEVEL ONLY`
+- `SOURCE-LEVEL FIXED`
+
+Never call an unexecuted test PASS.
+
+Physical Samsung SM-A546E evidence must be written exactly:
+
+`NOT EXECUTED — DEVICE UNAVAILABLE`
+
+Luna/Sol/local-model reported PASS is not automatically an independent ChatGPT PASS. Independent review should distinguish source conclusions from execution evidence reproduced in its own environment.
+
+## 3.1 Gradle/build policy
+
+Known project/toolchain characteristics from the prior plan:
+
+- one `app` module;
+- Gradle 8.13;
+- AGP 8.13.2;
+- Kotlin 2.3.0;
+- KSP 2.3.4;
+- JDK 21;
+- `DownloadWorker.kt` is a known Kotlin coroutine compiler hotspot.
+
+During correction loops:
+
+- prefer focused tests;
+- use `git diff --check` on every candidate;
+- avoid duplicate parallel Gradle processes;
+- run serial Gradle execution where shared state can interfere;
+- distinguish a compiler/test harness timeout from a semantic test failure;
+- do not repeatedly trigger the most expensive full compile after every tiny edit.
+
+For a substantial candidate, normally run as applicable:
+
+```text
+git diff --check
+:app:kspDebugKotlin
+:app:compileDebugKotlin -x lint
+focused JVM tests
+:app:compileDebugAndroidTestKotlin
+focused instrumentation / WorkManager / Room tests
+```
+
+Final heavy verification is defined later in this document.
+
+---
+
+# 4. Correctness review method
+
+Every independent review must inspect the current source as a system, not only the changed lines.
+
+For data-integrity/destructive findings reconstruct:
+
+```text
+producer
+→ identity / authority creation
+→ persistence / carrier
+→ retry / recovery / process-death path
+→ semantic consumer
+→ destructive or irreversible side effect
+```
+
+For output correctness specifically reconstruct:
+
+```text
+yt-dlp producer
+→ effective command/arguments
+→ output plan
+→ operation/execution ownership
+→ staging/direct write
+→ output provenance
+→ move/copy
+→ ffmpeg/hard-sub derivative
+→ finalPaths
+→ quality
+→ media publication
+→ History insertion/replacement
+→ old-media deletion
+```
+
+For every finding inspect:
+
+- production wiring;
+- all callers;
+- stale writers;
+- retries;
+- cancellation/pause races;
+- worker/process death;
+- transaction boundaries;
+- filesystem effects;
+- SAF/provider effects;
+- destructive cleanup;
+- tests at the real production boundary.
+
+A helper-level proof is insufficient when the bug exists at Worker/Room/WorkManager/Activity lifecycle wiring.
+
+---
+
+# 5. Planning-vs-source precedence
+
+Each detailed defect dossier below contains one or more of:
+
+- `CONFIRMED CURRENT`: independently revalidated against the latest known current source during the recent review cycle;
+- `HISTORICALLY CONFIRMED`: established by the original repository review/master plan but not fully re-audited during generation of this document;
+- `ROOT-CAUSE HYPOTHESIS`: likely fix boundary that must be checked against fresh source before implementation;
+- `PRODUCT DECISION REQUIRED`: code must not silently choose semantics.
+
+The implementation agent must not force the planned correction if fresh current source shows the defect has already changed or the planned mechanism is no longer applicable.
+
+---
+
+# 6. Execution queue — current priority order
+
+This queue intentionally differs from the original F1→F22 ordering because current remediation discovered urgent output/data-integrity work and additional post-review priorities.
+
+The queue is **dependency-aware and asynchronous**. An independent-review gate blocks defects that depend on that gate; it does not freeze all unrelated work. While one candidate awaits independent review, the implementation model may continue with the highest-priority defect whose dependencies are already satisfied. A later independent P0/P1 review blocker preempts new work at the next coherent commit boundary according to Section 11.
+
+## Tier 0 — finish current correctness boundary
+
+1. `BUG-OUTPUT-01` — output provenance and physical output confinement.
+2. Independent review/closure of `BUG-OUTPUT-01`.
+
+While step 2 is pending, do **not** start Finding B, but independently actionable defects such as the Player timeline/index crash or historical defects whose dependencies are already satisfied may be implemented as separate attributable candidates.
+
+## Tier 1 — source-less History authorization and F1 close-out
+
+3. `FINDING-B / BUG-BACKUP-01-B` — source-less command History redownload identity, actionable only after BUG-OUTPUT-01 independent CLEAN.
+4. Independent review of Finding B.
+5. As soon as Finding B is independently CLEAN, perform the **full current-source F1 / BUG-BACKUP-01 close-out review and ledger closure** before any downstream backup/restore defect is allowed to rely on BUG-BACKUP-01 as closed.
+
+While steps 3–5 are pending on independent review/closure, the runner **must continue** unrelated actionable defects under Section 11.2.1. Do not rewrite or rebase that asynchronous implementation history; simply honor the dependency before starting F1-dependent work.
+
+## Tier 2 — high-priority crash, input, identity, and queue correctness
+
+6. Player timeline/index crash — current P1 crash path; keep separate from historical `BUG-PLAYER-01` unless fresh source proves one root cause/state machine.
+7. Crash evidence preservation.
+8. MainActivity startup/lifecycle crash root cause — only after causal evidence is preserved well enough to diagnose it.
+9. Link input/share handling.
+10. Canonical media/source identity.
+11. History title-only duplicate deletion.
+12. `BUG-QUEUE-03` — queue enqueue/durability boundary discovered after the original F1–F22 inventory.
+13. Preset LayoutParams crash.
+14. Quality degradation semantics — only after an explicit product-contract decision if current behavior is ambiguous.
+15. Worker/foreground anomaly — only after synchronized evidence establishes a concrete defect.
+
+## Tier 3 — remaining original baseline defects
+
+This is the default placement for the remaining historical inventory, **not permission to postpone a freshly confirmed destructive P0/P1 and not a global gate behind Tier 0/Tier 1**. During any asynchronous review/dependency wait, when higher-priority items are blocked, and again before starting a lower-severity UI correction, revalidate the historical P0/P1 entries against current source. A freshly confirmed current P0/P1 moves ahead of lower-severity work. Otherwise continue the remaining dependency-eligible original defects while preserving their hard dependencies:
+
+- `BUG-OBSERVE-01`
+- `BUG-BACKUP-04`
+- `BUG-BACKUP-02`
+- `BUG-BACKUP-06`
+- `BUG-BACKUP-08`
+- `BUG-BACKUP-05`
+- `BUG-BACKUP-07`
+- `BUG-CLEANUP-01`
+- `BUG-BACKUP-03`
+- `BUG-KEYWORD-01`
+- `BUG-METADATA-02`
+- `BUG-METADATA-01`
+- `BUG-DATE-01`
+- `BUG-DATE-02`
+- `BUG-HISTORY-01`
+- `BUG-KEYWORD-02`
+- `BUG-DUPLICATE-01`
+- `BUG-LOCALADD-01`
+- original `BUG-PLAYER-01` ordered playback-position persistence if still open
+- original `BUG-QUEUE-01` if still applicable after `BUG-QUEUE-03`
+
+The implementation agent must reconcile duplicate/overlapping defect IDs before editing, rather than fixing the same root cause twice under different names.
+
+## Tier 4 — final correctness closure
+
+- full remaining baseline/F2 review after F1 has already been independently closed;
+- all open in-scope P0/P1/P2 blockers closed or explicitly policy-waived where allowed;
+- final heavy verification;
+- Known-Good Baseline procedure.
+
+## Tier 5 — post-correctness feature work
+

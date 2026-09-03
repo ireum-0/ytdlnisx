@@ -1,0 +1,293 @@
+- `Review-Base` where relevant;
+- `Verdict`: `CLEAN`, `NOT_CLEAN`, or `CLEAN_WITH_WAIVERS`;
+- P0/P1/P2 blockers;
+- attribution (`introduced_by_candidate`, `pre_existing`, `newly_discovered`, or equivalent) **separately from CLEAN blocking status**;
+- exact source paths/functions;
+- reproduction/authority chain;
+- execution evidence;
+- required remediation boundary;
+- reviewer/date;
+- relation to prior findings;
+- whether the ledger may now be closed.
+
+A record for SHA A does not automatically review later SHA B. Later commits may preserve the fix, but that is a hypothesis until the next independent review reconstructs the current path.
+
+## 12.3 Review discovery rule for the implementation model
+
+At bootstrap and after every push:
+
+1. fresh-fetch implementation branch;
+2. fresh-fetch `review/remediation`;
+3. fresh-fetch ledger;
+4. find review records targeting any candidate defect SHA that has not yet been remediated/closed;
+5. prefer the newest authoritative independent review for the same exact checkpoint;
+6. detect newly published CLEAN records that unlock dependencies;
+7. do not treat implementation-model notes as independent review;
+8. do not infer `CLEAN` from absence of a review file.
+
+## 12.4 Review branch is evidence transport, not implementation authority
+
+A review record may require a change, classify severity, or establish CLEAN, but production semantics remain on `checkpoint/pre-baseline-review`. Do not merge review-only commits into the implementation branch merely to make the finding visible. The implementation agent responds by creating an additive semantic fix commit on the implementation branch.
+
+---
+
+# 13. Closure ledger protocol — record every independently finished defect
+
+The user's desired historical record is implemented here: after a defect is independently CLEAN, seal the result with a separate metadata/evidence closure commit.
+
+## 13.1 Who may close
+
+The implementation model must not close its own defect merely because tests/self-review pass.
+
+A closure commit is created only after an independent review has established the exact candidate as CLEAN (or explicitly CLEAN_WITH_WAIVERS under project policy).
+
+## 13.2 Closure commit semantics
+
+A closure commit is metadata-only.
+
+It may record decisions already established by review/evidence, but must not introduce a new blocker-impacting:
+
+- classification;
+- attribution;
+- waiver;
+- severity decision;
+- semantic finding decision;
+- product contract.
+
+Review/evidence makes the decision. Closure records it.
+
+## 13.3 Required closure fields
+
+Each closed defect record should include:
+
+- defect ID and title;
+- final independent verdict;
+- implementation starting SHA;
+- all semantic implementation/review-fix SHAs attributable to the defect;
+- final independently reviewed implementation SHA;
+- review record identifier/path if applicable;
+- original blocker summary;
+- blocker closure summary;
+- P0/P1/P2 count at closure;
+- exact tests executed and results;
+- tests added but not executed;
+- compile/build results;
+- emulator/device evidence;
+- Samsung physical-device line where relevant;
+- residual non-blocking risks;
+- accepted waivers, only if already independently approved;
+- relationships to still-open defects;
+- next execution-queue pointer.
+
+## 13.4 Example closure record
+
+```text
+Defect: BUG-OUTPUT-01
+Status: CLEAN
+
+Implementation start: <sha>
+Semantic commits:
+  - <sha> ...
+  - <sha> ...
+Final reviewed implementation: <sha>
+Independent review: <review-record>
+
+Open blockers at closure:
+  P0: 0
+  P1: 0
+  P2: 0
+
+Evidence:
+  git diff --check: PASS
+  focused JVM: PASS
+  compileDebugKotlin: PASS
+  compileDebugAndroidTestKotlin: PASS
+  production wiring: PASS
+  Samsung SM-A546E: NOT EXECUTED — DEVICE UNAVAILABLE
+
+Residual non-blockers:
+  ...
+```
+
+## 13.5 Commit naming
+
+Recommended closure commit concept:
+
+```text
+review: close BUG-OUTPUT-01
+review: close BUG-PLAYER-01
+review: close BUG-QUEUE-03
+```
+
+Use repository/project conventions if an established naming scheme is stricter.
+
+## 13.6 Ledger branch isolation
+
+Closure commits belong on `ledger/remediation`, not as semantic parents of implementation commits on `checkpoint/pre-baseline-review`.
+
+Do not merge ledger-only metadata into the implementation chain merely to make the implementation branch “contain” the review.
+
+---
+
+# 14. Evidence and verification gates
+
+## 14.1 Evidence vocabulary
+
+Use exactly and honestly:
+
+- `PASS`
+- `FAIL`
+- `ATTEMPTED NOT COMPLETED`
+- `FAIL BEFORE EXECUTION`
+- `ADDED NOT EXECUTED`
+- `NOT EXECUTED`
+- `SOURCE-LEVEL ONLY`
+- `SOURCE-LEVEL FIXED`
+
+Physical Samsung SM-A546E Android 16/API 36 when unavailable:
+
+`NOT EXECUTED — DEVICE UNAVAILABLE`
+
+Never call an unexecuted test PASS.
+
+## 14.2 Initial failure vs later rerun
+
+If a command initially fails and later passes, preserve both facts in the report.
+
+Examples:
+
+```text
+compileDebugKotlin:
+  initial: FAIL — production compile error in ...
+  after correction: PASS
+```
+
+or:
+
+```text
+instrumentation:
+  initial: FAIL BEFORE EXECUTION — emulator unavailable
+  rerun: PASS — API 36 emulator
+```
+
+Do not rewrite history as if only the final pass happened.
+
+## 14.3 Per-correction minimum gate
+
+Every semantic correction should normally include:
+
+1. `git diff --check`;
+2. focused unit tests for the corrected invariant;
+3. focused negative tests;
+4. compile of affected Kotlin source;
+5. affected instrumentation compile where Android tests changed;
+6. production-boundary test if the defect is defined at a Room/Worker/filesystem/lifecycle boundary;
+7. neighboring regression tests identified in the dossier;
+8. fresh self-review of the modified source.
+
+## 14.4 Serial Gradle rule
+
+Use serial Gradle execution when shared Gradle/KSP/emulator/resource state can cause false concurrency failures.
+
+Do not interpret daemon/resource contention or a test-harness timeout as semantic proof either for or against correctness.
+
+## 14.5 Compiler hotspot rule
+
+`DownloadWorker.kt` is historically a Kotlin coroutine/compiler hotspot. For large changes:
+
+- compile early;
+- avoid unnecessary nested generic/coroutine complexity;
+- distinguish compiler resource/harness failure from semantic failure;
+- do not simplify ownership semantics merely to appease compiler complexity without review.
+
+## 14.6 Current toolchain baseline
+
+Unless fresh repository configuration changed it, the historical plan records:
+
+- one app module;
+- Gradle 8.13;
+- AGP 8.13.2;
+- Kotlin 2.3.0;
+- KSP 2.3.4;
+- JDK 21.
+
+Fresh source/build configuration wins if any version has changed.
+
+---
+
+# 15. Clean policy and cumulative gates
+
+## 15.1 Per-defect CLEAN
+
+CLEAN is determined by the **entire agreed in-scope defect domain at the exact reviewed candidate**, not merely by lines introduced in the current commit. Attribution and blocking status are separate dimensions.
+
+### `CLEAN`
+
+- open in-scope P0 = 0;
+- open in-scope P1 = 0;
+- open in-scope P2 = 0;
+- this includes blockers introduced by the candidate, pre-existing blockers, and blockers merely discovered during the review;
+- no accepted/waived P1/P2 unless the project explicitly uses the waiver state below;
+- required available execution evidence supports the semantic claim.
+
+### `CLEAN_WITH_WAIVERS`
+
+- no unwaived in-scope P0/P1/P2 blocker remains;
+- no P0 may be waived for baseline closure;
+- any P1 exception requires an explicit project-owner decision plus independently documented risk and is exceptional rather than routine;
+- any P2 waiver requires explicit project-owner approval recorded by independent review;
+- a ledger closure commit may record an already approved waiver but may not create one.
+
+### `NOT_CLEAN`
+
+- any unwaived in-scope P0/P1/P2 blocker remains, regardless of attribution; or
+- a required available production-boundary verification is missing in a way that prevents the claimed semantic closure.
+
+Absence of a physical device alone does not automatically block closure when equivalent available evidence is sufficient; report it truthfully.
+
+## 15.2 Cross-defect regression gate
+
+A newly implemented defect cannot be considered a valid candidate if it clearly regresses an already independently CLEAN invariant.
+
+The implementation model must repair such regression before moving on when attributable to its change.
+
+## 15.3 Finding A special rule
+
+Finding A remains CLEAN unless fresh actual regression evidence appears.
+
+Do not repeatedly re-litigate its historical findings without a current regression trigger, but run focused regressions when later changes touch its execution/History/cancellation authority surfaces.
+
+## 15.4 Finding B and F1 gates
+
+Finding B must not start before BUG-OUTPUT-01 independent CLEAN under the current project decision. This is a dependency gate, not a global freeze: unrelated actionable defects may proceed while BUG-OUTPUT-01 review is pending.
+
+After Finding B becomes independently CLEAN, perform the mandatory full current-source F1 / `BUG-BACKUP-01` close-out review before any downstream backup/restore defect relies on F1 as closed. While that independent close-out is pending, the runner continues unrelated actionable defects; only work that semantically depends on F1 closure remains blocked.
+
+If an explicit independent-review/project decision changes this ordering, record that decision rather than silently ignoring the gate.
+
+---
+
+# 16. Priority queue after BUG-OUTPUT-01
+
+This queue is intentionally more adaptive than the historical F1→F22 numerical order. Hard dependencies override ordinal preference; fresh independent P0/P1 review findings override planned work.
+
+## 16.1 Immediate dependency-aware sequence
+
+The ordinal below expresses preferred priority **when an item is actionable**. If an item is blocked awaiting independent review, skip temporarily to the highest-priority unrelated actionable item and return as soon as the gate opens or a review blocker arrives.
+
+1. `BUG-OUTPUT-01` — finish exact output confinement/provenance and publish a candidate.
+2. BUG-OUTPUT independent review/closure; while pending, Finding B is blocked but unrelated work may advance.
+3. Finding B / remaining `BUG-BACKUP-01` source-less command authority closure, immediately when BUG-OUTPUT becomes independently CLEAN.
+4. Finding B independent review; while pending, unrelated work may advance.
+5. Full current-source F1 / `BUG-BACKUP-01` close-out review and ledger closure immediately when Finding B becomes independently CLEAN.
+6. Current Player timeline/index crash P1.
+7. Crash evidence preservation.
+8. MainActivity startup/lifecycle root cause if evidence is sufficient.
+9. Link input/share extraction contract.
+10. Canonical media/source identity.
+11. History title-only destructive duplicate correction.
+12. `BUG-QUEUE-03` scheduler acceptance/recovery.
+13. Preset/LayoutParams crash.
+14. Quality degradation semantics only after product decision.
+15. Worker/foreground anomaly only after synchronized evidence.
+

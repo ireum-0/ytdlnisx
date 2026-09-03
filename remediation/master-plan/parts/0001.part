@@ -1,0 +1,187 @@
+# YTDLnisX Correctness Remediation — Final Master Execution Plan
+
+> Generated and critically revised: `2026-09-03` (`Asia/Seoul`)
+>
+> Repository: `ireum-0/ytdlnisx`
+>
+> Implementation branch: `checkpoint/pre-baseline-review`
+>
+> Closure ledger branch: `ledger/remediation`
+>
+> Independent review branch: `review/remediation`
+>
+> Authoritative plan branch: `plan/remediation`
+>
+> Authoritative plan manifest: `remediation/master-plan/README.md`
+>
+> Authoritative plan parts: `remediation/master-plan/parts/*.part` (lexical order)
+>
+> This document is the authoritative execution queue and long-running handoff for correctness remediation. It replaces the earlier F1–F22 session-oriented plan as the current planning document, while preserving its historical defect IDs, invariants, dependencies, and evidence where still valid.
+>
+> **Planning authority is not review authority.** This file may define expected root causes, invariants, likely files, implementation order, and required tests. A concrete implementation must always fresh-fetch current remote source before editing. If current source contradicts this plan, current source wins and the discrepancy must be recorded. Only an independent review of an exact implementation SHA may declare a defect CLEAN.
+
+---
+
+## 0. Current authoritative state
+
+### 0.1 Fresh remote refs at final-plan revision
+
+At the time of this final-plan revision, the remote refs were independently re-read:
+
+- Implementation HEAD: `0a00e35af07632aa6b40a8cc5f7c003b33d73c56`
+- Implementation message: `fix: complete direct output provenance review`
+- Immediate parent: `b9cb855ea911cf411ebb91a151d522e9d86966fc`
+- Ledger HEAD: `899328bc91e4008e39a658387396a0106c8666ec`
+- Ledger message: `review: close Finding A`
+- Review branch: `review/remediation`
+- Review branch creation anchor: `899328bc91e4008e39a658387396a0106c8666ec`
+- Review bootstrap commit: `4c7be32beecb6a954b96b8d61385d11740f5e641`
+- Review bootstrap message: `review: initialize independent review inbox`
+- Review bootstrap path: `reviews/README.md`
+- Review branch HEAD after current BUG-OUTPUT-01 review backfill: `d8ac4865bf06f8778c76abede58b2a9f7e616ae3`
+- Backfilled exact-SHA review path: `reviews/BUG-OUTPUT-01/0a00e35af07632aa6b40a8cc5f7c003b33d73c56-review.md`
+- Backfilled review verdict: `BUG-OUTPUT-01 — NOT_CLEAN` at implementation SHA `0a00e35af07632aa6b40a8cc5f7c003b33d73c56`
+- Plan branch: `plan/remediation`
+- Plan branch creation anchor: `899328bc91e4008e39a658387396a0106c8666ec`
+- Authoritative plan manifest: `remediation/master-plan/README.md`
+- Authoritative plan parts: `remediation/master-plan/parts/*.part` (lexical order)
+
+The review branch was created from the ledger closure anchor, advanced by the additive review-infrastructure commit, and now contains the existing independent BUG-OUTPUT-01 review as an exact-SHA historical record. Later review commits are independent metadata/evidence history.
+
+The plan branch is a separate versioned governance history. At the beginning of each implementation run, resolve and pin the exact remote `plan/remediation` commit that contains the Master Plan. That pinned Plan SHA governs workflow, gates, invariants, review discipline, and execution policy for that run. Do not silently switch to a later Plan SHA mid-run.
+
+These SHAs are historical anchors, not permission to skip a new fetch. Every run must resolve a fresh Plan SHA at bootstrap, and every implementation/review cycle must fresh-fetch implementation, review, and ledger refs as applicable.
+
+### 0.2 Finding A
+
+Finding A is **INDEPENDENTLY CLEAN and ledger-closed**.
+
+Reference semantic implementation checkpoint:
+
+`70437f76ede9cf0e69fb08d694dd3baf7bd8bfac`
+
+Ledger closure:
+
+`899328bc91e4008e39a658387396a0106c8666ec`
+
+Finding A must not be reopened because of speculation or because a later defect touches adjacent code. Reopen it only on fresh, concrete regression evidence.
+
+Historical verification caveat that must remain intact:
+
+- do not state that the entire `LowQualityRedownloadPersistenceTest` class was green;
+- the full-class run had an existing timing/test-harness timeout;
+- isolated/focused Finding-A evidence passed and was sufficient for closure.
+
+### 0.3 BUG-OUTPUT-01
+
+Current state: **INDEPENDENT REVIEW: NOT CLEAN**.
+
+The remediation chain through the current remote HEAD is:
+
+- `9401158dea7ac282a6d72159d0f5c401a4650991` — initial output-provenance remediation
+- `b9cb855ea911cf411ebb91a151d522e9d86966fc` — direct output provenance gaps
+- `0a00e35af07632aa6b40a8cc5f7c003b33d73c56` — `--paths`, ownership-marker cleanup, production quality-boundary coverage
+
+The previously identified baseline fail-open, public-destination race, `--paths` compatibility, ownership-marker leak, and quality production-wiring gaps are source-level fixed at `0a00e35…`.
+
+The currently known remaining blocker is the custom-command `-o/--output` physical-write escape: yt-dlp can ignore `--paths` for an absolute output template, allowing an unowned filesystem write before semantic provenance later rejects the escaped path. This is currently treated as a **P2 in-scope blocker discovered during the current review**, not a proven P0 takeover, because the escaped path has not been shown to become final semantic authority under current gates. Attribution as newly introduced vs pre-existing does not affect whether an in-scope blocker prevents CLEAN.
+
+The independently established `NOT_CLEAN` review for this exact checkpoint is recorded on `review/remediation` at `reviews/BUG-OUTPUT-01/0a00e35af07632aa6b40a8cc5f7c003b33d73c56-review.md`.
+
+BUG-OUTPUT-01 remains the first implementation target and the gate for Finding B. After a coherent BUG-OUTPUT-01 candidate is pushed, unrelated actionable defects may proceed while independent review is pending; any new BUG-OUTPUT review blocker is then prioritized under Section 11.
+
+### 0.4 Finding B
+
+Current state: **OPEN / BLOCKED_BY_DEPENDENCY**.
+
+Finding B concerns source-less `DownloadType.command` History redownload authorization. It must not begin before BUG-OUTPUT-01 is independently CLEAN unless an explicit independent-review/project decision changes that gate. This gate blocks Finding B and its dependents; it does not require unrelated, independently actionable defect work to stop while BUG-OUTPUT-01 awaits review.
+
+### 0.5 Feature boundary
+
+A token auto-extractor is a later **feature**, not part of correctness remediation. Do not mix it into defect commits. After download-related correctness work is actually finished, inspect the then-current token input/storage/update paths and design:
+
+`extraction → validation → persistence/update → fallback to existing manual path`.
+
+---
+
+# 1. Status model
+
+Every defect uses four independent status axes. Do not collapse them into one word.
+
+## 1.1 Implementation status
+
+- `NOT_STARTED`
+- `IN_PROGRESS`
+- `CANDIDATE_COMPLETE`
+- `REMEDIATION_REQUIRED`
+- `BLOCKED_BY_DEPENDENCY`
+- `BLOCKED_BY_EVIDENCE`
+- `BLOCKED_BY_PRODUCT_DECISION`
+- `NO_CHANGE_REQUIRED_CURRENT_HEAD`
+- `NOT_APPLICABLE_CURRENT_HEAD`
+- `DEFERRED`
+
+`CANDIDATE_COMPLETE` means implementation and local/self verification are complete enough for independent review. It does **not** mean CLEAN.
+
+`BLOCKED_BY_DEPENDENCY` means the defect may be understood and queued, but implementation is not permitted until the named semantic/review dependency is satisfied. `BLOCKED_BY_EVIDENCE` means implementation would be speculative because the causal evidence required to choose a correction is not yet sufficient.
+
+`NO_CHANGE_REQUIRED_CURRENT_HEAD` means a fresh implementation-side current-source revalidation found that intervening code already satisfies the planned invariant, so no new semantic implementation commit is presently required. This is **not** an independent CLEAN verdict. The runner records the exact source/evidence basis and immediately continues to other actionable work while the defect remains eligible for independent review/closure.
+
+`NOT_APPLICABLE_CURRENT_HEAD` means the historical path or architecture described by the defect no longer exists in current source and no equivalent reachable path was found during fresh implementation-side revalidation. This is **not** an independent CLEAN verdict. Record why the historical contract is no longer applicable, then continue to other actionable work.
+
+## 1.2 Self-review status
+
+- `PENDING`
+- `PASS_NO_KNOWN_BLOCKERS`
+- `FOUND_BLOCKER`
+- `NOT_PERFORMED`
+
+An implementation model may self-review its own commit, but self-review never establishes independent closure.
+
+## 1.3 Independent-review status
+
+- `PENDING`
+- `NOT_CLEAN`
+- `CLEAN`
+- `CLEAN_WITH_WAIVERS`
+
+Only this axis controls correctness closure.
+
+## 1.4 Closure-record status
+
+- `OPEN`
+- `CLOSED`
+
+Closure is metadata/evidence sealing after independent review. A closure commit may not create a new semantic decision.
+
+---
+
+# 2. Non-negotiable remediation protocol
+
+## 2.1 Fresh-source and pinned-plan rule
+
+At the beginning of each implementation run, before choosing any defect:
+
+1. fresh-fetch `plan/remediation`;
+2. resolve the exact remote Plan SHA;
+3. read the complete Master Plan by concatenating every file under `remediation/master-plan/parts/` in lexical filename order at that exact Plan SHA;
+4. record the Plan SHA in the run/handoff record;
+5. keep that exact Plan SHA pinned for the duration of the run unless the user explicitly instructs adoption of a newer plan or the pinned plan itself defines a controlled migration rule.
+
+Do not check out `plan/remediation` into the implementation working tree merely to read the plan. Read it from the fetched remote ref or exact commit so the implementation branch remains unchanged. A later commit on `plan/remediation` does not silently replace the pinned governing plan mid-run.
+
+Read **all** plan parts from the same pinned Plan SHA. Never mix parts from different Plan SHAs, never treat one part as the whole plan, and verify the manifest-provided whole-plan SHA-256 when available before execution.
+
+Before each correction:
+
+1. fresh-fetch `checkpoint/pre-baseline-review`;
+2. fresh-fetch `review/remediation`;
+3. fresh-fetch `ledger/remediation`;
+4. identify the exact current implementation HEAD and parent plus the current review/ledger heads;
+5. inspect whether a new independent review targets a candidate that still requires remediation;
+6. inspect the current production source relevant to the selected defect;
+7. treat this plan's root-cause text as a hypothesis/checklist where source may have changed;
+8. do not implement from an old diff alone.
+
+Fresh current production source is authoritative for **source-state facts**. The pinned Master Plan is authoritative for **workflow, gates, invariants, review discipline, branch authority, and execution policy**. If a source-state hypothesis in the plan conflicts with fresh source, record the discrepancy and follow fresh source without silently changing the pinned governance rules.
+

@@ -1,0 +1,201 @@
+5. rescan the **entire** remediation registry, not merely the current tier or neighboring defects;
+6. select the highest-priority unrelated `ACTIONABLE` correction under severity + dependency + current-source evidence;
+7. continue implementation.
+
+The exhaustive rescan in step 5 includes at minimum:
+
+- Tier/current-priority items in Section 16.1;
+- historical P0/P1 reconsideration in Section 16.2;
+- all dependency-eligible legacy F3–F22 entries in Section 10 / Appendix A;
+- open review-fix work discovered on `review/remediation`;
+- evidence-preservation or source-audit work that can materially advance an otherwise evidence-blocked defect without inventing a root cause.
+
+A defect that needs a physical device, unavailable synchronized evidence, or an external product decision is skipped temporarily unless there is still a safe source/test/evidence-preservation action that materially advances it. The blocker is defect-local; it does not freeze the project.
+
+The run may stop for **lack of actionable work** only after an exhaustive current-source queue scan establishes that every remaining item is independently closed, dependency-blocked, evidence-blocked with no presently possible evidence-gathering action, product-decision-blocked, explicitly deferred, `NO_CHANGE_REQUIRED_CURRENT_HEAD`, or `NOT_APPLICABLE_CURRENT_HEAD`. Resource exhaustion and inability to leave a coherent repository state remain separate legitimate stop conditions under Section 11.7.
+
+## 11.3 One defect at a time
+
+Do not keep several unrelated working-tree corrections open simultaneously.
+
+Before switching to another defect, the current correction should be in one of these states:
+
+- pushed `CANDIDATE_COMPLETE`;
+- explicitly deferred/blocked with the working tree restored to a coherent state;
+- `NO_CHANGE_REQUIRED_CURRENT_HEAD` or `NOT_APPLICABLE_CURRENT_HEAD` with the exact current-source basis recorded;
+- independently reviewed and followed up as required.
+
+This rule keeps later independent review attributable even when the branch advances far beyond an earlier defect.
+
+## 11.4 Self-review after implementation
+
+Self-review is mandatory before moving on.
+
+The implementation model must:
+
+- re-open the current production files rather than trusting its patch intent;
+- inspect all current callers/consumers of changed APIs;
+- search for stale writers/bypass paths;
+- trace retry/recovery/process-death paths;
+- inspect destructive consumers;
+- verify tests actually cross the intended production boundary;
+- verify the fix did not merely make the test fixture agree with the bug;
+- inspect the entire defect domain, not only the added lines.
+
+If self-review finds a blocker before commit, fix it before the candidate commit when cohesive.
+
+If self-review finds a blocker after the first candidate commit/push, make a new additive child commit. Never amend.
+
+Self-review status may be `PASS_NO_KNOWN_BLOCKERS`, but never `CLEAN`.
+
+## 11.5 External-review priority policy
+
+`review/remediation` is the authoritative repository inbox for independent review records. The implementation model reads it; it never authors independent verdicts there.
+
+When a new independent review record becomes visible, prioritize it as follows:
+
+1. independent-review P0 blocker;
+2. independent-review P1 blocker;
+3. bring the current in-progress working tree to the nearest safe coherent commit boundary when switching immediately would leave partial semantics;
+4. independent-review P2 blocker according to dependency and risk;
+5. next highest-priority actionable master-plan defect.
+
+A newly established `CLEAN` record may unlock a previously blocked dependency, but only after the **ancestor-CLEAN carry-forward guard** below is satisfied against the then-current implementation HEAD.
+
+### 11.5.1 Ancestor-CLEAN carry-forward guard
+
+An independent `CLEAN` record proves the reviewed defect domain at the exact reviewed implementation SHA. It does not automatically prove every later implementation HEAD.
+
+Before using a `CLEAN` record for an ancestor SHA to unlock a dependency on a later current HEAD:
+
+1. identify the exact reviewed implementation SHA and the current implementation HEAD;
+2. inspect every intervening semantic commit between them;
+3. determine whether any intervening commit touches, calls into, rewires, persists, consumes, deletes, recovers, retries, or otherwise semantically affects the reviewed defect domain or one of its established invariants;
+4. if the intervening commits are demonstrably unrelated to that domain, the established CLEAN may carry forward until concrete regression evidence appears;
+5. if any intervening commit touches or may semantically affect the reviewed domain, do **not** infer carry-forward CLEAN merely because the older checkpoint was CLEAN;
+6. run focused regression evidence against the later candidate and require a new independent review of the later candidate whenever semantic preservation is not independently obvious from the intervening history;
+7. never use a self-review, implementation-agent assertion, absence of a new review file, or unchanged test name as a substitute for this guard.
+
+Attribution is irrelevant to this protection: even an unrelated-defect commit can invalidate carry-forward if it changes shared authority or lifecycle code used by the reviewed domain.
+
+When the guard succeeds, re-evaluate the queue immediately. For example:
+
+```text
+BUG-OUTPUT CLEAN appears
+    → inspect intervening commits through current HEAD
+    → if BUG-OUTPUT domain is untouched, Finding B becomes actionable
+    → if shared/output authority changed, require current-candidate evidence/review first
+
+Finding B CLEAN appears
+    → inspect intervening commits through current HEAD
+    → if the Finding-B/F1 domain is preserved, mandatory full F1 close-out becomes actionable
+```
+
+A `NOT_CLEAN` record for an older candidate remains actionable even if the implementation branch has advanced. Remediate it with a new additive commit on the latest implementation HEAD after checking that intervening commits have not already changed the relevant semantics.
+
+If an independent P0 arrives while another correction is in progress, do not leave the tree syntactically/semantically broken. Bring the current working tree to the nearest safe coherent boundary, then switch immediately.
+
+Rebase/amend/squash/force-push are unnecessary and forbidden for remediation history.
+
+## 11.6 Review-fix commit attribution
+
+A later review-fix commit must identify:
+
+- `Defect-ID`;
+- `Reviewed-Checkpoint` SHA;
+- independent finding ID/title if one exists;
+- severity;
+- semantic invariant repaired.
+
+Recommended commit-body trailers or equivalent report fields:
+
+```text
+Defect-ID: BUG-OUTPUT-01
+Reviewed-Checkpoint: <sha>
+Review-Finding: OUTPUT-FOLLOWUP-XX
+Review-Severity: P2
+```
+
+The exact trailer names need not become a repository-wide schema unless current project conventions already define one, but equivalent information must be recoverable from the report/record.
+
+## 11.7 Resource-exhaustion stop rule
+
+A long Ultra run should use available capacity aggressively, but must not sacrifice repository integrity at the end. Do not use this section as a generic early-stop escape hatch: lack-of-actionable-work termination is governed by the exhaustive proof in Section 11.2.1.
+
+If resources become constrained:
+
+- finish the current correction only if it can be brought to a tested coherent candidate;
+- otherwise restore/leave the implementation branch at the last pushed coherent candidate rather than pushing known-broken partial semantics;
+- report the unstarted/unfinished next defect and exact source findings discovered so far;
+- never fabricate test execution to make a partial correction look complete.
+
+---
+
+# 12. Plan, implementation, review, and ledger branch interaction
+
+The project now uses four explicit remote histories with different authority.
+
+## 12.1 Branch roles
+
+### `plan/remediation`
+
+Contains the versioned authoritative Master Plan and planning/governance revisions only. The canonical plan text is the exact concatenation, in lexical filename order, of every file under:
+
+`remediation/master-plan/parts/`
+
+The manifest is:
+
+`remediation/master-plan/README.md`
+
+Canonical read command:
+
+```bash
+PLAN_SHA=<resolved-plan-sha>
+for p in $(git ls-tree -r --name-only "$PLAN_SHA" remediation/master-plan/parts | sort); do
+  git show "$PLAN_SHA:$p"
+done
+```
+
+The part representation exists only to keep each repository write small and verifiable. Part boundaries have no semantic meaning.
+
+The implementation runner may fetch/read this branch but must not modify it during ordinary remediation work. At run bootstrap, the runner pins the exact Plan SHA and uses that governance snapshot for the run. A later plan commit is adopted only on explicit user instruction or a controlled migration rule in the pinned plan. Plan commits do not create independent CLEAN verdicts and do not modify production semantics.
+
+### `checkpoint/pre-baseline-review`
+
+Contains semantic production/test corrections. Implementation models write here using additive commits only.
+
+### `review/remediation`
+
+Official independent-review history. This branch was created from the closure-ledger anchor `899328bc91e4008e39a658387396a0106c8666ec` on 2026-09-03 and bootstrapped by `4c7be32beecb6a954b96b8d61385d11740f5e641` (`review: initialize independent review inbox`) adding `reviews/README.md`. The previously established independent `BUG-OUTPUT-01 — NOT_CLEAN` review for implementation SHA `0a00e35af07632aa6b40a8cc5f7c003b33d73c56` was then backfilled additively at review commit `d8ac4865bf06f8778c76abede58b2a9f7e616ae3` in `reviews/BUG-OUTPUT-01/0a00e35af07632aa6b40a8cc5f7c003b33d73c56-review.md`. Review commits after the creation anchor are independent metadata/evidence history and do not need to be ancestors of implementation commits.
+
+Recommended layout:
+
+```text
+reviews/
+  BUG-OUTPUT-01/
+    <reviewed-implementation-sha>-review.md
+  FINDING-B/
+    <reviewed-implementation-sha>-review.md
+  CURRENT-PLAYER-TIMELINE-INDEX/
+    <reviewed-implementation-sha>-review.md
+  ...
+```
+
+Only an independent reviewer may author semantic verdicts on this branch. The implementation model may fetch/read it but must not create, modify, rewrite, or delete independent-review records on the reviewer’s behalf.
+
+Review history is additive:
+
+- no amend/rebase/squash/force-push;
+- a newer review of a later candidate gets a new record/commit;
+- if a prior review contained a factual correction, preserve the old record and add a new correcting record rather than rewriting history.
+
+### `ledger/remediation`
+
+Contains independently established closure/metadata records only. It is not a scratch review queue and must not be modified by the implementation model during normal defect work.
+
+## 12.2 Review record schema
+
+Every independent review record should identify at minimum:
+
+- `Defect-ID`;
+- `Reviewed-Implementation-SHA`;

@@ -1,0 +1,242 @@
+- token auto-extractor feature, as a separate feature plan and commit series.
+
+---
+
+# 7. Hard dependency graph
+
+The original dependency relationships remain valid unless fresh source disproves them:
+
+```text
+BUG-OBSERVE-01
+    └── BUG-KEYWORD-01
+        shared authoritative SourceSnapshot contract
+
+BUG-METADATA-02
+    └── BUG-METADATA-01
+        identity validation before metadata mutation
+
+BUG-DATE-01
+    └── BUG-DATE-02
+        typed lookup outcome before child/parent terminal semantics
+
+BUG-HISTORY-01
+    └── BUG-KEYWORD-02
+        atomic HistoryUndoSnapshot before RULE recomputation
+
+BUG-BACKUP-04
+    ├── BUG-BACKUP-05
+    └── BUG-BACKUP-07
+        typed/consistent capture boundary before payload extensions
+
+BUG-BACKUP-03 requires the applicable backup/restore prerequisites:
+    ├── BUG-BACKUP-01 semantic closure, including Finding B where relevant
+    ├── BUG-BACKUP-04
+    ├── BUG-BACKUP-02
+    ├── BUG-BACKUP-06
+    ├── BUG-BACKUP-08
+    ├── BUG-BACKUP-05
+    ├── BUG-BACKUP-07
+    └── BUG-CLEANUP-01
+```
+
+Additional sequencing rules from current remediation:
+
+```text
+BUG-OUTPUT-01 independent CLEAN
+    └── Finding B may begin
+
+Finding B independent CLEAN
+    └── full current-source F1 / BUG-BACKUP-01 re-review and closure
+        └── downstream backup/restore defects may rely on BUG-BACKUP-01 closure
+
+Crash evidence preservation
+    └── MainActivity startup/lifecycle root-cause correction
+
+Link input/share extraction
+    └── canonical source/media identity should consume the normalized input contract
+
+canonical source/media identity
+    └── History duplicate/destructive logic should use explicit identity rather than titles or URL spelling
+```
+
+An independent-review gate blocks only defects that depend on it. Unrelated defects may be implemented while the gate is pending, but no dependent defect may treat `CANDIDATE_COMPLETE` or self-review PASS as equivalent to independent CLEAN.
+
+The last three are preferred sequencing/contract dependencies and must be validated against current source before being treated as hard schema dependencies.
+
+---
+
+# 8. Original-plan corrections that remain binding
+
+## 8.1 BACKUP-04 does not own a format bump
+
+`BUG-BACKUP-04` owns capture correctness: selected-category capture failure must not silently become an empty successful payload. Do not introduce a new backup format solely to close that defect.
+
+## 8.2 Backup format evolution belongs to the first genuine payload extension
+
+Preferred historical ordering:
+
+- BACKUP-04: capture semantics only;
+- BACKUP-05: first actual payload extension if a capability-bearing format is needed;
+- BACKUP-07: extend that capability model for playlists/groups.
+
+Do not bump format versions once per defect.
+
+## 8.3 Never invent legacy backup semantics
+
+Before interpreting formats 1–3 or unversioned payloads, inspect repository history/tests/artifacts. Unknown historical input must fail safely rather than be guessed into a schema.
+
+## 8.4 Unmappable replacement markers must fail safely before BACKUP-03 exists
+
+A stale backup-local History ID must never remain executable. Before a fully validated pre-mutation Reset plan exists, preserve affected rows only in a safe non-running diagnosable state rather than throwing a late restore-wide exception after partial mutation.
+
+## 8.5 BACKUP-03 design must not preselect Room schema migration
+
+Required semantics are atomic/fail-safe restore, not a specific persistence mechanism. Add a Room migration only if the smallest correct durable coordinator genuinely requires schema.
+
+## 8.6 Playlist identity must not be invented
+
+Imported playlists receive fresh destination IDs with explicit old→new maps. Do not merge by backup numeric ID, name, or `(name, description)` unless current repository semantics have since added a stable identity contract.
+
+PlaylistGroup may use its actual unique-name DB constraint if still current.
+
+## 8.7 Monthly cleanup means calendar month
+
+A monthly cadence advances one calendar month, not a fixed 30-day interval.
+
+---
+
+# 9. Current-priority implementation dossiers
+
+This section is the primary execution queue for the implementation model. Later legacy F-sections remain binding where they do not conflict with this section.
+
+For every dossier below, the implementation model must first fresh-fetch current source and explicitly state whether the documented root cause is still present. If current source has already changed, preserve the invariant and adapt the correction rather than recreating stale code.
+
+---
+
+## 9.1 BUG-OUTPUT-01 — exact output provenance and physical-write confinement
+
+**Priority:** TIER 0 / current blocker  
+**Severity:** current known blocker P2; any newly found semantic takeover or destructive authority may elevate severity  
+**Implementation status at plan generation:** `REMEDIATION_REQUIRED`  
+**Self-review status:** prior candidate self-reviewed by implementer; not closure authority  
+**Independent-review status:** `NOT_CLEAN` at `0a00e35af07632aa6b40a8cc5f7c003b33d73c56`  
+**Closure record:** `OPEN`
+
+### 9.1.1 Historical remediation chain
+
+The current domain has already passed through multiple additive corrections:
+
+- `9401158dea7ac282a6d72159d0f5c401a4650991`
+  - introduced explicit `DownloadOutputProvenance` and removed broad ambient output authority;
+- `b9cb855ea911cf411ebb91a151d522e9d86966fc`
+  - moved direct/no-cache production into operation-owned staging and repaired baseline/path-plan gaps;
+- `0a00e35af07632aa6b40a8cc5f7c003b33d73c56`
+  - modeled `--paths` home/temp map semantics, added narrow ownership-marker cleanup, and added real Worker quality-boundary tests.
+
+Do not regress those semantics while closing the remaining output-template boundary.
+
+### 9.1.2 Current confirmed blocker
+
+`DownloadType.command` can carry user-authored yt-dlp command text. The app now appends operation-owned `-P home:<staging>` and `-P temp:<staging>` values, but yt-dlp may ignore `--paths` when the effective `-o/--output` template is absolute.
+
+Therefore an authored output template may cause a **physical filesystem write outside the operation-owned staging root before provenance rejects the escaped path**.
+
+At the last independent review, no evidence showed that such an escaped path could then become History/quality/deletion authority. The current issue is therefore a physical-write/confinement regression rather than a proven semantic takeover. Any fresh source evidence showing semantic promotion must be treated as a higher-severity blocker.
+
+### 9.1.3 Core invariants
+
+The implementation must satisfy all of the following simultaneously:
+
+1. **No file becomes semantically authoritative without exact current-execution provenance.**
+2. **No supported custom command may physically write an output outside the operation-owned output scope through an output-destination mechanism the app claims to contain.**
+3. User authorship alone is not provenance.
+4. Destination mtime, basename, recency, absence-at-start, or destination enumeration never establishes ownership.
+5. Exact move/copy result lineage remains the only publication bridge from owned staging to public/final storage.
+6. Hard-sub/ffmpeg/remux/recode products inherit authority only from exact authoritative inputs and exact current-operation produced outputs.
+7. Ambiguous or partially published artifacts are preserved as evidence rather than broadly deleted.
+8. A safety fix must not unnecessarily ban ordinary relative custom output templates that are provably confined.
+9. Rejection of an unsafe custom output destination occurs **before native/output-producing yt-dlp execution**.
+10. Failure to prove confinement is a fail-closed condition, not permission to promote the path after the fact.
+
+### 9.1.4 Required effective-output model
+
+Fresh-read the actual app request construction, sanitizer, bundled/runtime yt-dlp version path, and relevant upstream parser semantics. Model the effective destination surface, not only one spelling.
+
+At minimum evaluate:
+
+- `-o VALUE`
+- attached short form if the actual parser supports it
+- `--output VALUE`
+- `--output=VALUE`
+- `[TYPES:]TEMPLATE`
+- repeated default templates
+- repeated typed templates
+- typed empty templates / suppression forms if supported by the actual runtime
+- stdout/special output forms such as `-o -` if supported by the actual runtime
+- comma-separated TYPES where supported by the actual runtime
+- ordering/effective last-value behavior
+- interaction with `-P/--paths`
+- absolute Unix paths
+- Android-relevant path normalization
+- `.` and `..`
+- nested relative templates
+- template substitutions that may introduce separators or traversal
+- split/chapter/subtitle/thumbnail/infojson/playlist artifact output types
+- config-derived options after the app's config allowlisting/sanitization
+
+The implementation should classify each effective output destination as one of:
+
+- `SAFE_CONFINED`
+- `SAFELY_REWRITTEN`
+- `REJECT_BEFORE_EXECUTION`
+- `NOT_APPLICABLE`
+
+Do not implement the policy with substring matching.
+
+### 9.1.5 Safe relative templates
+
+A legitimate custom template such as:
+
+```text
+-o "%(title)s.%(ext)s"
+```
+
+must continue to work if the app can prove that yt-dlp will resolve it below the current operation-owned staging root.
+
+Nested templates such as:
+
+```text
+-o "%(uploader)s/%(title)s.%(ext)s"
+```
+
+may remain supported only if actual yt-dlp sanitization/template semantics make confinement provable.
+
+The implementation must explicitly investigate whether dynamic substitutions can introduce path separators, absolute prefixes, or traversal. If this cannot be proved safe against the actual runtime, fail closed rather than assume benign substitution.
+
+Unsafe forms must include at least:
+
+- an absolute output path;
+- `../` traversal;
+- normalized equivalents of parent traversal;
+- typed output templates capable of routing a side artifact outside staging;
+- malformed/ambiguous syntax whose effective destination cannot be established.
+
+### 9.1.6 Full destination-affecting option audit
+
+Do not stop after `-o` is fixed. From current source and actual yt-dlp semantics, search for mechanisms that can influence where an output-producing operation writes or moves files. Avoid turning BUG-OUTPUT-01 into an unbounded audit of every ancillary filesystem write.
+
+Classify destination-affecting mechanisms into two buckets:
+
+**A. Media/side-artifact/postprocessor publication destinations — in-scope for BUG-OUTPUT-01 confinement/provenance**
+
+At minimum inspect:
+
+- `-P` / `--paths`;
+- `-o` / `--output`;
+- output-template type maps;
+- temp paths used by the media-producing operation;
+- split chapters;
+- subtitle/thumbnail/description/info-json outputs when produced as download side artifacts;
+- merge/remux/recode outputs;
+- postprocessor output paths;
+- external downloader output configuration where the app permits it;

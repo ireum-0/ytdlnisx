@@ -1,0 +1,271 @@
+The implementation model does not perform independent review itself. Items 2, 4, and the independent-review portion of 5 are satisfied only by reviewer-authored evidence on the review branch / ledger process. The runner’s job is to notice those records and re-evaluate which implementation item is now actionable.
+
+## 16.2 Legacy P0/P1 reconsideration gate
+
+Before continuing deep into lower-priority UI issues, perform an **implementation-side fresh current-source revalidation/self-audit** of the still-open historical P0/P1 defects from Section 10, especially:
+
+- `BUG-OBSERVE-01`;
+- `BUG-BACKUP-03`;
+- `BUG-BACKUP-04`;
+- `BUG-KEYWORD-01`;
+- `BUG-METADATA-01`.
+
+This revalidation is not an independent CLEAN review and does not require a reviewer record before the runner continues. Its purpose is to determine whether current source still contains an actionable implementation defect, whether a dependency/evidence gate applies, or whether intervening code already satisfies/removes the historical path.
+
+If current source confirms an open destructive P0, it takes priority over lower-severity planned items even if the historical ordinal was later. If current source already satisfies the invariant, record `NO_CHANGE_REQUIRED_CURRENT_HEAD`; if the historical path no longer exists and no equivalent reachable path remains, record `NOT_APPLICABLE_CURRENT_HEAD`. Neither state establishes independent CLEAN, and neither is a reason to idle.
+
+The implementation model should use severity + hard dependency + current source evidence, not blindly numeric order.
+
+## 16.3 Dependency-driven legacy sequence
+
+Preserve these hard relationships:
+
+```text
+BUG-OBSERVE-01
+    └── BUG-KEYWORD-01
+
+BUG-METADATA-02
+    └── BUG-METADATA-01
+
+BUG-DATE-01
+    └── BUG-DATE-02
+
+BUG-HISTORY-01
+    └── BUG-KEYWORD-02
+
+BUG-BACKUP-04
+    ├── BUG-BACKUP-05
+    └── BUG-BACKUP-07
+
+BUG-BACKUP-03
+    requires applicable backup/restore prerequisites
+    including completed BUG-BACKUP-01 semantic authorization
+```
+
+Where multiple independent defects are actionable, prefer destructive/data-integrity P0/P1 over cosmetic/UI P2/P3.
+
+---
+
+# 17. Final Known-Good Baseline gate
+
+Do not create a Known-Good Baseline merely because the implementation model exhausted the queue it managed to reach.
+
+A final baseline requires:
+
+Waiver policy before evaluating the checklist:
+
+- **P0:** no baseline waiver.
+- **P1:** normally blocks Known-Good Baseline. Any exception requires an explicit project-owner decision plus independently documented risk; it must never be inferred from schedule/resource pressure.
+- **P2:** may remain only through an explicit project-owner waiver recorded by independent review.
+- **P3/non-blocker:** does not block unless explicitly elevated.
+
+Then:
+
+1. all agreed remediation-scope P0/P1/P2 defects independently closed or explicitly waived under the policy above;
+2. all closure records sealed;
+3. no unresolved review inbox blocker;
+4. full JVM suite where practical;
+5. Android-test compile;
+6. full Kotlin compile;
+7. `assembleDebug`;
+8. representative Room/WorkManager/filesystem/SAF/player/restore smoke coverage where applicable;
+9. migration tests if final backup/reset design adds migrations;
+10. final independent high-capability review over the agreed complete remediation range;
+11. remediation of final-review blockers;
+12. authoritative ledger update;
+13. only then a Known-Good Baseline commit/tag under project policy.
+
+Do not let unrelated feature work outrun unresolved correctness findings inside the agreed scope.
+
+---
+
+# 18. Token auto-extractor feature boundary
+
+This feature begins only after the download-related correctness gate chosen by the project owner is complete.
+
+When that time arrives, start from fresh current source and map:
+
+```text
+existing manual token entry
+    ↓
+validation
+    ↓
+storage format
+    ↓
+player-client association
+    ↓
+request construction
+    ↓
+update/expiry behavior
+```
+
+Then design:
+
+```text
+automatic extraction
+    ↓
+validation and source attribution
+    ↓
+safe persistence/update
+    ↓
+manual fallback
+    ↓
+clear user-visible failure behavior
+```
+
+Do not reuse correctness-remediation commits to introduce this feature. It receives its own feature design, tests, and review scope.
+
+---
+
+# 19. Master-plan revision policy
+
+The authoritative versioned copy of this file lives on `plan/remediation`. Its canonical text is the lexical-order concatenation of `remediation/master-plan/parts/*.part`, with `remediation/master-plan/README.md` as the manifest. Part boundaries have no governance meaning. Plan history is additive and separate from implementation, independent review, and closure history.
+
+This file is intentionally detailed, but it is not allowed to override fresh code reality.
+
+Revise the plan only when concrete evidence warrants it, for example:
+
+- current implementation already eliminated a planned root cause;
+- a hard dependency proves false;
+- a fix introduces a new same-domain blocker;
+- repository history establishes a legacy backup contract that was previously unknown;
+- product owner records a quality/fallback semantic decision;
+- independent review reclassifies or splits a defect;
+- two historically separate defects are proven to share one exact state machine and correction;
+- a current architecture makes a proposed persistence mechanism unnecessary/incorrect.
+
+When revising:
+
+- commit the revision additively on `plan/remediation`;
+- never amend/rebase/squash/force-push referenced plan history;
+- preserve defect IDs and historical relation where possible;
+- distinguish historical observation from current source;
+- do not retroactively rewrite closure evidence;
+- do not turn a planning edit into an independent-review decision;
+- do not expect an already-running implementation agent to silently adopt the new Plan SHA; a new Plan SHA governs a run only when it is resolved at bootstrap or explicitly adopted by user instruction.
+
+---
+
+# 20. Implementation handoff report template
+
+After each candidate defect push, report at least:
+
+```text
+Defect:
+Pinned Plan SHA:
+Starting implementation HEAD:
+Starting review HEAD:
+Starting ledger HEAD:
+Reviewed external records:
+
+Current-source root cause confirmed/revised:
+Invariant implemented:
+
+Changed files:
+Semantic changes:
+Preserved behaviors:
+
+Self-review findings:
+Additional same-domain fixes:
+
+Verification:
+  git diff --check:
+  focused JVM:
+  Kotlin compile:
+  androidTest compile:
+  instrumentation:
+  regressions:
+  Samsung SM-A546E: NOT EXECUTED — DEVICE UNAVAILABLE
+
+Initial failures and reruns:
+
+Commit SHA:
+Commit message:
+Parent:
+Final remote implementation HEAD:
+Final remote review HEAD:
+Final remote ledger HEAD:
+
+Independent-review status: PENDING
+Do not claim CLEAN.
+```
+
+For a multi-defect Ultra run, repeat this block per defect/correction chain and finish with a queue summary:
+
+- candidates pushed;
+- review-fixes pushed;
+- defects blocked by evidence/product decision;
+- next actionable defect;
+- working tree status;
+- remote branch heads.
+
+---
+
+# 21. Final operational summary
+
+The complete remediation workflow is:
+
+```text
+THIS MASTER PLAN
+    ↓
+implementation model fresh-fetches implementation + review + ledger
+    ↓
+respond to any higher-priority independent review blocker
+    ↓
+select highest-priority ACTIONABLE defect
+    ↓
+fix one correction domain
+    ↓
+focused tests + production-boundary evidence
+    ↓
+fresh self-review of the whole defect domain
+    ↓
+additive commit + push
+    ↓
+fresh-fetch review/remediation
+    ↓
+review blocker now available? ── yes ──> additive review-fix + tests + push
+      │
+      no
+      ↓
+new CLEAN record unlocks dependency? ── yes ──> re-prioritize unlocked defect/gate
+      │
+      no
+      ↓
+move to next unrelated ACTIONABLE defect as capacity permits
+    ↓
+independent reviewer reviews exact candidates on review/remediation
+    ↓
+NOT CLEAN ──> implementation runner later creates additive review-fix
+CLEAN ──────> dependency may unlock; metadata-only ledger closure when required
+    ↓
+Finding B CLEAN
+    ↓
+mandatory full current-source F1 close-out + ledger closure
+    ↓
+all agreed defects closed
+    ↓
+final heavy verification / full-range independent review
+    ↓
+Known-Good Baseline
+    ↓
+separate token auto-extractor feature work
+```
+
+The implementation model's objective is **maximum safe corrected code**, not maximum number of touched defect IDs. A smaller number of genuinely coherent, tested candidates is preferable to broad partially fixed changes. Conversely, once a correction is coherent and pushed, the model should continue to another **actionable** defect rather than stopping unnecessarily. Pending review never upgrades a candidate to CLEAN, and dependency-gated defects remain blocked until reviewer-authored evidence opens the gate. When a planned item is blocked or already satisfied in current source, apply the Global No-Idle Rule in Section 11.2.1 and rescan the complete registry instead of waiting.
+
+
+# Appendix A. Defect registry at plan generation
+
+This table is a navigation index, not a substitute for the dossiers. `Historical severity` is carried from the prior master plan where available; newer entries use the most recent project-review priority. Fresh current evidence may reclassify severity. A legacy item that current implementation-side revalidation finds already satisfied may transition to `NO_CHANGE_REQUIRED_CURRENT_HEAD`; one whose historical reachable path no longer exists may transition to `NOT_APPLICABLE_CURRENT_HEAD`. These are runner states, not independent closure verdicts, and the runner must continue scanning other work.
+
+| Defect / work item | Historical/current priority | State at generation | Source confidence | Primary dossier |
+|---|---|---|---|---|
+| Finding A / BUG-BACKUP-01-A | previously blocking F1 | independently CLEAN, ledger CLOSED | independently established | 0.2 |
+| BUG-OUTPUT-01 | current known P2 blocker inside historically P0 output domain | NOT CLEAN | confirmed current through latest independent review | 9.1 |
+| Finding B / BUG-BACKUP-01-B | destructive authorization follow-up | BLOCKED_BY_DEPENDENCY on BUG-OUTPUT-01 independent CLEAN | confirmed contract from prior independent review | 9.2 |
+| Player timeline/index crash | P1 | pending current-source implementation | review-history grounded | 9.3 |
+| Crash evidence preservation | high diagnostic prerequisite | pending | requires fresh source confirmation | 9.4 |
+| MainActivity startup/lifecycle crash | severity depends on causal evidence | BLOCKED_BY_EVIDENCE until causal evidence is sufficient; skip and continue unrelated work | root cause unknown | 9.5 |
+| Link input/share handling | current priority | pending | review-history grounded | 9.6 |
+| Canonical media/source identity | current priority / destructive dependency | pending | review-history grounded | 9.7 |

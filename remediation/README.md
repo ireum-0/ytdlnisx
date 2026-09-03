@@ -1,28 +1,11 @@
-# Correctness Remediation Master Plan
+# Correctness Remediation Plan
 
-The authoritative remediation plan for this project is stored on this branch as:
+The authoritative versioned remediation Master Plan is on this branch under:
 
-`remediation/YTDLnisX_CORRECTNESS_REMEDIATION_MASTER_PLAN.md.gz`
+`remediation/master-plan/README.md`
 
-The artifact is gzip-compressed only because the plan is large. Decode it before reading.
+The manifest defines the exact ordered-part representation, whole-plan SHA-256, bootstrap/pinning rules, and branch authority. Read every `remediation/master-plan/parts/*.part` file in lexical order from one exact pinned Plan SHA.
 
-Recommended run-bootstrap sequence:
+Do not use the historical single-file `.md.gz` transport attempt; it was detected as incomplete and is removed by the verified multipart publication.
 
-```bash
-git fetch origin
-PLAN_SHA=$(git rev-parse origin/plan/remediation)
-git show "$PLAN_SHA":remediation/YTDLnisX_CORRECTNESS_REMEDIATION_MASTER_PLAN.md.gz | gzip -dc
-```
-
-Record the exact `PLAN_SHA` used for the run and keep that Plan SHA pinned for the duration of the run unless the user explicitly instructs adoption of a newer plan.
-
-Do not check out `plan/remediation` into the implementation worktree merely to read the plan.
-
-Branch authority remains separated:
-
-- `plan/remediation`: planning/governance only
-- `checkpoint/pre-baseline-review`: semantic implementation/test corrections
-- `review/remediation`: independent exact-SHA review history
-- `ledger/remediation`: independently established closure records
-
-Fresh current production source is authoritative for source-state facts. The pinned Master Plan is authoritative for workflow, gates, invariants, review discipline, branch authority, and execution policy. A plan commit never creates an independent CLEAN verdict.
+Do not check out `plan/remediation` into the implementation worktree merely to read the plan. Fetch it and read it by exact commit.

@@ -1,0 +1,351 @@
+### Invariant
+Partial or failed extraction cannot make a destructive absence claim.
+
+### Preferred correction
+Typed snapshot contract:
+
+- `AUTHORITATIVE`
+- `PARTIAL`
+- `FAILED`
+
+Only authoritative snapshot, including authoritative empty, may permit destructive reconciliation.
+
+### Preserve
+Normal additions, filtering, canonical URLs, retry behavior, authoritative-empty removal.
+
+### Tests
+Ignored child errors, parse drops, continuation failure, empty partial page, transient failure,
+complete source and authoritative empty.
+
+---
+
+## F4 — BUG-BACKUP-04
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+Capture helper failure is collapsed into an empty array.
+
+### Invariant
+An empty captured category means a successful capture of genuinely empty state.
+
+### Correction
+- typed capture failures;
+- consistent transactionally captured related Room state;
+- selected capture failure prevents successful artifact creation;
+- category-owned required thumbnail/read failures cannot silently become success.
+
+### Boundary
+Do **not** introduce format 4 merely for F4.
+
+### Tests
+Per-category fault injection, true empty category, serialization/read failure, concurrent relational change,
+final backup write/move failure.
+
+---
+
+## F5 — BUG-BACKUP-02
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+Restored thumbnail names derived from backup History IDs can collide before destination IDs are allocated.
+
+### Invariant
+Staged restore files cannot overwrite live files or become live references prematurely.
+
+### Correction
+- collision-resistant no-overwrite staging names;
+- bind only during mapped History insertion;
+- clean staged artifacts on failure;
+- no old-ID deterministic overwrite path.
+
+### Tests
+Same old ID across backups, repeated Merge, extension/content variations, write/insertion failure, Reset.
+
+---
+
+## F6 — BUG-BACKUP-06
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+Imported relations/preferences can retain backup-local numeric IDs or trust equal live numbers.
+
+### Invariant
+No DB-local numeric reference survives import through numeric equality alone.
+
+### Correction
+Inventory every imported ID-bearing field and preference:
+
+- explicit destination map, or
+- stable identity proof,
+- otherwise reject/clear/quarantine as appropriate.
+
+No “same numeric ID exists” fallback.
+
+### Preserve
+Manual assignments, valid source identity merge, unrelated destination state during Merge.
+
+### Tests
+Group/source collisions, missing parents, group prefs, waiting downloads, Observe provenance,
+transient preference exclusion.
+
+---
+
+## F7 — BUG-BACKUP-08
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`  
+**Hard prerequisite:** F6 portable/transient preference policy.
+
+### Root cause
+Some serialized SharedPreferences types such as Long/Float are not restored; malformed/unknown types may be ignored.
+
+### Invariant
+Every admitted portable preference type round-trips losslessly; unsupported input never reports success.
+
+### Correction
+Restore every supported primitive/set type with matching API and strict type validation.
+Exclude transient ID-keyed state under F6 policy.
+
+### Tests
+String/Boolean/Int/Long/Float/StringSet, large long, float precision, malformed/unknown input, excluded keys.
+
+---
+
+## F8 — BUG-BACKUP-05
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`  
+**Hard prerequisites:** F4 capture correctness, F6 ID policy.
+
+### Root cause
+Paused downloads are persistent but omitted from backup/restore.
+
+### Invariant
+All-category backups preserve paused jobs and restore never auto-starts them.
+
+### Correction
+- add paused payload/category;
+- preserve config/order/retry/operation metadata;
+- restore as `Paused`;
+- never enqueue paused rows.
+
+### Backup-format ownership
+If a self-describing new backup format is needed, this is the expected first real wire-format extension.
+Before defining legacy compatibility, inspect Git history/tests/artifacts.
+
+### Tests
+Paused-only, mixed states, order/metadata, Merge, Reset, repeated import, no worker enqueue.
+
+---
+
+## F9 — BUG-BACKUP-07
+**Historical mode:** `CONDITIONAL_FOCUSED_PLAN_THEN_LUNA`  
+**Hard prerequisites:** F4 typed capture boundary, F6 ID maps.
+
+### Root cause
+Playlists, History membership, playlist groups and group membership are absent from backup/restore.
+
+### Invariant
+Every imported relationship references an explicitly mapped live row.
+
+### Playlist policy
+- fresh destination playlist ID for every imported playlist;
+- no merge by backup numeric ID;
+- no merge by name;
+- no merge by `(name, description)`;
+- rebuild crossrefs only through History + playlist maps.
+
+### PlaylistGroup policy
+Exact-name merge may follow the current unique-name DB constraint.
+
+### Format policy
+Extend the same capability-based format introduced by the first actual wire-format extension.
+Do not bump another version mechanically.
+
+### Tests
+Reset/Merge roundtrip, duplicate same-name playlists remain distinct, repeated Merge produces distinct imports,
+multi-playlist History membership, multi-group membership, exact-name group merge, missing refs, numeric collisions.
+
+---
+
+## F10 — BUG-CLEANUP-01
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+Automatic cleanup is effectively one delayed request and does not maintain a durable recurring schedule.
+
+### Invariant
+Exactly one logical cleanup schedule preserves the selected **calendar** cadence.
+
+### Preferred correction
+Stable unique one-time work chain:
+
+- compute next daily/weekly/monthly occurrence with calendar/time-zone semantics;
+- monthly = one calendar month, never 30 days;
+- cadence change replaces;
+- disable cancels;
+- successful run schedules next only if cadence token matches;
+- retry does not create duplicate successor;
+- startup reconciles to one correct request.
+
+### Tests
+28/29/30/31-day transitions, year boundary, DST/time-zone, repeat, retry, cadence change, disable, restart.
+
+---
+
+## F11 — BUG-BACKUP-03
+**Historical mode:** `SOL_EXTRA_HIGH_PLAN_THEN_LUNA`  
+**Hard prerequisites:** F1, F4, F5, F6, F7, F8, F9, F10.
+
+### Root cause
+Destructive Reset spans Room, SharedPreferences, filesystem, WorkManager and notifications without a restore-wide commit/recovery protocol.
+
+### Required invariants for the Extra High plan
+
+1. immutable fully parsed/validated restore plan before destructive mutation;
+2. app marker/version/capability/reference validation before Reset;
+3. related Room mutation atomicity;
+4. staged filesystem artifacts;
+5. explicit SharedPreferences commit/compensation;
+6. conflicting worker quiescence/gating;
+7. post-commit scheduling/reconciliation;
+8. deterministic process-death recovery at every phase;
+9. no worker sees partial restore;
+10. scheduling failure is represented honestly and retried idempotently.
+
+### Do not preselect
+- Room restore journal;
+- Room 56→57 migration.
+
+The plan selects the smallest durable design that proves the invariants.
+
+### Legacy rule
+Never invent old format semantics. Inspect repository history/tests/artifacts.
+
+### Tests
+Invalid manifest/reference, early/mid/late fault injection, preferences failure, scheduling failure,
+worker races, process death at each phase, compensation, restart recovery, staged-file cleanup,
+migration test only if schema actually changes.
+
+
+---
+
+## F12 — BUG-KEYWORD-01
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`  
+**Hard prerequisite:** F3 authoritative SourceSnapshot contract.
+
+### Root cause
+Automatic-keyword baseline/discovery receives only item lists, so an incomplete empty extraction can falsely complete baseline.
+
+### Invariant
+Baseline completion proves source authority independently of item count.
+
+### Correction
+Consume F3 snapshot authority. Only an authoritative snapshot, including authoritative empty,
+may complete baseline/scheduled discovery.
+
+### Preserve
+Rule revision checks, apply-existing behavior, prior matches, bounded retry.
+
+### Tests
+Partial empty then success, authoritative empty, partial non-empty, rule change during fetch, retries, normal discovery.
+
+---
+
+## F13 — BUG-METADATA-02
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+Fresh metadata candidates in some lookup/cache paths can bypass requested-source identity validation.
+
+### Invariant
+Unrelated fresh metadata contributes no field to a Download row.
+
+### Correction
+Validate every fresh candidate before merging/applying it. Reuse the existing canonical-equivalent and approved redirect/source policy rather than inventing another URL model.
+
+### Preserve
+Cache fallback, equivalent YouTube URL forms, approved redirects, cancellation.
+
+### Tests
+Both lookup orders, valid cache + mismatched fresh, missing provenance, equivalents, redirects.
+
+---
+
+## F14 — BUG-METADATA-01
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`  
+**Hard prerequisite:** F13 validated metadata candidate contract.
+
+### Root cause
+Both metadata writers enrich stale `DownloadItem` snapshots and perform full-row writes.
+
+Affected writers:
+
+- `UpdateMultipleDownloadsDataWorker`
+- `DownloadWorker.persistDownloadMetadata`
+
+### Invariant
+Metadata enrichment cannot overwrite:
+
+- status;
+- path;
+- queue/order;
+- configuration;
+- scheduling;
+- retry state;
+- operation state.
+
+### Correction
+Return an immutable metadata-only patch and apply through DAO updates limited to metadata-owned columns,
+while verifying the requested source is still current.
+
+### Tests
+Deterministic concurrent mutation in both writers, source change, deletion, successful patch.
+
+---
+
+## F15 — BUG-DATE-01
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`
+
+### Root cause
+Minimal extractor lookup failures collapse to `null`; ambiguous fallback empty output can become durable `NO_DATE`.
+
+### Invariant
+Extractor failure/ambiguity remains distinct from authoritative absence.
+
+### Correction
+Typed lookup outcome, e.g.:
+
+- found;
+- authoritative absence;
+- ambiguous;
+- retryable failure;
+- final failure.
+
+Persist `NO_DATE` only when successful matching extraction proves date absence.
+
+### Preserve
+Local/cache precedence, compatibility fallback, grouping, cancellation.
+
+### Tests
+Minimal failure + fallback empty/ignored error, authoritative absence, malformed/mismatched result, cache hit, cancellation.
+
+---
+
+## F16 — BUG-DATE-02
+**Historical mode:** `DIRECT_LUNA_IMPLEMENTATION`  
+**Hard prerequisite:** F15 typed child outcome.
+
+### Root cause
+Parent finalization can mark `COMPLETED` when pending is zero while failed children exist;
+retryable child failures may still produce WorkManager success.
+
+### Invariant
+Child distribution, parent state, WorkManager result and notification agree.
+
+### Correction
+- retryable children remain pending while budget remains;
+- return `Result.retry()` while retry is valid;
+- terminalize failure at exhaustion;
+- mixed terminal outcomes use explicit partial-failure semantics;
+- all failed = failed;
+- zero failed = completed;
+- notifications expose failed counts.
+
+### Preserve
