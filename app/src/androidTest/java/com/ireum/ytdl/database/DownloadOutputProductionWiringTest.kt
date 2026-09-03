@@ -16,6 +16,8 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.VideoFileQualityState
+import com.ireum.ytdl.util.VideoMediaQuality
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadOutputProvenance
 import com.ireum.ytdl.work.DownloadWorker
@@ -117,6 +119,9 @@ class DownloadOutputProductionWiringTest {
             assertTrue(unrelated.exists())
             assertTrue(File(destination, "created-during-attempt.m4a").exists())
             assertFalse(currentSource!!.exists())
+            assertFalse(File(ownedOutputDirectory, ".ytdlnisx-owner").exists())
+            assertFalse(ownedOutputDirectory.exists())
+            assertFalse(File(destination, ".ytdlnisx-output").exists())
         }
     }
 
@@ -156,6 +161,7 @@ class DownloadOutputProductionWiringTest {
             val downloadId = outputWiringDownloadIds.getAndIncrement()
             val destination = File(testRoot, "baseline-failure").apply { mkdirs() }
             val current = File(destination, "ambient.m4a").apply { writeBytes(byteArrayOf(1, 1, 1)) }
+            var currentOutputDirectory: File? = null
             db.downloadDao.insertRaw(download(downloadId, destination.absolutePath))
             DownloadWorkerEffectTestHooks.dbManagerForTesting = db
             DownloadWorkerEffectTestHooks.outputBaselineReaderForTesting = { directory ->
@@ -169,6 +175,7 @@ class DownloadOutputProductionWiringTest {
                 if (candidateId != downloadId) {
                     null
                 } else {
+                    currentOutputDirectory = outputDirectory
                     val reported = File(outputDirectory, "reported.m4a").apply {
                         writeBytes(byteArrayOf(2, 2, 2))
                     }
@@ -184,6 +191,122 @@ class DownloadOutputProductionWiringTest {
                 db.downloadDao.getNullableDownloadById(downloadId)?.status,
             )
             assertTrue(current.exists())
+            assertTrue(
+                File(
+                    requireNotNull(currentOutputDirectory),
+                    ".ytdlnisx-owner",
+                ).exists()
+            )
+        }
+    }
+
+    @Test
+    fun realWorkerVerifiedQualityCannotUseAmbientHighQualityForReplacement() = runBlocking {
+        withCacheDownloads(false) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "verified-quality-negative").apply { mkdirs() }
+            val oldMedia = File(destination, "old.mp4").apply { writeBytes(byteArrayOf(9, 9, 9)) }
+            val ambientHighQuality = File(destination, "requested.mp4").apply {
+                writeBytes(byteArrayOf(8, 8, 8))
+            }
+            val historyId = db.historyDao.insertAndGetIdRaw(
+                history(oldMedia.absolutePath).copy(
+                    type = DownloadType.video,
+                    format = Format(container = "mp4", format_note = "720p"),
+                    downloadId = 0L,
+                )
+            )
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.video,
+                    formatNote = "720p",
+                    container = "mp4",
+                    videoPreferences = VideoPreferences(embedSubs = false),
+                    playlistUrl = HistoryRedownloadMarker.quality(historyId, 720),
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            var stagedLowQuality: File? = null
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    stagedLowQuality = File(outputDirectory, "requested.mp4").apply {
+                        writeBytes(byteArrayOf(1, 2, 3))
+                    }
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedLowQuality).absolutePath}'"
+                }
+            }
+            DownloadWorkerEffectTestHooks.videoQualityProbeForTesting = { paths ->
+                assertFalse(paths.any { it == ambientHighQuality.canonicalPath })
+                assertTrue(paths.any { it == requireNotNull(stagedLowQuality).canonicalPath })
+                VideoMediaQuality(
+                    state = VideoFileQualityState.READY,
+                    width = 640,
+                    height = 360,
+                    hasAudio = true,
+                    path = paths.first(),
+                )
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(
+                oldMedia.absolutePath,
+                requireNotNull(db.historyDao.getNullableItem(historyId)).downloadPath.single(),
+            )
+            assertTrue(oldMedia.exists())
+            assertTrue(ambientHighQuality.exists())
+        }
+    }
+
+    @Test
+    fun realWorkerVerifiedQualityAcceptsAuthoritativeCurrentOutput() = runBlocking {
+        withCacheDownloads(true) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "verified-quality-positive").apply { mkdirs() }
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.video,
+                    formatNote = "720p",
+                    container = "mp4",
+                    videoPreferences = VideoPreferences(embedSubs = false),
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            var stagedCurrent: File? = null
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    stagedCurrent = File(outputDirectory, "verified.mp4").apply {
+                        writeBytes(byteArrayOf(4, 5, 6))
+                    }
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedCurrent).absolutePath}'"
+                }
+            }
+            DownloadWorkerEffectTestHooks.videoQualityProbeForTesting = { paths ->
+                assertEquals(listOf(requireNotNull(stagedCurrent).canonicalPath), paths)
+                VideoMediaQuality(
+                    state = VideoFileQualityState.READY,
+                    width = 1280,
+                    height = 720,
+                    hasAudio = true,
+                    path = paths.single(),
+                )
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            val history = requireNotNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(1, history.downloadPath.size)
+            assertTrue(history.downloadPath.single().endsWith("verified.mp4"))
+            assertFalse(requireNotNull(stagedCurrent).exists())
         }
     }
 
@@ -193,20 +316,24 @@ class DownloadOutputProductionWiringTest {
             val downloadId = outputWiringDownloadIds.getAndIncrement()
             val configuredDestination = File(testRoot, "configured").apply { mkdirs() }
             val effectiveDestination = File(testRoot, "effective").apply { mkdirs() }
+            val effectiveTempDestination = File(testRoot, "effective-temp").apply { mkdirs() }
             val commandPath = effectiveDestination.absolutePath.replace('\\', '/')
+            val tempPath = effectiveTempDestination.absolutePath.replace('\\', '/')
             db.downloadDao.insertRaw(
                 download(
                     id = downloadId,
                     destination = configuredDestination.absolutePath,
                     type = DownloadType.command,
-                    formatNote = "-P \"$commandPath\" --no-playlist",
+                    formatNote = "--paths home:\"$commandPath\" --paths temp:\"$tempPath\" --no-playlist",
                 )
             )
             DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            var currentOutputDirectory: File? = null
             DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
                 if (candidateId != downloadId) {
                     null
                 } else {
+                    currentOutputDirectory = outputDirectory
                     val reported = File(outputDirectory, "command-output.m4a").apply {
                         writeBytes(byteArrayOf(3, 3, 3))
                     }
@@ -220,6 +347,12 @@ class DownloadOutputProductionWiringTest {
             assertTrue(history.downloadPath.single().startsWith(effectiveDestination.canonicalPath))
             assertTrue(history.downloadPath.single().endsWith("command-output.m4a"))
             assertTrue(configuredDestination.listFiles().orEmpty().none { it.name == "command-output.m4a" })
+            val ownedOutputDirectory = requireNotNull(currentOutputDirectory)
+            assertEquals(
+                effectiveTempDestination.canonicalFile,
+                ownedOutputDirectory.parentFile?.parentFile?.canonicalFile,
+            )
+            assertFalse(ownedOutputDirectory.exists())
         }
     }
 
@@ -304,6 +437,7 @@ class DownloadOutputProductionWiringTest {
         DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = null
         DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = null
         DownloadWorkerEffectTestHooks.outputBaselineReaderForTesting = null
+        DownloadWorkerEffectTestHooks.videoQualityProbeForTesting = null
         DownloadWorkerEffectTestHooks.beforeNoCacheMediaPublicationForTesting = null
         DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
     }
@@ -329,6 +463,8 @@ class DownloadOutputProductionWiringTest {
         destination: String,
         type: DownloadType = DownloadType.audio,
         formatNote: String = "audio only",
+        container: String = "m4a",
+        videoPreferences: VideoPreferences = VideoPreferences(),
         playlistUrl: String? = "",
     ) = DownloadItem(
         id = id,
@@ -338,8 +474,8 @@ class DownloadOutputProductionWiringTest {
         thumb = "",
         duration = "00:01",
         type = type,
-        format = Format(container = "m4a", format_note = formatNote),
-        container = "m4a",
+        format = Format(container = container, format_note = formatNote),
+        container = container,
         downloadSections = "",
         allFormats = mutableListOf(),
         downloadPath = destination,
@@ -347,7 +483,7 @@ class DownloadOutputProductionWiringTest {
         downloadSize = "",
         playlistTitle = "",
         audioPreferences = AudioPreferences(),
-        videoPreferences = VideoPreferences(),
+        videoPreferences = videoPreferences,
         extraCommands = "",
         customFileNameTemplate = "",
         SaveThumb = false,

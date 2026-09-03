@@ -1,5 +1,6 @@
 package com.ireum.ytdl.work
 
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpOutputPlan
 import java.io.File
 import java.io.IOException
 
@@ -300,5 +301,73 @@ internal class DownloadOutputProvenance(
             return value.startsWith("/") ||
                 value.matches(Regex("^[A-Za-z]:[\\\\/].+"))
         }
+    }
+}
+
+internal data class DirectOutputStagingCleanupResult(
+    val markerDeleted: Boolean,
+    val tokenDirectoryDeleted: Boolean,
+    val namespaceDeleted: Boolean,
+)
+
+internal enum class DirectOutputPublicationState {
+    SUCCESS,
+    PARTIAL,
+    FAILED,
+    AMBIGUOUS,
+}
+
+/**
+ * Removes only the current operation's successful direct-output marker. This
+ * is intentionally a non-recursive operation: any unexpected or stranded
+ * child prevents directory pruning and remains in place for recovery or
+ * diagnostics.
+ */
+internal object DirectOutputStagingCleanup {
+    fun removeOwnedMarkerAndEmptyParents(
+        outputPlan: YtdlpOutputPlan,
+        expectedMarkerText: String,
+        publicationState: DirectOutputPublicationState,
+    ): DirectOutputStagingCleanupResult? {
+        if (
+            !outputPlan.directNoCache ||
+                publicationState != DirectOutputPublicationState.SUCCESS
+        ) return null
+        val staging = outputPlan.directStagingDirectory?.canonicalFile ?: return null
+        val namespace = staging.parentFile?.canonicalFile ?: return null
+        val stagingParent = outputPlan.directStagingParent?.canonicalFile ?: return null
+        val marker = outputPlan.ownershipMarker?.canonicalFile ?: return null
+        if (
+            namespace.name != ".ytdlnisx-output" ||
+                namespace.parentFile?.canonicalFile != stagingParent ||
+                marker.parentFile?.canonicalFile != staging ||
+                !staging.isDirectory ||
+                !marker.isFile
+        ) {
+            return null
+        }
+        val markerText = runCatching { marker.readText() }.getOrNull() ?: return null
+        if (markerText != expectedMarkerText) return null
+        if (!marker.delete()) return null
+
+        val tokenDirectoryDeleted = runCatching {
+            staging.listFiles()?.let { entries ->
+                entries.isEmpty() && staging.delete()
+            } ?: false
+        }.getOrDefault(false)
+        val namespaceDeleted = if (tokenDirectoryDeleted) {
+            runCatching {
+                namespace.listFiles()?.let { entries ->
+                    entries.isEmpty() && namespace.delete()
+                } ?: false
+            }.getOrDefault(false)
+        } else {
+            false
+        }
+        return DirectOutputStagingCleanupResult(
+            markerDeleted = true,
+            tokenDirectoryDeleted = tokenDirectoryDeleted,
+            namespaceDeleted = namespaceDeleted,
+        )
     }
 }

@@ -1589,29 +1589,34 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
      * directory.
      */
     internal fun resolveOutputPlan(downloadItem: DownloadItem): YtdlpOutputPlan {
-        val commandPath = if (downloadItem.type == DownloadType.command) {
+        val commandPathResolution = if (downloadItem.type == DownloadType.command) {
             YtdlpCommandPathParser.resolve(downloadItem.format.format_note)
         } else {
             YtdlpCommandPathResolution.None
         }
-        val explicitCommandPath = when (commandPath) {
+        val commandPathMap = when (commandPathResolution) {
             YtdlpCommandPathResolution.None -> null
-            is YtdlpCommandPathResolution.Explicit -> commandPath
+            is YtdlpCommandPathResolution.Explicit -> commandPathResolution.pathMap
             is YtdlpCommandPathResolution.Invalid -> {
                 throw IllegalArgumentException(
-                    "Unsupported direct output path in command: ${commandPath.reason}"
+                    "Unsupported direct output path in command: ${commandPathResolution.reason}"
                 )
             }
         }
-        val finalDestinationDirectory = explicitCommandPath?.directory
+        if (commandPathMap?.outputTypePaths?.isNotEmpty() == true) {
+            throw IllegalArgumentException(
+                "Unsupported output-specific --paths destinations: " +
+                    commandPathMap.outputTypePaths.keys.sorted().joinToString(",")
+            )
+        }
+        val finalDestinationDirectory = commandPathMap?.home
             ?: resolveFilesystemDestination(downloadItem.downloadPath)
         // Keep provider-backed destinations as their original URI, but give
         // filesystem publication the canonical path that FileUtil expects.
-        val finalDestination = explicitCommandPath?.directory?.absolutePath
+        val finalDestination = commandPathMap?.home?.absolutePath
             ?: finalDestinationDirectory?.absolutePath
             ?: downloadItem.downloadPath
-        val destinationCanBeWritten = finalDestinationDirectory != null &&
-            FileUtil.canWriteToDestination(finalDestination, context)
+        val destinationCanBeWritten = FileUtil.canWriteToDestination(finalDestination, context)
         val requiresVerifiedQualityStaging = VideoQualityPolicy.requiresVerifiedStaging(
             isVideo = downloadItem.type == DownloadType.video,
             format = downloadItem.format,
@@ -1623,20 +1628,16 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 downloadItem.url.isYoutubeURL() &&
                 YoutubeMediaAccessPolicy.containsRawFormatOverride(downloadItem.extraCommands)
             )
-        val directNoCache = explicitCommandPath != null || (
+        val explicitCommandPath = commandPathMap != null
+        val directNoCache = explicitCommandPath || (
             !requiresVerifiedQualityStaging &&
                 !sharedPreferences.getBoolean("cache_downloads", true) &&
                 destinationCanBeWritten
             )
 
-        if (explicitCommandPath != null && !destinationCanBeWritten) {
+        if (explicitCommandPath && !destinationCanBeWritten) {
             throw IllegalArgumentException(
                 "Explicit command output path is not writable: $finalDestination"
-            )
-        }
-        if (directNoCache && finalDestinationDirectory == null) {
-            throw IllegalArgumentException(
-                "Direct output requires a filesystem-representable destination: $finalDestination"
             )
         }
         if (directNoCache && finalDestinationDirectory?.exists() == true &&
@@ -1647,6 +1648,22 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             )
         }
 
+        val directStagingParent = if (directNoCache) {
+            (commandPathMap?.temp ?: finalDestinationDirectory)
+                ?: File(FileUtil.getCachePath(context)).canonicalFile
+        } else {
+            null
+        }
+        if (directNoCache && !FileUtil.canWriteToDestination(
+                directStagingParent!!.absolutePath,
+                context,
+            )
+        ) {
+            throw IllegalArgumentException(
+                "Direct output staging path is not writable: ${directStagingParent.absolutePath}"
+            )
+        }
+
         val operationToken = YtdlpOutputPlanToken.forDownload(
             downloadId = downloadItem.id,
             executionId = downloadItem.executionId,
@@ -1654,7 +1671,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         )
         val ytdlpDirectory = if (directNoCache) {
             File(
-                requireNotNull(finalDestinationDirectory),
+                requireNotNull(directStagingParent),
                 ".ytdlnisx-output/$operationToken",
             ).canonicalFile
         } else {
@@ -1664,8 +1681,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             finalDestination = finalDestination,
             ytdlpDirectory = ytdlpDirectory,
             directNoCache = directNoCache,
-            explicitCommandPath = explicitCommandPath != null,
+            explicitCommandPath = explicitCommandPath,
             directDestinationDirectory = finalDestinationDirectory,
+            directStagingParent = directStagingParent,
+            commandPathMap = commandPathMap,
             ownershipMarker = if (directNoCache) {
                 File(ytdlpDirectory, ".ytdlnisx-owner")
             } else {
@@ -2530,11 +2549,14 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             }
             DownloadType.command -> {
                 request.addOption(normalizeLegacyShellCommand(downloadItem.format.format_note))
-                // The generated option is appended after the raw command
-                // config so an authored -P/--paths value can identify the
-                // final destination without regaining output authority over
-                // the ambient filesystem.
-                request.addOption("-P", downDir.absolutePath)
+                // The generated home and temp entries are appended after the
+                // raw command config. The authored path map still determines
+                // the final home destination in YtdlpOutputPlan, while both
+                // yt-dlp path classes are forced through the exact
+                // operation-owned staging root. Output-type-specific maps are
+                // rejected before this request is built.
+                request.addOption("-P", "home:${downDir.absolutePath}")
+                request.addOption("-P", "temp:${downDir.absolutePath}")
             }
 
             else -> {}

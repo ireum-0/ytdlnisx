@@ -1,5 +1,6 @@
 package com.ireum.ytdl.work
 
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpOutputPlan
 import java.io.File
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
@@ -361,6 +362,121 @@ class DownloadOutputProvenanceTest {
     }
 
     @Test
+    fun successfulDirectCleanupRemovesOnlyCurrentMarkerAndEmptyParents() {
+        val destination = Files.createTempDirectory("output-cleanup-success-").toFile()
+        try {
+            val plan = directPlan(destination, "current-token")
+            val marker = requireNotNull(plan.ownershipMarker)
+            assertTrue(marker.parentFile!!.mkdirs())
+            marker.writeText(currentMarker)
+
+            val result = DirectOutputStagingCleanup.removeOwnedMarkerAndEmptyParents(
+                outputPlan = plan,
+                expectedMarkerText = currentMarker,
+                publicationState = DirectOutputPublicationState.SUCCESS,
+            )
+
+            assertEquals(
+                DirectOutputStagingCleanupResult(true, true, true),
+                result,
+            )
+            assertFalse(marker.exists())
+            assertFalse(plan.ytdlpDirectory.exists())
+            assertFalse(plan.ytdlpDirectory.parentFile!!.exists())
+        } finally {
+            destination.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun successfulCleanupPreservesUnexpectedSiblingAndOtherExecution() {
+        val destination = Files.createTempDirectory("output-cleanup-siblings-").toFile()
+        try {
+            val current = directPlan(destination, "current-token")
+            val currentMarker = requireNotNull(current.ownershipMarker)
+            assertTrue(currentMarker.parentFile!!.mkdirs())
+            currentMarker.writeText(currentMarkerText("current"))
+            val unexpected = write(current.ytdlpDirectory, "unproven.part")
+
+            val other = directPlan(destination, "other-token")
+            val otherMarker = requireNotNull(other.ownershipMarker)
+            assertTrue(otherMarker.parentFile!!.mkdirs())
+            otherMarker.writeText(currentMarkerText("other"))
+
+            val result = DirectOutputStagingCleanup.removeOwnedMarkerAndEmptyParents(
+                outputPlan = current,
+                expectedMarkerText = currentMarkerText("current"),
+                publicationState = DirectOutputPublicationState.SUCCESS,
+            )
+
+            assertEquals(DirectOutputStagingCleanupResult(true, false, false), result)
+            assertFalse(currentMarker.exists())
+            assertTrue(unexpected.exists())
+            assertTrue(current.ytdlpDirectory.exists())
+            assertTrue(otherMarker.exists())
+            assertTrue(other.ytdlpDirectory.exists())
+            assertTrue(current.ytdlpDirectory.parentFile!!.exists())
+        } finally {
+            destination.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun mismatchedMarkerPreservesCurrentAndOtherExecutionArtifacts() {
+        val destination = Files.createTempDirectory("output-cleanup-mismatch-").toFile()
+        try {
+            val plan = directPlan(destination, "mismatched-token")
+            val marker = requireNotNull(plan.ownershipMarker)
+            assertTrue(marker.parentFile!!.mkdirs())
+            marker.writeText(currentMarkerText("different-execution"))
+
+            val result = DirectOutputStagingCleanup.removeOwnedMarkerAndEmptyParents(
+                outputPlan = plan,
+                expectedMarkerText = currentMarker,
+                publicationState = DirectOutputPublicationState.SUCCESS,
+            )
+
+            assertNull(result)
+            assertTrue(marker.exists())
+            assertTrue(plan.ytdlpDirectory.exists())
+            assertTrue(plan.ytdlpDirectory.parentFile!!.exists())
+        } finally {
+            destination.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun partialOrFailedPublicationCannotTriggerDirectCleanup() {
+        val destination = Files.createTempDirectory("output-cleanup-failure-").toFile()
+        try {
+            val plan = directPlan(destination, "failed-token")
+            val marker = requireNotNull(plan.ownershipMarker)
+            assertTrue(marker.parentFile!!.mkdirs())
+            marker.writeText(currentMarker)
+            val stranded = write(plan.ytdlpDirectory, "stranded.mp4")
+
+            listOf(
+                DirectOutputPublicationState.PARTIAL,
+                DirectOutputPublicationState.FAILED,
+                DirectOutputPublicationState.AMBIGUOUS,
+            ).forEach { state ->
+                val result = DirectOutputStagingCleanup.removeOwnedMarkerAndEmptyParents(
+                    outputPlan = plan,
+                    expectedMarkerText = currentMarker,
+                    publicationState = state,
+                )
+                assertNull(result)
+            }
+
+            assertTrue(marker.exists())
+            assertTrue(stranded.exists())
+            assertTrue(plan.ytdlpDirectory.exists())
+        } finally {
+            destination.deleteRecursively()
+        }
+    }
+
+    @Test
     fun parserKeepsAllOutputBearingRecordsButIgnoresAmbientDiagnostics() {
         val paths = DownloadOutputProvenance.parseYtdlpOutputPaths(
             """
@@ -386,5 +502,25 @@ class DownloadOutputProvenanceTest {
         file.parentFile?.mkdirs()
         file.writeText("artifact")
         return file
+    }
+
+    private val currentMarker = currentMarkerText("current")
+
+    private fun currentMarkerText(execution: String): String =
+        "ytdlnisx-output-owner\n" +
+            "downloadId=42\n" +
+            "executionId=$execution\n"
+
+    private fun directPlan(destination: File, token: String): YtdlpOutputPlan {
+        val staging = File(destination, ".ytdlnisx-output/$token").canonicalFile
+        return YtdlpOutputPlan(
+            finalDestination = destination.canonicalPath,
+            ytdlpDirectory = staging,
+            directNoCache = true,
+            explicitCommandPath = false,
+            directDestinationDirectory = destination.canonicalFile,
+            directStagingParent = destination.canonicalFile,
+            ownershipMarker = File(staging, ".ytdlnisx-owner"),
+        )
     }
 }

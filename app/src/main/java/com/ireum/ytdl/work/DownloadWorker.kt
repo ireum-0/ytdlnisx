@@ -233,6 +233,10 @@ internal object DownloadWorkerEffectTestHooks {
     @Volatile
     internal var outputBaselineReaderForTesting: ((File) -> DownloadOutputProvenance.BaselineSnapshot)? = null
 
+    /** Supplies deterministic media-quality results at the real Worker boundary. */
+    @Volatile
+    internal var videoQualityProbeForTesting: ((List<String>) -> VideoMediaQuality)? = null
+
     /** Fails the real committed-History finalization boundary once in tests. */
     @Volatile
     internal var beforeCommittedHistoryFinalizationForTesting: ((Long) -> Unit)? = null
@@ -2156,6 +2160,7 @@ class DownloadWorker(
                                 }
                         }
                         recordCreatedOutputs(finalPaths)
+                        cleanupSuccessfulDirectOutputStaging()
         completionIssues = mutableListOf()
                         ytdlpPhase.result.qualityWarning?.let { mismatch ->
                             completionIssues += DownloadIssue.create(
@@ -3963,6 +3968,42 @@ class DownloadWorker(
         private fun currentAuthoritativeOutputPaths(): List<String> =
             ytdlpOutputProvenance?.currentAttemptPaths().orEmpty()
 
+        private suspend fun cleanupSuccessfulDirectOutputStaging() {
+            val outputPlan = ytdlpOutputPlan ?: return
+            if (!outputPlan.directNoCache) return
+            try {
+                withOwnedExecutionSideEffect(downloadItem) {
+                    val result = DirectOutputStagingCleanup.removeOwnedMarkerAndEmptyParents(
+                        outputPlan = outputPlan,
+                        expectedMarkerText = directOwnershipMarkerText(downloadItem),
+                        publicationState = DirectOutputPublicationState.SUCCESS,
+                    )
+                    if (result == null) {
+                        Log.w(
+                            TAG,
+                            "Direct output staging cleanup refused id=${downloadItem.id}; " +
+                                "preserving marker/artifacts",
+                        )
+                    } else {
+                        Log.i(
+                            TAG,
+                            "Direct output staging cleanup id=${downloadItem.id} " +
+                                "marker=${result.markerDeleted} token=${result.tokenDirectoryDeleted} " +
+                                "namespace=${result.namespaceDeleted}",
+                        )
+                    }
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                Log.w(
+                    TAG,
+                    "Direct output staging cleanup failed id=${downloadItem.id}; preserving artifacts",
+                    error,
+                )
+            }
+        }
+
         private fun authoritativeTempSourceFiles(): List<File> =
             currentAuthoritativeOutputPaths()
                 .filter { path ->
@@ -5164,7 +5205,8 @@ class DownloadWorker(
             .map { it.absolutePath }
             .toList()
         if (paths.isEmpty()) return null
-        return HistoryVideoQualityProbe.probe(context, paths)
+        return DownloadWorkerEffectTestHooks.videoQualityProbeForTesting?.invoke(paths)
+            ?: HistoryVideoQualityProbe.probe(context, paths)
     }
 
     private fun commandHasYoutubeAuthentication(command: String): Boolean {
@@ -5280,26 +5322,26 @@ class DownloadWorker(
         downloadItem: DownloadItem,
         beforeRetry: Boolean,
     ): File {
-        val destination = outputPlan.directDestinationDirectory?.canonicalFile
-            ?: throw IOException("Direct output destination is unavailable")
         val staging = outputPlan.directStagingDirectory?.canonicalFile
             ?: throw IOException("Direct output staging directory is unavailable")
+        val stagingParent = outputPlan.directStagingParent?.canonicalFile
+            ?: throw IOException("Direct output staging parent is unavailable")
         val marker = outputPlan.ownershipMarker?.canonicalFile
             ?: throw IOException("Direct output ownership marker is unavailable")
         val stagingNamespace = staging.parentFile?.canonicalFile
             ?: throw IOException("Direct output staging parent is unavailable")
         if (
             stagingNamespace.name != ".ytdlnisx-output" ||
-                stagingNamespace.parentFile?.canonicalFile != destination ||
+                stagingNamespace.parentFile?.canonicalFile != stagingParent ||
                 marker.parentFile?.canonicalFile != staging
         ) {
             throw IOException("Unsafe direct output staging directory: ${staging.absolutePath}")
         }
-        if (!destination.exists() && !destination.mkdirs() && !destination.isDirectory) {
-            throw IOException("Failed to create direct output destination: ${destination.absolutePath}")
+        if (!stagingParent.exists() && !stagingParent.mkdirs() && !stagingParent.isDirectory) {
+            throw IOException("Failed to create direct output staging parent: ${stagingParent.absolutePath}")
         }
-        if (!destination.isDirectory) {
-            throw IOException("Direct output destination is not a directory: ${destination.absolutePath}")
+        if (!stagingParent.isDirectory) {
+            throw IOException("Direct output staging parent is not a directory: ${stagingParent.absolutePath}")
         }
         val cleanFailure = if (beforeRetry) {
             "Failed to clean direct output staging directory before retry"
@@ -7663,7 +7705,7 @@ class DownloadWorker(
             ?: return
         val expectedHeight = marker.expectedMinimumHeight ?: return
         val quality = withOwnedExecutionLease(downloadItem) {
-            HistoryVideoQualityProbe.probe(context, finalPaths)
+            probeVideoQuality(finalPaths)
         }
         if (
             quality.state == VideoFileQualityState.READY &&
@@ -7686,6 +7728,10 @@ class DownloadWorker(
                 "(expected=${expectedHeight}p, actual=${quality.resolutionHeight}p, state=${quality.state})"
         )
     }
+
+    private fun probeVideoQuality(paths: List<String>): VideoMediaQuality =
+        DownloadWorkerEffectTestHooks.videoQualityProbeForTesting?.invoke(paths)
+            ?: HistoryVideoQualityProbe.probe(context, paths)
 
     private suspend fun deleteRejectedQualityReplacementOutputs(
         historyId: Long,

@@ -17,34 +17,62 @@ data class YtdlpOutputPlan(
     val directNoCache: Boolean,
     val explicitCommandPath: Boolean,
     val directDestinationDirectory: File? = null,
+    val directStagingParent: File? = null,
+    val commandPathMap: YtdlpPathMap? = null,
     val ownershipMarker: File? = null,
 ) {
     val directStagingDirectory: File?
         get() = ytdlpDirectory.takeIf { directNoCache }
 }
 
+/**
+ * The effective filesystem path map accepted by yt-dlp's --paths option.
+ * A null entry means that yt-dlp's default for that key remains in effect.
+ */
+data class YtdlpPathMap(
+    val home: File? = null,
+    val temp: File? = null,
+    val outputTypePaths: Map<String, File> = emptyMap(),
+)
+
 internal sealed interface YtdlpCommandPathResolution {
     data object None : YtdlpCommandPathResolution
 
     data class Explicit(
-        val option: String,
-        val rawValue: String,
-        val directory: File,
+        val pathMap: YtdlpPathMap,
     ) : YtdlpCommandPathResolution
 
     data class Invalid(val reason: String) : YtdlpCommandPathResolution
 }
 
 /**
- * Parses only the path options that the command worker can safely authorize.
- * Unqualified paths and the yt-dlp `home:` path are supported.  Other typed
- * paths or multiple competing path options remain explicitly ambiguous.
+ * Parses the path-map syntax used by yt-dlp. The upstream option parser stores
+ * one effective value per key, with later declarations replacing earlier
+ * declarations for the same key. The worker can safely rewrite the home and
+ * temp keys into its operation-owned staging root. Output-type-specific keys
+ * are retained in the model but rejected by output-plan construction because
+ * this worker cannot prove their publication lineage independently.
  */
 internal object YtdlpCommandPathParser {
+    private val outputTypeKeys = setOf(
+        "chapter",
+        "subtitle",
+        "thumbnail",
+        "description",
+        "annotation",
+        "infojson",
+        "link",
+        "pl_video",
+        "pl_thumbnail",
+        "pl_description",
+        "pl_infojson",
+    )
+
     fun resolve(command: String): YtdlpCommandPathResolution {
         val tokens = tokenize(command)
             ?: return YtdlpCommandPathResolution.Invalid("unbalanced shell quoting")
-        var explicit: YtdlpCommandPathResolution.Explicit? = null
+        val paths = linkedMapOf<String, File>()
+        var foundPathOption = false
         var index = 0
         while (index < tokens.size) {
             val token = tokens[index]
@@ -64,35 +92,49 @@ internal object YtdlpCommandPathParser {
             }
             if (optionAndValue != null) {
                 val (option, value) = optionAndValue
-                val parsed = parsePath(value)
+                val parsed = parsePathMapValue(value)
                     ?: return YtdlpCommandPathResolution.Invalid(
                         "unsupported or malformed $option path: $value"
                     )
-                if (explicit != null) {
-                    return YtdlpCommandPathResolution.Invalid(
-                        "multiple direct output path options are ambiguous"
-                    )
-                }
-                explicit = YtdlpCommandPathResolution.Explicit(
-                    option = option,
-                    rawValue = value,
-                    directory = parsed,
-                )
+                foundPathOption = true
+                parsed.keys.forEach { key -> paths[key] = parsed.directory }
             }
             index += 1
         }
-        return explicit ?: YtdlpCommandPathResolution.None
+        if (!foundPathOption) return YtdlpCommandPathResolution.None
+        return YtdlpCommandPathResolution.Explicit(
+            pathMap = YtdlpPathMap(
+                home = paths["home"],
+                temp = paths["temp"],
+                outputTypePaths = paths
+                    .filterKeys { it in outputTypeKeys }
+                    .toMap(),
+            )
+        )
     }
 
-    private fun parsePath(rawValue: String): File? {
+    private data class ParsedPathMapValue(
+        val keys: List<String>,
+        val directory: File,
+    )
+
+    private fun parsePathMapValue(rawValue: String): ParsedPathMapValue? {
         val value = rawValue.trim().trim('"', '\'')
         if (value.isBlank() || value.startsWith("content://", ignoreCase = true)) return null
 
-        val path = when {
-            value.startsWith("home:", ignoreCase = true) -> value.substringAfter(':')
-            value.contains(':') && !isWindowsDrivePath(value) -> return null
-            else -> value
-        }.trim()
+        val colonIndex = value.indexOf(':')
+        val candidateKeys = if (colonIndex > 0 && !isWindowsDrivePath(value)) {
+            value.substring(0, colonIndex)
+                .split(',')
+                .map { it.trim().lowercase() }
+        } else {
+            emptyList()
+        }
+        val isTyped = candidateKeys.isNotEmpty() && candidateKeys.all { key ->
+            key == "home" || key == "temp" || key in outputTypeKeys
+        }
+        val typedKeys = if (isTyped) candidateKeys else listOf("home")
+        val path = (if (isTyped) value.substring(colonIndex + 1) else value).trim()
         if (path.isBlank() || path.startsWith("~") || path.startsWith("file://")) return null
         // A relative yt-dlp path is resolved against the native process
         // working directory, which is not an operation-owned destination.
@@ -102,7 +144,7 @@ internal object YtdlpCommandPathParser {
 
         return runCatching {
             val file = File(path).canonicalFile
-            file.takeIf { it.isAbsolute }
+            file.takeIf { it.isAbsolute }?.let { ParsedPathMapValue(typedKeys, it) }
         }.getOrNull()
     }
 
