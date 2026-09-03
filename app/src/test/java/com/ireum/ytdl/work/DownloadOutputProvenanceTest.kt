@@ -94,17 +94,93 @@ class DownloadOutputProvenanceTest {
         val directDirectory = Files.createTempDirectory("output-provenance-direct-new-").toFile()
         val unusedTempDirectory = Files.createTempDirectory("output-provenance-unused-").toFile()
         try {
-            val preExisting = write(directDirectory, "same.mp4")
+            val ownershipMarker = write(directDirectory, ".ytdlnisx-owner")
+            val provenance = DownloadOutputProvenance(
+                tempDirectory = unusedTempDirectory,
+                directDirectory = directDirectory,
+                directOwnershipMarker = ownershipMarker,
+            )
+            provenance.beginAttempt()
+            val current = write(directDirectory, "same-new.mp4")
+
+            assertEquals(
+                listOf(current.canonicalPath),
+                provenance.acceptYtdlpOutput("Destination: '${current.absolutePath}'")
+            )
+        } finally {
+            directDirectory.deleteRecursively()
+            unusedTempDirectory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun directBaselineFailureDoesNotBecomeAnEmptyBaseline() {
+        val directDirectory = Files.createTempDirectory("output-provenance-direct-baseline-").toFile()
+        val unusedTempDirectory = Files.createTempDirectory("output-provenance-unused-baseline-").toFile()
+        try {
+            val ownershipMarker = write(directDirectory, ".ytdlnisx-owner")
+            val provenance = DownloadOutputProvenance(
+                tempDirectory = unusedTempDirectory,
+                directDirectory = directDirectory,
+                directOwnershipMarker = ownershipMarker,
+                baselineSnapshotReader = { directory ->
+                    if (directory.canonicalFile == directDirectory.canonicalFile) {
+                        DownloadOutputProvenance.BaselineSnapshot.Failed("injected enumeration failure")
+                    } else {
+                        DownloadOutputProvenance.BaselineSnapshot.Complete(emptySet())
+                    }
+                },
+            )
+
+            provenance.beginAttempt()
+            val current = write(directDirectory, "reported.mp4")
+
+            assertTrue(
+                provenance.acceptYtdlpOutput("Destination: '${current.absolutePath}'").isEmpty()
+            )
+            assertFalse(provenance.isAuthoritative(current.absolutePath))
+        } finally {
+            directDirectory.deleteRecursively()
+            unusedTempDirectory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun publicDirectRaceCannotAcquireAuthorityFromAbsenceAtStart() {
+        val directDirectory = Files.createTempDirectory("output-provenance-direct-race-").toFile()
+        val unusedTempDirectory = Files.createTempDirectory("output-provenance-unused-race-").toFile()
+        try {
             val provenance = DownloadOutputProvenance(
                 tempDirectory = unusedTempDirectory,
                 directDirectory = directDirectory,
             )
             provenance.beginAttempt()
-            val current = write(directDirectory, "same-new.mp4")
+            val foreign = write(directDirectory, "created-by-another-actor.mp4")
 
             assertTrue(
-                provenance.acceptYtdlpOutput("Destination: '${preExisting.absolutePath}'").isEmpty()
+                provenance.acceptYtdlpOutput("Destination: '${foreign.absolutePath}'").isEmpty()
             )
+            assertFalse(provenance.isAuthoritative(foreign.absolutePath))
+        } finally {
+            directDirectory.deleteRecursively()
+            unusedTempDirectory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun operationOwnedDirectRootProvidesAuthorityWithoutPublicFolderAbsenceProof() {
+        val directDirectory = Files.createTempDirectory("output-provenance-owned-direct-").toFile()
+        val unusedTempDirectory = Files.createTempDirectory("output-provenance-unused-owned-").toFile()
+        try {
+            val ownershipMarker = write(directDirectory, ".ytdlnisx-owner")
+            val provenance = DownloadOutputProvenance(
+                tempDirectory = unusedTempDirectory,
+                directDirectory = directDirectory,
+                directOwnershipMarker = ownershipMarker,
+            )
+            provenance.beginAttempt()
+            val current = write(directDirectory, "current.mp4")
+
             assertEquals(
                 listOf(current.canonicalPath),
                 provenance.acceptYtdlpOutput("Destination: '${current.absolutePath}'")

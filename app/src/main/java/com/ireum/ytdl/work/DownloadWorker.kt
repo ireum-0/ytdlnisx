@@ -93,6 +93,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YoutubeMediaFailureKind
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeQualityRouteInput
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeQualityRouteOutcome
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpOutputPlan
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRetryLog
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
@@ -223,6 +224,14 @@ internal object DownloadWorkerEffectTestHooks {
     /** Supplies synthetic successful yt-dlp output to the real worker path. */
     @Volatile
     internal var ytdlpSuccessForTesting: ((Long, File) -> String?)? = null
+
+    /** Supplies synthetic output while exposing the exact production output directory. */
+    @Volatile
+    internal var ytdlpSuccessWithOutputDirectoryForTesting: ((Long, File, File) -> String?)? = null
+
+    /** Injects a direct-output baseline result for deterministic fail-closed tests. */
+    @Volatile
+    internal var outputBaselineReaderForTesting: ((File) -> DownloadOutputProvenance.BaselineSnapshot)? = null
 
     /** Fails the real committed-History finalization boundary once in tests. */
     @Volatile
@@ -1203,6 +1212,7 @@ class DownloadWorker(
         private lateinit var eventBus: EventBus
         private lateinit var ytdlpPhase: YtdlpPhaseOutcome.Completed
         private var ytdlpOutputProvenance: DownloadOutputProvenance? = null
+        private var ytdlpOutputPlan: YtdlpOutputPlan? = null
         private lateinit var tempFileDir: File
         private var finalPaths: MutableList<String> = mutableListOf()
         private var hardSubBurned = false
@@ -1446,27 +1456,24 @@ class DownloadWorker(
                         )
                     }
 
-                    val writtenPath = downloadItem.format.format_note.contains("-P ")
+                    val outputPlan = ytdlpUtil.resolveOutputPlan(downloadItem)
+                    ytdlpOutputPlan = outputPlan
         shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
-                    // Ordinary downloads always use the reset-isolated staging
-                    // directory.  The only direct-output mode left here is an
-                    // explicitly authored terminal command containing -P;
-                    // its exact after_move report is validated separately.
-        noCache = writtenPath
+        noCache = outputPlan.directNoCache
 
-        downloadLocation = downloadItem.downloadPath
+        downloadLocation = outputPlan.finalDestination
         keepCache = sharedPreferences.getBoolean("keep_cache", false)
         noKeepSubs = sharedPreferences.getBoolean("no_keep_subs", false)
                     val ytdlpInput = YtdlpPhaseInput(
                         downloadItem = downloadItem,
                         rawTempDirectory = rawTempFileDir,
+                        outputPlan = outputPlan,
                         outputProvenance = DownloadOutputProvenance(
                             tempDirectory = rawTempFileDir,
-                            directDirectory = if (writtenPath) {
-                                File(FileUtil.formatPath(downloadLocation))
-                            } else {
-                                null
-                            },
+                            directDirectory = outputPlan.directStagingDirectory,
+                            directOwnershipMarker = outputPlan.ownershipMarker,
+                            baselineSnapshotReader = DownloadWorkerEffectTestHooks
+                                .outputBaselineReaderForTesting,
                         ),
                         notificationTitle = notificationTitle,
                         loggingEnabled = sharedPreferences.getBoolean("log_downloads", false) &&
@@ -1695,25 +1702,136 @@ class DownloadWorker(
                         }
 
                             if (noCache){
-                            finalPaths = currentAuthoritativeOutputPaths()
+                            // No-cache is a publication policy, not permission
+                            // to treat the public destination as an output
+                            // manifest.  Direct mode writes to the exact
+                            // operation-owned staging root and publishes only
+                            // the move result for those authoritative sources.
+                            currentIssueStage = DownloadIssueStage.MOVE
+                            withOwnedExecutionSideEffect(downloadItem) {
+                                eventBus.post(
+                                    WorkerProgress(
+                                        100,
+                                        "Moving file to ${FileUtil.formatPath(downloadLocation)}",
+                                        downloadItem.id,
+                                        downloadItem.logID,
+                                    )
+                                )
+                            }
+                            val authoritativeDirectSourceFiles = authoritativeTempSourceFiles()
+                            val movedOutputPaths = mutableListOf<String>()
+                            var returnedMovePaths = emptyList<String>()
+                            var directMoveError: Exception? = null
+                            try {
+                                returnedMovePaths = if (
+                                    authoritativeDirectSourceFiles.isEmpty() &&
+                                        ytdlpPhase.state.activeRequest.hasOption("--download-archive")
+                                ) {
+                                    emptyList()
+                                } else {
+                                    if (authoritativeDirectSourceFiles.isEmpty()) {
+                                        throw IOException("Download completed without an authoritative output path")
+                                    }
+                                    withOwnedExecutionLease(downloadItem) {
+                                        withContext(Dispatchers.IO) {
+                                            FileUtil.moveFile(
+                                                originDir = tempFileDir.absoluteFile,
+                                                context = context,
+                                                destDir = downloadLocation,
+                                                keepCache = keepCache,
+                                                progress = { p ->
+                                                    eventBus.post(
+                                                        WorkerProgress(
+                                                            p,
+                                                            "Moving file to ${FileUtil.formatPath(downloadLocation)}",
+                                                            downloadItem.id,
+                                                            downloadItem.logID,
+                                                        )
+                                                    )
+                                                },
+                                                sourceFiles = authoritativeDirectSourceFiles,
+                                                onOutput = { path -> movedOutputPaths.add(path) },
+                                            )
+                                        }
+                                    }
+                                }
+                            } catch (error: Exception) {
+                                if (error is CancellationException) throw error
+                                directMoveError = error
+                                Log.e(TAG, "Direct output move failed id=${downloadItem.id}", error)
+                            }
+                            var exactDirectPaths = ytdlpOutputProvenance
+                                ?.recordMoveResults(
+                                    paths = movedOutputPaths + returnedMovePaths,
+                                    sourcePaths = authoritativeDirectSourceFiles.map { it.absolutePath },
+                                )
+                                .orEmpty()
+                            var remainingDirectSources = authoritativeDirectSourceFiles.filter { source ->
+                                source.exists() && source.isFile
+                            }
+                            if (remainingDirectSources.isNotEmpty()) {
+                                Log.w(
+                                    TAG,
+                                    "Direct output move left authoritative sources id=${downloadItem.id} " +
+                                        "count=${remainingDirectSources.size}; retrying exact move",
+                                )
+                                val retryPaths = retryMoveFromTempDirectory(
+                                    tempFileDir = tempFileDir,
+                                    downloadLocation = downloadLocation,
+                                    keepCache = keepCache,
+                                    downloadItem = downloadItem,
+                                    downloadLogId = downloadItem.logID,
+                                    eventBus = eventBus,
+                                    sourcePaths = remainingDirectSources.map { it.absolutePath },
+                                )
+                                exactDirectPaths = (
+                                    exactDirectPaths + ytdlpOutputProvenance
+                                        ?.recordMoveResults(
+                                            retryPaths,
+                                            sourcePaths = remainingDirectSources.map { it.absolutePath },
+                                        ).orEmpty()
+                                    )
+                                remainingDirectSources = authoritativeDirectSourceFiles.filter { source ->
+                                    source.exists() && source.isFile
+                                }
+                            }
+                            finalPaths = exactDirectPaths
                                 .filter { path ->
-                                    FileUtil.exists(path)
+                                    FileUtil.exists(path) && !isMetadataOutputPath(path)
                                 }
                                 .distinct()
                                 .toMutableList()
-                            logPathCandidates("HardSub no-cache authoritative", downloadItem.id, finalPaths)
+                            logPathCandidates("HardSub no-cache exact move", downloadItem.id, finalPaths)
+                            if (remainingDirectSources.isNotEmpty()) {
+                                throw IOException(
+                                    "Direct output move did not publish all authoritative outputs; " +
+                                        "temporary outputs remain: ${remainingDirectSources.joinToString(limit = 5)}",
+                                    directMoveError,
+                                )
+                            }
+                            directMoveError?.let { error ->
+                                if (finalPaths.isEmpty()) {
+                                    throw IOException("Direct output move failed without an authoritative output path", error)
+                                }
+                            }
                             if (
                                 finalPaths.isEmpty() &&
                                 !ytdlpPhase.state.activeRequest.hasOption("--download-archive")
                             ) {
                                 throw IOException("Download completed without an authoritative output path")
                             }
-                            Log.i(
-                                TAG,
-                                "HardSub no-cache output paths id=${downloadItem.id} count=${finalPaths.size} sample=${
-                                    finalPaths.joinToString(limit = 3)
-                                }"
-                            )
+                            if (finalPaths.isNotEmpty()) {
+                                withOwnedExecutionSideEffect(downloadItem) {
+                                    eventBus.post(
+                                        WorkerProgress(
+                                            100,
+                                            "Moved file to ${FileUtil.formatPath(downloadLocation)}",
+                                            downloadItem.id,
+                                            downloadItem.logID,
+                                        )
+                                    )
+                                }
+                            }
                             publishNoCacheMediaWithOwnedExecution(
                                 context = context,
                                 dbManager = dbManager,
@@ -2749,11 +2867,20 @@ class DownloadWorker(
                             }
                             runCatching {
                                 withOwnedExecutionSideEffect(downloadItem) {
-                                    resetYtdlpTempDirectoryUnsafe(
-                                        rawTempDirectory = rawTempFileDir,
-                                        downloadId = downloadItem.id,
-                                        beforeRetry = true,
-                                    ).delete()
+                                    val outputPlan = ytdlpOutputPlan
+                                    if (outputPlan?.directNoCache == true) {
+                                        resetDirectOutputDirectoryUnsafe(
+                                            outputPlan = outputPlan,
+                                            downloadItem = downloadItem,
+                                            beforeRetry = true,
+                                        ).delete()
+                                    } else {
+                                        resetYtdlpTempDirectoryUnsafe(
+                                            rawTempDirectory = rawTempFileDir,
+                                            downloadId = downloadItem.id,
+                                            beforeRetry = true,
+                                        ).delete()
+                                    }
                                 }
                             }.onFailure { cleanupError ->
                                 Log.w(
@@ -3850,6 +3977,7 @@ class DownloadWorker(
     private data class YtdlpPhaseInput(
         val downloadItem: DownloadItem,
         val rawTempDirectory: File,
+        val outputPlan: YtdlpOutputPlan,
         val outputProvenance: DownloadOutputProvenance,
         val notificationTitle: String,
         val loggingEnabled: Boolean,
@@ -4062,16 +4190,24 @@ class DownloadWorker(
             outputProvenance = input.outputProvenance,
         )
         return try {
-            runtime.validatedTempDirectory = resetYtdlpTempDirectory(
+            runtime.validatedTempDirectory = resetYtdlpOutputDirectory(
                 downloadItem = input.downloadItem,
                 rawTempDirectory = input.rawTempDirectory,
+                outputPlan = input.outputPlan,
                 beforeRetry = false,
             )
             runtime.beginAttempt()
             DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting
                 ?.invoke(input.downloadItem.id)
-            val injectedOutput = DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting
-                ?.invoke(input.downloadItem.id, input.rawTempDirectory)
+            val injectedOutput = DownloadWorkerEffectTestHooks
+                .ytdlpSuccessWithOutputDirectoryForTesting
+                ?.invoke(
+                    input.downloadItem.id,
+                    input.rawTempDirectory,
+                    input.outputPlan.ytdlpDirectory,
+                )
+                ?: DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting
+                    ?.invoke(input.downloadItem.id, input.rawTempDirectory)
             if (injectedOutput != null) {
                 runtime.recordCompletedOutput(injectedOutput)
                 return YtdlpPhaseOutcome.Completed(
@@ -4122,7 +4258,11 @@ class DownloadWorker(
         return try {
             val (initialProfile, request) = withOwnedExecutionSideEffect(downloadItem) {
                 val profile = services.ytdlpUtil.resolveInitialYoutubeMediaAccessProfile(downloadItem)
-                val builtRequest = services.ytdlpUtil.buildYoutubeDLRequest(downloadItem, profile)
+                val builtRequest = services.ytdlpUtil.buildYoutubeDLRequest(
+                    downloadItem = downloadItem,
+                    mediaAccessProfile = profile,
+                    outputPlan = input.outputPlan,
+                )
                 requestOwner.register(builtRequest)
                 profile to builtRequest
             }
@@ -4143,6 +4283,7 @@ class DownloadWorker(
                         request,
                         command,
                         initialProfile,
+                        outputPlan = input.outputPlan,
                     ),
                     mediaAccessProfile = initialProfile,
                     qualityGuardApplied = !rawFormatOverride && commandQualityTarget(command) != null,
@@ -4205,6 +4346,7 @@ class DownloadWorker(
 
     private fun buildYtdlpAttempt(
         downloadItem: DownloadItem,
+        outputPlan: YtdlpOutputPlan,
         ytdlpUtil: YTDLPUtil,
         retryPlan: YtdlpRetryPlan.Attempt,
         onRequestBuilt: (YoutubeDLRequest) -> Unit,
@@ -4215,6 +4357,7 @@ class DownloadWorker(
             mediaAccessProfile = retryPlan.mediaAccessProfile,
             useCachedInfoJson = retryPlan.useCachedInfoJson,
             applyQualityGuard = retryPlan.applyQualityGuard,
+            outputPlan = outputPlan,
         )
         onRequestBuilt(request)
         val command = ytdlpUtil.parseYTDLRequestString(request)
@@ -4230,6 +4373,7 @@ class DownloadWorker(
                 request,
                 command,
                 retryPlan.mediaAccessProfile,
+                outputPlan = outputPlan,
             ),
             mediaAccessProfile = retryPlan.mediaAccessProfile,
             qualityGuardApplied = retryPlan.applyQualityGuard &&
@@ -4602,9 +4746,10 @@ class DownloadWorker(
                 )) {
                     is CompletedYtdlpQualityOutcome.Accept -> return qualityOutcome.result
                     is CompletedYtdlpQualityOutcome.Reject -> {
-                        resetYtdlpTempDirectory(
+                        resetYtdlpOutputDirectory(
                             downloadItem = input.downloadItem,
                             rawTempDirectory = input.rawTempDirectory,
+                            outputPlan = input.outputPlan,
                             beforeRetry = true,
                         )
                         throw YtdlpQualityRejectedException(qualityOutcome.message)
@@ -4796,14 +4941,16 @@ class DownloadWorker(
         withOwnedExecutionSideEffect(input.downloadItem) {
             announceYtdlpRetry(input, services, eventBus, plan.notice, previousError)
         }
-        resetYtdlpTempDirectory(
+        resetYtdlpOutputDirectory(
             downloadItem = input.downloadItem,
             rawTempDirectory = input.rawTempDirectory,
+            outputPlan = input.outputPlan,
             beforeRetry = true,
         )
         return withOwnedExecutionSideEffect(input.downloadItem) {
             buildYtdlpAttempt(
                 downloadItem = input.downloadItem,
+                outputPlan = input.outputPlan,
                 ytdlpUtil = services.ytdlpUtil,
                 retryPlan = plan,
                 onRequestBuilt = runtime::registerRequest,
@@ -4928,6 +5075,7 @@ class DownloadWorker(
                 useCachedInfoJson = false,
                 applyQualityGuard = false,
                 selectionOnly = true,
+                outputPlan = input.outputPlan,
             ).apply {
                 addOption("--simulate")
                 addOption("--skip-download")
@@ -4949,6 +5097,7 @@ class DownloadWorker(
                 request,
                 command,
                 profile,
+                outputPlan = input.outputPlan,
             ),
             mediaAccessProfile = profile,
             qualityGuardApplied = false,
@@ -5105,17 +5254,95 @@ class DownloadWorker(
         }
     }
 
-    private suspend fun resetYtdlpTempDirectory(
+    private suspend fun resetYtdlpOutputDirectory(
         downloadItem: DownloadItem,
         rawTempDirectory: File,
+        outputPlan: YtdlpOutputPlan,
         beforeRetry: Boolean,
     ): File = withOwnedExecutionSideEffect(downloadItem) {
-        resetYtdlpTempDirectoryUnsafe(
-            rawTempDirectory = rawTempDirectory,
-            downloadId = downloadItem.id,
-            beforeRetry = beforeRetry,
-        )
+        if (outputPlan.directNoCache) {
+            resetDirectOutputDirectoryUnsafe(
+                outputPlan = outputPlan,
+                downloadItem = downloadItem,
+                beforeRetry = beforeRetry,
+            )
+        } else {
+            resetYtdlpTempDirectoryUnsafe(
+                rawTempDirectory = rawTempDirectory,
+                downloadId = downloadItem.id,
+                beforeRetry = beforeRetry,
+            )
+        }
     }
+
+    private fun resetDirectOutputDirectoryUnsafe(
+        outputPlan: YtdlpOutputPlan,
+        downloadItem: DownloadItem,
+        beforeRetry: Boolean,
+    ): File {
+        val destination = outputPlan.directDestinationDirectory?.canonicalFile
+            ?: throw IOException("Direct output destination is unavailable")
+        val staging = outputPlan.directStagingDirectory?.canonicalFile
+            ?: throw IOException("Direct output staging directory is unavailable")
+        val marker = outputPlan.ownershipMarker?.canonicalFile
+            ?: throw IOException("Direct output ownership marker is unavailable")
+        val stagingNamespace = staging.parentFile?.canonicalFile
+            ?: throw IOException("Direct output staging parent is unavailable")
+        if (
+            stagingNamespace.name != ".ytdlnisx-output" ||
+                stagingNamespace.parentFile?.canonicalFile != destination ||
+                marker.parentFile?.canonicalFile != staging
+        ) {
+            throw IOException("Unsafe direct output staging directory: ${staging.absolutePath}")
+        }
+        if (!destination.exists() && !destination.mkdirs() && !destination.isDirectory) {
+            throw IOException("Failed to create direct output destination: ${destination.absolutePath}")
+        }
+        if (!destination.isDirectory) {
+            throw IOException("Direct output destination is not a directory: ${destination.absolutePath}")
+        }
+        val cleanFailure = if (beforeRetry) {
+            "Failed to clean direct output staging directory before retry"
+        } else {
+            "Failed to clean direct output staging directory"
+        }
+        val createFailure = if (beforeRetry) {
+            "Failed to recreate direct output staging directory before retry"
+        } else {
+            "Failed to create direct output staging directory"
+        }
+        if (staging.exists()) {
+            val existingMarkerIsOwned = marker.isFile && runCatching {
+                marker.readText() == directOwnershipMarkerText(downloadItem)
+            }.getOrDefault(false)
+            if (!existingMarkerIsOwned) {
+                throw IOException(
+                    "Refusing to delete unproven direct output staging directory: " +
+                        staging.absolutePath
+                )
+            }
+            if (!staging.deleteRecursively()) {
+                throw IOException("$cleanFailure: ${staging.absolutePath}")
+            }
+        }
+        if (!staging.mkdirs() && !staging.isDirectory) {
+            throw IOException("$createFailure: ${staging.absolutePath}")
+        }
+        runCatching {
+            marker.writeText(directOwnershipMarkerText(downloadItem))
+        }.getOrElse { error ->
+            throw IOException("$createFailure marker: ${marker.absolutePath}", error)
+        }
+        if (!marker.isFile) {
+            throw IOException("Direct output ownership marker was not created: ${marker.absolutePath}")
+        }
+        return staging
+    }
+
+    private fun directOwnershipMarkerText(downloadItem: DownloadItem): String =
+        "ytdlnisx-output-owner\n" +
+            "downloadId=${downloadItem.id}\n" +
+            "executionId=${downloadItem.executionId}\n"
 
     private fun resetYtdlpTempDirectoryUnsafe(
         rawTempDirectory: File,

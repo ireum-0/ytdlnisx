@@ -1,34 +1,49 @@
 package com.ireum.ytdl.work
 
 import java.io.File
+import java.io.IOException
 
 /**
  * Carries output authority for one yt-dlp execution attempt.
  *
  * A path reported by yt-dlp is only an artifact candidate until it is
- * validated against the attempt-owned staging root (or, for the legacy raw
- * command path, an exact new path in the configured direct destination).
- * Directory membership, recency, and filename similarity are deliberately
- * absent from this contract.
+ * validated against the attempt-owned staging root.  The staging root may
+ * live beside the final destination for a no-cache operation, but it is
+ * created and marked by the current worker before yt-dlp starts.  Directory
+ * membership, recency, and filename similarity are deliberately absent from
+ * this contract.
  */
 internal class DownloadOutputProvenance(
     tempDirectory: File,
     directDirectory: File? = null,
+    private val directOwnershipMarker: File? = null,
+    private val baselineSnapshotReader: ((File) -> BaselineSnapshot)? = null,
 ) {
     private val tempRoot = tempDirectory.canonicalFile
     private val directRoot = directDirectory?.canonicalFile
 
     private var tempRootWasCleanAtAttemptStart = false
-    private var directPathsPresentAtAttemptStart: Set<String> = emptySet()
+    private var directRootReadyAtAttemptStart = false
+    private var tempBaseline: BaselineSnapshot = BaselineSnapshot.Failed("attempt not started")
+    private var directBaseline: BaselineSnapshot = BaselineSnapshot.Complete(emptySet())
     private var attemptStarted = false
     private val currentAttemptPaths = linkedSetOf<String>()
+
+    internal sealed interface BaselineSnapshot {
+        data class Complete(val files: Set<String>) : BaselineSnapshot
+        data class Failed(val reason: String) : BaselineSnapshot
+    }
 
     /** Begin a new route/retry attempt without carrying the previous attempt's paths. */
     fun beginAttempt() {
         attemptStarted = true
         currentAttemptPaths.clear()
-        tempRootWasCleanAtAttemptStart = isEmptyOrMissingDirectory(tempRoot)
-        directPathsPresentAtAttemptStart = snapshotFiles(directRoot)
+        tempBaseline = readBaseline(tempRoot)
+        directBaseline = directRoot?.let(::readBaseline) ?: BaselineSnapshot.Complete(emptySet())
+        tempRootWasCleanAtAttemptStart = tempBaseline.isCompleteAndEmpty()
+        directRootReadyAtAttemptStart = directRoot != null &&
+            directOwnershipMarker != null &&
+            directBaseline.isOwnedRoot(directOwnershipMarker)
     }
 
     /**
@@ -50,16 +65,14 @@ internal class DownloadOutputProvenance(
      * performed here.
      */
     fun recordMoveResults(paths: Iterable<String>, sourcePaths: Iterable<String>): List<String> {
-        if (!attemptStarted || !tempRootWasCleanAtAttemptStart) return emptyList()
+        if (!attemptStarted) return emptyList()
         val normalizedSources = sourcePaths
             .mapNotNull(::normalizeStoredPath)
             .distinct()
         if (
             normalizedSources.isEmpty() ||
             normalizedSources.any { source ->
-                !isAuthoritative(source) ||
-                    source.startsWith("content://") ||
-                    !isInside(File(source), tempRoot)
+                !isAuthoritative(source) || !isOwnedSource(source)
             }
         ) {
             return emptyList()
@@ -92,10 +105,8 @@ internal class DownloadOutputProvenance(
      */
     fun hasUnprovenTemporaryArtifacts(): Boolean {
         if (!attemptStarted) return false
-        val authoritative = currentAttemptPaths.toList()
-        return snapshotFiles(tempRoot).any { candidate ->
-            authoritative.none { equivalentStoredPath(it, candidate) }
-        }
+        return hasUnprovenArtifacts(tempRoot, tempBaseline) ||
+            (directRoot != null && hasUnprovenArtifacts(directRoot, directBaseline))
     }
 
     fun isAuthoritative(path: String): Boolean {
@@ -108,9 +119,9 @@ internal class DownloadOutputProvenance(
         val file = File(normalized)
         return when {
             tempRootWasCleanAtAttemptStart && isInside(file, tempRoot) -> normalized
-            directRoot != null &&
-                isInside(file, directRoot) &&
-                normalized !in directPathsPresentAtAttemptStart -> normalized
+            directRootReadyAtAttemptStart &&
+                isInside(file, directRoot!!) &&
+                !isOwnershipMarker(file) -> normalized
             else -> null
         }
     }
@@ -140,20 +151,90 @@ internal class DownloadOutputProvenance(
         }.getOrDefault(false)
     }
 
-    private fun isEmptyOrMissingDirectory(directory: File): Boolean {
-        if (!directory.exists()) return true
-        if (!directory.isDirectory) return false
-        return runCatching { directory.walkTopDown().none { it.isFile } }.getOrDefault(false)
+    private fun isOwnedSource(path: String): Boolean {
+        if (path.startsWith("content://")) return false
+        val file = File(path)
+        return (tempRootWasCleanAtAttemptStart && isInside(file, tempRoot)) ||
+            (directRootReadyAtAttemptStart && directRoot != null && isInside(file, directRoot))
     }
 
-    private fun snapshotFiles(directory: File?): Set<String> {
-        if (directory == null || !directory.exists() || !directory.isDirectory) return emptySet()
-        return runCatching {
-            directory.walkTopDown()
-                .filter { it.isFile }
-                .map { it.canonicalFile.absolutePath }
-                .toSet()
-        }.getOrDefault(emptySet())
+    private fun isOwnershipMarker(file: File): Boolean =
+        directOwnershipMarker?.let { marker -> equivalentStoredPath(file.absolutePath, marker.absolutePath) } == true
+
+    private fun readBaseline(directory: File): BaselineSnapshot =
+        runCatching {
+            baselineSnapshotReader?.invoke(directory) ?: snapshotFiles(directory)
+        }.getOrElse { error ->
+            BaselineSnapshot.Failed(
+                "baseline acquisition failed for ${directory.absolutePath}: " +
+                    (error.message ?: error.javaClass.simpleName)
+            )
+        }
+
+    private fun hasUnprovenArtifacts(
+        directory: File,
+        baseline: BaselineSnapshot,
+    ): Boolean {
+        if (baseline is BaselineSnapshot.Failed) return true
+        val authoritative = currentAttemptPaths.toList()
+        val current = snapshotFiles(directory)
+        val currentFiles = (current as? BaselineSnapshot.Complete)?.files ?: return true
+        return currentFiles.any { candidate ->
+            !isOwnershipMarker(File(candidate)) &&
+                authoritative.none { equivalentStoredPath(it, candidate) }
+        }
+    }
+
+    private fun BaselineSnapshot.isCompleteAndEmpty(): Boolean =
+        this is BaselineSnapshot.Complete && files.isEmpty()
+
+    private fun BaselineSnapshot.isOwnedRoot(marker: File): Boolean {
+        if (this !is BaselineSnapshot.Complete) return false
+        val normalizedMarker = runCatching { marker.canonicalFile.absolutePath }.getOrNull() ?: return false
+        return directRoot != null &&
+            isInside(marker, directRoot) &&
+            marker.exists() && marker.isFile &&
+            files.contains(normalizedMarker) &&
+            files.all { it == normalizedMarker }
+    }
+
+    private fun snapshotFiles(directory: File): BaselineSnapshot {
+        return try {
+            if (!directory.exists()) return BaselineSnapshot.Complete(emptySet())
+            if (!directory.isDirectory) {
+                return BaselineSnapshot.Failed("path is not a directory: ${directory.absolutePath}")
+            }
+            val root = directory.canonicalFile
+            val files = linkedSetOf<String>()
+
+            fun visit(current: File) {
+                val canonicalCurrent = current.canonicalFile
+                if (!isInside(canonicalCurrent, root)) {
+                    throw IOException("directory escaped baseline root: ${current.absolutePath}")
+                }
+                val children = current.listFiles()
+                    ?: throw IOException("could not enumerate directory: ${current.absolutePath}")
+                children.forEach { child ->
+                    val canonicalChild = child.canonicalFile
+                    if (!isInside(canonicalChild, root)) {
+                        throw IOException("child escaped baseline root: ${child.absolutePath}")
+                    }
+                    when {
+                        child.isDirectory -> visit(child)
+                        child.isFile -> files += canonicalChild.absolutePath
+                        else -> throw IOException("unsupported directory entry: ${child.absolutePath}")
+                    }
+                }
+            }
+
+            visit(directory)
+            BaselineSnapshot.Complete(files)
+        } catch (error: Exception) {
+            BaselineSnapshot.Failed(
+                "baseline enumeration failed for ${directory.absolutePath}: " +
+                    (error.message ?: error.javaClass.simpleName)
+            )
+        }
     }
 
     private fun isInside(file: File, root: File): Boolean {

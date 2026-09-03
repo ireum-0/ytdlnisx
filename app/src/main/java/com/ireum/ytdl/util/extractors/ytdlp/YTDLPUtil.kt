@@ -1088,13 +1088,18 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         request: YoutubeDLRequest,
         commandString: String? = null,
         mediaAccessProfile: YoutubeMediaAccessProfile? = null,
+        outputPlan: YtdlpOutputPlan? = null,
     ): String {
+        val resolvedOutputPlan = outputPlan ?: resolveOutputPlan(downloadItem)
         val normalizedDownloadPath = FileUtil.formatPath(downloadItem.downloadPath)
-        val canWriteDirectly = FileUtil.canWriteToDestination(downloadItem.downloadPath, context)
+        val canWriteDirectly = FileUtil.canWriteToDestination(
+            resolvedOutputPlan.finalDestination,
+            context,
+        )
         val cacheDownloadsEnabled = sharedPreferences.getBoolean("cache_downloads", true)
-        val writtenPath = downloadItem.type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
-        val noCache = writtenPath
-        val tempDir = File(FileUtil.getCachePath(context), downloadItem.id.toString())
+        val writtenPath = resolvedOutputPlan.explicitCommandPath
+        val noCache = resolvedOutputPlan.directNoCache
+        val tempDir = resolvedOutputPlan.ytdlpDirectory
         val ffmpegPayload = App.instance.getFfmpegPayloadDiagnostics()
         val ffmpegResolution = buildYtDlpFfmpegResolutionDiagnostics()
         val ffmpegPreflight = buildYtDlpFfmpegPreflightDiagnostics()
@@ -1151,6 +1156,8 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             appendLine("cacheDownloadsEnabled: $cacheDownloadsEnabled")
             appendLine("writtenPathMode: $writtenPath")
             appendLine("noCacheDirectWrite: $noCache")
+            appendLine("effectiveOutputDestination: ${resolvedOutputPlan.finalDestination}")
+            appendLine("effectiveYtdlpDirectory: ${resolvedOutputPlan.ytdlpDirectory.absolutePath}")
             appendLine("tempDownloadDir: ${tempDir.absolutePath}")
             appendLine("diagnosticsVersion: ffmpeg-preflight-v25")
             appendLine("requestLoadInfoJson: $hasLoadInfoJson")
@@ -1574,6 +1581,114 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         )
     }
 
+    /**
+     * Resolves the one output contract shared by request construction and the
+     * worker. Direct/no-cache output is published to the configured
+     * destination, but yt-dlp writes into an operation-owned child directory
+     * first. The worker then publishes only exact move results from that
+     * directory.
+     */
+    internal fun resolveOutputPlan(downloadItem: DownloadItem): YtdlpOutputPlan {
+        val commandPath = if (downloadItem.type == DownloadType.command) {
+            YtdlpCommandPathParser.resolve(downloadItem.format.format_note)
+        } else {
+            YtdlpCommandPathResolution.None
+        }
+        val explicitCommandPath = when (commandPath) {
+            YtdlpCommandPathResolution.None -> null
+            is YtdlpCommandPathResolution.Explicit -> commandPath
+            is YtdlpCommandPathResolution.Invalid -> {
+                throw IllegalArgumentException(
+                    "Unsupported direct output path in command: ${commandPath.reason}"
+                )
+            }
+        }
+        val finalDestinationDirectory = explicitCommandPath?.directory
+            ?: resolveFilesystemDestination(downloadItem.downloadPath)
+        // Keep provider-backed destinations as their original URI, but give
+        // filesystem publication the canonical path that FileUtil expects.
+        val finalDestination = explicitCommandPath?.directory?.absolutePath
+            ?: finalDestinationDirectory?.absolutePath
+            ?: downloadItem.downloadPath
+        val destinationCanBeWritten = finalDestinationDirectory != null &&
+            FileUtil.canWriteToDestination(finalDestination, context)
+        val requiresVerifiedQualityStaging = VideoQualityPolicy.requiresVerifiedStaging(
+            isVideo = downloadItem.type == DownloadType.video,
+            format = downloadItem.format,
+            sourceFormats = downloadItem.allFormats,
+            isQualityReplacement = HistoryRedownloadMarker.parse(downloadItem.playlistURL)
+                ?.isQualityReplacement == true,
+        ) || (
+            downloadItem.type == DownloadType.video &&
+                downloadItem.url.isYoutubeURL() &&
+                YoutubeMediaAccessPolicy.containsRawFormatOverride(downloadItem.extraCommands)
+            )
+        val directNoCache = explicitCommandPath != null || (
+            !requiresVerifiedQualityStaging &&
+                !sharedPreferences.getBoolean("cache_downloads", true) &&
+                destinationCanBeWritten
+            )
+
+        if (explicitCommandPath != null && !destinationCanBeWritten) {
+            throw IllegalArgumentException(
+                "Explicit command output path is not writable: $finalDestination"
+            )
+        }
+        if (directNoCache && finalDestinationDirectory == null) {
+            throw IllegalArgumentException(
+                "Direct output requires a filesystem-representable destination: $finalDestination"
+            )
+        }
+        if (directNoCache && finalDestinationDirectory?.exists() == true &&
+            !finalDestinationDirectory.isDirectory
+        ) {
+            throw IllegalArgumentException(
+                "Direct output destination is not a directory: $finalDestination"
+            )
+        }
+
+        val operationToken = YtdlpOutputPlanToken.forDownload(
+            downloadId = downloadItem.id,
+            executionId = downloadItem.executionId,
+            operationId = downloadItem.operationId,
+        )
+        val ytdlpDirectory = if (directNoCache) {
+            File(
+                requireNotNull(finalDestinationDirectory),
+                ".ytdlnisx-output/$operationToken",
+            ).canonicalFile
+        } else {
+            File(FileUtil.getCachePath(context), downloadItem.id.toString()).canonicalFile
+        }
+        return YtdlpOutputPlan(
+            finalDestination = finalDestination,
+            ytdlpDirectory = ytdlpDirectory,
+            directNoCache = directNoCache,
+            explicitCommandPath = explicitCommandPath != null,
+            directDestinationDirectory = finalDestinationDirectory,
+            ownershipMarker = if (directNoCache) {
+                File(ytdlpDirectory, ".ytdlnisx-owner")
+            } else {
+                null
+            },
+        )
+    }
+
+    private fun resolveFilesystemDestination(rawPath: String): File? {
+        val normalized = rawPath.trim()
+        if (normalized.isBlank() || normalized.startsWith("content://", ignoreCase = true)) return null
+        return runCatching {
+            val path = if (normalized.startsWith("file://", ignoreCase = true)) {
+                android.net.Uri.parse(normalized).path.orEmpty()
+            } else if (normalized.startsWith("/")) {
+                normalized
+            } else {
+                FileUtil.formatPath(normalized)
+            }
+            path.trim().takeIf { it.isNotBlank() }?.let { File(it).canonicalFile }
+        }.getOrNull()?.takeIf { it.isAbsolute }
+    }
+
     private fun readConfiguredYoutubePlayerClients(): List<YoutubePlayerClientItem> {
         val raw = sharedPreferences.getString("youtube_player_clients", "[]").orEmpty().ifEmpty { "[]" }
         return runCatching {
@@ -1595,7 +1710,9 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         useCachedInfoJson: Boolean = true,
         applyQualityGuard: Boolean = true,
         selectionOnly: Boolean = false,
+        outputPlan: YtdlpOutputPlan? = null,
     ) : YoutubeDLRequest {
+        val resolvedOutputPlan = outputPlan ?: resolveOutputPlan(downloadItem)
         var useItemURL = sharedPreferences.getBoolean("use_itemurl_instead_playlisturl", false)
         if (downloadItem.observeSourceId > 0L && downloadItem.url.isYoutubeURL() && downloadItem.url.getIDFromYoutubeURL() != null) {
             useItemURL = true
@@ -1651,9 +1768,9 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         val type = downloadItem.type
 
         val downDir : File
-        val writtenPath = type == DownloadType.command && downloadItem.format.format_note.contains("-P ")
-        if (writtenPath){
-            downDir = File(FileUtil.formatPath(downloadItem.downloadPath))
+        val directOutput = !selectionOnly && resolvedOutputPlan.directNoCache
+        if (directOutput){
+            downDir = resolvedOutputPlan.ytdlpDirectory
             request.addOption("--no-quiet")
             request.addOption("--no-simulate")
             request.addOption("--print", "after_move:'__YTDLNISX_OUTPUT__%(filepath,_filename)s'")
@@ -1662,7 +1779,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             downDir = if (selectionOnly) {
                 File(cacheDir, "${downloadItem.id}/selection")
             } else {
-                File(cacheDir, downloadItem.id.toString())
+                resolvedOutputPlan.ytdlpDirectory
             }
             if (!selectionOnly) downDir.delete()
             downDir.mkdirs()
@@ -2412,11 +2529,12 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
             }
             DownloadType.command -> {
-                if (!writtenPath) {
-                    request.addOption("-P", downDir.absolutePath)
-                }
-
                 request.addOption(normalizeLegacyShellCommand(downloadItem.format.format_note))
+                // The generated option is appended after the raw command
+                // config so an authored -P/--paths value can identify the
+                // final destination without regaining output authority over
+                // the ambient filesystem.
+                request.addOption("-P", downDir.absolutePath)
             }
 
             else -> {}
