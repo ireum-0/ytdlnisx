@@ -39,6 +39,7 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 private val outputWiringDownloadIds = AtomicLong(
@@ -357,6 +358,140 @@ class DownloadOutputProductionWiringTest {
     }
 
     @Test
+    fun realWorkerRejectsUnsafeCustomOutputBeforeNativeBoundary() = runBlocking {
+        withCacheDownloads(true) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "pre-native-command").apply { mkdirs() }
+            val escaped = File(testRoot, "escaped-command/escaped.m4a")
+            val escapedPath = escaped.absolutePath.replace('\\', '/')
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.command,
+                    formatNote = "-o \"$escapedPath\" --no-playlist",
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            // This reproduces the old physical-side-effect gap: if validation
+            // ever lets execution reach this seam, an escaped artifact appears
+            // before downstream provenance gets a chance to reject it.
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, _ ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    escaped.parentFile?.mkdirs()
+                    escaped.writeBytes(byteArrayOf(8, 8, 8))
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${escaped.absolutePath}'"
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertFalse(nativeBoundaryReached.get())
+            assertFalse(escaped.exists())
+            assertNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        }
+    }
+
+    @Test
+    fun realWorkerPublishesSafeRelativeCustomOutputFromOwnedStaging() = runBlocking {
+        withCacheDownloads(true) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "relative-command").apply { mkdirs() }
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.command,
+                    formatNote = "-o \"safe/%(title)s.%(ext)s\" --no-playlist",
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            var ownedOutputDirectory: File? = null
+            var stagedOutput: File? = null
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    ownedOutputDirectory = outputDirectory.canonicalFile
+                    val output = File(outputDirectory, "safe/relative.m4a").apply {
+                        parentFile?.mkdirs()
+                        writeBytes(byteArrayOf(5, 5, 5))
+                    }
+                    stagedOutput = output
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${output.absolutePath}'"
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertTrue(nativeBoundaryReached.get())
+            val stagingRoot = requireNotNull(ownedOutputDirectory)
+            val staged = requireNotNull(stagedOutput)
+            assertTrue(staged.canonicalPath.startsWith(stagingRoot.canonicalPath + File.separator))
+            val history = requireNotNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(1, history.downloadPath.size)
+            assertTrue(history.downloadPath.single().startsWith(destination.canonicalPath))
+            assertTrue(history.downloadPath.single().endsWith("relative.m4a"))
+            assertFalse(staged.exists())
+        }
+    }
+
+    @Test
+    fun realWorkerRejectsUnsafeExtraCommandOutputBeforeNativeBoundary() = runBlocking {
+        withCacheDownloads(true) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "pre-native-extra").apply { mkdirs() }
+            val escaped = File(testRoot, "escaped-extra/escaped.m4a")
+            val escapedPath = escaped.absolutePath.replace('\\', '/')
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    extraCommands = "-o \"$escapedPath\"",
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, _ ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    escaped.parentFile?.mkdirs()
+                    escaped.writeBytes(byteArrayOf(7, 7, 7))
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${escaped.absolutePath}'"
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertFalse(nativeBoundaryReached.get())
+            assertFalse(escaped.exists())
+            assertNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        }
+    }
+
+    @Test
     fun realWorkerRejectsCustomCommandOutputOutsideEffectiveDestination() = runBlocking {
         withCacheDownloads(true) {
             val downloadId = outputWiringDownloadIds.getAndIncrement()
@@ -466,6 +601,8 @@ class DownloadOutputProductionWiringTest {
         container: String = "m4a",
         videoPreferences: VideoPreferences = VideoPreferences(),
         playlistUrl: String? = "",
+        extraCommands: String = "",
+        customFileNameTemplate: String = "",
     ) = DownloadItem(
         id = id,
         url = "https://example.com/$id",
@@ -484,8 +621,8 @@ class DownloadOutputProductionWiringTest {
         playlistTitle = "",
         audioPreferences = AudioPreferences(),
         videoPreferences = videoPreferences,
-        extraCommands = "",
-        customFileNameTemplate = "",
+        extraCommands = extraCommands,
+        customFileNameTemplate = customFileNameTemplate,
         SaveThumb = false,
         status = DownloadRepository.Status.Queued.name,
         downloadStartTime = 0L,

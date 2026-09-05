@@ -1042,19 +1042,18 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
     fun getFilenameTemplatePreview(item: DownloadItem, filenameTemplate: String): String {
         item.customFileNameTemplate = filenameTemplate
-        val request = buildYoutubeDLRequest(item, resolveInitialYoutubeMediaAccessProfile(item))
-        request.addOption("--print", "%(filename)s")
-        request.addOption("--skip-download")
-        request.addOption("--simulate")
-        request.addOption("--no-check-certificates")
-        request.addOption("--no-check-formats")
-        request.addOption("--quiet")
-
-        try {
+        return try {
+            val request = buildYoutubeDLRequest(item, resolveInitialYoutubeMediaAccessProfile(item))
+            request.addOption("--print", "%(filename)s")
+            request.addOption("--skip-download")
+            request.addOption("--simulate")
+            request.addOption("--no-check-certificates")
+            request.addOption("--no-check-formats")
+            request.addOption("--quiet")
             val response = YoutubeDL.getInstance().execute(request)
-            return response.out.replace(FileUtil.getCachePath(context) + "${item.id}/", "").trim()
+            response.out.replace(FileUtil.getCachePath(context) + "${item.id}/", "").trim()
         } catch (ex: Exception) {
-            return ex.message ?: ""
+            ex.message ?: ""
         }
     }
 
@@ -1589,6 +1588,49 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
      * directory.
      */
     internal fun resolveOutputPlan(downloadItem: DownloadItem): YtdlpOutputPlan {
+        val authoredOutputCommand = if (downloadItem.type == DownloadType.command) {
+            downloadItem.format.format_note
+        } else {
+            downloadItem.extraCommands
+        }
+        val outputTemplateResolution = YtdlpCommandOutputTemplateParser.resolve(
+            command = authoredOutputCommand,
+            // DownloadType.command is persisted before the app's generated
+            // home/temp confinement options. Non-command extraCommands are
+            // appended after those options, so an option terminator there
+            // cannot disable already-parsed confinement.
+            confinementOptionsFollow = downloadItem.type == DownloadType.command,
+        )
+        if (outputTemplateResolution is YtdlpCommandOutputTemplateResolution.Invalid) {
+            throw IllegalArgumentException(
+                "Unsupported custom output template: ${outputTemplateResolution.reason}"
+            )
+        }
+
+        if (downloadItem.type != DownloadType.command && downloadItem.extraCommands.isNotBlank()) {
+            when (val extraPathResolution = YtdlpCommandPathParser.resolve(downloadItem.extraCommands)) {
+                YtdlpCommandPathResolution.None -> Unit
+                is YtdlpCommandPathResolution.Invalid -> {
+                    throw IllegalArgumentException(
+                        "Unsupported output path in extra commands: ${extraPathResolution.reason}"
+                    )
+                }
+                is YtdlpCommandPathResolution.Explicit -> {
+                    throw IllegalArgumentException(
+                        "Output paths in extra commands cannot override app-owned staging"
+                    )
+                }
+            }
+        }
+
+        if (downloadItem.type != DownloadType.command && downloadItem.customFileNameTemplate.isNotBlank()) {
+            val generatedTemplate =
+                "${downloadItem.customFileNameTemplate.removeSuffix(".%(ext)s")}.%(ext)s"
+            YtdlpCommandOutputTemplateParser.validateGeneratedTemplate(generatedTemplate)?.let { reason ->
+                throw IllegalArgumentException("Unsupported filename template: $reason")
+            }
+        }
+
         val commandPathResolution = if (downloadItem.type == DownloadType.command) {
             YtdlpCommandPathParser.resolve(downloadItem.format.format_note)
         } else {
