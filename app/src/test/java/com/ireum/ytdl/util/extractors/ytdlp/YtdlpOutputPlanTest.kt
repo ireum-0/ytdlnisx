@@ -110,6 +110,10 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun pathAuthorityIsNotGrantedWhenPathTokenIsAnotherOptionsValue() {
+        val absolutePath = Files.createTempDirectory("ytdlp-output-plan-cluster-path-")
+            .toFile()
+            .absolutePath
+            .replace('\\', '/')
         assertTrue(
             YtdlpCommandPathParser.resolve("-o --paths /shared/not-a-path-option") is
                 YtdlpCommandPathResolution.None
@@ -127,23 +131,35 @@ class YtdlpOutputPlanTest {
                 YtdlpCommandPathResolution.None
         )
         assertTrue(
-            YtdlpCommandPathParser.resolve("-qP /shared/unmodelled-cluster") is
-                YtdlpCommandPathResolution.None
-        )
-        assertTrue(
-            YtdlpCommandPathParser.resolve("--no-playlist --paths /shared/real") is
+            YtdlpCommandPathParser.resolve("-qP $absolutePath") is
                 YtdlpCommandPathResolution.Explicit
         )
         assertTrue(
-            YtdlpCommandPathParser.resolve("--progress --paths /shared/real") is
+            YtdlpCommandPathParser.resolve("-qP$absolutePath") is
                 YtdlpCommandPathResolution.Explicit
         )
         assertTrue(
-            YtdlpCommandPathParser.resolve("--pro --paths /shared/ambiguous") is
+            YtdlpCommandPathParser.resolve("-vqP $absolutePath") is
+                YtdlpCommandPathResolution.Explicit
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--path $absolutePath") is
+                YtdlpCommandPathResolution.Explicit
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--no-playlist --paths $absolutePath") is
+                YtdlpCommandPathResolution.Explicit
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--progress --paths $absolutePath") is
+                YtdlpCommandPathResolution.Explicit
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--pro --paths $absolutePath") is
                 YtdlpCommandPathResolution.None
         )
         assertTrue(
-            YtdlpCommandPathParser.resolve("--paths /shared/real --no-playlist") is
+            YtdlpCommandPathParser.resolve("--paths $absolutePath --no-playlist") is
                 YtdlpCommandPathResolution.Explicit
         )
     }
@@ -175,6 +191,74 @@ class YtdlpOutputPlanTest {
             "--output safe/\\#tag/%(title)s.%(ext)s"
         )
         assertTrue(escapedHash is YtdlpCommandOutputTemplateResolution.Explicit)
+    }
+
+    @Test
+    fun parsesBundledShortOptionClustersForOutputAndPathPolicy() {
+        val absolutePath = Files.createTempDirectory("ytdlp-output-plan-cluster-path-")
+            .toFile()
+            .absolutePath
+            .replace('\\', '/')
+        val safeAttached = YtdlpCommandOutputTemplateParser.resolve(
+            "-qosafe/%(title)s.%(ext)s"
+        )
+        val safeSeparate = YtdlpCommandOutputTemplateParser.resolve(
+            "-qo safe/nested/%(title)s.%(ext)s"
+        )
+        val safeVerbose = YtdlpCommandOutputTemplateParser.resolve(
+            "-vqo%(title)s.%(ext)s"
+        )
+        val safeCombinedFlags = YtdlpCommandOutputTemplateParser.resolve(
+            "-CXqosafe/combined/%(title)s.%(ext)s"
+        )
+        val outputLookingLikeOption = YtdlpCommandOutputTemplateParser.resolve("-qo -P")
+
+        assertTrue(safeAttached is YtdlpCommandOutputTemplateResolution.Explicit)
+        assertTrue(safeSeparate is YtdlpCommandOutputTemplateResolution.Explicit)
+        assertTrue(safeVerbose is YtdlpCommandOutputTemplateResolution.Explicit)
+        assertTrue(safeCombinedFlags is YtdlpCommandOutputTemplateResolution.Explicit)
+        assertEquals(
+            "-P",
+            (outputLookingLikeOption as YtdlpCommandOutputTemplateResolution.Explicit)
+                .templates["default"],
+        )
+        listOf(
+            "-f -o /absolute/not-an-output-option",
+            "--proxy --output /absolute/not-an-output-option",
+            "-P -o /absolute/not-an-output-option",
+        ).forEach { command ->
+            assertTrue(
+                "expected value-taking option to consume output-looking token for $command",
+                YtdlpCommandOutputTemplateParser.resolve(command) is
+                    YtdlpCommandOutputTemplateResolution.None,
+            )
+        }
+
+        listOf(
+            "-qo/absolute/escape.%(ext)s",
+            "-qo /absolute/escape.%(ext)s",
+            "-vqo/absolute/escape.%(ext)s",
+            "-qo../traversal.%(ext)s",
+        ).forEach { command ->
+            assertTrue(
+                "expected clustered output rejection for $command",
+                YtdlpCommandOutputTemplateParser.resolve(command) is
+                    YtdlpCommandOutputTemplateResolution.Invalid,
+            )
+        }
+
+        listOf(
+            "-qP $absolutePath",
+            "-qP$absolutePath",
+            "-vqP $absolutePath",
+            "-CXqP $absolutePath",
+        ).forEach { command ->
+            assertTrue(
+                "expected clustered path authority for $command",
+                YtdlpCommandPathParser.resolve(command) is
+                    YtdlpCommandPathResolution.Explicit,
+            )
+        }
     }
 
     @Test

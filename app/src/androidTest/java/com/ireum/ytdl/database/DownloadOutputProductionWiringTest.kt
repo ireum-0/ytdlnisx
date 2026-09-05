@@ -403,6 +403,48 @@ class DownloadOutputProductionWiringTest {
     }
 
     @Test
+    fun realWorkerRejectsUnsafeClusteredCustomOutputBeforeNativeBoundary() = runBlocking {
+        withCacheDownloads(true) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "pre-native-clustered-command").apply { mkdirs() }
+            val escaped = File(testRoot, "escaped-clustered-command/escaped.m4a")
+            val escapedPath = escaped.absolutePath.replace('\\', '/')
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.command,
+                    formatNote = "-qo$escapedPath --no-playlist",
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, _ ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    escaped.parentFile?.mkdirs()
+                    escaped.writeBytes(byteArrayOf(8, 8, 8))
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${escaped.absolutePath}'"
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertFalse(nativeBoundaryReached.get())
+            assertFalse(escaped.exists())
+            assertNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        }
+    }
+
+    @Test
     fun realWorkerPublishesSafeRelativeCustomOutputFromOwnedStaging() = runBlocking {
         withCacheDownloads(true) {
             val downloadId = outputWiringDownloadIds.getAndIncrement()
@@ -488,6 +530,57 @@ class DownloadOutputProductionWiringTest {
                 DownloadRepository.Status.Error.name,
                 db.downloadDao.getNullableDownloadById(downloadId)?.status,
             )
+        }
+    }
+
+    @Test
+    fun realWorkerRejectsUnsafeClusteredExtraCommandPathBeforeNativeBoundary() = runBlocking {
+        withCacheDownloads(true) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "pre-native-clustered-extra").apply { mkdirs() }
+            val oldMedia = File(destination, "old.m4a").apply { writeBytes(byteArrayOf(9, 9, 9)) }
+            val escaped = File(testRoot, "escaped-clustered-extra/escaped.m4a")
+            val escapedPath = escaped.absolutePath.replace('\\', '/')
+            val historyId = db.historyDao.insertAndGetIdRaw(
+                history(oldMedia.absolutePath).copy(downloadId = 0L)
+            )
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    playlistUrl = HistoryRedownloadMarker.regular(historyId),
+                    extraCommands = "-qP $escapedPath",
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, _ ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    escaped.parentFile?.mkdirs()
+                    escaped.writeBytes(byteArrayOf(7, 7, 7))
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${escaped.absolutePath}'"
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertFalse(nativeBoundaryReached.get())
+            assertFalse(escaped.exists())
+            assertNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertEquals(
+                oldMedia.absolutePath,
+                requireNotNull(db.historyDao.getNullableItem(historyId)).downloadPath.single(),
+            )
+            assertTrue(oldMedia.exists())
         }
     }
 

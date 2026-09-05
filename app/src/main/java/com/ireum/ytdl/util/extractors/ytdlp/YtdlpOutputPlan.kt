@@ -143,6 +143,75 @@ internal object YtdlpCommandTokenizer {
 }
 
 /**
+ * Models the short-option cluster handling used by Python optparse. A
+ * value-taking option consumes the remainder of its token, or the following
+ * token when it is the final character in a cluster. This matters for yt-dlp
+ * because `-qP` and `-qo` are not unknown options: they are `-q` followed by
+ * the value-taking `-P`/`-o` option.
+ */
+internal object YtdlpShortOptionClusterParser {
+    data class Match(
+        val value: String?,
+        val consumesFollowingToken: Boolean,
+    )
+
+    // These are the value-taking short options exposed by bundled yt-dlp
+    // 2025.11.12. If one appears before the target, the remainder of the
+    // token is its value and cannot contain another option.
+    private val VALUE_TAKING_OPTIONS = setOf(
+        '2', 'I', 'N', 'O', 'P', 'R', 'S', 'a', 'f', 'o', 'p', 'r', 't', 'u',
+    )
+
+    // The no-value options that may legally precede -o/-P in a cluster. Keep
+    // this explicit instead of treating arbitrary letters as flags: an
+    // unknown short option must not be reinterpreted as a destination option.
+    private val NO_VALUE_OPTIONS = setOf(
+        '4', '6', 'C', 'F', 'J', 'U', 'X', 'c', 'e', 'g', 'h', 'i', 'j', 'k',
+        'n', 'q', 's', 'v', 'w', 'x',
+    )
+
+    fun match(token: String, followingToken: String?, target: Char): Match? {
+        if (!token.startsWith('-') || token.startsWith("--") || token.length < 2) {
+            return null
+        }
+        val cluster = token.substring(1)
+        var index = 0
+        while (index < cluster.length) {
+            val option = cluster[index]
+            if (option == target) {
+                val attached = cluster.substring(index + 1)
+                return if (attached.isNotEmpty()) {
+                    Match(value = attached, consumesFollowingToken = false)
+                } else {
+                    Match(value = followingToken, consumesFollowingToken = true)
+                }
+            }
+            if (option in VALUE_TAKING_OPTIONS || option !in NO_VALUE_OPTIONS) {
+                // A preceding value-taking or unknown option owns the rest of
+                // this token; the target is not an effective option here.
+                return null
+            }
+            index += 1
+        }
+        return null
+    }
+
+    fun consumesFollowingToken(token: String): Boolean {
+        if (!token.startsWith('-') || token.startsWith("--") || token.length < 2) {
+            return false
+        }
+        val cluster = token.substring(1)
+        cluster.forEachIndexed { index, option ->
+            if (option in VALUE_TAKING_OPTIONS) {
+                return index == cluster.lastIndex
+            }
+            if (option !in NO_VALUE_OPTIONS) return false
+        }
+        return false
+    }
+}
+
+/**
  * Parses the path-map syntax used by yt-dlp. The upstream option parser stores
  * one effective value per key, with later declarations replacing earlier
  * declarations for the same key. The worker can safely rewrite the home and
@@ -161,12 +230,32 @@ internal object YtdlpCommandPathParser {
             val token = tokens[index]
             if (token == "--") break
 
+            val clusteredPath = YtdlpShortOptionClusterParser.match(
+                token = token,
+                followingToken = tokens.getOrNull(index + 1),
+                target = 'P',
+            )
+            if (clusteredPath != null) {
+                val match = clusteredPath
+                val value = match.value
+                    ?: return YtdlpCommandPathResolution.Invalid("-P is missing its path")
+                val parsed = parsePathMapValue(value)
+                    ?: return YtdlpCommandPathResolution.Invalid(
+                        "unsupported or malformed -P path: $value"
+                    )
+                foundPathOption = true
+                parsed.keys.forEach { key -> paths[key] = parsed.directory }
+                if (match.consumesFollowingToken) index += 1
+                index += 1
+                continue
+            }
+
             // A path-looking token can be the required value of a preceding
             // option. Never grant final-destination authority from that shape.
             // These value-taking option tables mirror the bundled yt-dlp
             // 2025.11.12 optparse surface; exact no-value options that are
             // prefixes of value-taking options are handled explicitly below.
-            if (!isPathOptionToken(token) && optionConsumesFollowingToken(token)) {
+            if (!isPathOptionToken(token) && consumesFollowingToken(token)) {
                 if (tokens.getOrNull(index + 1) == null) {
                     return YtdlpCommandPathResolution.Invalid("$token is missing its value")
                 }
@@ -175,14 +264,14 @@ internal object YtdlpCommandPathParser {
             }
 
             val optionAndValue = when {
-                token == "-P" || token == "--paths" -> {
+                isLongPathsOptionToken(token) && !token.contains('=') -> {
                     val value = tokens.getOrNull(index + 1)
                         ?: return YtdlpCommandPathResolution.Invalid("$token is missing its path")
                     index += 1
-                    token to value
+                    "--paths" to value
                 }
-                token.startsWith("--paths=") -> "--paths" to token.substringAfter('=')
-                token.startsWith("-P") && token.length > 2 -> "-P" to token.substring(2)
+                isLongPathsOptionToken(token) && token.contains('=') ->
+                    "--paths" to token.substringAfter('=')
                 else -> null
             }
             if (optionAndValue != null) {
@@ -376,10 +465,6 @@ internal object YtdlpCommandPathParser {
         "--xff",
     )
 
-    private val VALUE_TAKING_SHORT_OPTIONS = setOf(
-        "-2", "-I", "-N", "-O", "-P", "-R", "-S", "-a", "-f", "-o", "-p", "-r", "-t", "-u",
-    )
-
     // optparse resolves an exact option before considering long-option
     // abbreviations. These five no-value options are exact prefixes of a
     // value-taking option in the bundled parser and therefore do not consume
@@ -392,7 +477,7 @@ internal object YtdlpCommandPathParser {
         "--update",
     )
 
-    private fun optionConsumesFollowingToken(token: String): Boolean {
+    internal fun consumesFollowingToken(token: String): Boolean {
         if (token == "-" || token == "--" || token.contains('=')) return false
         if (token.startsWith("--")) {
             if (token in EXACT_NO_VALUE_PREFIXES) return false
@@ -409,18 +494,20 @@ internal object YtdlpCommandPathParser {
         // short option is encountered, the remainder of the same token is its
         // value; only when it is the final character does it consume the next
         // token.
-        val cluster = token.substring(1)
-        cluster.forEachIndexed { index, character ->
-            if ("-$character" in VALUE_TAKING_SHORT_OPTIONS) {
-                return index == cluster.lastIndex
-            }
-        }
-        return false
+        return YtdlpShortOptionClusterParser.consumesFollowingToken(token)
     }
 
     private fun isPathOptionToken(token: String): Boolean =
-        token == "-P" || token == "--paths" || token.startsWith("--paths=") ||
-            (token.startsWith("-P") && token.length > 2)
+        isLongPathsOptionToken(token) ||
+            YtdlpShortOptionClusterParser.match(token, null, 'P') != null
+
+    private fun isLongPathsOptionToken(token: String): Boolean {
+        val optionName = token.substringBefore('=')
+        if (!optionName.startsWith("--")) return false
+        if (optionName == "--paths") return true
+        return VALUE_TAKING_LONG_OPTIONS.count { canonical -> canonical.startsWith(optionName) } == 1 &&
+            VALUE_TAKING_LONG_OPTIONS.any { canonical -> canonical == "--paths" && canonical.startsWith(optionName) }
+    }
 
     private fun isWindowsDrivePath(value: String): Boolean =
         value.length > 2 && value[0].isLetter() && value[1] == ':' &&
@@ -550,8 +637,47 @@ internal object YtdlpCommandOutputTemplateParser {
                 )
             }
 
+            // Python optparse accepts short-option clusters. In particular,
+            // `-qoVALUE`, `-qo VALUE`, and `-vqoVALUE` all select -o, while
+            // `-qP VALUE` and `-qPVALUE` select -P. The output policy must
+            // inspect the effective -o rather than treating these as opaque
+            // unknown flags before native execution.
+            val clusteredOutput = YtdlpShortOptionClusterParser.match(
+                token = token,
+                followingToken = tokens.getOrNull(index + 1),
+                target = 'o',
+            )
+            if (clusteredOutput == null &&
+                token != "--output" &&
+                !token.startsWith("--output=") &&
+                YtdlpCommandPathParser.consumesFollowingToken(token)
+            ) {
+                if (tokens.getOrNull(index + 1) == null) {
+                    return YtdlpCommandOutputTemplateResolution.Invalid(
+                        "$token is missing its value"
+                    )
+                }
+                index += 2
+                continue
+            }
+            if (clusteredOutput != null) {
+                val rawValue = clusteredOutput.value
+                    ?: return YtdlpCommandOutputTemplateResolution.Invalid(
+                        "-o is missing its output template"
+                    )
+                val parsed = parseOutputValue(rawValue)
+                    ?: return YtdlpCommandOutputTemplateResolution.Invalid(
+                        "unsupported or malformed -o template: $rawValue"
+                    )
+                foundOutputOption = true
+                parsed.keys.forEach { key -> templates[key] = parsed.template }
+                if (clusteredOutput.consumesFollowingToken) index += 1
+                index += 1
+                continue
+            }
+
             val optionAndValue = when {
-                token == "-o" || token == "--output" -> {
+                token == "--output" -> {
                     val value = tokens.getOrNull(index + 1)
                         ?: return YtdlpCommandOutputTemplateResolution.Invalid(
                             "$token is missing its output template"
@@ -561,8 +687,6 @@ internal object YtdlpCommandOutputTemplateParser {
                 }
                 token.startsWith("--output=") ->
                     "--output" to token.substringAfter('=')
-                token.startsWith("-o") && token.length > 2 ->
-                    "-o" to token.substring(2)
                 else -> null
             }
 
