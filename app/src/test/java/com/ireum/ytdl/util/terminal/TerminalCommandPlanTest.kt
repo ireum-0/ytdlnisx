@@ -42,6 +42,17 @@ class TerminalCommandPlanTest {
     }
 
     @Test
+    fun metadataReplacementPathLookingValueDoesNotSelectTerminalDestination() {
+        val plan = TerminalCommandPlanner.create(
+            command = "--replace-in-metadata title -P /tmp/metadata-replacement",
+            environment = environment(cacheDownloads = true, destinationWritable = true)
+        )
+
+        assertTrue(plan.usesAppCache)
+        assertEquals("/app/cache/TERMINAL/42", plan.requestOptions.single { it.name == "-P" }.value)
+    }
+
+    @Test
     fun writableDirectDestinationAndCacheFallbackStayDistinct() {
         val direct = TerminalCommandPlanner.create(
             command = "https://example.com/video",

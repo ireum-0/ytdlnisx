@@ -358,6 +358,55 @@ class DownloadOutputProductionWiringTest {
     }
 
     @Test
+    fun realWorkerIgnoresFixedArityMetadataPathLookingValueForPublication() = runBlocking {
+        withCacheDownloads(true) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "metadata-arity-command").apply { mkdirs() }
+            val metadataReplacement = File(testRoot, "metadata-replacement")
+            val metadataReplacementPath = metadataReplacement.absolutePath.replace('\\', '/')
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.command,
+                    formatNote = "--replace-in-metadata title -P \"$metadataReplacementPath\" --no-playlist",
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            var ownedOutputDirectory: File? = null
+            var stagedOutput: File? = null
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    ownedOutputDirectory = outputDirectory.canonicalFile
+                    stagedOutput = File(outputDirectory, "metadata-safe.m4a").apply {
+                        writeBytes(byteArrayOf(6, 7, 8))
+                    }
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedOutput).absolutePath}'"
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertTrue(nativeBoundaryReached.get())
+            val staging = requireNotNull(ownedOutputDirectory)
+            val history = requireNotNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(1, history.downloadPath.size)
+            assertTrue(history.downloadPath.single().startsWith(destination.canonicalPath))
+            assertTrue(history.downloadPath.single().endsWith("metadata-safe.m4a"))
+            assertFalse(requireNotNull(stagedOutput).exists())
+            assertFalse(staging.exists())
+            assertFalse(metadataReplacement.exists())
+            assertTrue(destination.listFiles().orEmpty().any { it.name == "metadata-safe.m4a" })
+        }
+    }
+
+    @Test
     fun realWorkerRejectsUnsafeCustomOutputBeforeNativeBoundary() = runBlocking {
         withCacheDownloads(true) {
             val downloadId = outputWiringDownloadIds.getAndIncrement()

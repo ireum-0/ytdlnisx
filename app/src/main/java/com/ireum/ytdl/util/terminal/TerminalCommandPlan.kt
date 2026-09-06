@@ -6,6 +6,8 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpArgumentPolicy
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpCommandPathParser
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpCommandPathResolution
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
 
@@ -55,7 +57,8 @@ object TerminalCommandPlanner {
             ?.let { options += TerminalRequestOption("--add-header", "User-Agent:$it") }
 
         var writesDirectly = !environment.cacheDownloads && environment.destinationWritable
-        val configDeclaresOutputPath = sanitized.commandString.contains("-P ")
+        val configDeclaresOutputPath = YtdlpCommandPathParser.resolve(sanitized.commandString) is
+            YtdlpCommandPathResolution.Explicit
         if (configDeclaresOutputPath) {
             writesDirectly = true
         } else {

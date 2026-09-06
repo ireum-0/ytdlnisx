@@ -45,36 +45,60 @@ object YtdlpArgumentPolicy {
         allowedConfigFiles: Set<File>
     ): List<String> {
         val args = mutableListOf<String>()
+        val normalizedArgs = originalArgs.map { it.unwrapMatchingQuotes() }
         var i = 0
         while (i < originalArgs.size) {
             val arg = originalArgs[i]
-            val normalizedArg = arg.unwrapMatchingQuotes()
-            val blockedOption = blockedExternalOptionFor(normalizedArg, RESTRICTED_EXTERNAL_OPTIONS)
+            val normalizedArg = normalizedArgs[i]
+            val ownership = YtdlpOptionOwnership.inspect(normalizedArgs, i)
+            val blockedOption = ownership.canonicalName
+                ?.let { canonical ->
+                    RESTRICTED_EXTERNAL_OPTIONS.firstOrNull { option -> option == canonical }
+                }
+                ?: blockedExternalOptionFor(normalizedArg, RESTRICTED_EXTERNAL_OPTIONS)
             if (blockedOption != null) {
-                val inlineValue = inlineOptionValue(normalizedArg, blockedOption)
+                val inlineValue = ownership.inlineValue ?: inlineOptionValue(normalizedArg, blockedOption)
+                val sharedSpan = ownership.recognizedOption || ownership.ambiguousOption
+                val followingCount = if (sharedSpan) {
+                    ownership.consumedFollowingTokenCount
+                } else if (inlineValue == null && originalArgs.getOrNull(i + 1) != null) {
+                    1
+                } else {
+                    0
+                }
+                val nextIndex = (i + 1 + followingCount).coerceAtMost(originalArgs.size)
+                val separatedValue = originalArgs.getOrNull(i + 1)
                 if (inlineValue != null) {
                     if (canKeepRestrictedOption(blockedOption, inlineValue, allowedConfigFiles)) {
                         args.add(arg)
+                        if (sharedSpan) {
+                            args.addAll(originalArgs.subList(i + 1, nextIndex))
+                        }
                     }
-                    i += 1
+                    i = nextIndex.coerceAtLeast(i + 1)
                     continue
                 }
 
-                val nextArg = originalArgs.getOrNull(i + 1)
                 if (
-                    nextArg != null &&
-                    canKeepRestrictedOption(blockedOption, nextArg, allowedConfigFiles)
+                    separatedValue != null &&
+                    canKeepRestrictedOption(blockedOption, separatedValue, allowedConfigFiles)
                 ) {
                     args.add(arg)
-                    args.add(nextArg)
-                    i += 2
+                    args.addAll(originalArgs.subList(i + 1, nextIndex))
+                    i = nextIndex.coerceAtLeast(i + 1)
                     continue
                 }
-                i += if (nextArg != null) 2 else 1
+                i = nextIndex.coerceAtLeast(i + 1)
                 continue
             }
-            args.add(arg)
-            i += 1
+            val span = if (ownership.recognizedOption || ownership.ambiguousOption) {
+                ownership.nextIndexDelta
+            } else {
+                1
+            }
+            val nextIndex = (i + span).coerceAtMost(originalArgs.size)
+            args.addAll(originalArgs.subList(i, nextIndex))
+            i = nextIndex
         }
         return args
     }
@@ -84,77 +108,63 @@ object YtdlpArgumentPolicy {
     }
 
     fun stripExternalFfmpegLocationOptionsWithReport(commandString: String): CommandStringSanitizeResult {
-        val lineSeparator = if (commandString.contains("\r\n")) "\r\n" else "\n"
-        var skipNextValueLine = false
+        val tokens = YtdlpCommandTokenizer.tokenize(commandString)
+            ?: return CommandStringSanitizeResult(
+                commandString = commandString,
+                removedOptions = emptyList(),
+            )
         val removedOptions = linkedSetOf<String>()
-        val sanitizedCommand = Regex("\\r?\\n")
-            .toPattern()
-            .split(commandString, -1)
-            .asList()
-            .map { line ->
-                if (line.isBlank() || line.trimStart().startsWith("#")) {
-                    return@map line
-                }
-
-                val tokens = tokenizeCommandString(line)
-                if (tokens.isEmpty()) {
-                    return@map line
-                }
-
-                if (skipNextValueLine) {
-                    skipNextValueLine = false
-                    return@map null
-                }
-
-                val sanitized = mutableListOf<String>()
-                var changed = false
-                var i = 0
-                while (i < tokens.size) {
-                    val token = tokens[i]
-                    val normalizedToken = token.unwrapMatchingQuotes()
-                    val blockedOption = blockedExternalOptionFor(normalizedToken, RESTRICTED_EXTERNAL_OPTIONS)
-                    when {
-                        blockedOption != null -> {
-                            val inlineValue = inlineOptionValue(normalizedToken, blockedOption)
-                            if (inlineValue != null && canKeepRestrictedOption(blockedOption, inlineValue)) {
-                                sanitized.add(token)
-                                i += 1
-                                continue
-                            }
-
-                            val nextToken = tokens.getOrNull(i + 1)
-                            if (
-                                nextToken != null &&
-                                canKeepRestrictedOption(blockedOption, nextToken)
-                            ) {
-                                sanitized.add(token)
-                                sanitized.add(nextToken)
-                                i += 2
-                                continue
-                            }
-
-                            changed = true
-                            removedOptions += blockedOption
-                            i += when {
-                                inlineValue != null -> 1
-                                nextToken != null -> 2
-                                else -> {
-                                    skipNextValueLine = true
-                                    1
-                                }
-                            }
-                        }
-                        else -> {
-                            sanitized.add(token)
-                            i += 1
-                        }
-                    }
-                }
-
-                if (!changed) line else sanitized.joinToString(" ").takeIf { it.isNotBlank() }
+        val sanitized = mutableListOf<String>()
+        var i = 0
+        while (i < tokens.size) {
+            val ownership = YtdlpOptionOwnership.inspect(tokens, i)
+            if (ownership.optionTerminator) {
+                sanitized.addAll(tokens.subList(i, tokens.size))
+                break
             }
-            .filterNotNull()
-            .joinToString(lineSeparator)
+
+            val token = tokens[i]
+            val blockedOption = ownership.canonicalName
+                ?.let { canonical ->
+                    RESTRICTED_EXTERNAL_OPTIONS.firstOrNull { option -> option == canonical }
+                }
+                ?: blockedExternalOptionFor(token, RESTRICTED_EXTERNAL_OPTIONS)
+            if (blockedOption != null) {
+                val inlineValue = ownership.inlineValue ?: inlineOptionValue(token, blockedOption)
+                val span = if (ownership.recognizedOption || ownership.ambiguousOption) {
+                    ownership.nextIndexDelta
+                } else if (inlineValue == null && i + 1 < tokens.size) {
+                    2
+                } else {
+                    1
+                }
+                val end = (i + span).coerceAtMost(tokens.size)
+                val separatedValue = tokens.getOrNull(i + 1)
+                val canKeep = if (inlineValue != null) {
+                    canKeepRestrictedOption(blockedOption, inlineValue)
+                } else {
+                    separatedValue != null &&
+                        canKeepRestrictedOption(blockedOption, separatedValue)
+                }
+                if (canKeep) {
+                    sanitized.addAll(tokens.subList(i, end))
+                } else {
+                    removedOptions += blockedOption
+                }
+                i = end
+                continue
+            }
+
+            val span = if (ownership.recognizedOption || ownership.ambiguousOption) {
+                ownership.nextIndexDelta
+            } else {
+                1
+            }
+            val end = (i + span).coerceAtMost(tokens.size)
+            sanitized.addAll(tokens.subList(i, end))
+            i = end
+        }
+        val sanitizedCommand = sanitized.joinToString(" ", transform = ::renderConfigToken)
         return CommandStringSanitizeResult(
             commandString = sanitizedCommand,
             removedOptions = removedOptions.toList()
@@ -166,40 +176,13 @@ object YtdlpArgumentPolicy {
         return index >= 0 && index + 1 < args.size && !args[index + 1].startsWith("-")
     }
 
-    private fun tokenizeCommandString(commandString: String): List<String> {
-        val tokens = mutableListOf<String>()
-        val current = StringBuilder()
-        var quote: Char? = null
-        var i = 0
-        while (i < commandString.length) {
-            val c = commandString[i]
-            if (c == '\\' && i + 1 < commandString.length) {
-                current.append(c)
-                current.append(commandString[i + 1])
-                i += 2
-                continue
-            }
-            if ((c == '"' || c == '\'') && (quote == null || quote == c)) {
-                quote = if (quote == c) null else c
-                current.append(c)
-                i += 1
-                continue
-            }
-            if (quote == null && c.isWhitespace()) {
-                if (current.isNotEmpty()) {
-                    tokens.add(current.toString())
-                    current.setLength(0)
-                }
-                i += 1
-                continue
-            }
-            current.append(c)
-            i += 1
+    private fun renderConfigToken(token: String): String {
+        if (token.isNotEmpty() && token.all { character ->
+                character.isLetterOrDigit() || character in "-_./:=+,%@"
+            }) {
+            return token
         }
-        if (current.isNotEmpty()) {
-            tokens.add(current.toString())
-        }
-        return tokens
+        return "\"${token.replace("\\", "\\\\").replace("\"", "\\\"")}\""
     }
 
     private fun isBlockedExternalOption(arg: String, option: String): Boolean {

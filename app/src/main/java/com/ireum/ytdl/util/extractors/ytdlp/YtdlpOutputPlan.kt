@@ -142,204 +142,52 @@ internal object YtdlpCommandTokenizer {
     }
 }
 
-/**
- * Models the short-option cluster handling used by Python optparse. A
- * value-taking option consumes the remainder of its token, or the following
- * token when it is the final character in a cluster. This matters for yt-dlp
- * because `-qP` and `-qo` are not unknown options: they are `-q` followed by
- * the value-taking `-P`/`-o` option.
- */
-internal object YtdlpShortOptionClusterParser {
-    data class Match(
-        val value: String?,
-        val consumesFollowingToken: Boolean,
-    )
-
-    // These are the value-taking short options exposed by bundled yt-dlp
-    // 2025.11.12. If one appears before the target, the remainder of the
-    // token is its value and cannot contain another option.
-    private val VALUE_TAKING_OPTIONS = setOf(
-        '2', 'I', 'N', 'O', 'P', 'R', 'S', 'a', 'f', 'o', 'p', 'r', 't', 'u',
-    )
-
-    // The no-value options that may legally precede -o/-P in a cluster. Keep
-    // this explicit instead of treating arbitrary letters as flags: an
-    // unknown short option must not be reinterpreted as a destination option.
-    private val NO_VALUE_OPTIONS = setOf(
-        '4', '6', 'C', 'F', 'J', 'U', 'X', 'c', 'e', 'g', 'h', 'i', 'j', 'k',
-        'n', 'q', 's', 'v', 'w', 'x',
-    )
-
-    fun match(token: String, followingToken: String?, target: Char): Match? {
-        if (!token.startsWith('-') || token.startsWith("--") || token.length < 2) {
-            return null
-        }
-        val cluster = token.substring(1)
-        var index = 0
-        while (index < cluster.length) {
-            val option = cluster[index]
-            if (option == target) {
-                val attached = cluster.substring(index + 1)
-                return if (attached.isNotEmpty()) {
-                    Match(value = attached, consumesFollowingToken = false)
-                } else {
-                    Match(value = followingToken, consumesFollowingToken = true)
-                }
-            }
-            if (option in VALUE_TAKING_OPTIONS || option !in NO_VALUE_OPTIONS) {
-                // A preceding value-taking or unknown option owns the rest of
-                // this token; the target is not an effective option here.
-                return null
-            }
-            index += 1
-        }
-        return null
-    }
-
-    fun consumesFollowingToken(token: String): Boolean {
-        if (!token.startsWith('-') || token.startsWith("--") || token.length < 2) {
-            return false
-        }
-        val cluster = token.substring(1)
-        cluster.forEachIndexed { index, option ->
-            if (option in VALUE_TAKING_OPTIONS) {
-                return index == cluster.lastIndex
-            }
-            if (option !in NO_VALUE_OPTIONS) return false
-        }
-        return false
-    }
+internal enum class YtdlpOptionTarget {
+    PATH,
+    OUTPUT,
 }
 
 /**
- * Parses the path-map syntax used by yt-dlp. The upstream option parser stores
- * one effective value per key, with later declarations replacing earlier
- * declarations for the same key. The worker can safely rewrite the home and
- * temp keys into its operation-owned staging root. Output-type-specific keys
- * are retained in the model but rejected by output-plan construction because
- * this worker cannot prove their publication lineage independently.
+ * The portion of yt-dlp's optparse surface that can own following tokens.
+ *
+ * This is deliberately shared by output/path planning and config sanitization.
+ * A boolean "consumes the next token" flag is not sufficient for options such
+ * as --replace-in-metadata (nargs=3) or --print-to-file (nargs=2).
  */
-internal object YtdlpCommandPathParser {
-    fun resolve(command: String): YtdlpCommandPathResolution {
-        val tokens = YtdlpCommandTokenizer.tokenize(command)
-            ?: return YtdlpCommandPathResolution.Invalid("unbalanced shell quoting")
-        val paths = linkedMapOf<String, File>()
-        var foundPathOption = false
-        var index = 0
-        while (index < tokens.size) {
-            val token = tokens[index]
-            if (token == "--") break
+internal data class YtdlpOptionTokenOwnership(
+    val canonicalName: String?,
+    val target: YtdlpOptionTarget?,
+    val requiredValueCount: Int,
+    val inlineValue: String?,
+    val values: List<String>,
+    val consumedFollowingTokenCount: Int,
+    val recognizedOption: Boolean,
+    val ambiguousOption: Boolean = false,
+    val optionTerminator: Boolean = false,
+) {
+    val nextIndexDelta: Int
+        get() = if (optionTerminator) 1 else 1 + consumedFollowingTokenCount
 
-            val clusteredPath = YtdlpShortOptionClusterParser.match(
-                token = token,
-                followingToken = tokens.getOrNull(index + 1),
-                target = 'P',
-            )
-            if (clusteredPath != null) {
-                val match = clusteredPath
-                val value = match.value
-                    ?: return YtdlpCommandPathResolution.Invalid("-P is missing its path")
-                val parsed = parsePathMapValue(value)
-                    ?: return YtdlpCommandPathResolution.Invalid(
-                        "unsupported or malformed -P path: $value"
-                    )
-                foundPathOption = true
-                parsed.keys.forEach { key -> paths[key] = parsed.directory }
-                if (match.consumesFollowingToken) index += 1
-                index += 1
-                continue
-            }
+    val missingValueCount: Int
+        get() = (requiredValueCount - values.size).coerceAtLeast(0)
 
-            // A path-looking token can be the required value of a preceding
-            // option. Never grant final-destination authority from that shape.
-            // These value-taking option tables mirror the bundled yt-dlp
-            // 2025.11.12 optparse surface; exact no-value options that are
-            // prefixes of value-taking options are handled explicitly below.
-            if (!isPathOptionToken(token) && consumesFollowingToken(token)) {
-                if (tokens.getOrNull(index + 1) == null) {
-                    return YtdlpCommandPathResolution.Invalid("$token is missing its value")
-                }
-                index += 2
-                continue
-            }
+    val firstValue: String?
+        get() = values.firstOrNull()
+}
 
-            val optionAndValue = when {
-                isLongPathsOptionToken(token) && !token.contains('=') -> {
-                    val value = tokens.getOrNull(index + 1)
-                        ?: return YtdlpCommandPathResolution.Invalid("$token is missing its path")
-                    index += 1
-                    "--paths" to value
-                }
-                isLongPathsOptionToken(token) && token.contains('=') ->
-                    "--paths" to token.substringAfter('=')
-                else -> null
-            }
-            if (optionAndValue != null) {
-                val (option, value) = optionAndValue
-                val parsed = parsePathMapValue(value)
-                    ?: return YtdlpCommandPathResolution.Invalid(
-                        "unsupported or malformed $option path: $value"
-                    )
-                foundPathOption = true
-                parsed.keys.forEach { key -> paths[key] = parsed.directory }
-            }
-            index += 1
-        }
-        if (!foundPathOption) return YtdlpCommandPathResolution.None
-        return YtdlpCommandPathResolution.Explicit(
-            pathMap = YtdlpPathMap(
-                home = paths["home"],
-                temp = paths["temp"],
-                outputTypePaths = paths
-                    .filterKeys { it in YTDLP_OUTPUT_TYPE_KEYS }
-                    .toMap(),
-            )
-        )
-    }
-
-    private data class ParsedPathMapValue(
-        val keys: List<String>,
-        val directory: File,
-    )
-
-    private fun parsePathMapValue(rawValue: String): ParsedPathMapValue? {
-        val value = rawValue.trim().trim('"', '\'')
-        if (value.isBlank() || value.startsWith("content://", ignoreCase = true)) return null
-
-        val colonIndex = value.indexOf(':')
-        val candidateKeys = if (colonIndex > 0 && !isWindowsDrivePath(value)) {
-            value.substring(0, colonIndex)
-                .split(',')
-                .map { it.trim().lowercase() }
-        } else {
-            emptyList()
-        }
-        val isTyped = candidateKeys.isNotEmpty() && candidateKeys.all { key ->
-            key == "home" || key == "temp" || key in YTDLP_OUTPUT_TYPE_KEYS
-        }
-        val typedKeys = if (isTyped) candidateKeys else listOf("home")
-        val path = (if (isTyped) value.substring(colonIndex + 1) else value).trim()
-        if (path.isBlank() || path.startsWith("~") || path.startsWith("file://")) return null
-        // A relative yt-dlp path is resolved against the native process
-        // working directory, which is not an operation-owned destination.
-        // Canonicalizing it here would turn an ambiguous command into false
-        // provenance, so only an explicitly absolute path is authorized.
-        if (!File(path).isAbsolute) return null
-
-        return runCatching {
-            val file = File(path).canonicalFile
-            file.takeIf { it.isAbsolute }?.let { ParsedPathMapValue(typedKeys, it) }
-        }.getOrNull()
-    }
-
-    // Generated from the bundled yt-dlp 2025.11.12 OptionParser. This is
-    // deliberately scoped to options that consume the following token because
-    // only those can make a later-looking -P/--paths token cease to be an
-    // option. Keep in sync when the bundled yt-dlp version changes.
-    private val VALUE_TAKING_LONG_OPTIONS = setOf(
+/**
+ * Shared arity-aware static model of bundled yt-dlp 2025.11.12 options.
+ *
+ * The bundled parser is Python optparse. Long options use exact names or an
+ * unambiguous prefix; an inline =value satisfies only the first required
+ * argument. Unknown/ambiguous options are never granted destination
+ * authority, but an ambiguous prefix that could own a value is conservatively
+ * skipped so a native parse error cannot turn a later token into authority.
+ */
+internal object YtdlpOptionOwnership {
+    private val SINGLE_VALUE_LONG_OPTIONS = setOf(
         "--add-headers",
         "--age-limit",
-        "--alias",
         "--ap-mso",
         "--ap-password",
         "--ap-username",
@@ -409,11 +257,9 @@ internal object YtdlpCommandPathParser {
         "--min-views",
         "--netrc-cmd",
         "--netrc-location",
-        "--output",
         "--output-na-placeholder",
         "--parse-metadata",
         "--password",
-        "--paths",
         "--playlist-end",
         "--playlist-items",
         "--playlist-start",
@@ -421,8 +267,6 @@ internal object YtdlpCommandPathParser {
         "--postprocessor-args",
         "--ppa",
         "--preset-alias",
-        "--print",
-        "--print-to-file",
         "--progress-delta",
         "--progress-template",
         "--proxy",
@@ -433,7 +277,6 @@ internal object YtdlpCommandPathParser {
         "--remote-components",
         "--remove-chapters",
         "--remux-video",
-        "--replace-in-metadata",
         "--retries",
         "--retry-sleep",
         "--skip-playlist-after-errors",
@@ -442,12 +285,12 @@ internal object YtdlpCommandPathParser {
         "--sleep-subtitles",
         "--socket-timeout",
         "--source-address",
-        "--sponskrub-args",
-        "--sponskrub-location",
         "--sponsorblock-api",
         "--sponsorblock-chapter-title",
         "--sponsorblock-mark",
         "--sponsorblock-remove",
+        "--sponskrub-args",
+        "--sponskrub-location",
         "--srt-langs",
         "--sub-format",
         "--sub-langs",
@@ -465,48 +308,374 @@ internal object YtdlpCommandPathParser {
         "--xff",
     )
 
-    // optparse resolves an exact option before considering long-option
-    // abbreviations. These five no-value options are exact prefixes of a
-    // value-taking option in the bundled parser and therefore do not consume
-    // the following token.
-    private val EXACT_NO_VALUE_PREFIXES = setOf(
+    /** Fixed required-argument counts from the bundled parser. */
+    private val LONG_OPTION_ARITIES: Map<String, Int> = buildMap {
+        SINGLE_VALUE_LONG_OPTIONS.forEach { put(it, 1) }
+        put("--alias", 2)
+        put("--print", 1)
+        put("--print-to-file", 2)
+        put("--paths", 1)
+        put("--output", 1)
+        put("--replace-in-metadata", 3)
+    }
+
+    // Exact no-value options that are prefixes of value-taking options, plus
+    // no-value options that must be recognized as real policy-sensitive flags.
+    private val LONG_NO_VALUE_OPTIONS = setOf(
         "--geo-bypass",
         "--netrc",
+        "--no-config",
+        "--no-config-locations",
+        "--no-plugin-dirs",
+        "--no-js-runtimes",
+        "--no-remote-components",
+        "--no-update",
+        "--print-traffic",
         "--progress",
         "--sponskrub",
         "--update",
+        "--write-thumbnail",
+        "--write-pages",
     )
 
-    internal fun consumesFollowingToken(token: String): Boolean {
-        if (token == "-" || token == "--" || token.contains('=')) return false
-        if (token.startsWith("--")) {
-            if (token in EXACT_NO_VALUE_PREFIXES) return false
-            if (token in VALUE_TAKING_LONG_OPTIONS) return true
-            // yt-dlp accepts unambiguous long-option abbreviations. If a token
-            // is a prefix of a value-taking option, treating the next token as
-            // consumed is conservative for ambiguous abbreviations too and,
-            // critically, prevents false path authority.
-            return VALUE_TAKING_LONG_OPTIONS.any { canonical -> canonical.startsWith(token) }
-        }
-        if (!token.startsWith('-') || token.length < 2) return false
+    private val LONG_OPTION_NAMES = LONG_OPTION_ARITIES.keys + LONG_NO_VALUE_OPTIONS
 
-        // Python optparse accepts short-option clusters. Once a value-taking
-        // short option is encountered, the remainder of the same token is its
-        // value; only when it is the final character does it consume the next
-        // token.
-        return YtdlpShortOptionClusterParser.consumesFollowingToken(token)
+    fun inspect(tokens: List<String>, index: Int): YtdlpOptionTokenOwnership {
+        val token = tokens.getOrNull(index)
+            ?: return YtdlpOptionTokenOwnership(
+                canonicalName = null,
+                target = null,
+                requiredValueCount = 0,
+                inlineValue = null,
+                values = emptyList(),
+                consumedFollowingTokenCount = 0,
+                recognizedOption = false,
+            )
+        if (token == "--") {
+            return YtdlpOptionTokenOwnership(
+                canonicalName = null,
+                target = null,
+                requiredValueCount = 0,
+                inlineValue = null,
+                values = emptyList(),
+                consumedFollowingTokenCount = 0,
+                recognizedOption = true,
+                optionTerminator = true,
+            )
+        }
+
+        if (token.startsWith("--") && token.length > 2) {
+            val optionName = token.substringBefore('=')
+            val canonical = resolveLongOption(optionName)
+            if (canonical != null) {
+                val required = LONG_OPTION_ARITIES[canonical] ?: 0
+                val hasInlineValue = token.contains('=') && required > 0
+                val inline = token.substringAfter('=', "").takeIf { hasInlineValue }
+                val inlineCount = if (hasInlineValue) 1 else 0
+                val neededFollowing = (required - inlineCount).coerceAtLeast(0)
+                val followingCount = minOf(neededFollowing, tokens.size - index - 1)
+                val values = buildList {
+                    if (inline != null) add(inline)
+                    repeat(followingCount) { add(tokens[index + 1 + it]) }
+                }
+                return YtdlpOptionTokenOwnership(
+                    canonicalName = canonical,
+                    target = canonical.targetOrNull(),
+                    requiredValueCount = required,
+                    inlineValue = inline,
+                    values = values,
+                    consumedFollowingTokenCount = followingCount,
+                    recognizedOption = true,
+                )
+            }
+
+            val candidates = longOptionCandidates(optionName)
+            val conservativeFollowingCount = if (candidates.any { LONG_OPTION_ARITIES[it] ?: 0 > 0 }) {
+                minOf(1, tokens.size - index - 1)
+            } else {
+                0
+            }
+            return YtdlpOptionTokenOwnership(
+                canonicalName = null,
+                target = null,
+                requiredValueCount = 0,
+                inlineValue = null,
+                values = if (conservativeFollowingCount == 1) {
+                    listOf(tokens[index + 1])
+                } else {
+                    emptyList()
+                },
+                consumedFollowingTokenCount = conservativeFollowingCount,
+                recognizedOption = false,
+                ambiguousOption = candidates.size > 1,
+            )
+        }
+
+        val short = YtdlpShortOptionClusterParser.inspect(
+            token = token,
+            followingToken = tokens.getOrNull(index + 1),
+        ) ?: return YtdlpOptionTokenOwnership(
+            canonicalName = null,
+            target = null,
+            requiredValueCount = 0,
+            inlineValue = null,
+            values = emptyList(),
+            consumedFollowingTokenCount = 0,
+            recognizedOption = false,
+        )
+        return YtdlpOptionTokenOwnership(
+            canonicalName = short.canonicalName,
+            target = short.canonicalName.targetOrNull(),
+            requiredValueCount = short.requiredValueCount,
+            inlineValue = short.inlineValue,
+            values = short.values,
+            consumedFollowingTokenCount = short.consumedFollowingTokenCount,
+            recognizedOption = short.recognizedOption,
+        )
     }
 
-    private fun isPathOptionToken(token: String): Boolean =
-        isLongPathsOptionToken(token) ||
-            YtdlpShortOptionClusterParser.match(token, null, 'P') != null
+    fun resolveLongOption(optionName: String): String? {
+        if (!optionName.startsWith("--") || optionName.length <= 2) return null
+        if (optionName in LONG_OPTION_NAMES) return optionName
+        return longOptionCandidates(optionName).singleOrNull()
+    }
 
-    private fun isLongPathsOptionToken(token: String): Boolean {
-        val optionName = token.substringBefore('=')
-        if (!optionName.startsWith("--")) return false
-        if (optionName == "--paths") return true
-        return VALUE_TAKING_LONG_OPTIONS.count { canonical -> canonical.startsWith(optionName) } == 1 &&
-            VALUE_TAKING_LONG_OPTIONS.any { canonical -> canonical == "--paths" && canonical.startsWith(optionName) }
+    fun longOptionCandidates(optionName: String): List<String> {
+        if (!optionName.startsWith("--") || optionName.length <= 2) return emptyList()
+        return LONG_OPTION_NAMES
+            .filter { canonical -> canonical.startsWith(optionName) }
+            .sorted()
+    }
+
+    private fun String.targetOrNull(): YtdlpOptionTarget? = when (this) {
+        "-P", "--paths" -> YtdlpOptionTarget.PATH
+        "-o", "--output" -> YtdlpOptionTarget.OUTPUT
+        else -> null
+    }
+}
+
+/**
+ * Models the short-option cluster handling used by Python optparse. A
+ * value-taking option consumes the remainder of its token, or the following
+ * token when it is the final character in a cluster. This matters for yt-dlp
+ * because `-qP` and `-qo` are not unknown options: they are `-q` followed by
+ * the value-taking `-P`/`-o` option.
+ */
+internal object YtdlpShortOptionClusterParser {
+    data class Match(
+        val value: String?,
+        val consumesFollowingToken: Boolean,
+    )
+
+    data class Ownership(
+        val canonicalName: String,
+        val requiredValueCount: Int,
+        val inlineValue: String?,
+        val values: List<String>,
+        val consumedFollowingTokenCount: Int,
+        val recognizedOption: Boolean,
+    )
+
+    // These are the value-taking short options exposed by bundled yt-dlp
+    // 2025.11.12. If one appears before the target, the remainder of the
+    // token is its value and cannot contain another option.
+    private val VALUE_TAKING_OPTIONS = setOf(
+        '2', 'I', 'N', 'O', 'P', 'R', 'S', 'a', 'f', 'o', 'p', 'r', 't', 'u',
+    )
+
+    // The no-value options that may legally precede -o/-P in a cluster. Keep
+    // this explicit instead of treating arbitrary letters as flags: an
+    // unknown short option must not be reinterpreted as a destination option.
+    private val NO_VALUE_OPTIONS = setOf(
+        '4', '6', 'C', 'F', 'J', 'U', 'X', 'c', 'e', 'g', 'h', 'i', 'j', 'k',
+        'n', 'q', 's', 'v', 'w', 'x',
+    )
+
+    fun match(token: String, followingToken: String?, target: Char): Match? {
+        if (!token.startsWith('-') || token.startsWith("--") || token.length < 2) {
+            return null
+        }
+        val cluster = token.substring(1)
+        var index = 0
+        while (index < cluster.length) {
+            val option = cluster[index]
+            if (option == target) {
+                val attached = cluster.substring(index + 1)
+                return if (attached.isNotEmpty()) {
+                    Match(value = attached, consumesFollowingToken = false)
+                } else {
+                    Match(value = followingToken, consumesFollowingToken = true)
+                }
+            }
+            if (option in VALUE_TAKING_OPTIONS || option !in NO_VALUE_OPTIONS) {
+                // A preceding value-taking or unknown option owns the rest of
+                // this token; the target is not an effective option here.
+                return null
+            }
+            index += 1
+        }
+        return null
+    }
+
+    fun inspect(token: String, followingToken: String?): Ownership? {
+        if (!token.startsWith('-') || token.startsWith("--") || token.length < 2) {
+            return null
+        }
+        val cluster = token.substring(1)
+        var index = 0
+        while (index < cluster.length) {
+            val option = cluster[index]
+            if (option in VALUE_TAKING_OPTIONS) {
+                val attached = cluster.substring(index + 1)
+                val consumesFollowing = attached.isEmpty()
+                val values = if (attached.isNotEmpty()) {
+                    listOf(attached)
+                } else {
+                    followingToken?.let(::listOf).orEmpty()
+                }
+                return Ownership(
+                    canonicalName = "-$option",
+                    requiredValueCount = 1,
+                    inlineValue = attached.takeIf { it.isNotEmpty() },
+                    values = values,
+                    consumedFollowingTokenCount = if (consumesFollowing && followingToken != null) 1 else 0,
+                    recognizedOption = true,
+                )
+            }
+            if (option !in NO_VALUE_OPTIONS) {
+                return Ownership(
+                    canonicalName = "-$option",
+                    requiredValueCount = 0,
+                    inlineValue = null,
+                    values = emptyList(),
+                    consumedFollowingTokenCount = 0,
+                    recognizedOption = false,
+                )
+            }
+            index += 1
+        }
+        return Ownership(
+            canonicalName = "-${cluster.first()}",
+            requiredValueCount = 0,
+            inlineValue = null,
+            values = emptyList(),
+            consumedFollowingTokenCount = 0,
+            recognizedOption = true,
+        )
+    }
+
+    fun consumesFollowingToken(token: String): Boolean {
+        return inspect(token, followingToken = "").let { ownership ->
+            ownership?.requiredValueCount == 1 && ownership.inlineValue == null
+        }
+    }
+}
+
+/**
+ * Parses the path-map syntax used by yt-dlp. The upstream option parser stores
+ * one effective value per key, with later declarations replacing earlier
+ * declarations for the same key. The worker can safely rewrite the home and
+ * temp keys into its operation-owned staging root. Output-type-specific keys
+ * are retained in the model but rejected by output-plan construction because
+ * this worker cannot prove their publication lineage independently.
+ */
+internal object YtdlpCommandPathParser {
+    fun resolve(command: String): YtdlpCommandPathResolution {
+        val tokens = YtdlpCommandTokenizer.tokenize(command)
+            ?: return YtdlpCommandPathResolution.Invalid("unbalanced shell quoting")
+        val paths = linkedMapOf<String, File>()
+        var foundPathOption = false
+        var index = 0
+        while (index < tokens.size) {
+            val ownership = YtdlpOptionOwnership.inspect(tokens, index)
+            if (ownership.optionTerminator) break
+
+            if (ownership.target == YtdlpOptionTarget.PATH) {
+                if (ownership.missingValueCount > 0 || ownership.firstValue == null) {
+                    return YtdlpCommandPathResolution.Invalid(
+                        "${ownership.canonicalName} is missing its path"
+                    )
+                }
+                val value = ownership.firstValue
+                    ?: return YtdlpCommandPathResolution.Invalid(
+                        "${ownership.canonicalName} is missing its path"
+                    )
+                val parsed = parsePathMapValue(value)
+                    ?: return YtdlpCommandPathResolution.Invalid(
+                        "unsupported or malformed ${ownership.canonicalName} path: $value"
+                    )
+                foundPathOption = true
+                parsed.keys.forEach { key -> paths[key] = parsed.directory }
+                index += ownership.nextIndexDelta
+                continue
+            }
+
+            // A token owned by any recognized fixed-arity option is data, even
+            // when it literally looks like -P/--paths. Ambiguous options are
+            // skipped conservatively because yt-dlp will reject them before
+            // execution rather than granting a later token authority.
+            if (ownership.recognizedOption || ownership.ambiguousOption) {
+                if (ownership.recognizedOption && ownership.missingValueCount > 0) {
+                    return YtdlpCommandPathResolution.Invalid(
+                        "${ownership.canonicalName} is missing its value"
+                    )
+                }
+                index += ownership.nextIndexDelta
+                continue
+            }
+
+            index += 1
+        }
+        if (!foundPathOption) return YtdlpCommandPathResolution.None
+        return YtdlpCommandPathResolution.Explicit(
+            pathMap = YtdlpPathMap(
+                home = paths["home"],
+                temp = paths["temp"],
+                outputTypePaths = paths
+                    .filterKeys { it in YTDLP_OUTPUT_TYPE_KEYS }
+                    .toMap(),
+            )
+        )
+    }
+
+    private data class ParsedPathMapValue(
+        val keys: List<String>,
+        val directory: File,
+    )
+
+    private fun parsePathMapValue(rawValue: String): ParsedPathMapValue? {
+        val value = rawValue.trim().trim('"', '\'')
+        if (value.isBlank() || value.startsWith("content://", ignoreCase = true)) return null
+
+        val colonIndex = value.indexOf(':')
+        val candidateKeys = if (colonIndex > 0 && !isWindowsDrivePath(value)) {
+            value.substring(0, colonIndex)
+                .split(',')
+                .map { it.trim().lowercase() }
+        } else {
+            emptyList()
+        }
+        val isTyped = candidateKeys.isNotEmpty() && candidateKeys.all { key ->
+            key == "home" || key == "temp" || key in YTDLP_OUTPUT_TYPE_KEYS
+        }
+        val typedKeys = if (isTyped) candidateKeys else listOf("home")
+        val path = (if (isTyped) value.substring(colonIndex + 1) else value).trim()
+        if (path.isBlank() || path.startsWith("~") || path.startsWith("file://")) return null
+        // A relative yt-dlp path is resolved against the native process
+        // working directory, which is not an operation-owned destination.
+        // Canonicalizing it here would turn an ambiguous command into false
+        // provenance, so only an explicitly absolute path is authorized.
+        // Android uses Unix-rooted paths. The JVM used by these policy tests
+        // may be Windows-hosted, where File("/storage/...").isAbsolute can be
+        // false even though the bundled runtime will treat it as absolute.
+        if (!File(path).isAbsolute && !path.startsWith('/') && !isWindowsDrivePath(path)) {
+            return null
+        }
+
+        return runCatching {
+            val file = File(path).canonicalFile
+            file.takeIf { it.isAbsolute }?.let { ParsedPathMapValue(typedKeys, it) }
+        }.getOrNull()
     }
 
     private fun isWindowsDrivePath(value: String): Boolean =
@@ -585,11 +754,12 @@ internal object YtdlpCommandOutputTemplateParser {
         var index = 0
         while (index < tokens.size) {
             val token = tokens[index]
+            val ownership = YtdlpOptionOwnership.inspect(tokens, index)
 
             // The app appends operation-owned -P home/temp after persisted
             // authored options. If authored `--` terminates option parsing,
             // those confinement options become positional arguments instead.
-            if (token == "--") {
+            if (ownership.optionTerminator) {
                 if (confinementOptionsFollow) {
                     return YtdlpCommandOutputTemplateResolution.Invalid(
                         "option terminator -- disables app-owned output confinement"
@@ -608,97 +778,74 @@ internal object YtdlpCommandOutputTemplateParser {
                 )
             }
 
-            // yt-dlp aliases can expand to -o/-P after this static policy has
-            // run, so user-defined aliases are an unmodelled destination route.
-            if (token == "--alias" || token.startsWith("--alias=")) {
-                return YtdlpCommandOutputTemplateResolution.Invalid(
-                    "--alias may inject an unmodelled output destination"
-                )
-            }
-            authoredIndependentWriteOptions.firstOrNull { option ->
-                token == option || token.startsWith("$option=")
-            }?.let { option ->
-                return YtdlpCommandOutputTemplateResolution.Invalid(
-                    "$option writes outside the operation-owned output contract"
-                )
-            }
-            authoredExecutionAuthorityOptions.firstOrNull { option ->
-                token == option || token.startsWith("$option=")
-            }?.let { option ->
-                return YtdlpCommandOutputTemplateResolution.Invalid(
-                    "$option may execute an untrusted external runtime"
-                )
-            }
-            authoredOutputSemanticOptions.firstOrNull { option ->
-                token == option || token.startsWith("$option=")
-            }?.let { option ->
-                return YtdlpCommandOutputTemplateResolution.Invalid(
-                    "$option can invalidate pre-execution output confinement"
-                )
+            if (ownership.recognizedOption) {
+                // yt-dlp aliases can expand to -o/-P after this static policy
+                // has run, so user-defined aliases are an unmodelled
+                // destination route. This check is deliberately made only on
+                // an actual option token; an identical string owned by a
+                // fixed-arity option is data and was skipped above.
+                if (ownership.canonicalName == "--alias") {
+                    return YtdlpCommandOutputTemplateResolution.Invalid(
+                        "--alias may inject an unmodelled output destination"
+                    )
+                }
+                authoredIndependentWriteOptions.firstOrNull { option ->
+                    ownership.canonicalName == option
+                }?.let { option ->
+                    return YtdlpCommandOutputTemplateResolution.Invalid(
+                        "$option writes outside the operation-owned output contract"
+                    )
+                }
+                authoredExecutionAuthorityOptions.firstOrNull { option ->
+                    ownership.canonicalName == option
+                }?.let { option ->
+                    return YtdlpCommandOutputTemplateResolution.Invalid(
+                        "$option may execute an untrusted external runtime"
+                    )
+                }
+                authoredOutputSemanticOptions.firstOrNull { option ->
+                    ownership.canonicalName == option
+                }?.let { option ->
+                    return YtdlpCommandOutputTemplateResolution.Invalid(
+                        "$option can invalidate pre-execution output confinement"
+                    )
+                }
             }
 
             // Python optparse accepts short-option clusters. In particular,
-            // `-qoVALUE`, `-qo VALUE`, and `-vqoVALUE` all select -o, while
-            // `-qP VALUE` and `-qPVALUE` select -P. The output policy must
-            // inspect the effective -o rather than treating these as opaque
-            // unknown flags before native execution.
-            val clusteredOutput = YtdlpShortOptionClusterParser.match(
-                token = token,
-                followingToken = tokens.getOrNull(index + 1),
-                target = 'o',
-            )
-            if (clusteredOutput == null &&
-                token != "--output" &&
-                !token.startsWith("--output=") &&
-                YtdlpCommandPathParser.consumesFollowingToken(token)
-            ) {
-                if (tokens.getOrNull(index + 1) == null) {
+            // -qoVALUE, -qo VALUE, and -vqoVALUE all select -o, while
+            // -qP VALUE and -qPVALUE select -P. The shared ownership model
+            // has already accounted for any preceding value-taking option.
+            if (ownership.target == YtdlpOptionTarget.OUTPUT) {
+                if (ownership.missingValueCount > 0 || ownership.firstValue == null) {
                     return YtdlpCommandOutputTemplateResolution.Invalid(
-                        "$token is missing its value"
+                        "${ownership.canonicalName} is missing its output template"
                     )
                 }
-                index += 2
-                continue
-            }
-            if (clusteredOutput != null) {
-                val rawValue = clusteredOutput.value
+                val rawValue = ownership.firstValue
                     ?: return YtdlpCommandOutputTemplateResolution.Invalid(
-                        "-o is missing its output template"
+                        "${ownership.canonicalName} is missing its output template"
                     )
                 val parsed = parseOutputValue(rawValue)
                     ?: return YtdlpCommandOutputTemplateResolution.Invalid(
-                        "unsupported or malformed -o template: $rawValue"
+                        "unsupported or malformed ${ownership.canonicalName} template: $rawValue"
                     )
                 foundOutputOption = true
                 parsed.keys.forEach { key -> templates[key] = parsed.template }
-                if (clusteredOutput.consumesFollowingToken) index += 1
-                index += 1
+                index += ownership.nextIndexDelta
                 continue
             }
 
-            val optionAndValue = when {
-                token == "--output" -> {
-                    val value = tokens.getOrNull(index + 1)
-                        ?: return YtdlpCommandOutputTemplateResolution.Invalid(
-                            "$token is missing its output template"
-                        )
-                    index += 1
-                    token to value
+            if (ownership.recognizedOption || ownership.ambiguousOption) {
+                if (ownership.recognizedOption && ownership.missingValueCount > 0) {
+                    return YtdlpCommandOutputTemplateResolution.Invalid(
+                        "${ownership.canonicalName} is missing its value"
+                    )
                 }
-                token.startsWith("--output=") ->
-                    "--output" to token.substringAfter('=')
-                else -> null
+                index += ownership.nextIndexDelta
+                continue
             }
 
-            if (optionAndValue != null) {
-                val (option, rawValue) = optionAndValue
-                val parsed = parseOutputValue(rawValue)
-                    ?: return YtdlpCommandOutputTemplateResolution.Invalid(
-                        "unsupported or malformed $option template: $rawValue"
-                    )
-                foundOutputOption = true
-                parsed.keys.forEach { key -> templates[key] = parsed.template }
-            }
             index += 1
         }
 

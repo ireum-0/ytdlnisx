@@ -155,6 +155,10 @@ class YtdlpOutputPlanTest {
                 YtdlpCommandPathResolution.Explicit
         )
         assertTrue(
+            YtdlpCommandPathParser.resolve("--write-thumbnail --paths $absolutePath") is
+                YtdlpCommandPathResolution.Explicit
+        )
+        assertTrue(
             YtdlpCommandPathParser.resolve("--pro --paths $absolutePath") is
                 YtdlpCommandPathResolution.None
         )
@@ -162,6 +166,132 @@ class YtdlpOutputPlanTest {
             YtdlpCommandPathParser.resolve("--paths $absolutePath --no-playlist") is
                 YtdlpCommandPathResolution.Explicit
         )
+    }
+
+    @Test
+    fun fixedArityMetadataOptionsOwnPathAndOutputLookingValues() {
+        val separated = "--replace-in-metadata title -P /tmp/metadata-replacement"
+        val equals = "--replace-in-metadata=title -P /tmp/metadata-replacement"
+        val abbreviated = "--replace-in-met title -o replacement"
+
+        listOf(separated, equals, abbreviated).forEach { command ->
+            assertTrue(
+                "metadata values must not become path authority for $command",
+                YtdlpCommandPathParser.resolve(command) is YtdlpCommandPathResolution.None,
+            )
+            assertTrue(
+                "metadata values must not become output authority for $command",
+                YtdlpCommandOutputTemplateParser.resolve(command) is
+                    YtdlpCommandOutputTemplateResolution.None,
+            )
+        }
+
+        val separatedOutput = YtdlpCommandOutputTemplateParser.resolve(
+            "--replace-in-metadata title -o replacement"
+        )
+        val equalsOutput = YtdlpCommandOutputTemplateParser.resolve(
+            "--replace-in-metadata=title -o replacement"
+        )
+        assertTrue(separatedOutput is YtdlpCommandOutputTemplateResolution.None)
+        assertTrue(equalsOutput is YtdlpCommandOutputTemplateResolution.None)
+    }
+
+    @Test
+    fun realDestinationOptionsAfterAllFixedArityValuesRemainEffective() {
+        val path = Files.createTempDirectory("ytdlp-output-plan-arity-path-")
+            .toFile()
+            .canonicalPath
+            .replace('\\', '/')
+        val pathResolution = YtdlpCommandPathParser.resolve(
+            "--replace-in-metadata title regex replacement -P $path"
+        )
+        assertEquals(
+            path,
+            (pathResolution as YtdlpCommandPathResolution.Explicit)
+                .pathMap.home
+                ?.canonicalPath
+                ?.replace('\\', '/'),
+        )
+
+        val outputResolution = YtdlpCommandOutputTemplateParser.resolve(
+            "--replace-in-metadata title regex replacement -o safe/%(title)s.%(ext)s"
+        )
+        assertTrue(outputResolution is YtdlpCommandOutputTemplateResolution.Explicit)
+        assertEquals(
+            "safe/%(title)s.%(ext)s",
+            (outputResolution as YtdlpCommandOutputTemplateResolution.Explicit)
+                .templates["default"],
+        )
+    }
+
+    @Test
+    fun fixedArityMetadataValuesThatLookSensitiveRemainData() {
+        val ownedAlias = "--replace-in-metadata title --alias replacement"
+        val ownedPrint = "--replace-in-metadata title --print-to-file replacement"
+
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(ownedAlias) is
+                YtdlpCommandOutputTemplateResolution.None,
+        )
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(ownedPrint) is
+                YtdlpCommandOutputTemplateResolution.None,
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve(ownedAlias) is YtdlpCommandPathResolution.None,
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve(ownedPrint) is YtdlpCommandPathResolution.None,
+        )
+    }
+
+    @Test
+    fun realAliasAndPrintToFileOwnTheirDeclaredArgumentCountsBeforeRejection() {
+        val aliasOwnership = YtdlpOptionOwnership.inspect(
+            YtdlpCommandTokenizer.tokenize("--alias safe '-o %(title)s.%(ext)s' -P /tmp/path")!!,
+            0,
+        )
+        assertEquals("--alias", aliasOwnership.canonicalName)
+        assertEquals(2, aliasOwnership.requiredValueCount)
+        assertEquals(listOf("safe", "-o %(title)s.%(ext)s"), aliasOwnership.values)
+
+        val printOwnership = YtdlpOptionOwnership.inspect(
+            YtdlpCommandTokenizer.tokenize(
+                "--print-to-file '%(title)s' /tmp/print.txt -P /tmp/path"
+            )!!,
+            0,
+        )
+        assertEquals("--print-to-file", printOwnership.canonicalName)
+        assertEquals(2, printOwnership.requiredValueCount)
+        assertEquals(listOf("%(title)s", "/tmp/print.txt"), printOwnership.values)
+
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(
+                "--alias safe '-o %(title)s.%(ext)s'"
+            ) is YtdlpCommandOutputTemplateResolution.Invalid,
+        )
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(
+                "--print-to-file '%(title)s' /tmp/print.txt"
+            ) is YtdlpCommandOutputTemplateResolution.Invalid,
+        )
+    }
+
+    @Test
+    fun sharedOwnershipModelReportsEqualsArityAndOwnedTokens() {
+        val tokens = YtdlpCommandTokenizer.tokenize(
+            "--replace-in-metadata=title -P /tmp/metadata-replacement"
+        )!!
+        val ownership = YtdlpOptionOwnership.inspect(tokens, 0)
+
+        assertEquals("--replace-in-metadata", ownership.canonicalName)
+        assertEquals(3, ownership.requiredValueCount)
+        assertEquals(
+            listOf("title", "-P", "/tmp/metadata-replacement"),
+            ownership.values,
+        )
+        assertEquals(2, ownership.consumedFollowingTokenCount)
+        assertEquals(3, ownership.nextIndexDelta)
     }
 
     @Test

@@ -151,4 +151,62 @@ class YtdlpArgumentPolicyTest {
         assertFalse(stripped.contains("UnsafeProcessor"))
         assertTrue(stripped.contains("https://example.com/video"))
     }
+
+    @Test
+    fun fixedArityMetadataDataIsNotReclassifiedByArgumentSanitizer() {
+        val original = listOf(
+            "--replace-in-metadata",
+            "title",
+            "--exec",
+            "replacement",
+            "https://example.com/video",
+        )
+        assertEquals(original, YtdlpArgumentPolicy.sanitize(original, emptySet()))
+
+        val equalsForm = listOf(
+            "--replace-in-metadata=title",
+            "--ffmpeg-location",
+            "replacement",
+            "https://example.com/video",
+        )
+        assertEquals(equalsForm, YtdlpArgumentPolicy.sanitize(equalsForm, emptySet()))
+    }
+
+    @Test
+    fun generatedConfigSanitizerSharesFixedArityOwnershipAcrossLines() {
+        val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(
+            """
+            # A metadata replacement value may look like a blocked option
+            --replace-in-metadata
+            title
+            --ffmpeg-location
+            replacement
+            --replace-in-metadata=artist --config-locations replacement
+            --exec
+            echo unsafe
+            https://example.com/video
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("--exec"), sanitized.removedOptions)
+        assertTrue(sanitized.commandString.contains("--replace-in-metadata"))
+        assertTrue(sanitized.commandString.contains("--ffmpeg-location"))
+        assertTrue(sanitized.commandString.contains("--config-locations"))
+        assertFalse(sanitized.commandString.contains("echo unsafe"))
+        assertTrue(sanitized.commandString.contains("https://example.com/video"))
+    }
+
+    @Test
+    fun realSensitiveOptionsRemainBlockedWhenFollowingFixedArityData() {
+        val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(
+            "--replace-in-metadata title --exec replacement --exec echo unsafe"
+        )
+
+        assertEquals(listOf("--exec"), sanitized.removedOptions)
+        assertTrue(
+            YtdlpCommandTokenizer.tokenize(sanitized.commandString)
+                ?.containsAll(listOf("--replace-in-metadata", "title", "--exec", "replacement")) == true
+        )
+        assertFalse(sanitized.commandString.contains("echo unsafe"))
+    }
 }
