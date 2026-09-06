@@ -463,6 +463,46 @@ class DownloadOutputProductionWiringTest {
     }
 
     @Test
+    fun realWorkerRejectsEnvironmentExpandableCommandPathBeforeNativeBoundary() = runBlocking {
+        withCacheDownloads(true) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "environment-expandable-command").apply { mkdirs() }
+            val authoredPathRoot = File(testRoot, "environment-expandable-path").apply { mkdirs() }
+            val authoredPath = authoredPathRoot.absolutePath.replace('\\', '/') + "/\$HOME"
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.command,
+                    formatNote = "--paths=home:$authoredPath --no-playlist",
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, _ ->
+                if (candidateId != downloadId) null else {
+                    error("environment-expandable path must be rejected before native output")
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertFalse(nativeBoundaryReached.get())
+            assertFalse(File(authoredPathRoot, "\$HOME").exists())
+            assertTrue(authoredPathRoot.walkTopDown().none { it.isFile })
+            assertTrue(destination.listFiles().orEmpty().isEmpty())
+            assertNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        }
+    }
+
+    @Test
     fun realWorkerRejectsUnsafeCustomOutputBeforeNativeBoundary() = runBlocking {
         withCacheDownloads(true) {
             val downloadId = outputWiringDownloadIds.getAndIncrement()

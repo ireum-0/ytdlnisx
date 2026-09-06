@@ -608,6 +608,17 @@ internal object YtdlpShortOptionClusterParser {
  * this worker cannot prove their publication lineage independently.
  */
 internal object YtdlpCommandPathParser {
+    /**
+     * Python's POSIX ``expandvars`` recognizes ``$name`` and ``${name}``
+     * forms (its bundled regex is ASCII ``\$(\w+|\{[^}]*\})``). The native
+     * process environment is supplied by the worker and cannot be reproduced
+     * safely while planning publication. Reject only those syntactic forms so
+     * an authored path cannot receive authority from an expansion we have not
+     * established; punctuation-only dollar text remains ordinary data.
+     */
+    private val environmentVariablePattern =
+        Regex("""\$(?:[A-Za-z0-9_]+|\{[^}]*\})""")
+
     fun resolve(command: String): YtdlpCommandPathResolution {
         val tokens = YtdlpCommandTokenizer.tokenize(command)
             ?: return YtdlpCommandPathResolution.Invalid("unbalanced shell quoting")
@@ -689,6 +700,11 @@ internal object YtdlpCommandPathParser {
         val typedKeys = if (isTyped) candidateKeys else listOf("home")
         val path = (if (isTyped) value.substring(colonIndex + 1) else value).trim()
         if (path.isBlank() || path.startsWith("~") || path.startsWith("file://")) return null
+        // yt-dlp expands environment variables in authored path-map values
+        // immediately before native output. The worker cannot safely grant
+        // publication authority to a value whose effective destination is
+        // dependent on that runtime environment, so fail closed here.
+        if (environmentVariablePattern.containsMatchIn(path)) return null
         // A relative yt-dlp path is resolved against the native process
         // working directory, which is not an operation-owned destination.
         // Canonicalizing it here would turn an ambiguous command into false

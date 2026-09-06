@@ -109,6 +109,45 @@ class YtdlpOutputPlanTest {
     }
 
     @Test
+    fun rejectsYtdlpEnvironmentExpandablePathValuesBeforeGrantingAuthority() {
+        val base = Files.createTempDirectory("ytdlp-output-plan-env-")
+            .toFile()
+            .canonicalPath
+            .replace('\\', '/')
+        val homeValue = "$base/\$HOME"
+        val tempValue = "$base/\${TMPDIR}"
+
+        listOf(
+            "-P $homeValue",
+            "--paths=$homeValue",
+            "--paths=home:$homeValue",
+            "--paths temp:$tempValue",
+            "--paths=home,temp:$tempValue",
+        ).forEach { command ->
+            assertTrue(
+                "environment-expandable path must fail closed: $command",
+                YtdlpCommandPathParser.resolve(command) is YtdlpCommandPathResolution.Invalid,
+            )
+        }
+
+        val ordinary = YtdlpCommandPathParser.resolve("-P $base")
+        assertTrue(ordinary is YtdlpCommandPathResolution.Explicit)
+        assertEquals(
+            base,
+            (ordinary as YtdlpCommandPathResolution.Explicit).pathMap.home
+                ?.canonicalPath
+                ?.replace('\\', '/'),
+        )
+
+        // A punctuation-only dollar is unchanged by Python expandvars and
+        // therefore remains ordinary supported path data.
+        assertTrue(
+            YtdlpCommandPathParser.resolve("-P $base/\$-") is
+                YtdlpCommandPathResolution.Explicit,
+        )
+    }
+
+    @Test
     fun pathAuthorityIsNotGrantedWhenPathTokenIsAnotherOptionsValue() {
         val absolutePath = Files.createTempDirectory("ytdlp-output-plan-cluster-path-")
             .toFile()
