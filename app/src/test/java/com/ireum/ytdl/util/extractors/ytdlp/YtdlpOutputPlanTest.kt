@@ -1,16 +1,18 @@
 package com.ireum.ytdl.util.extractors.ytdlp
 
-import java.nio.file.Files
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class YtdlpOutputPlanTest {
 
+    private fun posixPath(name: String): String = "/storage/emulated/0/$name"
+
     @Test
     fun parsesExplicitShortPathOption() {
-        val directory = Files.createTempDirectory("ytdlp-output-plan-short-").toFile()
-        val path = directory.absolutePath.replace('\\', '/')
+        val directory = File("/storage/emulated/0/ytdlp-output-plan-short")
+        val path = posixPath("ytdlp-output-plan-short")
         val result = YtdlpCommandPathParser.resolve("-P \"$path\" --no-playlist")
 
         assertEquals(directory.canonicalFile, (result as YtdlpCommandPathResolution.Explicit).pathMap.home)
@@ -18,8 +20,8 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun parsesAttachedShortAndRejectsEqualsAsRelativeValue() {
-        val directory = Files.createTempDirectory("ytdlp-output-plan-short-forms-").toFile()
-        val path = directory.absolutePath.replace('\\', '/')
+        val directory = File("/storage/emulated/0/ytdlp-output-plan-short-forms")
+        val path = posixPath("ytdlp-output-plan-short-forms")
 
         val attached = YtdlpCommandPathParser.resolve("-P$path")
         val equals = YtdlpCommandPathParser.resolve("-P=\"$path\"")
@@ -32,12 +34,12 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun parsesUnqualifiedHomeAndSeparateHomeAndTempDeclarations() {
-        val configured = Files.createTempDirectory("ytdlp-output-plan-configured-").toFile()
-        val effective = Files.createTempDirectory("ytdlp-output-plan-effective-").toFile()
-        val temporary = Files.createTempDirectory("ytdlp-output-plan-temp-").toFile()
-        val configuredPath = configured.absolutePath.replace('\\', '/')
-        val effectivePath = effective.absolutePath.replace('\\', '/')
-        val temporaryPath = temporary.absolutePath.replace('\\', '/')
+        val configured = File("/storage/emulated/0/ytdlp-output-plan-configured")
+        val effective = File("/storage/emulated/0/ytdlp-output-plan-effective")
+        val temporary = File("/storage/emulated/0/ytdlp-output-plan-temp")
+        val configuredPath = posixPath("ytdlp-output-plan-configured")
+        val effectivePath = posixPath("ytdlp-output-plan-effective")
+        val temporaryPath = posixPath("ytdlp-output-plan-temp")
 
         val map = (YtdlpCommandPathParser.resolve(
             "-P \"$configuredPath\" --paths home:\"$effectivePath\" --paths temp:\"$temporaryPath\""
@@ -49,16 +51,16 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun repeatedDeclarationsUseTheLastValueForEachEffectiveKey() {
-        val firstHome = Files.createTempDirectory("ytdlp-output-plan-first-home-").toFile()
-        val lastHome = Files.createTempDirectory("ytdlp-output-plan-last-home-").toFile()
-        val firstTemp = Files.createTempDirectory("ytdlp-output-plan-first-temp-").toFile()
-        val lastTemp = Files.createTempDirectory("ytdlp-output-plan-last-temp-").toFile()
+        val firstHome = File("/storage/emulated/0/ytdlp-output-plan-first-home")
+        val lastHome = File("/storage/emulated/0/ytdlp-output-plan-last-home")
+        val firstTemp = File("/storage/emulated/0/ytdlp-output-plan-first-temp")
+        val lastTemp = File("/storage/emulated/0/ytdlp-output-plan-last-temp")
 
         val map = (YtdlpCommandPathParser.resolve(
-            "--paths home:${firstHome.absolutePath.replace('\\', '/')} " +
-                "--paths temp:${firstTemp.absolutePath.replace('\\', '/')} " +
-                "-P ${lastHome.absolutePath.replace('\\', '/')} " +
-                "--paths temp:${lastTemp.absolutePath.replace('\\', '/')}"
+                "--paths home:${posixPath("ytdlp-output-plan-first-home")} " +
+                "--paths temp:${posixPath("ytdlp-output-plan-first-temp")} " +
+                "-P ${posixPath("ytdlp-output-plan-last-home")} " +
+                "--paths temp:${posixPath("ytdlp-output-plan-last-temp")}"
         ) as YtdlpCommandPathResolution.Explicit).pathMap
 
         assertEquals(lastHome.canonicalFile, map.home)
@@ -67,8 +69,8 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun commaSeparatedHomeAndTempTypesApplyToBothKeys() {
-        val directory = Files.createTempDirectory("ytdlp-output-plan-comma-").toFile()
-        val path = directory.absolutePath.replace('\\', '/')
+        val directory = File("/storage/emulated/0/ytdlp-output-plan-comma")
+        val path = posixPath("ytdlp-output-plan-comma")
         val map = (YtdlpCommandPathParser.resolve("--paths=home,temp:$path")
             as YtdlpCommandPathResolution.Explicit).pathMap
 
@@ -78,8 +80,8 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun parsesEquivalentLongPathsSyntax() {
-        val directory = Files.createTempDirectory("ytdlp-output-plan-long-").toFile()
-        val path = directory.absolutePath.replace('\\', '/')
+        val directory = File("/storage/emulated/0/ytdlp-output-plan-long")
+        val path = posixPath("ytdlp-output-plan-long")
         val result = YtdlpCommandPathParser.resolve("--paths=home:$path")
 
         assertEquals(directory.canonicalFile, (result as YtdlpCommandPathResolution.Explicit).pathMap.home)
@@ -87,8 +89,8 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun retainsOutputSpecificPathsForExplicitUnsafeRejection() {
-        val directory = Files.createTempDirectory("ytdlp-output-plan-output-type-").toFile()
-        val path = directory.absolutePath.replace('\\', '/')
+        val directory = File("/storage/emulated/0/ytdlp-output-plan-output-type")
+        val path = posixPath("ytdlp-output-plan-output-type")
         val result = YtdlpCommandPathParser.resolve("--paths subtitle:$path")
 
         val map = (result as YtdlpCommandPathResolution.Explicit).pathMap
@@ -110,10 +112,7 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun rejectsYtdlpEnvironmentExpandablePathValuesBeforeGrantingAuthority() {
-        val base = Files.createTempDirectory("ytdlp-output-plan-env-")
-            .toFile()
-            .canonicalPath
-            .replace('\\', '/')
+        val base = "/storage/emulated/0/ytdlp-output-plan-env"
         val homeValue = "$base/\$HOME"
         val tempValue = "$base/\${TMPDIR}"
 
@@ -133,7 +132,7 @@ class YtdlpOutputPlanTest {
         val ordinary = YtdlpCommandPathParser.resolve("-P $base")
         assertTrue(ordinary is YtdlpCommandPathResolution.Explicit)
         assertEquals(
-            base,
+            File(base).canonicalPath.replace('\\', '/'),
             (ordinary as YtdlpCommandPathResolution.Explicit).pathMap.home
                 ?.canonicalPath
                 ?.replace('\\', '/'),
@@ -149,10 +148,7 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun pathAuthorityIsNotGrantedWhenPathTokenIsAnotherOptionsValue() {
-        val absolutePath = Files.createTempDirectory("ytdlp-output-plan-cluster-path-")
-            .toFile()
-            .absolutePath
-            .replace('\\', '/')
+        val absolutePath = "/storage/emulated/0/ytdlp-output-plan-cluster-path"
         assertTrue(
             YtdlpCommandPathParser.resolve("-o --paths /shared/not-a-path-option") is
                 YtdlpCommandPathResolution.None
@@ -208,6 +204,111 @@ class YtdlpOutputPlanTest {
     }
 
     @Test
+    fun destructiveCacheOptionIsZeroArityAndCannotReachDestinationPolicy() {
+        val path = "/storage/emulated/0/ytdlp-output-plan-cache"
+        val ownership = YtdlpOptionOwnership.inspect(
+            requireNotNull(YtdlpCommandTokenizer.tokenize("--rm-cache-dir https://example.com/video")),
+            0,
+        )
+
+        assertEquals("--rm-cache-dir", ownership.canonicalName)
+        assertEquals(0, ownership.requiredValueCount)
+        assertTrue(ownership.values.isEmpty())
+        assertEquals(0, ownership.consumedFollowingTokenCount)
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--rm-cache-dir https://example.com/video") is
+                YtdlpCommandPathResolution.Invalid,
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--rm-cache /storage/emulated/0/cache") is
+                YtdlpCommandPathResolution.Invalid,
+        )
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve("--rm-cache-dir -o safe/%(title)s.%(ext)s") is
+                YtdlpCommandOutputTemplateResolution.Invalid,
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--rm-cache-dir --paths $path") is
+                YtdlpCommandPathResolution.Invalid,
+        )
+    }
+
+    @Test
+    fun destructiveCacheLookingMetadataValueRemainsData() {
+        val command = "--replace-in-metadata title --rm-cache-dir replacement"
+
+        assertTrue(
+            YtdlpCommandPathParser.resolve(command) is YtdlpCommandPathResolution.None,
+        )
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(command) is
+                YtdlpCommandOutputTemplateResolution.None,
+        )
+    }
+
+    @Test
+    fun unknownOrAmbiguousOptionsCannotPrecedeDestinationAuthority() {
+        val path = "/storage/emulated/0/ytdlp-output-plan-parse-certainty"
+        listOf(
+            "--definitely-unknown filler -P $path",
+            "--pro filler -P $path",
+            "-Z -P $path",
+        ).forEach { command ->
+            assertTrue(
+                "destination must fail closed after parse uncertainty: $command",
+                YtdlpCommandPathParser.resolve(command) is YtdlpCommandPathResolution.Invalid,
+            )
+        }
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve("--pro filler -o safe/%(title)s.%(ext)s") is
+                YtdlpCommandOutputTemplateResolution.Invalid,
+        )
+
+        // --no-colors and --no-colours are the same optparse Option object,
+        // so their shared abbreviation is unambiguous.
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--no-colo --paths $path") is
+                YtdlpCommandPathResolution.Explicit,
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--no-playlist=invalid --paths $path") is
+                YtdlpCommandPathResolution.Invalid,
+        )
+    }
+
+    @Test
+    fun windowsDrivePathFormsCannotGainAndroidPublicationAuthority() {
+        assertTrue(
+            YtdlpCommandPathParser.resolve("-P C:/storage/emulated/0/escape") is
+                YtdlpCommandPathResolution.Invalid,
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve("--paths \"C:\\\\storage\\\\emulated\\\\0\\\\escape\"") is
+                YtdlpCommandPathResolution.Invalid,
+        )
+        assertTrue(
+            YtdlpCommandPathParser.resolve("-P /storage/emulated/0/supported") is
+                YtdlpCommandPathResolution.Explicit,
+        )
+    }
+
+    @Test
+    fun outputValueAndExecutionOptionsUseOneValidatedRepresentation() {
+        val command = "-o sh -c --no-playlist"
+        val output = YtdlpCommandOutputTemplateParser.resolve(command)
+
+        assertTrue(output is YtdlpCommandOutputTemplateResolution.Explicit)
+        assertEquals(
+            "sh",
+            (output as YtdlpCommandOutputTemplateResolution.Explicit).templates["default"],
+        )
+        assertEquals(
+            listOf("-o", "sh", "-c", "--no-playlist"),
+            YtdlpCommandTokenizer.tokenize(command),
+        )
+    }
+
+    @Test
     fun fixedArityMetadataOptionsOwnPathAndOutputLookingValues() {
         val separated = "--replace-in-metadata title -P /tmp/metadata-replacement"
         val equals = "--replace-in-metadata=title -P /tmp/metadata-replacement"
@@ -237,15 +338,12 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun realDestinationOptionsAfterAllFixedArityValuesRemainEffective() {
-        val path = Files.createTempDirectory("ytdlp-output-plan-arity-path-")
-            .toFile()
-            .canonicalPath
-            .replace('\\', '/')
+        val path = "/storage/emulated/0/ytdlp-output-plan-arity-path"
         val pathResolution = YtdlpCommandPathParser.resolve(
             "--replace-in-metadata title regex replacement -P $path"
         )
         assertEquals(
-            path,
+            File(path).canonicalPath.replace('\\', '/'),
             (pathResolution as YtdlpCommandPathResolution.Explicit)
                 .pathMap.home
                 ?.canonicalPath
@@ -364,10 +462,7 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun doubleQuotedBackslashesBeforeOrdinaryCharactersRemainLiteralData() {
-        val path = Files.createTempDirectory("ytdlp-output-plan-shlex-path-")
-            .toFile()
-            .canonicalPath
-            .replace('\\', '/')
+        val path = "/storage/emulated/0/ytdlp-output-plan-shlex-path"
         val commands = listOf(
             "\"\\\\-P\" $path",
             "\"\\\\--paths\" $path",
@@ -401,15 +496,12 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun outsideQuoteBackslashStillMatchesPythonShlexOptionSemantics() {
-        val path = Files.createTempDirectory("ytdlp-output-plan-shlex-escaped-")
-            .toFile()
-            .canonicalPath
-            .replace('\\', '/')
+        val path = "/storage/emulated/0/ytdlp-output-plan-shlex-escaped"
         val resolution = YtdlpCommandPathParser.resolve("\\-P $path")
 
         assertTrue(resolution is YtdlpCommandPathResolution.Explicit)
         assertEquals(
-            path,
+            File(path).canonicalPath.replace('\\', '/'),
             (resolution as YtdlpCommandPathResolution.Explicit)
                 .pathMap.home
                 ?.canonicalPath
@@ -471,10 +563,7 @@ class YtdlpOutputPlanTest {
 
     @Test
     fun parsesBundledShortOptionClustersForOutputAndPathPolicy() {
-        val absolutePath = Files.createTempDirectory("ytdlp-output-plan-cluster-path-")
-            .toFile()
-            .absolutePath
-            .replace('\\', '/')
+        val absolutePath = "/storage/emulated/0/ytdlp-output-plan-cluster-path-output"
         val safeAttached = YtdlpCommandOutputTemplateParser.resolve(
             "-qosafe/%(title)s.%(ext)s"
         )
@@ -485,7 +574,7 @@ class YtdlpOutputPlanTest {
             "-vqo%(title)s.%(ext)s"
         )
         val safeCombinedFlags = YtdlpCommandOutputTemplateParser.resolve(
-            "-CXqosafe/combined/%(title)s.%(ext)s"
+            "-Cqosafe/combined/%(title)s.%(ext)s"
         )
         val outputLookingLikeOption = YtdlpCommandOutputTemplateParser.resolve("-qo -P")
 
@@ -527,14 +616,23 @@ class YtdlpOutputPlanTest {
             "-qP $absolutePath",
             "-qP$absolutePath",
             "-vqP $absolutePath",
-            "-CXqP $absolutePath",
+            "-CqP $absolutePath",
         ).forEach { command ->
             assertTrue(
                 "expected clustered path authority for $command",
                 YtdlpCommandPathParser.resolve(command) is
-                    YtdlpCommandPathResolution.Explicit,
+                YtdlpCommandPathResolution.Explicit,
             )
         }
+        assertTrue(
+            YtdlpCommandPathParser.resolve("-CXqP $absolutePath") is
+                YtdlpCommandPathResolution.None,
+        )
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(
+                "-CXqosafe/invalid/%(title)s.%(ext)s"
+            ) is YtdlpCommandOutputTemplateResolution.None,
+        )
     }
 
     @Test

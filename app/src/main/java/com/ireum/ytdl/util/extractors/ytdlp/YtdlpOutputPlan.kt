@@ -213,160 +213,422 @@ internal data class YtdlpOptionTokenOwnership(
  * skipped so a native parse error cannot turn a later token into authority.
  */
 internal object YtdlpOptionOwnership {
-    private val SINGLE_VALUE_LONG_OPTIONS = setOf(
-        "--add-headers",
-        "--age-limit",
-        "--ap-mso",
-        "--ap-password",
-        "--ap-username",
-        "--audio-format",
-        "--audio-quality",
-        "--autonumber-size",
-        "--autonumber-start",
-        "--batch-file",
-        "--break-match-filters",
-        "--buffer-size",
-        "--cache-dir",
-        "--client-certificate",
-        "--client-certificate-key",
-        "--client-certificate-password",
-        "--cn-verification-proxy",
-        "--color",
-        "--compat-options",
-        "--concat-playlist",
-        "--concurrent-fragments",
-        "--config-locations",
-        "--convert-sub",
-        "--convert-subs",
-        "--convert-subtitles",
-        "--convert-thumbnails",
-        "--cookies",
-        "--cookies-from-browser",
-        "--date",
-        "--dateafter",
-        "--datebefore",
-        "--default-search",
-        "--download-archive",
-        "--download-sections",
-        "--downloader",
-        "--downloader-args",
-        "--encoding",
-        "--exec",
-        "--exec-before-download",
-        "--external-downloader",
-        "--external-downloader-args",
-        "--extractor-args",
-        "--extractor-retries",
-        "--ffmpeg-location",
-        "--file-access-retries",
-        "--fixup",
-        "--format",
-        "--format-sort",
-        "--fragment-retries",
-        "--geo-bypass-country",
-        "--geo-bypass-ip-block",
-        "--geo-verification-proxy",
-        "--http-chunk-size",
-        "--ies",
-        "--impersonate",
-        "--js-runtimes",
-        "--limit-rate",
-        "--load-info-json",
-        "--match-filters",
-        "--match-title",
-        "--max-downloads",
-        "--max-filesize",
-        "--max-sleep-interval",
-        "--max-views",
-        "--merge-output-format",
-        "--metadata-from-title",
-        "--min-filesize",
-        "--min-sleep-interval",
-        "--min-views",
-        "--netrc-cmd",
-        "--netrc-location",
-        "--output-na-placeholder",
-        "--parse-metadata",
-        "--password",
-        "--playlist-end",
-        "--playlist-items",
-        "--playlist-start",
-        "--plugin-dirs",
-        "--postprocessor-args",
-        "--ppa",
-        "--preset-alias",
-        "--progress-delta",
-        "--progress-template",
-        "--proxy",
-        "--rate-limit",
-        "--recode-video",
-        "--referer",
-        "--reject-title",
-        "--remote-components",
-        "--remove-chapters",
-        "--remux-video",
-        "--retries",
-        "--retry-sleep",
-        "--skip-playlist-after-errors",
-        "--sleep-interval",
-        "--sleep-requests",
-        "--sleep-subtitles",
-        "--socket-timeout",
-        "--source-address",
-        "--sponsorblock-api",
-        "--sponsorblock-chapter-title",
-        "--sponsorblock-mark",
-        "--sponsorblock-remove",
-        "--sponskrub-args",
-        "--sponskrub-location",
-        "--srt-langs",
-        "--sub-format",
-        "--sub-langs",
-        "--throttled-rate",
-        "--trim-file-names",
-        "--trim-filenames",
-        "--twofactor",
-        "--update-to",
-        "--use-extractors",
-        "--use-postprocessor",
-        "--user-agent",
-        "--username",
-        "--video-password",
-        "--wait-for-video",
-        "--xff",
+    /** Exact long-option arities from bundled yt-dlp 2025.11.12 (5977782142). */
+    private val LONG_OPTION_ARITIES: Map<String, Int> = mapOf(
+        "--S-force" to 0,
+        "--format-sort-force" to 0,
+        "--abort-on-error" to 0,
+        "--no-ignore-errors" to 0,
+        "--abort-on-unavailable-fragments" to 0,
+        "--no-skip-unavailable-fragments" to 0,
+        "--add-chapters" to 0,
+        "--embed-chapters" to 0,
+        "--add-headers" to 1,
+        "--add-metadata" to 0,
+        "--embed-metadata" to 0,
+        "--age-limit" to 1,
+        "--alias" to 2,
+        "--all-formats" to 0,
+        "--all-subs" to 0,
+        "--allow-dynamic-mpd" to 0,
+        "--no-ignore-dynamic-mpd" to 0,
+        "--allow-unplayable-formats" to 0,
+        "--ap-list-mso" to 0,
+        "--ap-mso" to 1,
+        "--ap-password" to 1,
+        "--ap-username" to 1,
+        "--audio-format" to 1,
+        "--audio-multistreams" to 0,
+        "--audio-quality" to 1,
+        "--autonumber-size" to 1,
+        "--autonumber-start" to 1,
+        "--batch-file" to 1,
+        "--bidi-workaround" to 0,
+        "--break-match-filters" to 1,
+        "--break-on-existing" to 0,
+        "--break-on-reject" to 0,
+        "--break-per-input" to 0,
+        "--buffer-size" to 1,
+        "--cache-dir" to 1,
+        "--call-home" to 0,
+        "--check-all-formats" to 0,
+        "--check-formats" to 0,
+        "--clean-info-json" to 0,
+        "--clean-infojson" to 0,
+        "--client-certificate" to 1,
+        "--client-certificate-key" to 1,
+        "--client-certificate-password" to 1,
+        "--cn-verification-proxy" to 1,
+        "--color" to 1,
+        "--compat-options" to 1,
+        "--concat-playlist" to 1,
+        "--concurrent-fragments" to 1,
+        "--config-locations" to 1,
+        "--console-title" to 0,
+        "--continue" to 0,
+        "--convert-sub" to 1,
+        "--convert-subs" to 1,
+        "--convert-subtitles" to 1,
+        "--convert-thumbnails" to 1,
+        "--cookies" to 1,
+        "--cookies-from-browser" to 1,
+        "--date" to 1,
+        "--dateafter" to 1,
+        "--datebefore" to 1,
+        "--default-search" to 1,
+        "--download-archive" to 1,
+        "--download-sections" to 1,
+        "--downloader" to 1,
+        "--external-downloader" to 1,
+        "--downloader-args" to 1,
+        "--external-downloader-args" to 1,
+        "--dump-json" to 0,
+        "--dump-pages" to 0,
+        "--dump-single-json" to 0,
+        "--dump-user-agent" to 0,
+        "--embed-info-json" to 0,
+        "--embed-subs" to 0,
+        "--embed-thumbnail" to 0,
+        "--enable-file-urls" to 0,
+        "--encoding" to 1,
+        "--exec" to 1,
+        "--exec-before-download" to 1,
+        "--extract-audio" to 0,
+        "--extractor-args" to 1,
+        "--extractor-descriptions" to 0,
+        "--extractor-retries" to 1,
+        "--ffmpeg-location" to 1,
+        "--file-access-retries" to 1,
+        "--fixup" to 1,
+        "--flat-playlist" to 0,
+        "--force-download-archive" to 0,
+        "--force-write-archive" to 0,
+        "--force-write-download-archive" to 0,
+        "--force-generic-extractor" to 0,
+        "--force-ipv4" to 0,
+        "--force-ipv6" to 0,
+        "--force-keyframes-at-cuts" to 0,
+        "--force-overwrites" to 0,
+        "--yes-overwrites" to 0,
+        "--format" to 1,
+        "--format-sort" to 1,
+        "--fragment-retries" to 1,
+        "--geo-bypass" to 0,
+        "--geo-bypass-country" to 1,
+        "--geo-bypass-ip-block" to 1,
+        "--geo-verification-proxy" to 1,
+        "--get-comments" to 0,
+        "--write-comments" to 0,
+        "--get-description" to 0,
+        "--get-duration" to 0,
+        "--get-filename" to 0,
+        "--get-format" to 0,
+        "--get-id" to 0,
+        "--get-thumbnail" to 0,
+        "--get-title" to 0,
+        "--get-url" to 0,
+        "--help" to 0,
+        "--hls-prefer-ffmpeg" to 0,
+        "--hls-prefer-native" to 0,
+        "--hls-split-discontinuity" to 0,
+        "--hls-use-mpegts" to 0,
+        "--http-chunk-size" to 1,
+        "--id" to 0,
+        "--ies" to 1,
+        "--use-extractors" to 1,
+        "--ignore-config" to 0,
+        "--no-config" to 0,
+        "--ignore-dynamic-mpd" to 0,
+        "--no-allow-dynamic-mpd" to 0,
+        "--ignore-errors" to 0,
+        "--ignore-no-formats-error" to 0,
+        "--impersonate" to 1,
+        "--include-ads" to 0,
+        "--js-runtimes" to 1,
+        "--keep-fragments" to 0,
+        "--keep-video" to 0,
+        "--lazy-playlist" to 0,
+        "--legacy-server-connect" to 0,
+        "--limit-rate" to 1,
+        "--rate-limit" to 1,
+        "--list-extractors" to 0,
+        "--list-formats" to 0,
+        "--list-formats-as-table" to 0,
+        "--list-formats-old" to 0,
+        "--no-list-formats-as-table" to 0,
+        "--list-impersonate-targets" to 0,
+        "--list-subs" to 0,
+        "--list-thumbnails" to 0,
+        "--live-from-start" to 0,
+        "--load-info-json" to 1,
+        "--load-pages" to 0,
+        "--mark-watched" to 0,
+        "--match-filters" to 1,
+        "--match-title" to 1,
+        "--max-downloads" to 1,
+        "--max-filesize" to 1,
+        "--max-sleep-interval" to 1,
+        "--max-views" to 1,
+        "--merge-output-format" to 1,
+        "--metadata-from-title" to 1,
+        "--min-filesize" to 1,
+        "--min-sleep-interval" to 1,
+        "--sleep-interval" to 1,
+        "--min-views" to 1,
+        "--mtime" to 0,
+        "--netrc" to 0,
+        "--netrc-cmd" to 1,
+        "--netrc-location" to 1,
+        "--newline" to 0,
+        "--no-abort-on-error" to 0,
+        "--no-abort-on-unavailable-fragments" to 0,
+        "--skip-unavailable-fragments" to 0,
+        "--no-add-chapters" to 0,
+        "--no-embed-chapters" to 0,
+        "--no-add-metadata" to 0,
+        "--no-embed-metadata" to 0,
+        "--no-allow-unplayable-formats" to 0,
+        "--no-audio-multistreams" to 0,
+        "--no-batch-file" to 0,
+        "--no-break-match-filters" to 0,
+        "--no-break-on-existing" to 0,
+        "--no-break-per-input" to 0,
+        "--no-cache-dir" to 0,
+        "--no-call-home" to 0,
+        "--no-check-certificates" to 0,
+        "--no-check-formats" to 0,
+        "--no-clean-info-json" to 0,
+        "--no-clean-infojson" to 0,
+        "--no-colors" to 0,
+        "--no-colours" to 0,
+        "--no-config-locations" to 0,
+        "--no-continue" to 0,
+        "--no-cookies" to 0,
+        "--no-cookies-from-browser" to 0,
+        "--no-download" to 0,
+        "--skip-download" to 0,
+        "--no-download-archive" to 0,
+        "--no-embed-info-json" to 0,
+        "--no-embed-subs" to 0,
+        "--no-embed-thumbnail" to 0,
+        "--no-exec" to 0,
+        "--no-exec-before-download" to 0,
+        "--no-flat-playlist" to 0,
+        "--no-force-keyframes-at-cuts" to 0,
+        "--no-force-overwrites" to 0,
+        "--no-format-sort-force" to 0,
+        "--no-geo-bypass" to 0,
+        "--no-get-comments" to 0,
+        "--no-write-comments" to 0,
+        "--no-hls-split-discontinuity" to 0,
+        "--no-hls-use-mpegts" to 0,
+        "--no-ignore-no-formats-error" to 0,
+        "--no-include-ads" to 0,
+        "--no-js-runtimes" to 0,
+        "--no-keep-fragments" to 0,
+        "--no-keep-video" to 0,
+        "--no-lazy-playlist" to 0,
+        "--no-live-from-start" to 0,
+        "--no-mark-watched" to 0,
+        "--no-match-filters" to 0,
+        "--no-mtime" to 0,
+        "--no-overwrites" to 0,
+        "--no-part" to 0,
+        "--no-playlist" to 0,
+        "--no-playlist-reverse" to 0,
+        "--no-plugin-dirs" to 0,
+        "--no-post-overwrites" to 0,
+        "--no-prefer-avconv" to 0,
+        "--no-prefer-ffmpeg" to 0,
+        "--no-prefer-free-formats" to 0,
+        "--no-progress" to 0,
+        "--no-quiet" to 0,
+        "--no-remote-components" to 0,
+        "--no-remove-chapters" to 0,
+        "--no-resize-buffer" to 0,
+        "--no-restrict-filenames" to 0,
+        "--no-simulate" to 0,
+        "--no-split-chapters" to 0,
+        "--no-split-tracks" to 0,
+        "--no-sponskrub" to 0,
+        "--no-sponskrub-cut" to 0,
+        "--no-sponskrub-force" to 0,
+        "--no-sponsorblock" to 0,
+        "--no-update" to 0,
+        "--no-video-multistreams" to 0,
+        "--no-wait-for-video" to 0,
+        "--no-warnings" to 0,
+        "--no-windows-filenames" to 0,
+        "--no-write-annotations" to 0,
+        "--no-write-auto-subs" to 0,
+        "--no-write-automatic-subs" to 0,
+        "--no-write-description" to 0,
+        "--no-write-info-json" to 0,
+        "--no-write-playlist-metafiles" to 0,
+        "--no-write-srt" to 0,
+        "--no-write-subs" to 0,
+        "--no-write-thumbnail" to 0,
+        "--no-youtube-include-dash-manifest" to 0,
+        "--no-youtube-include-hls-manifest" to 0,
+        "--no-youtube-skip-dash-manifest" to 0,
+        "--no-youtube-skip-hls-manifest" to 0,
+        "--output" to 1,
+        "--output-na-placeholder" to 1,
+        "--parse-metadata" to 1,
+        "--part" to 0,
+        "--password" to 1,
+        "--paths" to 1,
+        "--playlist-end" to 1,
+        "--playlist-items" to 1,
+        "--playlist-random" to 0,
+        "--playlist-reverse" to 0,
+        "--playlist-start" to 1,
+        "--plugin-dirs" to 1,
+        "--post-overwrites" to 0,
+        "--postprocessor-args" to 1,
+        "--ppa" to 1,
+        "--prefer-avconv" to 0,
+        "--prefer-ffmpeg" to 0,
+        "--prefer-free-formats" to 0,
+        "--prefer-insecure" to 0,
+        "--prefer-unsecure" to 0,
+        "--preset-alias" to 1,
+        "--print" to 1,
+        "--print-json" to 0,
+        "--print-to-file" to 2,
+        "--print-traffic" to 0,
+        "--progress" to 0,
+        "--progress-delta" to 1,
+        "--progress-template" to 1,
+        "--proxy" to 1,
+        "--quiet" to 0,
+        "--recode-video" to 1,
+        "--referer" to 1,
+        "--reject-title" to 1,
+        "--remote-components" to 1,
+        "--remove-chapters" to 1,
+        "--remux-video" to 1,
+        "--replace-in-metadata" to 3,
+        "--resize-buffer" to 0,
+        "--restrict-filenames" to 0,
+        "--retries" to 1,
+        "--retry-sleep" to 1,
+        "--rm-cache-dir" to 0,
+        "--simulate" to 0,
+        "--skip-playlist-after-errors" to 1,
+        "--sleep-requests" to 1,
+        "--sleep-subtitles" to 1,
+        "--socket-timeout" to 1,
+        "--source-address" to 1,
+        "--split-chapters" to 0,
+        "--split-tracks" to 0,
+        "--sponskrub" to 0,
+        "--sponskrub-args" to 1,
+        "--sponskrub-cut" to 0,
+        "--sponskrub-force" to 0,
+        "--sponskrub-location" to 1,
+        "--sponsorblock-api" to 1,
+        "--sponsorblock-chapter-title" to 1,
+        "--sponsorblock-mark" to 1,
+        "--sponsorblock-remove" to 1,
+        "--srt-langs" to 1,
+        "--sub-langs" to 1,
+        "--sub-format" to 1,
+        "--test" to 0,
+        "--throttled-rate" to 1,
+        "--trim-file-names" to 1,
+        "--trim-filenames" to 1,
+        "--twofactor" to 1,
+        "--update" to 0,
+        "--update-to" to 1,
+        "--use-postprocessor" to 1,
+        "--user-agent" to 1,
+        "--username" to 1,
+        "--verbose" to 0,
+        "--version" to 0,
+        "--video-multistreams" to 0,
+        "--video-password" to 1,
+        "--wait-for-video" to 1,
+        "--windows-filenames" to 0,
+        "--write-all-thumbnails" to 0,
+        "--write-annotations" to 0,
+        "--write-auto-subs" to 0,
+        "--write-automatic-subs" to 0,
+        "--write-description" to 0,
+        "--write-desktop-link" to 0,
+        "--write-info-json" to 0,
+        "--write-link" to 0,
+        "--write-pages" to 0,
+        "--write-playlist-metafiles" to 0,
+        "--write-srt" to 0,
+        "--write-subs" to 0,
+        "--write-thumbnail" to 0,
+        "--write-url-link" to 0,
+        "--write-webloc-link" to 0,
+        "--xattr" to 0,
+        "--xattrs" to 0,
+        "--xattr-set-filesize" to 0,
+        "--xff" to 1,
+        "--yes-playlist" to 0,
+        "--youtube-include-dash-manifest" to 0,
+        "--youtube-include-hls-manifest" to 0,
+        "--youtube-print-sig-code" to 0,
+        "--youtube-skip-dash-manifest" to 0,
+        "--youtube-skip-hls-manifest" to 0,
     )
 
-    /** Fixed required-argument counts from the bundled parser. */
-    private val LONG_OPTION_ARITIES: Map<String, Int> = buildMap {
-        SINGLE_VALUE_LONG_OPTIONS.forEach { put(it, 1) }
-        put("--alias", 2)
-        put("--print", 1)
-        put("--print-to-file", 2)
-        put("--paths", 1)
-        put("--output", 1)
-        put("--replace-in-metadata", 3)
-    }
-
-    // Exact no-value options that are prefixes of value-taking options, plus
-    // no-value options that must be recognized as real policy-sensitive flags.
-    private val LONG_NO_VALUE_OPTIONS = setOf(
-        "--geo-bypass",
-        "--netrc",
-        "--no-config",
-        "--no-config-locations",
-        "--no-plugin-dirs",
-        "--no-js-runtimes",
-        "--no-remote-components",
-        "--no-update",
-        "--print-traffic",
-        "--progress",
-        "--sponskrub",
-        "--update",
-        "--write-thumbnail",
-        "--write-pages",
+    /** Long spellings registered on the same optparse Option object. */
+    private val LONG_OPTION_ALIASES = mapOf(
+        "--format-sort-force" to "--S-force",
+        "--no-ignore-errors" to "--abort-on-error",
+        "--no-skip-unavailable-fragments" to "--abort-on-unavailable-fragments",
+        "--embed-chapters" to "--add-chapters",
+        "--embed-metadata" to "--add-metadata",
+        "--no-ignore-dynamic-mpd" to "--allow-dynamic-mpd",
+        "--clean-infojson" to "--clean-info-json",
+        "--convert-subs" to "--convert-sub",
+        "--convert-subtitles" to "--convert-sub",
+        "--external-downloader" to "--downloader",
+        "--external-downloader-args" to "--downloader-args",
+        "--force-write-archive" to "--force-download-archive",
+        "--force-write-download-archive" to "--force-download-archive",
+        "--yes-overwrites" to "--force-overwrites",
+        "--write-comments" to "--get-comments",
+        "--use-extractors" to "--ies",
+        "--no-config" to "--ignore-config",
+        "--no-allow-dynamic-mpd" to "--ignore-dynamic-mpd",
+        "--rate-limit" to "--limit-rate",
+        "--no-list-formats-as-table" to "--list-formats-old",
+        "--sleep-interval" to "--min-sleep-interval",
+        "--skip-unavailable-fragments" to "--no-abort-on-unavailable-fragments",
+        "--no-embed-chapters" to "--no-add-chapters",
+        "--no-embed-metadata" to "--no-add-metadata",
+        "--no-clean-infojson" to "--no-clean-info-json",
+        "--no-colours" to "--no-colors",
+        "--skip-download" to "--no-download",
+        "--no-write-comments" to "--no-get-comments",
+        "--no-split-tracks" to "--no-split-chapters",
+        "--no-write-automatic-subs" to "--no-write-auto-subs",
+        "--no-write-subs" to "--no-write-srt",
+        "--ppa" to "--postprocessor-args",
+        "--prefer-unsecure" to "--prefer-insecure",
+        "--split-tracks" to "--split-chapters",
+        "--sub-langs" to "--srt-langs",
+        "--trim-filenames" to "--trim-file-names",
+        "--write-automatic-subs" to "--write-auto-subs",
+        "--write-subs" to "--write-srt",
+        "--xattrs" to "--xattr",
     )
 
-    private val LONG_OPTION_NAMES = LONG_OPTION_ARITIES.keys + LONG_NO_VALUE_OPTIONS
+    private val LONG_OPTION_NAMES = LONG_OPTION_ARITIES.keys
+    private fun canonicalLongName(name: String): String =
+        LONG_OPTION_ALIASES[name] ?: name
+
+    fun isDestructiveOption(canonicalName: String?): Boolean =
+        canonicalName == "--rm-cache-dir"
+
+    fun isOptionToken(token: String): Boolean =
+        token.length > 1 && token.startsWith('-') && token != "-"
 
     fun inspect(tokens: List<String>, index: Int): YtdlpOptionTokenOwnership {
         val token = tokens.getOrNull(index)
@@ -397,6 +659,22 @@ internal object YtdlpOptionOwnership {
             val canonical = resolveLongOption(optionName)
             if (canonical != null) {
                 val required = LONG_OPTION_ARITIES[canonical] ?: 0
+                // optparse rejects an explicit =value on a no-value option.
+                // Keep the spelling visible but mark it parse-uncertain so a
+                // later destination option cannot gain authority after a
+                // command that native parsing will reject.
+                if (required == 0 && token.contains('=')) {
+                    return YtdlpOptionTokenOwnership(
+                        canonicalName = canonical,
+                        target = null,
+                        requiredValueCount = 0,
+                        inlineValue = null,
+                        values = emptyList(),
+                        consumedFollowingTokenCount = 0,
+                        recognizedOption = false,
+                        ambiguousOption = true,
+                    )
+                }
                 val hasInlineValue = token.contains('=') && required > 0
                 val inline = token.substringAfter('=', "").takeIf { hasInlineValue }
                 val inlineCount = if (hasInlineValue) 1 else 0
@@ -464,7 +742,7 @@ internal object YtdlpOptionOwnership {
 
     fun resolveLongOption(optionName: String): String? {
         if (!optionName.startsWith("--") || optionName.length <= 2) return null
-        if (optionName in LONG_OPTION_NAMES) return optionName
+        if (optionName in LONG_OPTION_NAMES) return canonicalLongName(optionName)
         return longOptionCandidates(optionName).singleOrNull()
     }
 
@@ -472,6 +750,8 @@ internal object YtdlpOptionOwnership {
         if (!optionName.startsWith("--") || optionName.length <= 2) return emptyList()
         return LONG_OPTION_NAMES
             .filter { canonical -> canonical.startsWith(optionName) }
+            .map(::canonicalLongName)
+            .distinct()
             .sorted()
     }
 
@@ -515,7 +795,7 @@ internal object YtdlpShortOptionClusterParser {
     // this explicit instead of treating arbitrary letters as flags: an
     // unknown short option must not be reinterpreted as a destination option.
     private val NO_VALUE_OPTIONS = setOf(
-        '4', '6', 'C', 'F', 'J', 'U', 'X', 'c', 'e', 'g', 'h', 'i', 'j', 'k',
+        '4', '6', 'C', 'F', 'J', 'U', 'c', 'e', 'g', 'h', 'i', 'j', 'k',
         'n', 'q', 's', 'v', 'w', 'x',
     )
 
@@ -624,12 +904,42 @@ internal object YtdlpCommandPathParser {
             ?: return YtdlpCommandPathResolution.Invalid("unbalanced shell quoting")
         val paths = linkedMapOf<String, File>()
         var foundPathOption = false
+        var uncertainNativeParse = false
         var index = 0
         while (index < tokens.size) {
+            val token = tokens[index]
             val ownership = YtdlpOptionOwnership.inspect(tokens, index)
             if (ownership.optionTerminator) break
 
+            if (YtdlpOptionOwnership.isDestructiveOption(ownership.canonicalName)) {
+                return YtdlpCommandPathResolution.Invalid(
+                    "${ownership.canonicalName} is not permitted in a download command"
+                )
+            }
+
+            if (
+                YtdlpOptionOwnership.isOptionToken(token) &&
+                    !ownership.recognizedOption &&
+                    !ownership.ambiguousOption
+            ) {
+                // Strict yt-dlp parsing rejects an unknown option. Keep
+                // scanning only to preserve the distinction between an
+                // ordinary command with no path authority and a later path
+                // token that must not be trusted after a parse error.
+                uncertainNativeParse = true
+            } else if (ownership.ambiguousOption) {
+                // The final parser is strict. An ambiguous prefix can only
+                // be treated as data for authority purposes, never as a
+                // transparent state before a later destination option.
+                uncertainNativeParse = true
+            }
+
             if (ownership.target == YtdlpOptionTarget.PATH) {
+                if (uncertainNativeParse) {
+                    return YtdlpCommandPathResolution.Invalid(
+                        "destination option follows an unknown or ambiguous yt-dlp option"
+                    )
+                }
                 if (ownership.missingValueCount > 0 || ownership.firstValue == null) {
                     return YtdlpCommandPathResolution.Invalid(
                         "${ownership.canonicalName} is missing its path"
@@ -666,6 +976,11 @@ internal object YtdlpCommandPathParser {
             index += 1
         }
         if (!foundPathOption) return YtdlpCommandPathResolution.None
+        if (uncertainNativeParse) {
+            return YtdlpCommandPathResolution.Invalid(
+                "command contains an unknown or ambiguous yt-dlp option"
+            )
+        }
         return YtdlpCommandPathResolution.Explicit(
             pathMap = YtdlpPathMap(
                 home = paths["home"],
@@ -700,6 +1015,10 @@ internal object YtdlpCommandPathParser {
         val typedKeys = if (isTyped) candidateKeys else listOf("home")
         val path = (if (isTyped) value.substring(colonIndex + 1) else value).trim()
         if (path.isBlank() || path.startsWith("~") || path.startsWith("file://")) return null
+        // The bundled Android runtime is POSIX. A Windows drive spelling is
+        // not an Android absolute path and must never become publication
+        // authority merely because the JVM running policy tests is Windows.
+        if (isWindowsDrivePath(path)) return null
         // yt-dlp expands environment variables in authored path-map values
         // immediately before native output. The worker cannot safely grant
         // publication authority to a value whose effective destination is
@@ -712,7 +1031,7 @@ internal object YtdlpCommandPathParser {
         // Android uses Unix-rooted paths. The JVM used by these policy tests
         // may be Windows-hosted, where File("/storage/...").isAbsolute can be
         // false even though the bundled runtime will treat it as absolute.
-        if (!File(path).isAbsolute && !path.startsWith('/') && !isWindowsDrivePath(path)) {
+        if (!File(path).isAbsolute && !path.startsWith('/')) {
             return null
         }
 
@@ -756,6 +1075,9 @@ internal object YtdlpCommandOutputTemplateParser {
     private val authoredOutputSemanticOptions = setOf(
         "--output-na-placeholder",
     )
+    private val authoredDestructiveOptions = setOf(
+        "--rm-cache-dir",
+    )
     // The bundled yt-dlp parser accepts unambiguous long-option prefixes. An
     // abbreviated form of any option below could otherwise evade this parser
     // or the later argument sanitizer and recover filesystem/process authority.
@@ -795,6 +1117,7 @@ internal object YtdlpCommandOutputTemplateParser {
             ?: return YtdlpCommandOutputTemplateResolution.Invalid("unbalanced shell quoting")
         val templates = linkedMapOf<String, String?>()
         var foundOutputOption = false
+        var uncertainNativeParse = false
         var index = 0
         while (index < tokens.size) {
             val token = tokens[index]
@@ -810,6 +1133,20 @@ internal object YtdlpCommandOutputTemplateParser {
                     )
                 }
                 break
+            }
+            if (ownership.canonicalName in authoredDestructiveOptions) {
+                return YtdlpCommandOutputTemplateResolution.Invalid(
+                    "${ownership.canonicalName} is not permitted in a download command"
+                )
+            }
+            if (
+                YtdlpOptionOwnership.isOptionToken(token) &&
+                    !ownership.recognizedOption &&
+                    !ownership.ambiguousOption
+            ) {
+                uncertainNativeParse = true
+            } else if (ownership.ambiguousOption) {
+                uncertainNativeParse = true
             }
             val longOptionName = token.takeIf { it.startsWith("--") }?.substringBefore('=')
             if (longOptionName != null &&
@@ -861,6 +1198,11 @@ internal object YtdlpCommandOutputTemplateParser {
             // -qP VALUE and -qPVALUE select -P. The shared ownership model
             // has already accounted for any preceding value-taking option.
             if (ownership.target == YtdlpOptionTarget.OUTPUT) {
+                if (uncertainNativeParse) {
+                    return YtdlpCommandOutputTemplateResolution.Invalid(
+                        "destination option follows an unknown or ambiguous yt-dlp option"
+                    )
+                }
                 if (ownership.missingValueCount > 0 || ownership.firstValue == null) {
                     return YtdlpCommandOutputTemplateResolution.Invalid(
                         "${ownership.canonicalName} is missing its output template"
@@ -894,6 +1236,11 @@ internal object YtdlpCommandOutputTemplateParser {
         }
 
         if (!foundOutputOption) return YtdlpCommandOutputTemplateResolution.None
+        if (uncertainNativeParse) {
+            return YtdlpCommandOutputTemplateResolution.Invalid(
+                "command contains an unknown or ambiguous yt-dlp option"
+            )
+        }
         templates.forEach { (key, template) ->
             validateEffectiveTemplate(key, template)?.let { reason ->
                 return YtdlpCommandOutputTemplateResolution.Invalid(reason)

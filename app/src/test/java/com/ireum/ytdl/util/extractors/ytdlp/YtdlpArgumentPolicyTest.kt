@@ -173,6 +173,63 @@ class YtdlpArgumentPolicyTest {
     }
 
     @Test
+    fun rmCacheDirIsRemovedWithoutConsumingNeighboringArguments() {
+        val url = "https://example.com/video"
+        assertEquals(
+            listOf(url, "--quiet"),
+            YtdlpArgumentPolicy.sanitize(
+                listOf("--rm-cache-dir", url, "--quiet"),
+                emptySet(),
+            ),
+        )
+        assertEquals(
+            listOf(url, "--quiet"),
+            YtdlpArgumentPolicy.sanitize(
+                listOf("--rm-cache", url, "--quiet"),
+                emptySet(),
+            ),
+        )
+
+        val report = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(
+            "--rm-cache-dir $url --quiet",
+        )
+        assertEquals(listOf("--rm-cache-dir"), report.removedOptions)
+        assertEquals(listOf(url, "--quiet"), YtdlpCommandTokenizer.tokenize(report.commandString))
+    }
+
+    @Test
+    fun rmCacheDirOwnedByFixedArityMetadataRemainsData() {
+        val args = listOf(
+            "--replace-in-metadata",
+            "title",
+            "--rm-cache-dir",
+            "replacement",
+            "https://example.com/video",
+        )
+        assertEquals(args, YtdlpArgumentPolicy.sanitize(args, emptySet()))
+
+        val command = args.joinToString(" ")
+        val report = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(command)
+        assertTrue(report.removedOptions.isEmpty())
+        assertEquals(args, YtdlpCommandTokenizer.tokenize(report.commandString))
+    }
+
+    @Test
+    fun sanitizerDoesNotRewriteShellLikeOutputDataAfterValidation() {
+        val original = "-o sh -c --no-playlist"
+        val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptions(original)
+
+        assertEquals(
+            listOf("-o", "sh", "-c", "--no-playlist"),
+            YtdlpCommandTokenizer.tokenize(sanitized),
+        )
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(sanitized) is
+                YtdlpCommandOutputTemplateResolution.Explicit,
+        )
+    }
+
+    @Test
     fun generatedConfigSanitizerSharesFixedArityOwnershipAcrossLines() {
         val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(
             """

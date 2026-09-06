@@ -4,6 +4,7 @@ import java.io.File
 
 object YtdlpArgumentPolicy {
     private const val FFMPEG_LOCATION_OPTION = "--ffmpeg-location"
+    private const val REMOVE_CACHE_OPTION = "--rm-cache-dir"
     private const val BUNDLED_ARIA2_DOWNLOADER = "libaria2c.so"
     private const val COPY_STREAM_POSTPROCESSOR = "FFmpegCopyStream"
     private const val COPY_STREAM_PPA = "CopyStream:-c copy -an"
@@ -26,7 +27,8 @@ object YtdlpArgumentPolicy {
         "--ppa",
         "--use-postprocessor"
     )
-    private val BLOCKED_EXTERNAL_OPTIONS = CONFIG_OPTIONS + FFMPEG_LOCATION_OPTION + PROCESS_SPAWNING_OPTIONS
+    private val BLOCKED_EXTERNAL_OPTIONS =
+        CONFIG_OPTIONS + FFMPEG_LOCATION_OPTION + PROCESS_SPAWNING_OPTIONS + REMOVE_CACHE_OPTION
     private val RESTRICTED_EXTERNAL_OPTIONS = BLOCKED_EXTERNAL_OPTIONS + RESTRICTED_VALUE_OPTIONS
     private val SAFE_PPA_VALUES = setOf(
         COPY_STREAM_PPA,
@@ -220,9 +222,9 @@ object YtdlpArgumentPolicy {
         return when (option) {
             "--config", "--config-location", "--config-locations" ->
                 isAllowedAppGeneratedConfigPath(value, allowedConfigFiles)
-            "--downloader" -> value == BUNDLED_ARIA2_DOWNLOADER
+            "--downloader", "--external-downloader" -> value == BUNDLED_ARIA2_DOWNLOADER
             "--use-postprocessor" -> value == COPY_STREAM_POSTPROCESSOR
-            "--ppa" -> value in SAFE_PPA_VALUES
+            "--ppa", "--postprocessor-args" -> value in SAFE_PPA_VALUES
             else -> false
         }
     }

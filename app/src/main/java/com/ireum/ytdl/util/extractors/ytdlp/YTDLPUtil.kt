@@ -1489,22 +1489,14 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     }
 
     private fun YoutubeDLRequest.addConfig(commandString: String) {
-        val normalizedCommandString = normalizeLegacyShellCommand(commandString)
         val configFile = File(context.cacheDir.absolutePath + "/${System.currentTimeMillis()}${java.util.UUID.randomUUID()}.txt").apply {
-            writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(normalizedCommandString))
+            writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(commandString))
         }
         YoutubeDLCompat.allowAppGeneratedConfigFile(this, configFile)
         this.addOption(
             "--config-locations",
             configFile.absolutePath
         )
-    }
-
-    private fun normalizeLegacyShellCommand(commandString: String): String {
-        val shellPath = "/system/bin/sh"
-        return commandString
-            .replace("([A-Za-z_][A-Za-z0-9_]*):sh(\\s+-c\\b)".toRegex(), "$1:$shellPath$2")
-            .replace("(^|\\s)sh(\\s+-c\\b)".toRegex(), "$1$shellPath$2")
     }
 
     private fun safeRegexMatches(pattern: String, value: String, fullMatch: Boolean): Boolean {
@@ -2590,7 +2582,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
             }
             DownloadType.command -> {
-                request.addOption(normalizeLegacyShellCommand(downloadItem.format.format_note))
+                request.addOption(downloadItem.format.format_note)
                 // The generated home and temp entries are appended after the
                 // raw command config. The authored path map still determines
                 // the final home destination in YtdlpOutputPlan, while both
@@ -2607,7 +2599,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         request.merge(metadataCommands)
 
         if (downloadItem.extraCommands.isNotBlank() && downloadItem.type != DownloadType.command){
-            request.addOption(normalizeLegacyShellCommand(downloadItem.extraCommands))
+            request.addOption(downloadItem.extraCommands)
         }
 
         if (request.toString().contains("sponsorblock")) {

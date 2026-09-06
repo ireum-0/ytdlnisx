@@ -503,6 +503,56 @@ class DownloadOutputProductionWiringTest {
     }
 
     @Test
+    fun realWorkerRejectsRmCacheDirBeforeDestructiveBoundary() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val configuredCache = File(testRoot, "configured-cache").apply { mkdirs() }
+        val sentinel = File(configuredCache, "unrelated-sentinel.txt").apply {
+            writeText("must survive")
+        }
+        val unrelatedStaging = File(configuredCache, "other-download").apply { mkdirs() }
+        val unrelatedFile = File(unrelatedStaging, "partial.m4a").apply {
+            writeBytes(byteArrayOf(9, 9, 9))
+        }
+        withConfiguredCachePath(configuredCache) {
+            withCacheDownloads(true) {
+                val downloadId = outputWiringDownloadIds.getAndIncrement()
+                val destination = File(testRoot, "rm-cache-command").apply { mkdirs() }
+                db.downloadDao.insertRaw(
+                    download(
+                        id = downloadId,
+                        destination = destination.absolutePath,
+                        type = DownloadType.command,
+                        formatNote = "--rm-cache-dir --no-playlist",
+                    )
+                )
+                DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+                val nativeBoundaryReached = AtomicBoolean(false)
+                DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                    if (candidateId == downloadId) nativeBoundaryReached.set(true)
+                }
+                DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting =
+                    { candidateId, _, _ ->
+                        if (candidateId != downloadId) null else {
+                            error("--rm-cache-dir must be rejected before native/destructive execution")
+                        }
+                    }
+
+                enqueueAndAwaitDownloadWorker(context)
+
+                assertFalse(nativeBoundaryReached.get())
+                assertTrue(sentinel.exists())
+                assertTrue(unrelatedFile.exists())
+                assertTrue(destination.listFiles().orEmpty().isEmpty())
+                assertNull(db.historyDao.getItemByDownloadId(downloadId))
+                assertEquals(
+                    DownloadRepository.Status.Error.name,
+                    db.downloadDao.getNullableDownloadById(downloadId)?.status,
+                )
+            }
+        }
+    }
+
+    @Test
     fun realWorkerRejectsUnsafeCustomOutputBeforeNativeBoundary() = runBlocking {
         withCacheDownloads(true) {
             val downloadId = outputWiringDownloadIds.getAndIncrement()
@@ -827,6 +877,29 @@ class DownloadOutputProductionWiringTest {
         } finally {
             val editor = preferences.edit()
             if (hadSetting) editor.putBoolean("cache_downloads", previous) else editor.remove("cache_downloads")
+            assertTrue(editor.commit())
+        }
+    }
+
+    private suspend fun <T> withConfiguredCachePath(
+        cachePath: File,
+        block: suspend () -> T,
+    ): T {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(
+            ApplicationProvider.getApplicationContext(),
+        )
+        val hadSetting = preferences.contains("cache_path")
+        val previous = preferences.getString("cache_path", null)
+        assertTrue(preferences.edit().putString("cache_path", cachePath.absolutePath).commit())
+        return try {
+            block()
+        } finally {
+            val editor = preferences.edit()
+            if (hadSetting) {
+                editor.putString("cache_path", previous)
+            } else {
+                editor.remove("cache_path")
+            }
             assertTrue(editor.commit())
         }
     }
