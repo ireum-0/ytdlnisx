@@ -164,7 +164,7 @@ object YtdlpArgumentPolicy {
             sanitized.addAll(tokens.subList(i, end))
             i = end
         }
-        val sanitizedCommand = sanitized.joinToString(" ", transform = ::renderConfigToken)
+        val sanitizedCommand = YtdlpCommandTokenizer.render(sanitized)
         return CommandStringSanitizeResult(
             commandString = sanitizedCommand,
             removedOptions = removedOptions.toList()
@@ -174,15 +174,6 @@ object YtdlpArgumentPolicy {
     fun containsOptionWithValue(args: List<String>, option: String): Boolean {
         val index = args.indexOf(option)
         return index >= 0 && index + 1 < args.size && !args[index + 1].startsWith("-")
-    }
-
-    private fun renderConfigToken(token: String): String {
-        if (token.isNotEmpty() && token.all { character ->
-                character.isLetterOrDigit() || character in "-_./:=+,%@"
-            }) {
-            return token
-        }
-        return "\"${token.replace("\\", "\\\\").replace("\"", "\\\"")}\""
     }
 
     private fun isBlockedExternalOption(arg: String, option: String): Boolean {

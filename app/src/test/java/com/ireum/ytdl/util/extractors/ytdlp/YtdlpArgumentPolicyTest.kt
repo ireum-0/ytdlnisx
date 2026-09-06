@@ -209,4 +209,80 @@ class YtdlpArgumentPolicyTest {
         )
         assertFalse(sanitized.commandString.contains("echo unsafe"))
     }
+
+    @Test
+    fun shlexProtectedSensitiveLookalikesRemainDataThroughSanitization() {
+        val original = """
+            "\--exec" literal
+            "\--ffmpeg-location" /data/literal-ffmpeg
+            "\--config-locations" /data/literal-config
+            "\-P" /data/literal-path
+            "\--paths" /data/literal-paths
+            "\-o" literal-output
+            "\--output" literal-long-output
+        """.trimIndent()
+        val expected = requireNotNull(YtdlpCommandTokenizer.tokenize(original))
+
+        val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(original)
+
+        assertTrue(sanitized.removedOptions.isEmpty())
+        assertEquals(expected, YtdlpCommandTokenizer.tokenize(sanitized.commandString))
+        assertTrue(
+            YtdlpCommandPathParser.resolve(sanitized.commandString) is
+                YtdlpCommandPathResolution.None,
+        )
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(sanitized.commandString) is
+                YtdlpCommandOutputTemplateResolution.None,
+        )
+    }
+
+    @Test
+    fun actualSensitiveOptionsRemainBlockedBesideProtectedLookalikeData() {
+        val original = """
+            "\--exec" literal
+            --exec echo unsafe
+            "\--ffmpeg-location" /data/literal-ffmpeg
+            --ffmpeg-location /external/ffmpeg
+            "\--config-locations" /data/literal-config
+            --config-locations /external/config
+        """.trimIndent()
+
+        val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(original)
+        val tokens = requireNotNull(YtdlpCommandTokenizer.tokenize(sanitized.commandString))
+
+        assertEquals(
+            listOf("--exec", "--ffmpeg-location", "--config-locations"),
+            sanitized.removedOptions,
+        )
+        assertTrue(tokens.containsAll(listOf("\\--exec", "\\--ffmpeg-location", "\\--config-locations")))
+        assertFalse(tokens.contains("--exec"))
+        assertFalse(tokens.contains("--ffmpeg-location"))
+        assertFalse(tokens.contains("--config-locations"))
+        assertEquals(
+            listOf(
+                "\\--exec",
+                "literal",
+                "unsafe",
+                "\\--ffmpeg-location",
+                "/data/literal-ffmpeg",
+                "\\--config-locations",
+                "/data/literal-config",
+            ),
+            tokens,
+        )
+    }
+
+    @Test
+    fun sanitizerPreservesShlexEscapedQuotesBackslashesAndComments() {
+        val original = """
+            --replace-in-metadata title "a\"b" "a\\b"
+            "quoted # hash" \# literal # comment
+            ""
+        """.trimIndent()
+        val expected = requireNotNull(YtdlpCommandTokenizer.tokenize(original))
+        val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptions(original)
+
+        assertEquals(expected, YtdlpCommandTokenizer.tokenize(sanitized))
+    }
 }

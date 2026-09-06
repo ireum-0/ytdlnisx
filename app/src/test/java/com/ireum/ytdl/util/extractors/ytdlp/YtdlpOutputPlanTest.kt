@@ -324,6 +324,113 @@ class YtdlpOutputPlanTest {
     }
 
     @Test
+    fun doubleQuotedBackslashesBeforeOrdinaryCharactersRemainLiteralData() {
+        val path = Files.createTempDirectory("ytdlp-output-plan-shlex-path-")
+            .toFile()
+            .canonicalPath
+            .replace('\\', '/')
+        val commands = listOf(
+            "\"\\\\-P\" $path",
+            "\"\\\\--paths\" $path",
+            "\"\\\\-o\" safe/%(title)s.%(ext)s",
+            "\"\\\\--output\" safe/%(title)s.%(ext)s",
+        )
+
+        commands.forEach { command ->
+            assertTrue(
+                "double-quoted backslash data must not become path authority: $command",
+                YtdlpCommandPathParser.resolve(command) is YtdlpCommandPathResolution.None,
+            )
+        }
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(commands[2]) is
+                YtdlpCommandOutputTemplateResolution.None,
+        )
+        assertTrue(
+            YtdlpCommandOutputTemplateParser.resolve(commands[3]) is
+                YtdlpCommandOutputTemplateResolution.None,
+        )
+        assertEquals(
+            listOf("\\-P", path),
+            YtdlpCommandTokenizer.tokenize(commands[0]),
+        )
+        assertEquals(
+            listOf("\\--paths", path),
+            YtdlpCommandTokenizer.tokenize(commands[1]),
+        )
+    }
+
+    @Test
+    fun outsideQuoteBackslashStillMatchesPythonShlexOptionSemantics() {
+        val path = Files.createTempDirectory("ytdlp-output-plan-shlex-escaped-")
+            .toFile()
+            .canonicalPath
+            .replace('\\', '/')
+        val resolution = YtdlpCommandPathParser.resolve("\\-P $path")
+
+        assertTrue(resolution is YtdlpCommandPathResolution.Explicit)
+        assertEquals(
+            path,
+            (resolution as YtdlpCommandPathResolution.Explicit)
+                .pathMap.home
+                ?.canonicalPath
+                ?.replace('\\', '/'),
+        )
+    }
+
+    @Test
+    fun tokenizerAndRendererPreservePythonShlexTokenVectors() {
+        val tokens = listOf(
+            "\\-P",
+            "\\--paths",
+            "\\-o",
+            "\\--output",
+            "\\--exec",
+            "\\--ffmpeg-location",
+            "\\--config-locations",
+            "",
+            "a\"b",
+            "a\\b",
+            "# quoted",
+            "line\nnext",
+        )
+
+        val rendered = YtdlpCommandTokenizer.render(tokens)
+
+        assertEquals(tokens, YtdlpCommandTokenizer.tokenize(rendered))
+    }
+
+    @Test
+    fun tokenizerMatchesPythonShlexDoubleQuoteAndCommentRules() {
+        assertEquals(
+            listOf("a\"b"),
+            YtdlpCommandTokenizer.tokenize("\"a\\\"b\""),
+        )
+        assertEquals(
+            listOf("a\\b"),
+            YtdlpCommandTokenizer.tokenize("\"a\\\\b\""),
+        )
+        assertEquals(
+            listOf("\\q"),
+            YtdlpCommandTokenizer.tokenize("\"\\q\""),
+        )
+        assertEquals(listOf(""), YtdlpCommandTokenizer.tokenize("\"\""))
+        assertEquals(
+            listOf("#"),
+            YtdlpCommandTokenizer.tokenize("\\# # comment"),
+        )
+        assertEquals(
+            listOf("# quoted"),
+            YtdlpCommandTokenizer.tokenize("\"# quoted\" # comment"),
+        )
+        assertEquals(
+            listOf("one", "two"),
+            YtdlpCommandTokenizer.tokenize("one # comment\ntwo"),
+        )
+        assertTrue(YtdlpCommandTokenizer.tokenize("\"unbalanced") == null)
+    }
+
+    @Test
     fun parsesBundledShortOptionClustersForOutputAndPathPolicy() {
         val absolutePath = Files.createTempDirectory("ytdlp-output-plan-cluster-path-")
             .toFile()

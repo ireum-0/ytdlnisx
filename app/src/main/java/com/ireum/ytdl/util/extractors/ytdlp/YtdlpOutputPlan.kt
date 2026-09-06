@@ -98,6 +98,13 @@ internal object YtdlpCommandTokenizer {
                 return@forEach
             }
             if (escaped) {
+                // Python shlex only treats backslash as an escape for `"` and
+                // `\\` while inside double quotes.  A backslash before any
+                // other character is literal data and must survive tokenization
+                // so it cannot become a new option (for example `"\\-P"`).
+                if (quote == '"' && character != '"' && character != '\\') {
+                    current.append('\\')
+                }
                 current.append(character)
                 escaped = false
                 tokenStarted = true
@@ -139,6 +146,27 @@ internal object YtdlpCommandTokenizer {
         if (quote != null || escaped) return null
         finishToken()
         return tokens
+    }
+
+    /**
+     * Renders tokens back into the config syntax consumed by yt-dlp's
+     * `shlex.split(contents, comments=True)` parser.
+     *
+     * Every token is either emitted using a conservative unquoted alphabet or
+     * double-quoted with backslashes and quotes escaped.  The corresponding
+     * tokenizer therefore preserves literal backslashes, empty tokens,
+     * whitespace, comments, and embedded quotes on a sanitizer round-trip.
+     */
+    fun render(tokens: List<String>): String =
+        tokens.joinToString(" ", transform = ::renderToken)
+
+    fun renderToken(token: String): String {
+        if (token.isNotEmpty() && token.all { character ->
+                character.isLetterOrDigit() || character in "-_./:=+,%@"
+            }) {
+            return token
+        }
+        return "\"${token.replace("\\", "\\\\").replace("\"", "\\\"")}\""
     }
 }
 

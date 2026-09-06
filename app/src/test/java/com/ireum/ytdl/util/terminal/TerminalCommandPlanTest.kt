@@ -53,6 +53,24 @@ class TerminalCommandPlanTest {
     }
 
     @Test
+    fun shlexProtectedPathLookingValueDoesNotSelectTerminalDestination() {
+        val plan = TerminalCommandPlanner.create(
+            command = "\"\\-P\" /writable-looking/path",
+            environment = environment(cacheDownloads = true, destinationWritable = true)
+        )
+
+        assertTrue(plan.usesAppCache)
+        assertEquals("/app/cache/TERMINAL/42", plan.requestOptions.single { it.name == "-P" }.value)
+        assertEquals(
+            listOf("\\-P", "/writable-looking/path"),
+            requireNotNull(
+                com.ireum.ytdl.util.extractors.ytdlp.YtdlpCommandTokenizer
+                    .tokenize(plan.sanitizedConfig)
+            ),
+        )
+    }
+
+    @Test
     fun writableDirectDestinationAndCacheFallbackStayDistinct() {
         val direct = TerminalCommandPlanner.create(
             command = "https://example.com/video",

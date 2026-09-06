@@ -15,6 +15,7 @@ import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.VideoFileQualityState
 import com.ireum.ytdl.util.VideoMediaQuality
@@ -403,6 +404,61 @@ class DownloadOutputProductionWiringTest {
             assertFalse(staging.exists())
             assertFalse(metadataReplacement.exists())
             assertTrue(destination.listFiles().orEmpty().any { it.name == "metadata-safe.m4a" })
+        }
+    }
+
+    @Test
+    fun realWorkerIgnoresShlexProtectedPathLookingValueForPublication() = runBlocking {
+        withCacheDownloads(true) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "shlex-protected-command").apply { mkdirs() }
+            val falseDestination = File(testRoot, "shlex-false-destination").apply { mkdirs() }
+            val falseDestinationPath = falseDestination.absolutePath.replace('\\', '/')
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.command,
+                    formatNote = "\"\\-P\" $falseDestinationPath --no-playlist",
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            var ownedOutputDirectory: File? = null
+            var stagedOutput: File? = null
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    ownedOutputDirectory = outputDirectory.canonicalFile
+                    stagedOutput = File(outputDirectory, "shlex-safe.m4a").apply {
+                        writeBytes(byteArrayOf(4, 5, 6))
+                    }
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedOutput).absolutePath}'"
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertTrue(nativeBoundaryReached.get())
+            val staging = requireNotNull(ownedOutputDirectory)
+            assertEquals(downloadId.toString(), staging.name)
+            assertEquals(
+                File(FileUtil.getCachePath(ApplicationProvider.getApplicationContext())).canonicalFile,
+                staging.parentFile?.canonicalFile,
+            )
+            val history = requireNotNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(1, history.downloadPath.size)
+            assertTrue(history.downloadPath.single().startsWith(destination.canonicalPath))
+            assertTrue(history.downloadPath.single().endsWith("shlex-safe.m4a"))
+            assertFalse(history.downloadPath.single().startsWith(falseDestination.canonicalPath))
+            assertFalse(requireNotNull(stagedOutput).exists())
+            assertFalse(staging.exists())
+            assertTrue(falseDestination.listFiles().orEmpty().isEmpty())
+            assertTrue(destination.listFiles().orEmpty().any { it.name == "shlex-safe.m4a" })
         }
     }
 
