@@ -15,6 +15,11 @@ internal object DownloadCacheOwnership {
     private const val MARKER_SUFFIX = ".txt"
     private const val VERSION = "1"
 
+    data class OwnedRoot(
+        val directory: File,
+        val marker: File,
+    )
+
     fun markerFile(cacheRoot: File, downloadId: Long): File =
         File(cacheRoot, "$MARKER_PREFIX$downloadId$MARKER_SUFFIX")
 
@@ -80,6 +85,33 @@ internal object DownloadCacheOwnership {
         if (!deleted) return false
         markerFile(root, item.id).delete()
         return true
+    }
+
+    /**
+     * Enumerate only numeric roots carrying a valid app ownership marker.
+     * Directory membership or a numeric name alone is deliberately ignored.
+     */
+    fun listOwnedRoots(cacheRoot: File): List<OwnedRoot> {
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return emptyList()
+        if (!root.isDirectory) return emptyList()
+        return root.listFiles()
+            ?.asSequence()
+            ?.filter { it.isFile && it.name.startsWith(MARKER_PREFIX) && it.name.endsWith(MARKER_SUFFIX) }
+            ?.mapNotNull { marker ->
+                val fields = runCatching { parse(marker.readText()) }.getOrNull() ?: return@mapNotNull null
+                if (fields["version"] != VERSION) return@mapNotNull null
+                val id = fields["downloadId"]?.toLongOrNull() ?: return@mapNotNull null
+                if (fields["operationId"].orEmpty().isBlank()) return@mapNotNull null
+                if (marker.name != "$MARKER_PREFIX$id$MARKER_SUFFIX") return@mapNotNull null
+                val directory = File(root, id.toString()).canonicalFile
+                if (directory.parentFile?.canonicalFile != root || !directory.isDirectory) {
+                    return@mapNotNull null
+                }
+                OwnedRoot(directory = directory, marker = marker.canonicalFile)
+            }
+            ?.distinctBy { it.directory.absolutePath }
+            ?.toList()
+            .orEmpty()
     }
 
     private fun parse(text: String): Map<String, String> = text.lineSequence()

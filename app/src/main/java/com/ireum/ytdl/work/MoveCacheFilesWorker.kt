@@ -17,9 +17,10 @@ import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.storage.CacheImportArtifact
+import com.ireum.ytdl.util.storage.CacheImportPlanner
 import java.io.File
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 
 class MoveCacheFilesWorker(
@@ -30,12 +31,14 @@ class MoveCacheFilesWorker(
         val notificationUtil = NotificationUtil(App.instance)
         val id = System.currentTimeMillis().toInt()
 
-        val cachePath = FileUtil.getCachePath(context)
-        val downloadFolders = File(cachePath)
-        val allContent = downloadFolders.walk()
-        allContent.drop(1)
-        val totalFiles = allContent.count()
-        val destination = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath + File.separator + "YTDLnisx/CACHE_IMPORT")
+        val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
+        val manifest = CacheImportPlanner.collect(cacheRoot)
+        val totalFiles = manifest.size
+        val destination = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath +
+                File.separator +
+                "YTDLnisx/CACHE_IMPORT"
+        ).canonicalFile
 
         val intent = Intent(context, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
@@ -47,27 +50,54 @@ class MoveCacheFilesWorker(
             setForegroundAsync(ForegroundInfo(id, notification))
         }
 
-        var progress = 0
-        allContent.forEach {
-            progress++
-            notificationUtil.updateCacheMovingNotification(id, progress, totalFiles)
-            val destFile = File(destination.absolutePath + "/${it.absolutePath.removePrefix(cachePath)}")
-            if (it.isDirectory) {
-                destFile.mkdirs()
-                return@forEach
-            }
+        if (manifest.isEmpty()) {
+            notificationUtil.updateCacheMovingNotification(id, 0, 0)
+        }
 
-            if (Build.VERSION.SDK_INT >= 26 ){
-                Files.move(it.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }else{
-                it.renameTo(destFile)
+        return runCatching {
+            if (!destination.exists() && !destination.mkdirs() && !destination.isDirectory) {
+                throw IllegalStateException("Could not create cache import destination")
+            }
+            manifest.forEachIndexed { index, artifact ->
+                notificationUtil.updateCacheMovingNotification(id, index + 1, totalFiles)
+                moveExact(artifact, destination)
+            }
+        }.fold(
+            onSuccess = {
+                showCompletionToast()
+                Result.success()
+            },
+            onFailure = { error ->
+                android.util.Log.e(TAG, "Cache import stopped without overwriting unknown files", error)
+                Result.failure()
+            }
+        )
+    }
+
+    private fun moveExact(artifact: CacheImportArtifact, destinationRoot: File) {
+        val source = artifact.source.canonicalFile
+        if (!source.isFile) throw IllegalStateException("Cache import source disappeared: ${source.absolutePath}")
+        val destination = CacheImportPlanner.collisionSafeDestination(destinationRoot, artifact.relativePath)
+        destination.parentFile?.let { parent ->
+            if (!parent.exists() && !parent.mkdirs() && !parent.isDirectory) {
+                throw IllegalStateException("Could not create cache import parent: ${parent.absolutePath}")
             }
         }
+        if (destination.exists()) {
+            throw IllegalStateException("Cache import destination appeared during move: ${destination.absolutePath}")
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
+            Files.move(source.toPath(), destination.toPath())
+        } else if (!source.renameTo(destination)) {
+            throw IllegalStateException("Could not move cache import source: ${source.absolutePath}")
+        }
+    }
+
+    private fun showCompletionToast() {
         val handler = Handler(Looper.getMainLooper())
         handler.post {
             Toast.makeText(context, context.getString(R.string.ok), Toast.LENGTH_SHORT).show()
         }
-        return Result.success()
     }
 
     companion object {

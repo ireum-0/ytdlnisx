@@ -26,6 +26,7 @@ import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
+import com.ireum.ytdl.util.storage.TerminalCacheOwnership
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.Dispatchers
@@ -147,6 +148,11 @@ class TerminalDownloadWorker(
             }
             if (!outputDirectory.exists() && !outputDirectory.mkdirs()) {
                 throw IOException("Could not create Terminal attempt output directory")
+            }
+            runCatching {
+                TerminalCacheOwnership.ensureMarker(outputDirectory, terminalTaskToken)
+            }.getOrElse { error ->
+                throw IOException("Could not establish Terminal cache ownership: ${error.message}", error)
             }
             terminalOutputDirectory = outputDirectory
             terminalOutputAuthority = TerminalOutputAuthority(outputDirectory).also {
