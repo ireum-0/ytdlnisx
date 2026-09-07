@@ -4003,11 +4003,11 @@ class DownloadWorker(
             val outputPlan = ytdlpOutputPlan
             if (outputPlan?.directNoCache == true) {
                 val staging = outputPlan.directStagingDirectory?.canonicalFile ?: return false
-                val marker = outputPlan.ownershipMarker?.canonicalFile ?: return false
-                if (directory.canonicalFile != staging || !staging.isDirectory || !marker.isFile) return false
-                val expectedMarker = directOwnershipMarkerText(downloadItem)
-                if (runCatching { marker.readText() }.getOrNull() != expectedMarker) return false
-                return staging.deleteRecursively() || !staging.exists()
+                if (directory.canonicalFile != staging) return false
+                return DirectOutputStagingCleanup.removeExactArtifactsAndEmptyParents(
+                    outputPlan = outputPlan,
+                    expectedMarkerText = directOwnershipMarkerText(downloadItem),
+                )
             }
             return DownloadCacheOwnership.deleteIfOwned(
                 cacheRoot = File(FileUtil.getCachePath(context)),
@@ -4272,15 +4272,27 @@ class DownloadWorker(
                     ?.invoke(input.downloadItem.id, input.rawTempDirectory)
             if (injectedOutput != null) {
                 val authoritative = runtime.recordCompletedOutput(injectedOutput)
-                if (!input.outputPlan.directNoCache && authoritative.isNotEmpty()) {
-                    check(
-                        DownloadCacheOwnership.recordArtifacts(
-                            cacheRoot = File(FileUtil.getCachePath(context)),
-                            item = input.downloadItem,
-                            files = authoritative,
-                        )
-                    ) {
-                        "Could not persist current-attempt output ownership before completion"
+                if (authoritative.isNotEmpty()) {
+                    if (input.outputPlan.directNoCache) {
+                        check(
+                            DirectOutputStagingCleanup.recordExactArtifacts(
+                                outputPlan = input.outputPlan,
+                                expectedMarkerText = directOwnershipMarkerText(input.downloadItem),
+                                paths = authoritative,
+                            )
+                        ) {
+                            "Could not persist current-attempt direct output ownership before completion"
+                        }
+                    } else {
+                        check(
+                            DownloadCacheOwnership.recordArtifacts(
+                                cacheRoot = File(FileUtil.getCachePath(context)),
+                                item = input.downloadItem,
+                                files = authoritative,
+                            )
+                        ) {
+                            "Could not persist current-attempt output ownership before completion"
+                        }
                     }
                 }
                 return YtdlpPhaseOutcome.Completed(
@@ -4803,15 +4815,27 @@ class DownloadWorker(
                     structuredMarker = input.outputPlan.structuredOutputMarker,
                     requireStructuredMarker = true,
                 )
-                if (!input.outputPlan.directNoCache && authoritativeOutputPaths.isNotEmpty()) {
-                    check(
-                        DownloadCacheOwnership.recordArtifacts(
-                            cacheRoot = File(FileUtil.getCachePath(context)),
-                            item = input.downloadItem,
-                            files = authoritativeOutputPaths,
-                        )
-                    ) {
-                        "Could not persist current-attempt output ownership before completion"
+                if (authoritativeOutputPaths.isNotEmpty()) {
+                    if (input.outputPlan.directNoCache) {
+                        check(
+                            DirectOutputStagingCleanup.recordExactArtifacts(
+                                outputPlan = input.outputPlan,
+                                expectedMarkerText = directOwnershipMarkerText(input.downloadItem),
+                                paths = authoritativeOutputPaths,
+                            )
+                        ) {
+                            "Could not persist current-attempt direct output ownership before completion"
+                        }
+                    } else {
+                        check(
+                            DownloadCacheOwnership.recordArtifacts(
+                                cacheRoot = File(FileUtil.getCachePath(context)),
+                                item = input.downloadItem,
+                                files = authoritativeOutputPaths,
+                            )
+                        ) {
+                            "Could not persist current-attempt output ownership before completion"
+                        }
                     }
                 }
                 if (runtime.currentAttemptTransferStarted) {
@@ -5413,8 +5437,12 @@ class DownloadWorker(
                         staging.absolutePath
                 )
             }
-            if (!staging.deleteRecursively()) {
-                throw IOException("$cleanFailure: ${staging.absolutePath}")
+            if (!DirectOutputStagingCleanup.removeExactArtifactsAndEmptyParents(
+                    outputPlan = outputPlan,
+                    expectedMarkerText = directOwnershipMarkerText(downloadItem),
+                )
+            ) {
+                throw IOException("$cleanFailure: preserved unproven direct output descendants in ${staging.absolutePath}")
             }
         }
         if (!staging.mkdirs() && !staging.isDirectory) {
@@ -6694,23 +6722,25 @@ class DownloadWorker(
         outputProvenance: DownloadOutputProvenance? = null,
     ): File? {
         val sourceParent = primaryVideo.parentFile ?: return null
-        val stageRoot = File(
-            FileUtil.getCachePath(context),
-            "hardsub_mux_stage/${System.currentTimeMillis()}_${primaryVideo.nameWithoutExtension.hashCode().toString().replace('-', 'n')}"
-        )
-        if (!stageRoot.exists() && !stageRoot.mkdirs()) {
-            Log.w(TAG, "HardSub AV merge staging create failed dir=${stageRoot.absolutePath}")
+        val stage = HardSubMuxStageOwnership.create(File(FileUtil.getCachePath(context)))
+        if (stage == null) {
+            Log.w(TAG, "HardSub AV merge staging create failed")
             return null
         }
+        val stageRoot = stage.root
         return try {
             val stagedVideo = File(stageRoot, primaryVideo.name)
             val stagedAudio = File(stageRoot, primaryAudio.name)
-            runCatching { primaryVideo.copyTo(stagedVideo, overwrite = true) }.getOrElse { error ->
+            runCatching { primaryVideo.copyTo(stagedVideo, overwrite = false) }.getOrElse { error ->
                 Log.w(TAG, "HardSub AV merge staging copy failed file=${primaryVideo.name} reason=${error.message}")
                 return null
             }
-            runCatching { primaryAudio.copyTo(stagedAudio, overwrite = true) }.getOrElse { error ->
+            runCatching { primaryAudio.copyTo(stagedAudio, overwrite = false) }.getOrElse { error ->
                 Log.w(TAG, "HardSub AV merge staging copy failed file=${primaryAudio.name} reason=${error.message}")
+                return null
+            }
+            if (!HardSubMuxStageOwnership.recordArtifacts(stage, listOf(stagedVideo, stagedAudio))) {
+                Log.w(TAG, "HardSub AV merge staging ownership record failed")
                 return null
             }
 
@@ -6725,7 +6755,11 @@ class DownloadWorker(
                 return null
             }
             val stagedPublish = File(publishDir, primaryVideo.name)
-            mergedInStage.copyTo(stagedPublish, overwrite = true)
+            mergedInStage.copyTo(stagedPublish, overwrite = false)
+            if (!HardSubMuxStageOwnership.recordArtifacts(stage, listOf(stagedPublish))) {
+                Log.w(TAG, "HardSub AV merge publish staging ownership record failed")
+                return null
+            }
 
             val movedOutputPaths = mutableListOf<String>()
             val movedBack = runBlocking {
@@ -6774,7 +6808,9 @@ class DownloadWorker(
             )
             mergedFile
         } finally {
-            runCatching { stageRoot.deleteRecursively() }
+            if (!HardSubMuxStageOwnership.cleanup(stage)) {
+                Log.w(TAG, "HardSub AV merge staging cleanup preserved unproven descendants dir=${stageRoot.absolutePath}")
+            }
         }
     }
 

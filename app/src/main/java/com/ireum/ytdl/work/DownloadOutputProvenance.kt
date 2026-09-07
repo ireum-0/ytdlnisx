@@ -506,6 +506,86 @@ internal enum class DirectOutputPublicationState {
  * diagnostics.
  */
 internal object DirectOutputStagingCleanup {
+    private const val ARTIFACT_MANIFEST_NAME = ".ytdlnisx-output-artifacts.txt"
+    private const val ARTIFACT_MANIFEST_HEADER = "ytdlnisx-output-artifacts"
+
+    /**
+     * Persist the exact files reported by this direct attempt.  The marker
+     * proves only the root identity; this manifest is the separate proof for
+     * individual descendants used by retry/failure cleanup.
+     */
+    fun recordExactArtifacts(
+        outputPlan: YtdlpOutputPlan,
+        expectedMarkerText: String,
+        paths: Iterable<String>,
+    ): Boolean {
+        val staging = validatedStaging(outputPlan, expectedMarkerText) ?: return false
+        val entries = paths.mapNotNull { raw ->
+            runCatching {
+                val file = File(raw).canonicalFile
+                if (!file.isFile || !isInside(file, staging) ||
+                    file == outputPlan.ownershipMarker?.canonicalFile ||
+                    file.name == ARTIFACT_MANIFEST_NAME
+                ) null
+                else file.relativeTo(staging).invariantSeparatorsPath
+            }.getOrNull()
+        }.filter(String::isNotBlank).toSortedSet()
+        if (entries.isEmpty()) return false
+        return runCatching {
+            manifestFile(staging).writeText(
+                buildString {
+                    append(ARTIFACT_MANIFEST_HEADER)
+                    append('\n')
+                    append("files:\n")
+                    entries.forEach { entry ->
+                        append(entry)
+                        append('\n')
+                    }
+                },
+            )
+            manifestFile(staging).isFile
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Remove only manifest-listed direct artifacts and prune directories that
+     * become empty.  An unexpected child leaves the root intact and causes a
+     * fail-closed result; no recursive deletion is performed.
+     */
+    fun removeExactArtifactsAndEmptyParents(
+        outputPlan: YtdlpOutputPlan,
+        expectedMarkerText: String,
+    ): Boolean {
+        val staging = validatedStaging(outputPlan, expectedMarkerText) ?: return false
+        val manifest = manifestFile(staging)
+        val entries = readManifest(manifest) ?: return false
+        entries.forEach { relative ->
+            val candidate = runCatching { File(staging, relative).canonicalFile }.getOrNull() ?: return@forEach
+            if (isInside(candidate, staging) && candidate != outputPlan.ownershipMarker?.canonicalFile &&
+                candidate != manifest.canonicalFile && candidate.isFile
+            ) {
+                candidate.delete()
+            }
+        }
+        if (manifest.exists() && !manifest.delete()) return false
+        pruneEmptyDirectories(staging)
+        val marker = outputPlan.ownershipMarker!!.canonicalFile
+        val remaining = staging.listFiles()?.filter { it != marker } ?: return false
+        if (remaining.isNotEmpty()) {
+            // The marker remains live so a later exact cleanup can still
+            // authenticate the root; unknown descendants are preserved.
+            return false
+        }
+        if (!marker.delete() && marker.exists()) return false
+        val removedRoot = staging.delete() || !staging.exists()
+        if (!removedRoot) return false
+        val namespace = staging.parentFile?.canonicalFile ?: return false
+        if (namespace.isDirectory && namespace.listFiles()?.isEmpty() == true) {
+            namespace.delete()
+        }
+        return true
+    }
+
     fun removeOwnedMarkerAndEmptyParents(
         outputPlan: YtdlpOutputPlan,
         expectedMarkerText: String,
@@ -530,6 +610,19 @@ internal object DirectOutputStagingCleanup {
         }
         val markerText = runCatching { marker.readText() }.getOrNull() ?: return null
         if (markerText != expectedMarkerText) return null
+        val manifest = manifestFile(staging)
+        val entries = readManifest(manifest) ?: return null
+        if (entries.any { relative ->
+                val candidate = runCatching { File(staging, relative).canonicalFile }.getOrNull()
+                candidate != null && candidate.isFile
+            }) {
+            // The exact source carrier is still present (for example when a
+            // copy-style publication intentionally retained the source).  Do
+            // not revoke the marker and strand the manifest; leave the root
+            // available for deterministic recovery.
+            return null
+        }
+        if (manifest.exists() && !manifest.delete()) return null
         if (!marker.delete()) return null
 
         val tokenDirectoryDeleted = runCatching {
@@ -552,4 +645,50 @@ internal object DirectOutputStagingCleanup {
             namespaceDeleted = namespaceDeleted,
         )
     }
+
+    private fun validatedStaging(
+        outputPlan: YtdlpOutputPlan,
+        expectedMarkerText: String,
+    ): File? {
+        if (!outputPlan.directNoCache) return null
+        val staging = outputPlan.directStagingDirectory?.canonicalFile ?: return null
+        val namespace = staging.parentFile?.canonicalFile ?: return null
+        val stagingParent = outputPlan.directStagingParent?.canonicalFile ?: return null
+        val marker = outputPlan.ownershipMarker?.canonicalFile ?: return null
+        if (
+            namespace.name != ".ytdlnisx-output" ||
+                namespace.parentFile?.canonicalFile != stagingParent ||
+                marker.parentFile?.canonicalFile != staging ||
+                !staging.isDirectory ||
+                !marker.isFile
+        ) return null
+        return runCatching { marker.readText() }
+            .getOrNull()
+            ?.takeIf { it == expectedMarkerText }
+            ?.let { staging }
+    }
+
+    private fun manifestFile(staging: File): File = File(staging, ARTIFACT_MANIFEST_NAME)
+
+    private fun readManifest(manifest: File): List<String>? {
+        if (!manifest.isFile) return emptyList()
+        val lines = runCatching { manifest.readLines() }.getOrNull() ?: return null
+        if (lines.firstOrNull()?.trim() != ARTIFACT_MANIFEST_HEADER) return null
+        val filesIndex = lines.indexOfFirst { it.trim() == "files:" }
+        if (filesIndex < 0) return null
+        return lines.drop(filesIndex + 1).map(String::trim).filter(String::isNotBlank).distinct()
+    }
+
+    private fun pruneEmptyDirectories(root: File) {
+        root.walkBottomUp()
+            .filter { it != root && it.isDirectory }
+            .forEach { directory ->
+                if (directory.listFiles()?.isEmpty() == true) directory.delete()
+            }
+    }
+
+    private fun isInside(candidate: File, root: File): Boolean = runCatching {
+        candidate.canonicalFile.toPath().normalize()
+            .startsWith(root.canonicalFile.toPath().normalize())
+    }.getOrDefault(false)
 }

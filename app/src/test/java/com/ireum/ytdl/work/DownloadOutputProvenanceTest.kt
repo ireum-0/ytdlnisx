@@ -530,6 +530,63 @@ class DownloadOutputProvenanceTest {
     }
 
     @Test
+    fun exactDirectArtifactCleanupPreservesUnknownDescendants() {
+        val destination = Files.createTempDirectory("output-cleanup-exact-").toFile()
+        try {
+            val plan = directPlan(destination, "exact-token")
+            val marker = requireNotNull(plan.ownershipMarker)
+            assertTrue(marker.parentFile!!.mkdirs())
+            marker.writeText(currentMarker)
+            val known = write(plan.ytdlpDirectory, "known.mp4")
+            val unknown = write(plan.ytdlpDirectory, "unexpected.part")
+
+            assertTrue(
+                DirectOutputStagingCleanup.recordExactArtifacts(
+                    outputPlan = plan,
+                    expectedMarkerText = currentMarker,
+                    paths = listOf(known.absolutePath),
+                ),
+            )
+            assertFalse(
+                DirectOutputStagingCleanup.removeExactArtifactsAndEmptyParents(
+                    outputPlan = plan,
+                    expectedMarkerText = currentMarker,
+                ),
+            )
+            assertFalse(known.exists())
+            assertTrue(unknown.exists())
+            assertTrue(marker.exists())
+            assertTrue(plan.ytdlpDirectory.exists())
+        } finally {
+            destination.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun directArtifactCleanupFailsClosedForMalformedManifest() {
+        val destination = Files.createTempDirectory("output-cleanup-malformed-manifest-").toFile()
+        try {
+            val plan = directPlan(destination, "malformed-token")
+            val marker = requireNotNull(plan.ownershipMarker)
+            assertTrue(marker.parentFile!!.mkdirs())
+            marker.writeText(currentMarker)
+            write(plan.ytdlpDirectory, ".ytdlnisx-output-artifacts.txt").writeText("not-a-manifest\n")
+            val unknown = write(plan.ytdlpDirectory, "unproven.bin")
+
+            assertFalse(
+                DirectOutputStagingCleanup.removeExactArtifactsAndEmptyParents(
+                    outputPlan = plan,
+                    expectedMarkerText = currentMarker,
+                ),
+            )
+            assertTrue(unknown.exists())
+            assertTrue(marker.exists())
+        } finally {
+            destination.deleteRecursively()
+        }
+    }
+
+    @Test
     fun structuredFilesMarkerAcceptsTheBundledYtdlpDirectMoveMap() {
         val tempDirectory = Files.createTempDirectory("output-provenance-structured-map-").toFile()
         try {
