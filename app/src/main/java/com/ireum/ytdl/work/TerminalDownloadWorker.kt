@@ -58,6 +58,25 @@ class TerminalDownloadWorker(
     private var shouldCleanupTerminalCache = false
     private var terminalOutputDirectory: File? = null
     private var terminalOutputAuthority: TerminalOutputAuthority? = null
+    private var terminalTaskToken: String? = null
+
+    private fun cleanupTerminalOutputDirectory() {
+        val directory = terminalOutputDirectory ?: return
+        // Failure/cancellation cleanup must not erase an exact remainder left
+        // by a partial publication. Revoke this attempt's marker and retain
+        // its manifest/files as recovery evidence; the UUID-scoped directory
+        // and missing marker keep a later attempt from gaining authority.
+        val removed = TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(
+            directory,
+            terminalTaskToken,
+        )
+        if (!removed && directory.exists()) {
+            Log.w(
+                TAG,
+                "Preserving Terminal staging without exact artifact ownership: ${directory.absolutePath}",
+            )
+        }
+    }
 
     private suspend fun cleanupStoppedWorker() = withContext(Dispatchers.IO + NonCancellable) {
         if (itemId == 0) return@withContext
@@ -68,9 +87,7 @@ class TerminalDownloadWorker(
         runCatching {
             NotificationUtil(context).cancelTerminalDownloadNotification(itemId)
         }
-        if (shouldCleanupTerminalCache) runCatching {
-            terminalOutputDirectory?.deleteRecursively()
-        }
+        if (shouldCleanupTerminalCache) runCatching { cleanupTerminalOutputDirectory() }
         runCatching {
             DBManager.getInstance(context).terminalDao.delete(itemId.toLong())
         }
@@ -96,6 +113,7 @@ class TerminalDownloadWorker(
 
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val terminalTaskToken = "$itemId-${UUID.randomUUID()}"
+        this.terminalTaskToken = terminalTaskToken
         val terminalPlan = TerminalCommandPlanFactory.create(
             context = context,
             preferences = sharedPreferences,
@@ -155,7 +173,10 @@ class TerminalDownloadWorker(
                 throw IOException("Could not establish Terminal cache ownership: ${error.message}", error)
             }
             terminalOutputDirectory = outputDirectory
-            terminalOutputAuthority = TerminalOutputAuthority(outputDirectory).also {
+            terminalOutputAuthority = TerminalOutputAuthority(
+                stagingRoot = outputDirectory,
+                ownershipMarker = TerminalCacheOwnership.markerFile(outputDirectory),
+            ).also {
                 it.beginAttempt()
             }
         }
@@ -233,7 +254,53 @@ class TerminalDownloadWorker(
                 if(!noCache){
                     val authority = requireNotNull(terminalOutputAuthority)
                     val outputDirectory = requireNotNull(terminalOutputDirectory)
-                    val sourceFiles = requireTerminalSourceFiles(authority, response.out)
+                    val structuredMarker = terminalPlan.outputAuthorityMarkerPath
+                        ?.let(::File)
+                        ?.takeUnless { injectedOutput != null }
+                    val sourceFiles = if (
+                        terminalPlan.outputExpectation == com.ireum.ytdl.util.terminal.TerminalOutputExpectation.NO_FILES_EXPECTED
+                    ) {
+                        emptyList()
+                    } else {
+                        requireTerminalSourceFiles(
+                            authority = authority,
+                            output = response.out,
+                            structuredMarker = structuredMarker,
+                        )
+                    }
+                    if (sourceFiles.isNotEmpty()) {
+                        check(
+                            TerminalCacheOwnership.recordArtifacts(
+                                directory = outputDirectory,
+                                files = sourceFiles.map { it.absolutePath },
+                            )
+                        ) {
+                            "Could not persist Terminal current-attempt output ownership"
+                        }
+                    }
+                    if (!authority.removeStructuredMarker(structuredMarker)) {
+                        throw IOException("Terminal output authority marker could not be removed")
+                    }
+                    // The ownership marker proves the staging root, not an
+                    // output file. Remove it only after the exact-output and
+                    // unproven-child checks so cleanup can still validate the
+                    // current operation.
+                    if (
+                        terminalPlan.outputExpectation == com.ireum.ytdl.util.terminal.TerminalOutputExpectation.NO_FILES_EXPECTED
+                    ) {
+                        if (!TerminalCacheOwnership.removeArtifactManifest(outputDirectory)) {
+                            throw IOException("Terminal artifact manifest could not be removed")
+                        }
+                        if (authority.hasUnprovenTemporaryArtifacts()) {
+                            throw IOException("Terminal no-output command produced an unproven staging artifact")
+                        }
+                        val ownershipMarker = TerminalCacheOwnership.markerFile(outputDirectory)
+                        if (ownershipMarker.exists() && !ownershipMarker.delete() && ownershipMarker.exists()) {
+                            throw IOException("Terminal cache ownership marker could not be removed")
+                        }
+                        outputDirectory.deleteRecursively()
+                        return@withContext
+                    }
                     val movedOutputPaths = mutableListOf<String>()
                     val returnedMovePaths = FileUtil.moveFile(
                         originDir = outputDirectory,
@@ -260,8 +327,15 @@ class TerminalDownloadWorker(
                                 strandedSources.joinToString(limit = 5) { it.name },
                         )
                     }
+                    if (!TerminalCacheOwnership.removeArtifactManifest(outputDirectory)) {
+                        throw IOException("Terminal artifact manifest could not be removed")
+                    }
                     if (authority.hasUnprovenTemporaryArtifacts()) {
                         throw IOException("Terminal staging contains unproven output artifacts")
+                    }
+                    val ownershipMarker = TerminalCacheOwnership.markerFile(outputDirectory)
+                    if (ownershipMarker.exists() && !ownershipMarker.delete() && ownershipMarker.exists()) {
+                        throw IOException("Terminal cache ownership marker could not be removed")
                     }
                     outputDirectory.deleteRecursively()
                 }
@@ -277,7 +351,7 @@ class TerminalDownloadWorker(
             if (isStopped || it is YoutubeDL.CanceledException) {
                 notificationUtil.cancelTerminalDownloadNotification(itemId)
                 if (!noCache) {
-                    terminalOutputDirectory?.deleteRecursively()
+                    cleanupTerminalOutputDirectory()
                 }
                 runCatching {
                     dao.delete(itemId.toLong())
@@ -298,7 +372,7 @@ class TerminalDownloadWorker(
             }
             notificationUtil.cancelTerminalDownloadNotification(itemId)
             if (!noCache) {
-                terminalOutputDirectory?.deleteRecursively()
+                cleanupTerminalOutputDirectory()
             }
             Log.e(TAG, "${context.getString(R.string.failed_download)} $userMessage")
             delay(1000)

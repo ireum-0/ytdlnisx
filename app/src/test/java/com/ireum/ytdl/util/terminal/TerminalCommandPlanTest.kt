@@ -3,6 +3,7 @@ package com.ireum.ytdl.util.terminal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 class TerminalCommandPlanTest {
@@ -38,7 +39,8 @@ class TerminalCommandPlanTest {
         )
 
         assertFalse(plan.usesAppCache)
-        assertFalse(plan.requestOptions.any { it.name == "-P" })
+        assertTrue(plan.downloadLocation.replace('\\', '/').endsWith("/storage/emulated/0/Custom"))
+        assertTrue(plan.requestOptions.none { it.name == "-P" })
     }
 
     @Test
@@ -86,6 +88,129 @@ class TerminalCommandPlanTest {
         )
         assertTrue(plan.usesAppCache)
         assertEquals("/app/cache/TERMINAL/42", plan.requestOptions.single { it.name == "-P" }.value)
+    }
+
+    @Test
+    fun unsafeAbsoluteOutputTemplateIsRejectedBeforeTerminalExecution() {
+        try {
+            TerminalCommandPlanner.create(
+                command = "-o /storage/emulated/0/escape/%(title)s.%(ext)s https://example.com/video",
+                environment = environment(cacheDownloads = true, destinationWritable = true),
+            )
+            fail("absolute Terminal output template must be rejected")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message.orEmpty().contains("output template"))
+        }
+    }
+
+    @Test
+    fun tempOnlyPathCannotBypassTerminalOutputStaging() {
+        try {
+            TerminalCommandPlanner.create(
+                command = "--paths temp:/storage/emulated/0/unconfined https://example.com/video",
+                environment = environment(cacheDownloads = true, destinationWritable = true),
+            )
+            fail("Terminal temp-only path must not establish direct output authority")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message.orEmpty().contains("explicit home"))
+        }
+    }
+
+    @Test
+    fun explicitNoOutputSemanticsDoNotRequireAFileCarrier() {
+        val plan = TerminalCommandPlanner.create(
+            command = "--simulate --quiet https://example.com/video",
+            environment = environment(cacheDownloads = true, destinationWritable = true),
+        )
+
+        assertEquals(TerminalOutputExpectation.NO_FILES_EXPECTED, plan.outputExpectation)
+        assertTrue(plan.outputAuthorityMarkerPath!!.endsWith(".ytdlnisx-terminal-output.txt"))
+    }
+
+    @Test
+    fun ordinaryTerminalDownloadRequiresStructuredFileCarrier() {
+        val plan = TerminalCommandPlanner.create(
+            command = "https://example.com/video",
+            environment = environment(cacheDownloads = true, destinationWritable = true),
+        )
+
+        assertEquals(TerminalOutputExpectation.FILES_REQUIRED, plan.outputExpectation)
+        assertTrue(plan.outputAuthorityMarkerPath!!.contains("TERMINAL/42"))
+    }
+
+    @Test
+    fun shortAndLongNoOutputAliasesAreModeledWithLastSimulationOverride() {
+        listOf("-j", "-J", "-e", "-g", "-O %(title)s", "--print %(title)s", "--list-extractors", "--skip-download")
+            .forEach { option ->
+                val plan = TerminalCommandPlanner.create(
+                    command = "$option https://example.com/video",
+                    environment = environment(cacheDownloads = true, destinationWritable = true),
+                )
+                assertEquals(
+                    "$option should not require a file carrier",
+                    TerminalOutputExpectation.NO_FILES_EXPECTED,
+                    plan.outputExpectation,
+                )
+            }
+
+        val reenabled = TerminalCommandPlanner.create(
+            command = "--simulate --no-simulate https://example.com/video",
+            environment = environment(cacheDownloads = true, destinationWritable = true),
+        )
+        assertEquals(TerminalOutputExpectation.FILES_REQUIRED, reenabled.outputExpectation)
+
+        val explicitDownload = TerminalCommandPlanner.create(
+            command = "--no-simulate --print %(title)s https://example.com/video",
+            environment = environment(cacheDownloads = true, destinationWritable = true),
+        )
+        assertEquals(TerminalOutputExpectation.FILES_REQUIRED, explicitDownload.outputExpectation)
+
+        val laterStagePrint = TerminalCommandPlanner.create(
+            command = "--print after_move:%(filepath)s https://example.com/video",
+            environment = environment(cacheDownloads = true, destinationWritable = true),
+        )
+        assertEquals(TerminalOutputExpectation.FILES_REQUIRED, laterStagePrint.outputExpectation)
+
+        val mixedPrintStages = TerminalCommandPlanner.create(
+            command = "--print %(title)s --print after_move:%(filepath)s https://example.com/video",
+            environment = environment(cacheDownloads = true, destinationWritable = true),
+        )
+        assertEquals(TerminalOutputExpectation.FILES_REQUIRED, mixedPrintStages.outputExpectation)
+    }
+
+    @Test
+    fun fileProducingOptionsOverrideObservationOnlyFlags() {
+        listOf(
+            "--no-download --write-description",
+        ).forEach { command ->
+            val plan = TerminalCommandPlanner.create(
+                command = command,
+                environment = environment(cacheDownloads = true, destinationWritable = true),
+            )
+            assertEquals(
+                "$command should retain the exact file carrier requirement",
+                TerminalOutputExpectation.FILES_REQUIRED,
+                plan.outputExpectation,
+            )
+        }
+
+        listOf(
+            "--simulate --write-info-json",
+            "--simulate --write-thumbnail",
+            "--simulate --write-subs",
+            "--dump-json --write-info-json",
+            "--print %(title)s --write-description",
+        ).forEach { command ->
+            val plan = TerminalCommandPlanner.create(
+                command = command,
+                environment = environment(cacheDownloads = true, destinationWritable = true),
+            )
+            assertEquals(
+                "$command remains simulated and must not require a file carrier",
+                TerminalOutputExpectation.NO_FILES_EXPECTED,
+                plan.outputExpectation,
+            )
+        }
     }
 
     @Test
@@ -172,6 +297,7 @@ class TerminalCommandPlanTest {
         downloadLocation = "/raw/output",
         formattedDownloadLocation = "/formatted/output",
         appCacheOutputPath = "/app/cache/TERMINAL/42",
+        appCacheOutputMarkerPath = "/app/cache/TERMINAL/42/.ytdlnisx-terminal-output.txt",
         cacheDownloads = cacheDownloads,
         destinationWritable = destinationWritable
     )

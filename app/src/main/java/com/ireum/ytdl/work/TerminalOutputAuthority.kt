@@ -13,22 +13,47 @@ import java.io.IOException
  */
 internal class TerminalOutputAuthority(
     val stagingRoot: File,
+    ownershipMarker: File? = null,
 ) {
-    private val provenance = DownloadOutputProvenance(stagingRoot)
+    // Terminal staging is created with an ownership marker before the
+    // attempt begins. Treat that marker exactly like Download direct-output
+    // staging: it is part of the clean baseline and is never an output, while
+    // reported files under the same root remain eligible for authority.
+    private val provenance = DownloadOutputProvenance(
+        tempDirectory = stagingRoot,
+        directDirectory = ownershipMarker?.let { stagingRoot },
+        directOwnershipMarker = ownershipMarker,
+    )
 
     fun beginAttempt() {
         provenance.beginAttempt()
     }
 
-    fun currentSourceFiles(output: String): List<File> {
+    fun currentSourceFiles(
+        output: String,
+        structuredMarker: File? = null,
+        requireStructuredMarker: Boolean = false,
+    ): List<File> {
+        val structuredOutput = structuredMarker?.let { marker ->
+            runCatching {
+                if (!marker.isFile) null else marker.readText().takeIf { it.isNotBlank() }
+            }.getOrNull()
+        }
+        if (requireStructuredMarker && structuredOutput == null) return emptyList()
+        val authorityText = structuredOutput ?: output
         return provenance
-            .acceptYtdlpOutput(output)
+            .acceptYtdlpOutput(authorityText)
             .mapNotNull { path ->
                 runCatching { File(path).canonicalFile }
                     .getOrNull()
                     ?.takeIf { it.isFile && isInside(it, stagingRoot) }
             }
             .distinctBy { it.absolutePath }
+    }
+
+    fun removeStructuredMarker(marker: File?): Boolean {
+        if (marker == null || !marker.exists()) return true
+        return marker.delete() || !marker.exists()
     }
 
     fun recordMoveResults(
@@ -54,8 +79,13 @@ internal class TerminalOutputAuthority(
 internal fun requireTerminalSourceFiles(
     authority: TerminalOutputAuthority,
     output: String,
+    structuredMarker: File? = null,
 ): List<File> {
-    val sources = authority.currentSourceFiles(output)
+    val sources = authority.currentSourceFiles(
+        output = output,
+        structuredMarker = structuredMarker,
+        requireStructuredMarker = structuredMarker != null,
+    )
     if (sources.isEmpty()) {
         throw IOException("Terminal completed without an authoritative current-attempt output path")
     }

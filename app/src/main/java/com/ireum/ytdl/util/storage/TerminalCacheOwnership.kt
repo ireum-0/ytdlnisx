@@ -17,6 +17,14 @@ internal object TerminalCacheOwnership {
 
     fun artifactManifestFile(directory: File): File = File(directory, ARTIFACT_MANIFEST_NAME)
 
+    /** Remove the exact-output manifest after its entries have been consumed. */
+    fun removeArtifactManifest(directory: File): Boolean {
+        val root = directory.canonicalFile
+        if (!isOwned(root)) return false
+        val manifest = artifactManifestFile(root)
+        return !manifest.exists() || manifest.delete() || !manifest.exists()
+    }
+
     fun ensureMarker(directory: File, taskToken: String): File {
         require(taskToken.isNotBlank()) { "Terminal cache ownership requires a task token" }
         val root = directory.canonicalFile
@@ -63,6 +71,78 @@ internal object TerminalCacheOwnership {
         }.getOrDefault(false)
     }
 
+    /** True only when the exact staging directory carries a valid owner marker. */
+    fun isOwned(directory: File, taskToken: String? = null): Boolean {
+        val root = runCatching { directory.canonicalFile }.getOrNull() ?: return false
+        val marker = markerFile(root)
+        val fields = runCatching {
+            if (marker.isFile) parse(marker.readText()) else emptyMap()
+        }.getOrDefault(emptyMap())
+        return fields["version"] == VERSION &&
+            fields["taskToken"].orEmpty().isNotBlank() &&
+            (taskToken == null || fields["taskToken"] == taskToken)
+    }
+
+    /**
+     * Delete only exact files recorded by this execution. Unknown children
+     * revoke the marker and remain available for recovery/diagnostics.
+     */
+    fun deleteIfOwned(directory: File, taskToken: String? = null): Boolean {
+        val root = runCatching { directory.canonicalFile }.getOrNull() ?: return false
+        if (!isOwned(root, taskToken)) return false
+        if (!root.exists()) return true
+        if (!root.isDirectory) return false
+
+        val marker = markerFile(root)
+        val manifest = artifactManifestFile(root)
+        val entries = runCatching {
+            if (!manifest.isFile) emptyList() else manifest.readLines()
+        }.getOrDefault(emptyList())
+            .map(String::trim)
+            .filter { it.isNotBlank() }
+            .distinct()
+        val initialChildren = root.listFiles()?.toList() ?: return false
+        if (entries.isEmpty() && initialChildren.any {
+                it.name != MARKER_NAME && it.name != ARTIFACT_MANIFEST_NAME
+            }) {
+            marker.delete()
+            return false
+        }
+
+        entries.forEach { relative ->
+            val candidate = runCatching { File(root, relative).canonicalFile }.getOrNull() ?: return@forEach
+            if (!isInside(candidate, root) || candidate == marker || candidate == manifest) return@forEach
+            if (candidate.isFile) candidate.delete()
+        }
+        manifest.delete()
+        pruneEmptyDirectories(root)
+        val remaining = root.listFiles()?.toList()?.filter {
+            it.name != MARKER_NAME && it.name != ARTIFACT_MANIFEST_NAME
+        } ?: return false
+        if (remaining.isNotEmpty()) {
+            marker.delete()
+            return false
+        }
+        val deleted = root.delete()
+        if (!deleted && root.exists()) marker.delete()
+        return deleted || !root.exists()
+    }
+
+    /**
+     * Revoke a failed/cancelled attempt without deleting its exact remainder.
+     * A partial publication can leave authoritative files behind after
+     * FileUtil.moveFile has moved only a prefix of the manifest.  Removing the
+     * marker prevents migration/publication from treating that directory as a
+     * live Terminal result, while retaining the manifest and files for
+     * deterministic recovery/diagnostics.
+     */
+    fun revokeOwnershipPreservingArtifacts(directory: File, taskToken: String? = null): Boolean {
+        val root = runCatching { directory.canonicalFile }.getOrNull() ?: return false
+        if (!isOwned(root, taskToken)) return false
+        val marker = markerFile(root)
+        return !marker.exists() || marker.delete() || !marker.exists()
+    }
+
     fun listArtifactFiles(root: OwnedRoot): List<File> = runCatching {
         val manifest = artifactManifestFile(root.directory)
         if (!manifest.isFile) return@runCatching emptyList()
@@ -107,6 +187,14 @@ internal object TerminalCacheOwnership {
             if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1)
         }
         .toMap()
+
+    private fun pruneEmptyDirectories(root: File) {
+        root.walkBottomUp()
+            .filter { it != root && it.isDirectory }
+            .forEach { directory ->
+                if (directory.listFiles()?.toList()?.isEmpty() == true) directory.delete()
+            }
+    }
 
     private fun isInside(candidate: File, root: File): Boolean = runCatching {
         candidate.canonicalFile.toPath().normalize()
