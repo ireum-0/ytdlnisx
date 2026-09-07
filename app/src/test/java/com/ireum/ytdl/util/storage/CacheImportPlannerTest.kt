@@ -23,8 +23,8 @@ class CacheImportPlannerTest {
 
             val item = item()
             val owned = File(root, item.id.toString()).apply { mkdirs() }
-            val ownedFile = File(owned, "video.mp4").apply { writeText("owned") }
             DownloadCacheOwnership.ensureMarker(root, item)
+            val ownedFile = File(owned, "video.mp4").apply { writeText("owned") }
             assertTrue(DownloadCacheOwnership.recordArtifacts(root, item, listOf(ownedFile.absolutePath)))
 
             val manifest = CacheImportPlanner.collect(root)

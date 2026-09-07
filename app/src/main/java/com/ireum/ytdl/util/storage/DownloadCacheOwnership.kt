@@ -14,6 +14,7 @@ internal object DownloadCacheOwnership {
     private const val MARKER_PREFIX = ".ytdlnisx-download-owner-"
     private const val MARKER_SUFFIX = ".txt"
     private const val ARTIFACT_MANIFEST_NAME = ".ytdlnisx-download-artifacts.txt"
+    private const val ARTIFACT_MANIFEST_HEADER = "ytdlnisx-download-artifacts"
     private const val VERSION = "1"
 
     data class OwnedRoot(
@@ -47,15 +48,61 @@ internal object DownloadCacheOwnership {
             throw IllegalStateException("Download cache root is not a directory: ${root.absolutePath}")
         }
         val marker = markerFile(root, item.id).canonicalFile
+        val directory = File(root, item.id.toString()).canonicalFile
         val existing = marker.takeIf(File::isFile)?.let { runCatching { it.readText() }.getOrNull() }
+        // Creating a sidecar marker is an authority-changing operation.  It
+        // must not authenticate a numeric directory (or an old artifact
+        // manifest) that was already present before this execution claimed
+        // the root.  An empty directory is harmless and may be claimed; any
+        // pre-existing child requires a prior marker-bound execution proof.
+        if (existing == null && directory.exists()) {
+            if (!directory.isDirectory) {
+                throw IllegalStateException("Download cache path is not a directory: ${directory.absolutePath}")
+            }
+            val children = directory.listFiles()?.toList()
+                ?: throw IllegalStateException(
+                    "Could not inspect pre-existing Download cache contents: ${directory.absolutePath}"
+                )
+            if (children.isNotEmpty()) {
+                throw IllegalStateException(
+                    "Refusing to authenticate pre-existing Download cache contents: ${directory.absolutePath}"
+                )
+            }
+        }
         if (existing != null) {
             val existingFields = parse(existing)
             val existingDownloadId = existingFields["downloadId"]?.toLongOrNull()
             val existingOperationId = existingFields["operationId"].orEmpty()
-            if (existingDownloadId != item.id || existingOperationId != item.operationId) {
-                throw IllegalStateException(
-                    "Refusing to reuse Download cache owned by another operation: ${marker.absolutePath}"
-                )
+            val existingExecutionId = existingFields["executionId"].orEmpty()
+            if (
+                existingDownloadId != item.id ||
+                existingOperationId != item.operationId ||
+                existingExecutionId != item.executionId
+            ) {
+                val hasUnprovenContents = when {
+                    !directory.exists() -> false
+                    !directory.isDirectory -> true
+                    else -> {
+                        val children = directory.listFiles()?.toList() ?: throw IllegalStateException(
+                            "Could not inspect stale Download cache contents: ${directory.absolutePath}"
+                        )
+                        artifactManifestFile(root, item.id).isFile ||
+                            children.any { it.name != ARTIFACT_MANIFEST_NAME }
+                    }
+                }
+                if (hasUnprovenContents) {
+                    throw IllegalStateException(
+                        "Refusing to reuse Download cache owned by another execution: ${marker.absolutePath}"
+                    )
+                }
+                // An empty abandoned marker carries no artifact authority and
+                // can be replaced by the newly claimed execution.  Never
+                // replace a marker while any prior content remains.
+                if (!marker.delete() && marker.exists()) {
+                    throw IllegalStateException(
+                        "Could not rotate stale Download cache ownership marker: ${marker.absolutePath}"
+                    )
+                }
             }
         }
         marker.writeText(markerText(item))
@@ -78,8 +125,15 @@ internal object DownloadCacheOwnership {
             if (!directory.isDirectory) {
                 throw IllegalStateException("Download cache path is not a directory: ${directory.absolutePath}")
             }
-            val manifest = readArtifactManifest(root, item.id)
-            if (manifest.isEmpty() && directory.listFiles().orEmpty().isNotEmpty()) {
+            val initialChildren = directory.listFiles()?.toList()
+                ?: throw IllegalStateException(
+                    "Could not inspect Download cache contents: ${directory.absolutePath}"
+                )
+            val manifest = readArtifactManifest(root, item)
+                ?: throw IllegalStateException(
+                    "Refusing to consume an unbound Download artifact manifest: ${artifactManifestFile(root, item.id).absolutePath}"
+                )
+            if (manifest.isEmpty() && initialChildren.isNotEmpty()) {
                 throw IllegalStateException(
                     "Refusing to delete unproven Download cache contents: ${directory.absolutePath}"
                 )
@@ -90,7 +144,11 @@ internal object DownloadCacheOwnership {
             }
             artifactManifestFile(root, item.id).delete()
             pruneEmptyDirectories(directory)
-            if (directory.listFiles().orEmpty().isNotEmpty()) {
+            val remainingChildren = directory.listFiles()?.toList()
+                ?: throw IllegalStateException(
+                    "Could not verify Download cache cleanup: ${directory.absolutePath}"
+                )
+            if (remainingChildren.isNotEmpty()) {
                 throw IllegalStateException(
                     "Refusing to delete unproven Download cache contents: ${directory.absolutePath}"
                 )
@@ -115,7 +173,8 @@ internal object DownloadCacheOwnership {
             .getOrDefault(emptyMap())
         return fields["version"] == VERSION &&
             fields["downloadId"]?.toLongOrNull() == item.id &&
-            fields["operationId"] == item.operationId
+            fields["operationId"] == item.operationId &&
+            fields["executionId"] == item.executionId
     }
 
     /** Delete one exact numeric staging root only when its marker proves ownership. */
@@ -135,8 +194,9 @@ internal object DownloadCacheOwnership {
         // A marker proves the operation root, not every child that happens to
         // be below it.  Delete only paths recorded by the current operation's
         // exact artifact manifest; unknown/stale children remain untouched.
-        val manifest = readArtifactManifest(root, item.id)
-        if (manifest.isEmpty() && directory.listFiles().orEmpty().any { it.name != ARTIFACT_MANIFEST_NAME }) {
+        val initialChildren = directory.listFiles()?.toList() ?: return false
+        val manifest = readArtifactManifest(root, item) ?: return false
+        if (manifest.isEmpty() && initialChildren.any { it.name != ARTIFACT_MANIFEST_NAME }) {
             return false
         }
         manifest.forEach { relative ->
@@ -146,7 +206,7 @@ internal object DownloadCacheOwnership {
         }
         artifactManifestFile(root, item.id).delete()
         pruneEmptyDirectories(directory)
-        val remaining = directory.listFiles().orEmpty()
+        val remaining = directory.listFiles()?.toList() ?: return false
         if (remaining.isNotEmpty()) {
             // Revoke the import/cleanup marker when unproven content remains;
             // preserving the directory is safer than recursive deletion.
@@ -177,13 +237,61 @@ internal object DownloadCacheOwnership {
             .toSortedSet()
         if (entries.isEmpty()) return false
         return runCatching {
-            artifactManifestFile(root, item.id).writeText(entries.joinToString("\n", postfix = "\n"))
+            artifactManifestFile(root, item.id).writeText(
+                buildString {
+                    append(ARTIFACT_MANIFEST_HEADER)
+                    append('\n')
+                    append("version=")
+                    append(VERSION)
+                    append('\n')
+                    append("downloadId=")
+                    append(item.id)
+                    append('\n')
+                    append("operationId=")
+                    append(item.operationId)
+                    append('\n')
+                    append("executionId=")
+                    append(item.executionId)
+                    append('\n')
+                    append("files:\n")
+                    entries.forEach { entry ->
+                        append(entry)
+                        append('\n')
+                    }
+                }
+            )
             artifactManifestFile(root, item.id).isFile
         }.getOrDefault(false)
     }
 
+    /**
+     * Retire the current-attempt manifest after all of its exact sources have
+     * been published and the caller is not retaining the cache.  The
+     * ownership marker remains at the cache root; unknown files below the
+     * numeric directory are therefore still preserved if they exist.
+     */
+    fun removeArtifactManifest(cacheRoot: File, item: DownloadItem): Boolean {
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
+        if (!isOwned(root, item)) return false
+        val manifest = artifactManifestFile(root, item.id)
+        val removed = !manifest.exists() || manifest.delete() || !manifest.exists()
+        if (removed) {
+            val directory = File(root, item.id.toString()).canonicalFile
+            if (directory.isDirectory && directory.listFiles()?.toList()?.isEmpty() == true) {
+                directory.delete()
+            }
+        }
+        return removed
+    }
+
     fun listArtifactFiles(root: OwnedRoot): List<File> {
-        val entries = readManifestFile(root.directory.resolve(ARTIFACT_MANIFEST_NAME))
+        val markerFields = runCatching { parse(root.marker.readText()) }.getOrDefault(emptyMap())
+        val entries = readArtifactManifest(
+            root.directory.parentFile ?: return emptyList(),
+            markerFields["downloadId"]?.toLongOrNull() ?: return emptyList(),
+            markerFields["operationId"].orEmpty(),
+            markerFields["executionId"].orEmpty(),
+        ) ?: return emptyList()
         return entries.mapNotNull { relative ->
             runCatching {
                 val file = File(root.directory, relative).canonicalFile
@@ -211,6 +319,7 @@ internal object DownloadCacheOwnership {
                 if (fields["version"] != VERSION) return@mapNotNull null
                 val id = fields["downloadId"]?.toLongOrNull() ?: return@mapNotNull null
                 if (fields["operationId"].orEmpty().isBlank()) return@mapNotNull null
+                if (fields["executionId"].orEmpty().isBlank()) return@mapNotNull null
                 if (marker.name != "$MARKER_PREFIX$id$MARKER_SUFFIX") return@mapNotNull null
                 val directory = File(root, id.toString()).canonicalFile
                 if (directory.parentFile?.canonicalFile != root || !directory.isDirectory) {
@@ -223,16 +332,44 @@ internal object DownloadCacheOwnership {
             .orEmpty()
     }
 
-    private fun readArtifactManifest(root: File, downloadId: Long): List<String> =
-        readManifestFile(artifactManifestFile(root, downloadId))
+    private fun readArtifactManifest(root: File, item: DownloadItem): List<String>? =
+        readArtifactManifest(root, item.id, item.operationId, item.executionId)
 
-    private fun readManifestFile(file: File): List<String> =
-        runCatching {
-            if (!file.isFile) emptyList() else file.readLines()
-        }.getOrDefault(emptyList())
+    /**
+     * Read an artifact manifest only when it carries the same identity as the
+     * ownership marker/operation that is consuming it.  A missing manifest is
+     * represented by an empty list; a present malformed or differently bound
+     * manifest is represented by null and must fail closed.
+     */
+    private fun readArtifactManifest(
+        root: File,
+        downloadId: Long,
+        operationId: String,
+        executionId: String,
+    ): List<String>? {
+        val file = artifactManifestFile(root, downloadId)
+        if (!file.isFile) return emptyList()
+        val lines = runCatching { file.readLines() }.getOrNull() ?: return null
+        if (lines.firstOrNull()?.trim() != ARTIFACT_MANIFEST_HEADER) return null
+        val header = lines.drop(1).takeWhile { it.trim() != "files:" }.mapNotNull { line ->
+            val separator = line.indexOf('=')
+            if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1)
+        }.toMap()
+        if (
+            header["version"] != VERSION ||
+            header["downloadId"]?.toLongOrNull() != downloadId ||
+            header["operationId"] != operationId ||
+            header["executionId"] != executionId ||
+            !lines.drop(1).any { it.trim() == "files:" }
+        ) {
+            return null
+        }
+        return lines.dropWhile { it.trim() != "files:" }
+            .drop(1)
             .map(String::trim)
             .filter(String::isNotBlank)
             .distinct()
+    }
 
     private fun pruneEmptyDirectories(root: File) {
         root.walkBottomUp()
