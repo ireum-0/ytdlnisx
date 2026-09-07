@@ -5,6 +5,7 @@ import java.io.File
 /** Ownership marker for a single cached Terminal execution directory. */
 internal object TerminalCacheOwnership {
     private const val MARKER_NAME = ".ytdlnisx-terminal-owner"
+    private const val ARTIFACT_MANIFEST_NAME = ".ytdlnisx-terminal-artifacts.txt"
     private const val VERSION = "1"
 
     data class OwnedRoot(
@@ -13,6 +14,8 @@ internal object TerminalCacheOwnership {
     )
 
     fun markerFile(directory: File): File = File(directory, MARKER_NAME)
+
+    fun artifactManifestFile(directory: File): File = File(directory, ARTIFACT_MANIFEST_NAME)
 
     fun ensureMarker(directory: File, taskToken: String): File {
         require(taskToken.isNotBlank()) { "Terminal cache ownership requires a task token" }
@@ -40,6 +43,40 @@ internal object TerminalCacheOwnership {
         }
         return marker
     }
+
+    /** Persist only exact current-attempt files as migration authority. */
+    fun recordArtifacts(directory: File, files: Iterable<String>): Boolean {
+        val root = runCatching { directory.canonicalFile }.getOrNull() ?: return false
+        if (!markerFile(root).isFile) return false
+        val entries = files.mapNotNull { raw ->
+            runCatching {
+                val file = File(raw).canonicalFile
+                if (!file.isFile || !isInside(file, root)) null
+                else file.relativeTo(root).invariantSeparatorsPath
+            }.getOrNull()
+        }.filter { it.isNotBlank() && it != MARKER_NAME && it != ARTIFACT_MANIFEST_NAME }
+            .toSortedSet()
+        if (entries.isEmpty()) return false
+        return runCatching {
+            artifactManifestFile(root).writeText(entries.joinToString("\n", postfix = "\n"))
+            artifactManifestFile(root).isFile
+        }.getOrDefault(false)
+    }
+
+    fun listArtifactFiles(root: OwnedRoot): List<File> = runCatching {
+        val manifest = artifactManifestFile(root.directory)
+        if (!manifest.isFile) return@runCatching emptyList()
+        manifest.readLines()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .mapNotNull { relative ->
+                val file = File(root.directory, relative).canonicalFile
+                file.takeIf {
+                    it.isFile && it != root.marker.canonicalFile &&
+                        it != manifest.canonicalFile && isInside(it, root.directory)
+                }
+            }
+    }.getOrDefault(emptyList())
 
     fun listOwnedRoots(cacheRoot: File): List<OwnedRoot> {
         val terminalRoot = runCatching { File(cacheRoot.canonicalFile, "TERMINAL").canonicalFile }
@@ -70,4 +107,9 @@ internal object TerminalCacheOwnership {
             if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1)
         }
         .toMap()
+
+    private fun isInside(candidate: File, root: File): Boolean = runCatching {
+        candidate.canonicalFile.toPath().normalize()
+            .startsWith(root.canonicalFile.toPath().normalize())
+    }.getOrDefault(false)
 }

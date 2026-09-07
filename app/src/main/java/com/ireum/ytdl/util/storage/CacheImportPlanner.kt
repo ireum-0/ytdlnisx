@@ -30,20 +30,21 @@ internal object CacheImportPlanner {
 
         return ownedRoots
             .flatMap { (directory, marker, cache) ->
-                directory.walkTopDown()
-                    .filter { candidate ->
-                        candidate.isFile &&
-                            candidate.canonicalFile != marker.canonicalFile &&
-                            isInside(candidate, directory)
-                    }
-                    .mapNotNull { candidate ->
-                        val source = runCatching { candidate.canonicalFile }.getOrNull() ?: return@mapNotNull null
-                        val relative = runCatching {
-                            source.relativeTo(cache.canonicalFile).invariantSeparatorsPath
-                        }.getOrNull() ?: return@mapNotNull null
-                        CacheImportArtifact(source, relative, marker)
-                    }
-                    .toList()
+                val explicitFiles = if (marker.name.startsWith(".ytdlnisx-download-owner-")) {
+                    DownloadCacheOwnership.listArtifactFiles(
+                        DownloadCacheOwnership.OwnedRoot(directory, marker)
+                    )
+                } else {
+                    TerminalCacheOwnership.listArtifactFiles(
+                        TerminalCacheOwnership.OwnedRoot(directory, marker)
+                    )
+                }
+                explicitFiles.mapNotNull { source ->
+                    val relative = runCatching {
+                        source.relativeTo(cache.canonicalFile).invariantSeparatorsPath
+                    }.getOrNull() ?: return@mapNotNull null
+                    CacheImportArtifact(source, relative, marker)
+                }
             }
             .distinctBy { it.source.absolutePath }
             .sortedBy { it.relativePath }

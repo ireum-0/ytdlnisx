@@ -25,6 +25,7 @@ class CacheImportPlannerTest {
             val owned = File(root, item.id.toString()).apply { mkdirs() }
             val ownedFile = File(owned, "video.mp4").apply { writeText("owned") }
             DownloadCacheOwnership.ensureMarker(root, item)
+            assertTrue(DownloadCacheOwnership.recordArtifacts(root, item, listOf(ownedFile.absolutePath)))
 
             val manifest = CacheImportPlanner.collect(root)
 
@@ -43,6 +44,7 @@ class CacheImportPlannerTest {
             val terminal = File(root, "TERMINAL/task-1").apply { mkdirs() }
             val output = File(terminal, "output.mp4").apply { writeText("owned") }
             TerminalCacheOwnership.ensureMarker(terminal, "task-1")
+            assertTrue(TerminalCacheOwnership.recordArtifacts(terminal, listOf(output.absolutePath)))
 
             val manifest = CacheImportPlanner.collect(root)
 

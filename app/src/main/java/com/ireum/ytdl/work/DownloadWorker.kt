@@ -4197,7 +4197,14 @@ class DownloadWorker(
                 ?: DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting
                     ?.invoke(input.downloadItem.id, input.rawTempDirectory)
             if (injectedOutput != null) {
-                runtime.recordCompletedOutput(injectedOutput)
+                val authoritative = runtime.recordCompletedOutput(injectedOutput)
+                if (!input.outputPlan.directNoCache) {
+                    DownloadCacheOwnership.recordArtifacts(
+                        cacheRoot = File(FileUtil.getCachePath(context)),
+                        item = input.downloadItem,
+                        files = authoritative,
+                    )
+                }
                 return YtdlpPhaseOutcome.Completed(
                     YtdlpExecutionResult(
                 response = YoutubeDLResponse(
@@ -5346,31 +5353,24 @@ class DownloadWorker(
         if (tempDirectory.parentFile != cacheRoot || tempDirectory.name != downloadItem.id.toString()) {
             throw IOException("Unsafe temporary download directory: ${tempDirectory.absolutePath}")
         }
-        val cleanFailure = if (beforeRetry) {
-            "Failed to clean temporary download directory before retry"
-        } else {
-            "Failed to clean temporary download directory"
-        }
         val createFailure = if (beforeRetry) {
             "Failed to recreate temporary download directory before retry"
         } else {
             "Failed to create temporary download directory"
         }
-        val ownershipMarker = runCatching {
-            DownloadCacheOwnership.ensureMarker(cacheRoot, downloadItem)
+        val preparedDirectory = runCatching {
+            DownloadCacheOwnership.prepareAttempt(cacheRoot, downloadItem)
         }.getOrElse { error ->
-            throw IOException("$createFailure ownership marker: ${error.message}", error)
+            throw IOException("$createFailure ownership/cleanup: ${error.message}", error)
         }
-        if (tempDirectory.exists() && !tempDirectory.deleteRecursively()) {
-            throw IOException("$cleanFailure: ${tempDirectory.absolutePath}")
+        if (preparedDirectory.canonicalFile != tempDirectory) {
+            throw IOException("Prepared Download cache directory changed unexpectedly")
         }
-        if (!tempDirectory.mkdirs() && !tempDirectory.isDirectory) {
-            throw IOException("$createFailure: ${tempDirectory.absolutePath}")
-        }
+        val ownershipMarker = DownloadCacheOwnership.markerFile(cacheRoot, downloadItem.id)
         if (!ownershipMarker.isFile) {
             throw IOException("$createFailure ownership marker disappeared: ${ownershipMarker.absolutePath}")
         }
-        return tempDirectory
+        return preparedDirectory
     }
 
     private suspend fun appendYtdlpRetryLog(

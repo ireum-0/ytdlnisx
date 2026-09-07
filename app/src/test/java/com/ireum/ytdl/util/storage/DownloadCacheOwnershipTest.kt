@@ -35,10 +35,30 @@ class DownloadCacheOwnershipTest {
             val directory = File(root, item.id.toString()).apply { mkdirs() }
             val sentinel = File(directory, "current.bin").apply { writeText("owned") }
             DownloadCacheOwnership.ensureMarker(root, item)
+            assertTrue(DownloadCacheOwnership.recordArtifacts(root, item, listOf(sentinel.absolutePath)))
 
             assertTrue(DownloadCacheOwnership.deleteIfOwned(root, item))
             assertFalse(sentinel.exists())
             assertFalse(DownloadCacheOwnership.markerFile(root, item.id).exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun matchingMarkerDoesNotDeleteUnprovenSibling() {
+        val root = Files.createTempDirectory("download-cache-unproven-").toFile()
+        try {
+            val item = item(operationId = "operation-current", executionId = "execution-current")
+            val directory = File(root, item.id.toString()).apply { mkdirs() }
+            val owned = File(directory, "owned.bin").apply { writeText("owned") }
+            val unrelated = File(directory, "unrelated.bin").apply { writeText("keep") }
+            DownloadCacheOwnership.ensureMarker(root, item)
+            assertTrue(DownloadCacheOwnership.recordArtifacts(root, item, listOf(owned.absolutePath)))
+
+            assertFalse(DownloadCacheOwnership.deleteIfOwned(root, item))
+            assertFalse(owned.exists())
+            assertTrue(unrelated.isFile)
         } finally {
             root.deleteRecursively()
         }
