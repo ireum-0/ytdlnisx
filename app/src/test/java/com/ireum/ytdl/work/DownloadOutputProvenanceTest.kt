@@ -597,6 +597,76 @@ class DownloadOutputProvenanceTest {
         }
     }
 
+    @Test
+    fun structuredMarkerLiteralInsidePathIsDataNotASecondCarrier() {
+        val parent = Files.createTempDirectory("output-marker-literal-parent-").toFile()
+        val markerText = DownloadOutputProvenance.PRINT_MARKER
+        try {
+            val provenance = DownloadOutputProvenance(parent)
+            provenance.beginAttempt()
+            val parentPath = File(parent, "folder$markerText").apply { mkdirs() }
+            val media = write(parentPath, "video$markerText.mp4")
+            val destination = "${media.absolutePath}"
+
+            assertEquals(
+                listOf(destination),
+                DownloadOutputProvenance.parseYtdlpOutputPaths(
+                    "Destination: '$destination'",
+                ),
+            )
+
+            assertEquals(
+                listOf(media.canonicalPath),
+                provenance.acceptYtdlpOutput(
+                    "${DownloadOutputProvenance.PRINT_MARKER}'$destination'",
+                ),
+            )
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun structuredFilesCarrierPreservesMarkerLiteralInSourceAndDestination() {
+        val root = Files.createTempDirectory("output-marker-literal-map-").toFile()
+        try {
+            val provenance = DownloadOutputProvenance(root)
+            provenance.beginAttempt()
+            val source = write(File(root, "source-${DownloadOutputProvenance.PRINT_MARKER}"), "input.mp4")
+            val destination = write(File(root, "dest-${DownloadOutputProvenance.PRINT_MARKER}"), "output.mp4")
+            val sourceJson = source.absolutePath.replace("\\", "\\\\")
+            val destinationJson = destination.absolutePath.replace("\\", "\\\\")
+
+            assertEquals(
+                listOf(source.canonicalPath, destination.canonicalPath),
+                provenance.acceptYtdlpOutput(
+                    "${DownloadOutputProvenance.STRUCTURED_FILES_MARKER}" +
+                        "{\"$sourceJson\":\"$destinationJson\"}",
+                ),
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun malformedMarkerLookingTextDoesNotGainOutputAuthority() {
+        val root = Files.createTempDirectory("output-marker-malformed-").toFile()
+        try {
+            val file = write(root, "safe.mp4")
+            val provenance = DownloadOutputProvenance(root)
+            provenance.beginAttempt()
+            assertTrue(
+                provenance.acceptYtdlpOutput(
+                    "Destination: '${file.absolutePath}/segment${DownloadOutputProvenance.PRINT_MARKER}name'",
+                ).isEmpty(),
+            )
+            assertTrue(provenance.currentAttemptPaths().isEmpty())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     private fun write(parent: File, name: String): File {
         val file = File(parent, name)
         file.parentFile?.mkdirs()

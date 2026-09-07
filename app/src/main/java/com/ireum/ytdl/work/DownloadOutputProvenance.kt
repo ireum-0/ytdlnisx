@@ -271,18 +271,14 @@ internal class DownloadOutputProvenance(
             output.lineSequence().forEach { line ->
                 val trimmed = line.trim()
                 if (trimmed.isBlank()) return@forEach
-                val primaryIndex = trimmed.indexOf(PRINT_MARKER)
-                if (primaryIndex >= 0) {
-                    parseReportedValue(trimmed.substring(primaryIndex + PRINT_MARKER.length))?.let(paths::add)
+                extractCarrierPayload(trimmed, PRINT_MARKER)?.let { payload ->
+                    parseReportedValue(payload)?.let(paths::add)
                 }
-                val filesIndex = trimmed.indexOf(STRUCTURED_FILES_MARKER)
-                if (filesIndex >= 0) {
-                    parseStructuredFilesMap(trimmed.substring(filesIndex + STRUCTURED_FILES_MARKER.length))
+                extractCarrierPayload(trimmed, STRUCTURED_FILES_MARKER)?.let { payload ->
+                    parseStructuredFilesMap(payload)
                         .forEach(paths::add)
                 }
-                val infoIndex = trimmed.indexOf(STRUCTURED_INFO_MARKER)
-                if (infoIndex >= 0) {
-                    val payload = trimmed.substring(infoIndex + STRUCTURED_INFO_MARKER.length)
+                extractCarrierPayload(trimmed, STRUCTURED_INFO_MARKER)?.let { payload ->
                     // ``infojson_filename`` is a scalar path while subtitle,
                     // thumbnail, and chapter carriers are JSON objects/arrays.
                     // Accept the scalar form without weakening the structured
@@ -313,9 +309,8 @@ internal class DownloadOutputProvenance(
                 val trimmed = line.trim()
                 if (trimmed.isBlank()) return@forEach
 
-                val markerIndex = trimmed.indexOf(PRINT_MARKER)
-                if (markerIndex >= 0) {
-                    parseReportedValue(trimmed.substring(markerIndex + PRINT_MARKER.length))?.let(paths::add)
+                extractCarrierPayload(trimmed, PRINT_MARKER)?.let { payload ->
+                    parseReportedValue(payload)?.let(paths::add)
                 }
 
                 markers.firstOrNull { trimmed.contains(it) }?.let { marker ->
@@ -334,13 +329,23 @@ internal class DownloadOutputProvenance(
         }
 
         private fun parseReportedValue(rawValue: String): String? {
-            var value = rawValue.trim()
-            val markerIndex = value.indexOf(PRINT_MARKER)
-            if (markerIndex >= 0) {
-                value = value.substring(markerIndex + PRINT_MARKER.length)
-            }
-            value = value.trim().trim('"', '\'')
+            val value = rawValue.trim().trim('"', '\'')
             return value.takeIf { isAbsolutePath(it) && it.length > 1 }
+        }
+
+        /**
+         * Extract an app-generated carrier only at its outer syntax boundary.
+         * Marker text embedded in a real filename or parent directory is path
+         * data, not a second carrier prefix and must remain untouched.
+         */
+        private fun extractCarrierPayload(line: String, marker: String): String? {
+            val index = line.indexOf(marker)
+            if (index < 0) return null
+            val prefix = line.substring(0, index)
+            if (prefix.isNotEmpty() && prefix.last() !in setOf(' ', '\t', '\'', '"', ':', '=')) {
+                return null
+            }
+            return line.substring(index + marker.length)
         }
 
         private fun parseStructuredJsonPaths(rawValue: String): List<String> {
