@@ -46,6 +46,7 @@ import com.ireum.ytdl.util.SubtitleSelection
 import com.ireum.ytdl.util.VideoQualityPolicy
 import com.ireum.ytdl.util.WebUrlInput
 import com.ireum.ytdl.util.process.ProcessQuiescence
+import com.ireum.ytdl.work.DownloadOutputProvenance
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -1724,6 +1725,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             } else {
                 null
             },
+            structuredOutputMarker = File(ytdlpDirectory, ".ytdlnisx-output-paths.txt"),
         )
     }
 
@@ -1826,7 +1828,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             downDir = resolvedOutputPlan.ytdlpDirectory
             request.addOption("--no-quiet")
             request.addOption("--no-simulate")
-            request.addOption("--print", "after_move:'__YTDLNISX_OUTPUT__%(filepath,_filename)s'")
+            request.addOption("--print", "after_move:'__YTDLNISX_OUTPUT__%(filepath)s'")
         }else{
             val cacheDir = FileUtil.getCachePath(context)
             downDir = if (selectionOnly) {
@@ -1839,7 +1841,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             // The marker gives the worker an explicit output carrier even
             // when yt-dlp does not emit a Destination/Merging line for the
             // final post-processed artifact.
-            request.addOption("--print", "after_move:'__YTDLNISX_OUTPUT__%(filepath,_filename)s'")
+            request.addOption("--print", "after_move:'__YTDLNISX_OUTPUT__%(filepath)s'")
         }
 
         val aria2 = sharedPreferences.getBoolean("aria2", false)
@@ -2618,6 +2620,18 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         YoutubeDLCompat.allowAppGeneratedConfigFile(ytDlRequest, conf)
 
         ytDlRequest.addOption("--cache-dir", cache.absolutePath)
+        if (!selectionOnly) {
+            // A trusted outer argument creates a machine-readable carrier
+            // after the authored config has been loaded.  Human-readable
+            // progress wording is never needed to establish primary output
+            // authority, and user quiet/no-progress options cannot suppress
+            // this file-backed print-to-file event.
+            resolvedOutputPlan.structuredOutputMarker?.let { marker ->
+                ytDlRequest.addCommands(
+                    DownloadOutputProvenance.structuredOutputMarkerArguments(marker)
+                )
+            }
+        }
         return ytDlRequest
     }
 

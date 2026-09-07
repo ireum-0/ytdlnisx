@@ -34,6 +34,8 @@ data class YtdlpOutputPlan(
     val directStagingParent: File? = null,
     val commandPathMap: YtdlpPathMap? = null,
     val ownershipMarker: File? = null,
+    /** App-owned machine-readable output carrier written by yt-dlp. */
+    val structuredOutputMarker: File? = null,
 ) {
     val directStagingDirectory: File?
         get() = ytdlpDirectory.takeIf { directNoCache }
@@ -1112,6 +1114,7 @@ internal object YtdlpCommandOutputTemplateParser {
     fun resolve(
         command: String,
         confinementOptionsFollow: Boolean = true,
+        allowedIndependentWriteOptions: Set<String> = emptySet(),
     ): YtdlpCommandOutputTemplateResolution {
         val tokens = YtdlpCommandTokenizer.tokenize(command)
             ?: return YtdlpCommandOutputTemplateResolution.Invalid("unbalanced shell quoting")
@@ -1171,7 +1174,7 @@ internal object YtdlpCommandOutputTemplateParser {
                     )
                 }
                 authoredIndependentWriteOptions.firstOrNull { option ->
-                    ownership.canonicalName == option
+                    ownership.canonicalName == option && option !in allowedIndependentWriteOptions
                 }?.let { option ->
                     return YtdlpCommandOutputTemplateResolution.Invalid(
                         "$option writes outside the operation-owned output contract"

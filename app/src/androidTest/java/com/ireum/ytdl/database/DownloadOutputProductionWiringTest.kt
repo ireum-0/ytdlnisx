@@ -401,7 +401,10 @@ class DownloadOutputProductionWiringTest {
             assertTrue(history.downloadPath.single().startsWith(destination.canonicalPath))
             assertTrue(history.downloadPath.single().endsWith("metadata-safe.m4a"))
             assertFalse(requireNotNull(stagedOutput).exists())
-            assertFalse(staging.exists())
+            assertFalse(
+                "staging remnants=${staging.listFiles().orEmpty().map { it.relativeTo(staging).path }}",
+                staging.exists(),
+            )
             assertFalse(metadataReplacement.exists())
             assertTrue(destination.listFiles().orEmpty().any { it.name == "metadata-safe.m4a" })
         }

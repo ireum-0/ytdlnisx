@@ -497,6 +497,106 @@ class DownloadOutputProvenanceTest {
         )
     }
 
+    @Test
+    fun structuredCarrierPreservesExactSideAndDerivedOutputsWithoutHumanLogs() {
+        val tempDirectory = Files.createTempDirectory("output-provenance-structured-").toFile()
+        try {
+            val provenance = DownloadOutputProvenance(tempDirectory)
+            provenance.beginAttempt()
+            val media = write(tempDirectory, "video.mp4")
+            val subtitle = write(tempDirectory, "video.en.vtt")
+            val thumbnail = write(tempDirectory, "video.jpg")
+            val info = write(tempDirectory, "video.info.json")
+            val description = write(tempDirectory, "video.description")
+            val chapter = write(tempDirectory, "video-chapter-001.mp4")
+            val mediaJson = media.absolutePath.replace("\\", "\\\\")
+            val subtitleJson = subtitle.absolutePath.replace("\\", "\\\\")
+            val thumbnailJson = thumbnail.absolutePath.replace("\\", "\\\\")
+            val infoJson = info.absolutePath.replace("\\", "\\\\")
+            val descriptionJson = description.absolutePath.replace("\\", "\\\\")
+            val chapterJson = chapter.absolutePath.replace("\\", "\\\\")
+            val carrier = """
+                ${DownloadOutputProvenance.STRUCTURED_FILES_MARKER}{"__files_to_move":{"$descriptionJson":"$descriptionJson"}}
+                ${DownloadOutputProvenance.STRUCTURED_INFO_MARKER}{"filepath":"$mediaJson","infojson_filename":"$infoJson","requested_subtitles":{"en":{"filepath":"$subtitleJson"}},"thumbnails":[{"filepath":"$thumbnailJson"}],"chapters":[{"filepath":"$chapterJson"}]}
+            """.trimIndent()
+
+            assertEquals(
+                listOf(description, media, info, subtitle, thumbnail, chapter).map { it.canonicalPath },
+                provenance.acceptYtdlpOutput(carrier),
+            )
+        } finally {
+            tempDirectory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun structuredFilesMarkerAcceptsTheBundledYtdlpDirectMoveMap() {
+        val tempDirectory = Files.createTempDirectory("output-provenance-structured-map-").toFile()
+        try {
+            val provenance = DownloadOutputProvenance(tempDirectory)
+            provenance.beginAttempt()
+            val source = write(tempDirectory, "video.description")
+            val destination = write(File(tempDirectory, "published"), "video.description")
+            val sourceJson = source.absolutePath.replace("\\", "\\\\")
+            val destinationJson = destination.absolutePath.replace("\\", "\\\\")
+
+            val carrier = "${DownloadOutputProvenance.STRUCTURED_FILES_MARKER}" +
+                "{\"$sourceJson\":\"$destinationJson\"}"
+
+            assertEquals(
+                listOf(source.canonicalPath, destination.canonicalPath),
+                provenance.acceptYtdlpOutput(carrier),
+            )
+        } finally {
+            tempDirectory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun structuredCarrierDoesNotPromoteArbitraryMetadataStrings() {
+        val tempDirectory = Files.createTempDirectory("output-provenance-structured-filter-").toFile()
+        try {
+            val provenance = DownloadOutputProvenance(tempDirectory)
+            provenance.beginAttempt()
+            val media = write(tempDirectory, "video.mp4")
+            val ambient = write(tempDirectory, "ambient.mp4")
+            val mediaJson = media.absolutePath.replace("\\", "\\\\")
+            val ambientJson = ambient.absolutePath.replace("\\", "\\\\")
+            val carrier = "${DownloadOutputProvenance.STRUCTURED_INFO_MARKER}" +
+                "{\"filepath\":\"$mediaJson\",\"description\":\"$ambientJson\"," +
+                "\"metadata\":{\"filepath\":\"$ambientJson\"}}"
+
+            assertEquals(listOf(media.canonicalPath), provenance.acceptYtdlpOutput(carrier))
+            assertFalse(provenance.isAuthoritative(ambient.absolutePath))
+        } finally {
+            tempDirectory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun directStructuredSidecarPayloadsMatchBundledYtdlpShapes() {
+        val tempDirectory = Files.createTempDirectory("output-provenance-direct-structured-").toFile()
+        try {
+            val provenance = DownloadOutputProvenance(tempDirectory)
+            provenance.beginAttempt()
+            val subtitle = write(tempDirectory, "video.en.vtt")
+            val info = write(tempDirectory, "video.info.json")
+            val subtitleJson = subtitle.absolutePath.replace("\\", "\\\\")
+
+            val carrier = """
+                ${DownloadOutputProvenance.STRUCTURED_INFO_MARKER}{"en":{"filepath":"$subtitleJson"}}
+                ${DownloadOutputProvenance.STRUCTURED_INFO_MARKER}${info.absolutePath}
+            """.trimIndent()
+
+            assertEquals(
+                listOf(subtitle, info).map { it.canonicalPath },
+                provenance.acceptYtdlpOutput(carrier),
+            )
+        } finally {
+            tempDirectory.deleteRecursively()
+        }
+    }
+
     private fun write(parent: File, name: String): File {
         val file = File(parent, name)
         file.parentFile?.mkdirs()

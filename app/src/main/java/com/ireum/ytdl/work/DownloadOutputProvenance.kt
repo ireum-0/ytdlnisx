@@ -1,5 +1,7 @@
 package com.ireum.ytdl.work
 
+import com.google.gson.JsonElement
+import com.google.gson.JsonParser
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpOutputPlan
 import java.io.File
 import java.io.IOException
@@ -53,7 +55,13 @@ internal class DownloadOutputProvenance(
      */
     fun acceptYtdlpOutput(output: String): List<String> {
         if (!attemptStarted) return emptyList()
-        val accepted = parseYtdlpOutputPaths(output)
+        val accepted = (if (output.contains(STRUCTURED_FILES_MARKER) ||
+            output.contains(STRUCTURED_INFO_MARKER)
+        ) {
+            parseStructuredYtdlpOutputPaths(output)
+        } else {
+            parseYtdlpOutputPaths(output)
+        })
             .mapNotNull(::acceptReportedPath)
             .distinct()
         currentAttemptPaths.addAll(accepted)
@@ -247,6 +255,44 @@ internal class DownloadOutputProvenance(
 
     companion object {
         const val PRINT_MARKER = "__YTDLNISX_OUTPUT__"
+        const val STRUCTURED_FILES_MARKER = "__YTDLNISX_FILES__"
+        const val STRUCTURED_INFO_MARKER = "__YTDLNISX_INFO__"
+
+        /**
+         * Parse only app-generated machine markers.  The post_process marker
+         * carries yt-dlp's exact __files_to_move map (including descriptions,
+         * subtitles, thumbnails, chapter and playlist artifacts); the
+         * after_move marker carries final filepath/sidecar fields.  Human
+         * progress wording is intentionally not consulted when a marker is
+         * present.
+         */
+        fun parseStructuredYtdlpOutputPaths(output: String): List<String> {
+            val paths = linkedSetOf<String>()
+            output.lineSequence().forEach { line ->
+                val trimmed = line.trim()
+                if (trimmed.isBlank()) return@forEach
+                val primaryIndex = trimmed.indexOf(PRINT_MARKER)
+                if (primaryIndex >= 0) {
+                    parseReportedValue(trimmed.substring(primaryIndex + PRINT_MARKER.length))?.let(paths::add)
+                }
+                val filesIndex = trimmed.indexOf(STRUCTURED_FILES_MARKER)
+                if (filesIndex >= 0) {
+                    parseStructuredFilesMap(trimmed.substring(filesIndex + STRUCTURED_FILES_MARKER.length))
+                        .forEach(paths::add)
+                }
+                val infoIndex = trimmed.indexOf(STRUCTURED_INFO_MARKER)
+                if (infoIndex >= 0) {
+                    val payload = trimmed.substring(infoIndex + STRUCTURED_INFO_MARKER.length)
+                    // ``infojson_filename`` is a scalar path while subtitle,
+                    // thumbnail, and chapter carriers are JSON objects/arrays.
+                    // Accept the scalar form without weakening the structured
+                    // field allow-list used for JSON payloads.
+                    parseReportedValue(payload)?.let(paths::add)
+                    parseStructuredJsonPaths(payload).forEach(paths::add)
+                }
+            }
+            return paths.toList()
+        }
 
         /** Parse only output-bearing yt-dlp lines; this is not a directory discovery operation. */
         fun parseYtdlpOutputPaths(output: String): List<String> {
@@ -296,6 +342,137 @@ internal class DownloadOutputProvenance(
             value = value.trim().trim('"', '\'')
             return value.takeIf { isAbsolutePath(it) && it.length > 1 }
         }
+
+        private fun parseStructuredJsonPaths(rawValue: String): List<String> {
+            val jsonText = rawValue.trim().trim('"', '\'')
+            if (jsonText.isBlank() || jsonText == "NA" || jsonText == "None") return emptyList()
+            return runCatching {
+                val element = JsonParser.parseString(jsonText)
+                val paths = linkedSetOf<String>()
+
+                fun visit(
+                    value: JsonElement,
+                    allowFileFields: Boolean = false,
+                    recurseForFileFields: Boolean = false,
+                ) {
+                    when {
+                        value.isJsonObject -> value.asJsonObject.entrySet().forEach { (name, child) ->
+                            // Only fields that yt-dlp documents as exact file
+                            // carriers are authority-bearing.  Arbitrary
+                            // metadata strings/URLs are never promoted.
+                            if (allowFileFields && (name == "filepath" || name == "infojson_filename")) {
+                                child.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+                                    ?.asString
+                                    ?.let { parseReportedValue(it)?.let(paths::add) }
+                            } else if (name == "__files_to_move") {
+                                if (child.isJsonObject) {
+                                    child.asJsonObject.entrySet().forEach { (source, destination) ->
+                                        parseReportedValue(source)?.let(paths::add)
+                                        if (destination.isJsonPrimitive && destination.asJsonPrimitive.isString) {
+                                            parseReportedValue(destination.asString)?.let(paths::add)
+                                        }
+                                    }
+                                }
+                            } else if (
+                                name == "requested_subtitles" ||
+                                name == "thumbnails" ||
+                                name == "chapters"
+                            ) {
+                                // These are the exact yt-dlp structures used
+                                // by the trusted marker arguments below. Do
+                                // not recurse through arbitrary metadata
+                                // objects, where a user-controlled field
+                                // named `filepath` could regain authority.
+                                visit(
+                                    child,
+                                    allowFileFields = true,
+                                    recurseForFileFields = true,
+                                )
+                            } else if (recurseForFileFields) {
+                                // requested_subtitles is keyed by language and
+                                // thumbnails may contain nested exact records.
+                                // Recurse only inside those known file-bearing
+                                // containers, never through arbitrary metadata.
+                                visit(
+                                    child,
+                                    allowFileFields = true,
+                                    recurseForFileFields = true,
+                                )
+                            }
+                        }
+                        value.isJsonArray -> value.asJsonArray.forEach { child ->
+                            visit(child, allowFileFields, recurseForFileFields)
+                        }
+                    }
+                }
+                // A direct requested-subtitles payload is keyed by language
+                // (for example ``{"en": {"filepath": "/..."}}``), so it
+                // needs one controlled recursive pass.  A record that already
+                // exposes a top-level filepath/infojson_filename is kept
+                // non-recursive so arbitrary metadata fields cannot smuggle a
+                // nested filepath into the authority carrier.
+                val rootIsFileRecord = element.isJsonObject &&
+                    element.asJsonObject.entrySet().any { (name, _) ->
+                        name == "filepath" || name == "infojson_filename"
+                    }
+                visit(
+                    element,
+                    allowFileFields = true,
+                    recurseForFileFields = !rootIsFileRecord,
+                )
+                paths.toList()
+            }.getOrDefault(emptyList())
+        }
+
+        /**
+         * ``%(__files_to_move)#j`` serializes the move manifest itself, so
+         * the marker payload is normally a JSON object whose keys are exact
+         * source paths and values are exact destination paths.  Keep support
+         * for the wrapped shape used by older test/injection seams, but never
+         * promote arbitrary nested metadata fields from this carrier.
+         */
+        private fun parseStructuredFilesMap(rawValue: String): List<String> {
+            val jsonText = rawValue.trim().trim('"', '\'')
+            if (jsonText.isBlank() || jsonText == "NA" || jsonText == "None") return emptyList()
+            return runCatching {
+                val element = JsonParser.parseString(jsonText)
+                val objectValue = element.takeIf { it.isJsonObject }?.asJsonObject
+                    ?: return@runCatching emptyList()
+                val mapValue = objectValue.get("__files_to_move")?.takeIf { it.isJsonObject }
+                    ?: element
+                if (!mapValue.isJsonObject) return@runCatching emptyList()
+                mapValue.asJsonObject.entrySet().flatMap { (source, destination) ->
+                    buildList {
+                        parseReportedValue(source)?.let(::add)
+                        if (destination.isJsonPrimitive && destination.asJsonPrimitive.isString) {
+                            parseReportedValue(destination.asString)?.let(::add)
+                        }
+                    }
+                }
+            }.getOrDefault(emptyList())
+        }
+
+        /** Build the trusted direct-argv carrier shared by Download and Terminal. */
+        fun structuredOutputMarkerArguments(marker: File): List<String> = listOf(
+            "--print-to-file",
+            "after_move:${PRINT_MARKER}%(filepath)s",
+            marker.absolutePath,
+            "--print-to-file",
+            "post_process:${STRUCTURED_FILES_MARKER}%(__files_to_move)#j",
+            marker.absolutePath,
+            "--print-to-file",
+            "after_move:${STRUCTURED_INFO_MARKER}%(requested_subtitles)#j",
+            marker.absolutePath,
+            "--print-to-file",
+            "after_move:${STRUCTURED_INFO_MARKER}%(thumbnails)#j",
+            marker.absolutePath,
+            "--print-to-file",
+            "after_move:${STRUCTURED_INFO_MARKER}%(chapters)#j",
+            marker.absolutePath,
+            "--print-to-file",
+            "after_move:${STRUCTURED_INFO_MARKER}%(infojson_filename|)s",
+            marker.absolutePath,
+        )
 
         private fun isAbsolutePath(value: String): Boolean {
             return value.startsWith("/") ||

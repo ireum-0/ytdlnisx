@@ -2030,6 +2030,32 @@ class DownloadWorker(
                             }
                         }
 
+                        if (!noCache && !keepCache) {
+                            if (!DownloadCacheOwnership.removeArtifactManifest(
+                                    cacheRoot = File(FileUtil.getCachePath(context)),
+                                    item = downloadItem,
+                                )
+                            ) {
+                                Log.w(
+                                    TAG,
+                                    "Could not retire completed Download cache artifact manifest id=${downloadItem.id}",
+                                )
+                            }
+                        }
+
+                        // A successful move is not enough when yt-dlp left
+                        // an artifact that no trusted structured carrier
+                        // described.  Fail closed before History can gain
+                        // authority; the failure path preserves the exact
+                        // staging remainder for deterministic recovery.
+                        if ((noCache || !keepCache) &&
+                            ytdlpOutputProvenance?.hasUnprovenTemporaryArtifacts() == true
+                        ) {
+                            throw IOException(
+                                "yt-dlp produced an unproven output artifact in operation staging"
+                            )
+                        }
+
                         validateMovedQualityReplacement(
                             downloadItem = downloadItem,
                             finalPaths = finalPaths,
@@ -3043,7 +3069,12 @@ class DownloadWorker(
                             } else {
                                 runCatching {
                                     withOwnedExecutionSideEffect(downloadItem) {
-                                        failedTempDirectory.deleteRecursively()
+                                        if (!cleanupFailedOutputDirectory(failedTempDirectory)) {
+                                            throw IOException(
+                                                "Failed download output ownership could not be proven; preserving " +
+                                                    failedTempDirectory.absolutePath
+                                            )
+                                        }
                                     }
                                 }
                                     .onFailure { cleanupError ->
@@ -3960,6 +3991,29 @@ class DownloadWorker(
                 }
                 .map { path -> File(path).canonicalFile }
                 .distinctBy { file -> file.absolutePath }
+
+        /**
+         * Failure cleanup must use the same ownership proof as attempt setup.
+         * A numeric cache directory is never recursively deleted by name
+         * alone; direct staging is removable only when its exact marker binds
+         * it to this execution.  Unknown children remain available for
+         * recovery rather than being swept as a side effect of failure.
+         */
+        private fun cleanupFailedOutputDirectory(directory: File): Boolean {
+            val outputPlan = ytdlpOutputPlan
+            if (outputPlan?.directNoCache == true) {
+                val staging = outputPlan.directStagingDirectory?.canonicalFile ?: return false
+                val marker = outputPlan.ownershipMarker?.canonicalFile ?: return false
+                if (directory.canonicalFile != staging || !staging.isDirectory || !marker.isFile) return false
+                val expectedMarker = directOwnershipMarkerText(downloadItem)
+                if (runCatching { marker.readText() }.getOrNull() != expectedMarker) return false
+                return staging.deleteRecursively() || !staging.exists()
+            }
+            return DownloadCacheOwnership.deleteIfOwned(
+                cacheRoot = File(FileUtil.getCachePath(context)),
+                item = downloadItem,
+            )
+        }
     }
 
     private data class YtdlpPhaseInput(
@@ -4138,8 +4192,28 @@ class DownloadWorker(
             currentAttemptOutput.clear()
         }
 
-        fun recordCompletedOutput(output: String): List<String> {
-            authoritativeOutputPaths = outputProvenance.acceptYtdlpOutput(output)
+        fun recordCompletedOutput(
+            output: String,
+            structuredMarker: File? = null,
+            requireStructuredMarker: Boolean = false,
+        ): List<String> {
+            val structuredOutput = structuredMarker?.let { marker ->
+                runCatching {
+                    if (!marker.isFile) null else marker.readText().takeIf { it.isNotBlank() }
+                }.getOrNull()
+            }
+            if (requireStructuredMarker && structuredOutput == null) {
+                authoritativeOutputPaths = emptyList()
+                return authoritativeOutputPaths
+            }
+            if (structuredMarker != null && structuredMarker.exists() &&
+                !structuredMarker.delete() && structuredMarker.exists()
+            ) {
+                throw IOException("yt-dlp structured output marker could not be removed")
+            }
+            authoritativeOutputPaths = outputProvenance.acceptYtdlpOutput(
+                structuredOutput ?: output
+            )
             return authoritativeOutputPaths
         }
 
@@ -4198,12 +4272,16 @@ class DownloadWorker(
                     ?.invoke(input.downloadItem.id, input.rawTempDirectory)
             if (injectedOutput != null) {
                 val authoritative = runtime.recordCompletedOutput(injectedOutput)
-                if (!input.outputPlan.directNoCache) {
-                    DownloadCacheOwnership.recordArtifacts(
-                        cacheRoot = File(FileUtil.getCachePath(context)),
-                        item = input.downloadItem,
-                        files = authoritative,
-                    )
+                if (!input.outputPlan.directNoCache && authoritative.isNotEmpty()) {
+                    check(
+                        DownloadCacheOwnership.recordArtifacts(
+                            cacheRoot = File(FileUtil.getCachePath(context)),
+                            item = input.downloadItem,
+                            files = authoritative,
+                        )
+                    ) {
+                        "Could not persist current-attempt output ownership before completion"
+                    }
                 }
                 return YtdlpPhaseOutcome.Completed(
                     YtdlpExecutionResult(
@@ -4720,7 +4798,22 @@ class DownloadWorker(
                     currentAttempt,
                     progressCallback
                 )
-                val authoritativeOutputPaths = runtime.recordCompletedOutput(completedResponse.out)
+                val authoritativeOutputPaths = runtime.recordCompletedOutput(
+                    output = completedResponse.out,
+                    structuredMarker = input.outputPlan.structuredOutputMarker,
+                    requireStructuredMarker = true,
+                )
+                if (!input.outputPlan.directNoCache && authoritativeOutputPaths.isNotEmpty()) {
+                    check(
+                        DownloadCacheOwnership.recordArtifacts(
+                            cacheRoot = File(FileUtil.getCachePath(context)),
+                            item = input.downloadItem,
+                            files = authoritativeOutputPaths,
+                        )
+                    ) {
+                        "Could not persist current-attempt output ownership before completion"
+                    }
+                }
                 if (runtime.currentAttemptTransferStarted) {
                     runtime.completedMediaTransfers += 1
                     check(routeAttempts.recordCompletedMediaTransfer()) {
@@ -6100,9 +6193,18 @@ class DownloadWorker(
             .filter { file -> SubtitleSelection.isSelectedSubtitleFile(file, subtitleRequest) }
             .let { validateSubtitleFilesForUse(it, subtitleRequest, downloadItemId, downloadLogId) }
         if (!removeSubsAfterBurnIn) {
-            convertSubtitleFilesToSrt(subtitleFiles, ffmpegRuntime, dedicatedSrv3ConverterPath)
+            convertSubtitleFilesToSrt(
+                subtitleFiles = subtitleFiles,
+                ffmpegRuntime = ffmpegRuntime,
+                dedicatedSrv3ConverterPath = dedicatedSrv3ConverterPath,
+                outputProvenance = outputProvenance,
+            )
         }
-        val canonicalSubtitle = createCanonicalHardSubSubtitle(subtitleFiles, subtitleExts)
+        val canonicalSubtitle = createCanonicalHardSubSubtitle(
+            subtitleFiles = subtitleFiles,
+            subtitleExts = subtitleExts,
+            outputProvenance = outputProvenance,
+        )
         val subtitleCandidates = canonicalSubtitle?.let { listOf(it.file) } ?: subtitleFiles
         var mediaFiles = existingFiles
             .filterNot { file -> subtitleExts.any { ext -> file.extension.equals(ext, ignoreCase = true) } }
@@ -6150,7 +6252,16 @@ class DownloadWorker(
                 )
                 return@forEach
             }
-            val subtitle = prepareSubtitleForBurnIn(media, subtitleExts, subtitleCandidates, ffmpegRuntime, dedicatedSrv3ConverterPath, subtitleRequest)
+            val subtitle = prepareSubtitleForBurnIn(
+                media = media,
+                subtitleExts = subtitleExts,
+                providedSubtitles = subtitleCandidates,
+                ffmpegRuntime = ffmpegRuntime,
+                dedicatedSrv3ConverterPath = dedicatedSrv3ConverterPath,
+                subtitleRequest = subtitleRequest,
+                exactCanonicalSubtitle = canonicalSubtitle?.file,
+                outputProvenance = outputProvenance,
+            )
             if (subtitle == null) {
                 Log.w(TAG, "HardSub skip media=${media.name} reason=no-matching-subtitle")
                 return@forEach
@@ -6564,7 +6675,9 @@ class DownloadWorker(
                 inputPaths = inputPaths,
             ) == null
         ) {
-            Log.e(TAG, "HardSub AV merge output provenance failed video=${primaryVideo.name}")
+            throw IOException(
+                "HardSub AV merge output provenance could not be established: ${primaryVideo.absolutePath}"
+            )
         }
 
         Log.i(
@@ -6676,9 +6789,23 @@ class DownloadWorker(
         providedSubtitles: List<File>,
         ffmpegRuntime: FfmpegRuntime,
         dedicatedSrv3ConverterPath: String?,
-        subtitleRequest: SubtitleSelection.Request
+        subtitleRequest: SubtitleSelection.Request,
+        exactCanonicalSubtitle: File? = null,
+        outputProvenance: DownloadOutputProvenance? = null,
     ): BurnInSubtitle? {
-        val candidates = findSubtitleCandidatesForMedia(media, subtitleExts, providedSubtitles, subtitleRequest)
+        val candidates = exactCanonicalSubtitle
+            ?.takeIf { candidate ->
+                candidate.isFile &&
+                    // The canonical subtitle is an exact current-attempt
+                    // carrier. It may live in a different output-type
+                    // directory than the media; requiring a matching
+                    // basename/parent would fall back to the old filename
+                    // heuristic and could silently skip an otherwise valid
+                    // subtitle.
+                    (outputProvenance == null || outputProvenance.isAuthoritative(candidate.absolutePath))
+            }
+            ?.let(::listOf)
+            ?: findSubtitleCandidatesForMedia(media, subtitleExts, providedSubtitles, subtitleRequest)
         if (candidates.isEmpty()) return null
 
         candidates.forEach { selectedSubtitle ->
@@ -6686,7 +6813,12 @@ class DownloadWorker(
                 return BurnInSubtitle(selectedSubtitle, isAss = true, isTemporary = false)
             }
 
-            val convertedAss = convertSubtitleToAss(selectedSubtitle, ffmpegRuntime, dedicatedSrv3ConverterPath)
+            val convertedAss = convertSubtitleToAss(
+                subtitle = selectedSubtitle,
+                ffmpegRuntime = ffmpegRuntime,
+                dedicatedSrv3ConverterPath = dedicatedSrv3ConverterPath,
+                outputProvenance = outputProvenance,
+            )
             if (convertedAss != null) {
                 return BurnInSubtitle(convertedAss, isAss = true, isTemporary = true)
             }
@@ -6705,11 +6837,35 @@ class DownloadWorker(
         return null
     }
 
-    private fun convertSubtitleToAss(subtitle: File, ffmpegRuntime: FfmpegRuntime, dedicatedSrv3ConverterPath: String?): File? {
+    private fun convertSubtitleToAss(
+        subtitle: File,
+        ffmpegRuntime: FfmpegRuntime,
+        dedicatedSrv3ConverterPath: String?,
+        outputProvenance: DownloadOutputProvenance? = null,
+    ): File? {
+        fun acceptDerivedOutput(output: File?): File? {
+            if (output == null || outputProvenance == null) return output
+            if (
+                outputProvenance.recordDerivedOutput(
+                    outputPath = output.absolutePath,
+                    inputPaths = listOf(subtitle.absolutePath),
+                ) == null
+            ) {
+                output.delete()
+                throw IOException(
+                    "HardSub subtitle conversion provenance could not be established: ${output.absolutePath}"
+                )
+            }
+            return output
+        }
         val richSubtitleExts = setOf("srv3", "json3", "ttml")
         val ext = subtitle.extension.lowercase(Locale.US)
         if (ext in setOf("json", "json3")) {
-            SubtitleFormatConverter.convertJson3ToAss(subtitle, createHardSubTempAssFile())?.let {
+            SubtitleFormatConverter.convertJson3ToAss(
+                subtitle,
+                createHardSubTempAssFile(subtitle.parentFile),
+            )?.let {
+                acceptDerivedOutput(it)
                 Log.i(TAG, "HardSub json3 subtitle converted to ass source=${subtitle.name} output=${it.name}")
                 return it
             }
@@ -6718,10 +6874,20 @@ class DownloadWorker(
             dedicatedSrv3ConverterPath != null &&
             richSubtitleExts.contains(ext)
         ) {
-            convertSrv3ToAssWithDedicatedConverter(subtitle, dedicatedSrv3ConverterPath)?.let { return it }
+            convertSrv3ToAssWithDedicatedConverter(
+                subtitle = subtitle,
+                converterPath = dedicatedSrv3ConverterPath,
+            )?.let {
+                acceptDerivedOutput(it)
+                return it
+            }
             createNormalizedRichSubtitleForConverter(subtitle)?.let { normalized ->
                 try {
-                    convertSrv3ToAssWithDedicatedConverter(normalized, dedicatedSrv3ConverterPath)?.let { converted ->
+                    convertSrv3ToAssWithDedicatedConverter(
+                        subtitle = normalized,
+                        converterPath = dedicatedSrv3ConverterPath,
+                    )?.let { converted ->
+                        acceptDerivedOutput(converted)
                         Log.i(
                             TAG,
                             "HardSub dedicated rich subtitle conversion succeeded after normalization source=${subtitle.name}"
@@ -6734,7 +6900,7 @@ class DownloadWorker(
             }
         }
 
-        val output = createHardSubTempAssFile()
+        val output = createHardSubTempAssFile(subtitle.parentFile)
         val result = executeFfmpegWithAutoPatch(
             ffmpegRuntime,
             listOf(
@@ -6749,7 +6915,7 @@ class DownloadWorker(
             if (output.exists()) output.delete()
             return null
         }
-        return output
+        return acceptDerivedOutput(output)
     }
 
     private data class FfmpegRuntime(
@@ -7380,7 +7546,7 @@ class DownloadWorker(
     }
 
     private fun convertSrv3ToAssWithDedicatedConverter(subtitle: File, converterPath: String): File? {
-        val output = createHardSubTempAssFile()
+        val output = createHardSubTempAssFile(subtitle.parentFile)
         return runDedicatedSubtitleConverter(
             input = subtitle,
             output = output,
@@ -7517,8 +7683,9 @@ class DownloadWorker(
         }.getOrNull()
     }
 
-    private fun createHardSubTempAssFile(): File {
-        val dir = File(context.cacheDir, "hardsub")
+    private fun createHardSubTempAssFile(operationParent: File? = null): File {
+        val dir = operationParent?.takeIf { it.isDirectory }
+            ?: File(context.cacheDir, "hardsub")
         val parent = if (dir.mkdirs() || dir.isDirectory) dir else context.cacheDir
         return File(parent, "ytdlnisx_hardsub_${java.util.UUID.randomUUID()}.ass")
     }
@@ -7526,13 +7693,22 @@ class DownloadWorker(
     private fun convertSubtitleFilesToSrt(
         subtitleFiles: List<File>,
         ffmpegRuntime: FfmpegRuntime,
-        dedicatedSrv3ConverterPath: String?
+        dedicatedSrv3ConverterPath: String?,
+        outputProvenance: DownloadOutputProvenance? = null,
     ) {
         subtitleFiles.forEach { subtitle ->
             val ext = subtitle.extension.lowercase(Locale.US)
             if (ext == "srt") return@forEach
             val target = File(subtitle.parentFile ?: return@forEach, "${subtitle.nameWithoutExtension}.srt")
-            if (target.exists() && target.length() > 0L) return@forEach
+            if (target.exists() && target.length() > 0L) {
+                // A clean operation staging root should not contain an
+                // unreported sibling. If yt-dlp already reported this exact
+                // SRT, retain that authority; otherwise leave it unproven.
+                if (outputProvenance?.isAuthoritative(target.absolutePath) == true) {
+                    Log.i(TAG, "HardSub subtitle sidecar already authoritative srt=${target.name}")
+                }
+                return@forEach
+            }
 
             val converted = if (ext in setOf("json", "json3")) {
                 SubtitleFormatConverter.convertJson3ToSrt(subtitle)
@@ -7557,6 +7733,18 @@ class DownloadWorker(
             }
 
             if (converted != null) {
+                if (
+                    outputProvenance != null &&
+                    outputProvenance.recordDerivedOutput(
+                        outputPath = converted.absolutePath,
+                        inputPaths = listOf(subtitle.absolutePath),
+                    ) == null
+                ) {
+                    converted.delete()
+                    throw IOException(
+                        "HardSub subtitle SRT provenance could not be established: ${converted.absolutePath}"
+                    )
+                }
                 Log.i(TAG, "HardSub subtitle sidecar converted to srt source=${subtitle.name} output=${converted.name}")
             } else {
                 Log.w(TAG, "HardSub subtitle sidecar srt conversion failed source=${subtitle.name}")
@@ -7933,7 +8121,11 @@ class DownloadWorker(
         val isTemporary: Boolean
     )
 
-    private fun createCanonicalHardSubSubtitle(subtitleFiles: List<File>, subtitleExts: List<String>): CanonicalSubtitle? {
+    private fun createCanonicalHardSubSubtitle(
+        subtitleFiles: List<File>,
+        subtitleExts: List<String>,
+        outputProvenance: DownloadOutputProvenance? = null,
+    ): CanonicalSubtitle? {
         if (subtitleFiles.isEmpty()) return null
         val priority = subtitleExts.withIndex().associate { it.value.lowercase(Locale.US) to it.index }
         val selected = subtitleFiles.sortedWith(
@@ -7951,14 +8143,25 @@ class DownloadWorker(
             Log.w(TAG, "HardSub subtitle canonicalize output creation failed source=${selected.name} reason=${error.message}")
             return CanonicalSubtitle(selected, isTemporary = false)
         }
-        return runCatching {
+        try {
             selected.copyTo(canonical, overwrite = true)
-            Log.i(TAG, "HardSub subtitle canonicalized from=${selected.name} to=${canonical.name}")
-            CanonicalSubtitle(canonical, isTemporary = true)
-        }.getOrElse {
-            Log.w(TAG, "HardSub subtitle canonicalize failed source=${selected.name} reason=${it.message}")
-            CanonicalSubtitle(selected, isTemporary = false)
+        } catch (error: Exception) {
+            canonical.delete()
+            Log.w(TAG, "HardSub subtitle canonicalize failed source=${selected.name} reason=${error.message}")
+            return CanonicalSubtitle(selected, isTemporary = false)
         }
+        if (
+            outputProvenance != null &&
+            outputProvenance.recordDerivedOutput(
+                outputPath = canonical.absolutePath,
+                inputPaths = listOf(selected.absolutePath),
+            ) == null
+        ) {
+            canonical.delete()
+            throw IOException("HardSub subtitle canonicalization provenance could not be established")
+        }
+        Log.i(TAG, "HardSub subtitle canonicalized from=${selected.name} to=${canonical.name}")
+        return CanonicalSubtitle(canonical, isTemporary = true)
     }
 
     private fun deleteSubtitleSidecars(subtitleFiles: List<File>) {
