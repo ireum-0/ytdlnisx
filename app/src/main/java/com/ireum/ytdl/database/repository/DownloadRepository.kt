@@ -34,6 +34,7 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
+import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.DownloadCancellationRegistry
@@ -464,9 +465,13 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     private fun deleteCache(items: List<DownloadItem>) {
-        val cacheDir = FileUtil.getCachePath(App.instance)
+        val cacheDir = File(FileUtil.getCachePath(App.instance))
         items.forEach {
-           runCatching { File(cacheDir, it.id.toString()).deleteRecursively() }
+            runCatching {
+                // Numeric membership is not ownership.  The helper leaves
+                // legacy or mismatched roots intact for recovery/diagnostics.
+                DownloadCacheOwnership.deleteIfOwned(cacheDir, it)
+            }
         }
     }
 

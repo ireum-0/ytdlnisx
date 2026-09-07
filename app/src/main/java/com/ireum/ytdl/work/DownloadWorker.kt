@@ -97,6 +97,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YtdlpOutputPlan
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRetryLog
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionSummary
 import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
@@ -2829,7 +2830,7 @@ class DownloadWorker(
                                     } else {
                                         resetYtdlpTempDirectoryUnsafe(
                                             rawTempDirectory = rawTempFileDir,
-                                            downloadId = downloadItem.id,
+                                            downloadItem = downloadItem,
                                             beforeRetry = true,
                                         ).delete()
                                     }
@@ -5248,6 +5249,9 @@ class DownloadWorker(
         outputPlan: YtdlpOutputPlan,
         beforeRetry: Boolean,
     ): File = withOwnedExecutionSideEffect(downloadItem) {
+        if (downloadItem.operationId.isBlank()) {
+            downloadItem.operationId = "download-${downloadItem.id}"
+        }
         if (outputPlan.directNoCache) {
             resetDirectOutputDirectoryUnsafe(
                 outputPlan = outputPlan,
@@ -5257,7 +5261,7 @@ class DownloadWorker(
         } else {
             resetYtdlpTempDirectoryUnsafe(
                 rawTempDirectory = rawTempDirectory,
-                downloadId = downloadItem.id,
+                downloadItem = downloadItem,
                 beforeRetry = beforeRetry,
             )
         }
@@ -5334,12 +5338,12 @@ class DownloadWorker(
 
     private fun resetYtdlpTempDirectoryUnsafe(
         rawTempDirectory: File,
-        downloadId: Long,
+        downloadItem: DownloadItem,
         beforeRetry: Boolean,
     ): File {
         val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
         val tempDirectory = rawTempDirectory.canonicalFile
-        if (tempDirectory.parentFile != cacheRoot || tempDirectory.name != downloadId.toString()) {
+        if (tempDirectory.parentFile != cacheRoot || tempDirectory.name != downloadItem.id.toString()) {
             throw IOException("Unsafe temporary download directory: ${tempDirectory.absolutePath}")
         }
         val cleanFailure = if (beforeRetry) {
@@ -5352,11 +5356,19 @@ class DownloadWorker(
         } else {
             "Failed to create temporary download directory"
         }
+        val ownershipMarker = runCatching {
+            DownloadCacheOwnership.ensureMarker(cacheRoot, downloadItem)
+        }.getOrElse { error ->
+            throw IOException("$createFailure ownership marker: ${error.message}", error)
+        }
         if (tempDirectory.exists() && !tempDirectory.deleteRecursively()) {
             throw IOException("$cleanFailure: ${tempDirectory.absolutePath}")
         }
         if (!tempDirectory.mkdirs() && !tempDirectory.isDirectory) {
             throw IOException("$createFailure: ${tempDirectory.absolutePath}")
+        }
+        if (!ownershipMarker.isFile) {
+            throw IOException("$createFailure ownership marker disappeared: ${ownershipMarker.absolutePath}")
         }
         return tempDirectory
     }
