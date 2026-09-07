@@ -27,6 +27,7 @@ import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
 import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -34,6 +35,18 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.greenrobot.eventbus.EventBus
 import java.io.File
+import java.io.IOException
+import java.util.UUID
+
+internal object TerminalDownloadWorkerEffectTestHooks {
+    /**
+     * Replaces only the native Terminal result for production-boundary tests.
+     * The worker still performs its normal plan, provenance, and exact move
+     * path; a null result means the real native boundary is used.
+     */
+    @Volatile
+    internal var ytdlpSuccessWithOutputDirectoryForTesting: ((Int, File) -> String?)? = null
+}
 
 
 class TerminalDownloadWorker(
@@ -42,6 +55,8 @@ class TerminalDownloadWorker(
 ) : CoroutineWorker(context, workerParams) {
     private var itemId : Int = 0
     private var shouldCleanupTerminalCache = false
+    private var terminalOutputDirectory: File? = null
+    private var terminalOutputAuthority: TerminalOutputAuthority? = null
 
     private suspend fun cleanupStoppedWorker() = withContext(Dispatchers.IO + NonCancellable) {
         if (itemId == 0) return@withContext
@@ -53,7 +68,7 @@ class TerminalDownloadWorker(
             NotificationUtil(context).cancelTerminalDownloadNotification(itemId)
         }
         if (shouldCleanupTerminalCache) runCatching {
-            File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
+            terminalOutputDirectory?.deleteRecursively()
         }
         runCatching {
             DBManager.getInstance(context).terminalDao.delete(itemId.toLong())
@@ -79,11 +94,12 @@ class TerminalDownloadWorker(
         if (command.isNullOrBlank()) return Result.failure()
 
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val terminalTaskToken = "$itemId-${UUID.randomUUID()}"
         val terminalPlan = TerminalCommandPlanFactory.create(
             context = context,
             preferences = sharedPreferences,
             command = command,
-            taskId = itemId.toString()
+            taskId = terminalTaskToken,
         )
         val dbManager = DBManager.getInstance(context)
         val logRepo = LogRepository(dbManager.logDao)
@@ -121,6 +137,22 @@ class TerminalDownloadWorker(
         val request = terminalPlan.createRequest(configFile)
         val noCache = !terminalPlan.usesAppCache
         shouldCleanupTerminalCache = !noCache
+        if (!noCache) {
+            val outputDirectory = File(
+                FileUtil.getCachePath(context),
+                "TERMINAL/$terminalTaskToken",
+            ).canonicalFile
+            if (outputDirectory.exists() && outputDirectory.listFiles()?.isNotEmpty() == true) {
+                throw IOException("Terminal attempt output directory was not clean")
+            }
+            if (!outputDirectory.exists() && !outputDirectory.mkdirs()) {
+                throw IOException("Could not create Terminal attempt output directory")
+            }
+            terminalOutputDirectory = outputDirectory
+            terminalOutputAuthority = TerminalOutputAuthority(outputDirectory).also {
+                it.beginAttempt()
+            }
+        }
 
 
 
@@ -155,38 +187,77 @@ class TerminalDownloadWorker(
             val processId = YtdlpProcessIdentity.terminal(itemId.toLong())
             YoutubeDL.getInstance().destroyProcessById(processId)
             YoutubeDLCompat.destroyProcessById(processId)
-            val response = YoutubeDLCompat.execute(
-                applicationContext,
-                request,
-                processId,
-                true,
-                callback = { progress, _, line ->
-                val redactedLine = SensitiveTextRedactor.redactOutput(line)
-                eventBus.post(DownloadWorker.WorkerProgress(progress.toInt(), redactedLine, itemId.toLong(), logItem.id))
-
-                notificationUtil.updateTerminalDownloadNotification(
-                    itemId,
-                    redactedLine, progress.toInt(), notificationTitle,
-                    NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID
+            val injectedOutput = terminalOutputDirectory?.let { outputDirectory ->
+                TerminalDownloadWorkerEffectTestHooks
+                    .ytdlpSuccessWithOutputDirectoryForTesting
+                    ?.invoke(itemId, outputDirectory)
+            }
+            val response = if (injectedOutput != null) {
+                YoutubeDLResponse(
+                    emptyList(),
+                    0,
+                    0L,
+                    injectedOutput,
+                    "",
                 )
-                runBlocking(Dispatchers.IO) {
-                    if (logDownloads) logRepo.update(redactedLine, logItem.id)
-                    dao.updateLog(redactedLine, itemId.toLong())
-                }
-                },
-            )
+            } else {
+                YoutubeDLCompat.execute(
+                    applicationContext,
+                    request,
+                    processId,
+                    true,
+                    callback = { progress, _, line ->
+                    val redactedLine = SensitiveTextRedactor.redactOutput(line)
+                    eventBus.post(DownloadWorker.WorkerProgress(progress.toInt(), redactedLine, itemId.toLong(), logItem.id))
+
+                    notificationUtil.updateTerminalDownloadNotification(
+                        itemId,
+                        redactedLine, progress.toInt(), notificationTitle,
+                        NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID
+                    )
+                    runBlocking(Dispatchers.IO) {
+                        if (logDownloads) logRepo.update(redactedLine, logItem.id)
+                        dao.updateLog(redactedLine, itemId.toLong())
+                    }
+                    },
+                )
+            }
 
             withContext(Dispatchers.IO) {
                 if(!noCache){
-                    //move file from internal to set download directory
-                    FileUtil.moveFile(
-                        File(FileUtil.getCachePath(context) + "/TERMINAL/" + itemId),
-                        context,
-                        downloadLocation,
-                        false
-                    ){ p ->
-                        eventBus.post(DownloadWorker.WorkerProgress(p, "", itemId.toLong(), logItem.id))
+                    val authority = requireNotNull(terminalOutputAuthority)
+                    val outputDirectory = requireNotNull(terminalOutputDirectory)
+                    val sourceFiles = requireTerminalSourceFiles(authority, response.out)
+                    val movedOutputPaths = mutableListOf<String>()
+                    val returnedMovePaths = FileUtil.moveFile(
+                        originDir = outputDirectory,
+                        context = context,
+                        destDir = downloadLocation,
+                        keepCache = false,
+                        progress = { p ->
+                            eventBus.post(DownloadWorker.WorkerProgress(p, "", itemId.toLong(), logItem.id))
+                        },
+                        sourceFiles = sourceFiles,
+                        onOutput = { path -> movedOutputPaths.add(path) },
+                    )
+                    val exactPublishedPaths = authority.recordMoveResults(
+                        movedPaths = movedOutputPaths + returnedMovePaths,
+                        sourceFiles = sourceFiles,
+                    )
+                    if (exactPublishedPaths.isEmpty()) {
+                        throw IOException("Terminal move completed without an authoritative output path")
                     }
+                    val strandedSources = sourceFiles.filter { it.exists() }
+                    if (strandedSources.isNotEmpty()) {
+                        throw IOException(
+                            "Terminal move left current-attempt outputs in staging: " +
+                                strandedSources.joinToString(limit = 5) { it.name },
+                        )
+                    }
+                    if (authority.hasUnprovenTemporaryArtifacts()) {
+                        throw IOException("Terminal staging contains unproven output artifacts")
+                    }
+                    outputDirectory.deleteRecursively()
                 }
             }
             val redactedOutput = SensitiveTextRedactor.redactOutput(response.out)
@@ -200,7 +271,7 @@ class TerminalDownloadWorker(
             if (isStopped || it is YoutubeDL.CanceledException) {
                 notificationUtil.cancelTerminalDownloadNotification(itemId)
                 if (!noCache) {
-                    File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
+                    terminalOutputDirectory?.deleteRecursively()
                 }
                 runCatching {
                     dao.delete(itemId.toLong())
@@ -221,7 +292,7 @@ class TerminalDownloadWorker(
             }
             notificationUtil.cancelTerminalDownloadNotification(itemId)
             if (!noCache) {
-                File(FileUtil.getCachePath(context), "TERMINAL/$itemId").deleteRecursively()
+                terminalOutputDirectory?.deleteRecursively()
             }
             Log.e(TAG, "${context.getString(R.string.failed_download)} $userMessage")
             delay(1000)
