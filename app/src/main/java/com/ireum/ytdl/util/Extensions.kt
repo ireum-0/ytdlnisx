@@ -205,12 +205,28 @@ object Extensions {
             .build()
     }
     fun File.getMediaDuration(context: Context): Int {
+        return absolutePath.getMediaDuration(context)
+    }
+
+    /**
+     * Reads duration from either a raw filesystem path or an exact provider
+     * URI.  History/Download paths are stored in both forms, so callers must
+     * not coerce a content URI through java.io.File before probing it.
+     */
+    fun String.getMediaDuration(context: Context): Int {
+        val storedPath = trim()
+        if (storedPath.isBlank() || !FileUtil.exists(storedPath, context)) return 0
         return kotlin.runCatching {
-            if (!exists()) return 0
             var retriever: MediaMetadataRetriever? = null
             try {
                 retriever = MediaMetadataRetriever()
-                retriever.setDataSource(context, Uri.parse(absolutePath))
+                if (storedPath.startsWith("content://", ignoreCase = true)) {
+                    retriever.setDataSource(context, Uri.parse(storedPath))
+                } else if (storedPath.startsWith("file://", ignoreCase = true)) {
+                    retriever.setDataSource(Uri.parse(storedPath).path.orEmpty())
+                } else {
+                    retriever.setDataSource(storedPath)
+                }
                 val duration = retriever.extractMetadata(METADATA_KEY_DURATION)
                 duration?.toIntOrNull()?.div(1000) ?: 0
             } finally {

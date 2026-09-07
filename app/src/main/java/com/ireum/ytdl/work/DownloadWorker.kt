@@ -237,6 +237,14 @@ internal object DownloadWorkerEffectTestHooks {
     @Volatile
     internal var videoQualityProbeForTesting: ((List<String>) -> VideoMediaQuality)? = null
 
+    /**
+     * Supplies a deterministic hard-sub result at the real Worker boundary.
+     * The worker still performs its normal output planning and publication;
+     * this seam only replaces the encoder process for production-wiring tests.
+     */
+    @Volatile
+    internal var hardSubBurnForTesting: ((List<String>) -> Boolean)? = null
+
     /** Fails the real committed-History finalization boundary once in tests. */
     @Volatile
     internal var beforeCommittedHistoryFinalizationForTesting: ((Long) -> Unit)? = null
@@ -1300,7 +1308,7 @@ class DownloadWorker(
                             .distinct()
                             .filter { path ->
                                 ytdlpOutputProvenance?.isAuthoritative(path) == true &&
-                                    FileUtil.exists(path) &&
+                                    FileUtil.isFile(path, context) &&
                                     !isMetadataOutputPath(path)
                             }
                     }
@@ -1598,7 +1606,15 @@ class DownloadWorker(
         if (shouldStopForUserRequest()) return AttemptControl.STOP
 
                         var deferBurnUntilPostMove = false
-                        val forceDeferBurn = shouldBurnHardSub && shouldForceHardSubFailpoint("force_hardsub_defer")
+                        // Direct/no-cache publication may target a provider URI
+                        // that cannot be consumed by the filesystem-only
+                        // encoder.  Never defer hard-sub past publication in
+                        // that mode; the transform must finish in local,
+                        // operation-owned staging first.
+                        val forceDeferBurn = shouldBurnHardSub &&
+                            !noCache &&
+                            !isProviderBackedPath(downloadLocation) &&
+                            shouldForceHardSubFailpoint("force_hardsub_defer")
                         val forceMoveUnresolved = shouldBurnHardSub && shouldForceHardSubFailpoint("force_hardsub_move_unresolved")
                         if (shouldBurnHardSub) {
                             Log.i(
@@ -1606,17 +1622,16 @@ class DownloadWorker(
                                 "HardSub session id=${downloadItem.id} noCache=$noCache keepCache=$keepCache downloadLocation=${FileUtil.formatPath(downloadLocation)} tempDir=${tempFileDir.absolutePath} forceDeferBurn=$forceDeferBurn forceMoveUnresolved=$forceMoveUnresolved"
                             )
                         }
-                        if (!noCache && shouldBurnHardSub) {
+                        if (shouldBurnHardSub) {
                             val preMoveBurnPaths = currentAuthoritativeOutputPaths()
                                 .filter { candidate ->
                                     isPathInsideDirectory(candidate, tempFileDir) &&
-                                        File(candidate).exists() &&
-                                        File(candidate).isFile
+                                        FileUtil.isFile(candidate, context)
                                 }
                                 .distinct()
                             logPathCandidates("HardSub pre-move authoritative", downloadItem.id, preMoveBurnPaths)
                             val hasMediaForPreMove = preMoveBurnPaths.any { path ->
-                                val ext = File(path).extension.lowercase(Locale.US)
+                                val ext = FileUtil.fileExtension(path, context).lowercase(Locale.US)
                                 ext !in setOf("ass", "srv3", "json3", "ttml", "vtt", "srt")
                             }
                             if (hasMediaForPreMove) {
@@ -1648,9 +1663,18 @@ class DownloadWorker(
                                         }
                                         Log.i(TAG, "HardSub completed id=${downloadItem.id} mode=pre-move")
                                     } else {
+                                        if (noCache) {
+                                            throw IOException(
+                                                "HardSub aborted: no media was burned before direct publication"
+                                            )
+                                        }
                                         Log.w(TAG, "HardSub pre-move produced no burned media id=${downloadItem.id}")
                                     }
                                 }
+                            } else if (noCache) {
+                                throw IOException(
+                                    "HardSub aborted: no authoritative temporary media files found for burn-in"
+                                )
                             } else {
                                 deferBurnUntilPostMove = true
                                 Log.w(
@@ -1664,12 +1688,11 @@ class DownloadWorker(
                             val latePreMoveBurnPaths = currentAuthoritativeOutputPaths()
                                 .filter { candidate ->
                                     isPathInsideDirectory(candidate, tempFileDir) &&
-                                        File(candidate).exists() &&
-                                        File(candidate).isFile
+                                        FileUtil.isFile(candidate, context)
                                 }
                                 .distinct()
                             val lateHasMedia = latePreMoveBurnPaths.any { path ->
-                                val ext = File(path).extension.lowercase(Locale.US)
+                                val ext = FileUtil.fileExtension(path, context).lowercase(Locale.US)
                                 ext !in setOf("ass", "srv3", "json3", "ttml", "vtt", "srt")
                             }
                             if (lateHasMedia) {
@@ -1801,7 +1824,7 @@ class DownloadWorker(
                             }
                             finalPaths = exactDirectPaths
                                 .filter { path ->
-                                    FileUtil.exists(path) && !isMetadataOutputPath(path)
+                                    FileUtil.isFile(path, context) && !isMetadataOutputPath(path)
                                 }
                                 .distinct()
                                 .toMutableList()
@@ -1887,7 +1910,7 @@ class DownloadWorker(
                                     .orEmpty()
                                 finalPaths = exactMovedPaths
                                     .filter { path ->
-                                        FileUtil.exists(path) && !isMetadataOutputPath(path)
+                                        FileUtil.isFile(path, context) && !isMetadataOutputPath(path)
                                     }
                                     .distinct()
                                     .toMutableList()
@@ -1933,13 +1956,13 @@ class DownloadWorker(
                                         )
                                         .orEmpty()
                                         .filter { path ->
-                                            FileUtil.exists(path) && !isMetadataOutputPath(path)
+                                            FileUtil.isFile(path, context) && !isMetadataOutputPath(path)
                                         }
                                         .distinct()
                                         .toMutableList()
                                     val authoritativeTempPaths = currentAuthoritativeOutputPaths()
                                         .filter { path ->
-                                            isPathInsideDirectory(path, tempFileDir) && FileUtil.exists(path)
+                                            isPathInsideDirectory(path, tempFileDir) && FileUtil.isFile(path, context)
                                         }
                                     if (authoritativeTempPaths.isNotEmpty()) {
                                         Log.w(
@@ -1964,7 +1987,7 @@ class DownloadWorker(
                                                 .orEmpty()
                                         )
                                             .filter { path ->
-                                                FileUtil.exists(path) && !isMetadataOutputPath(path)
+                                                FileUtil.isFile(path, context) && !isMetadataOutputPath(path)
                                             }
                                             .distinct()
                                             .toMutableList()
@@ -2014,78 +2037,6 @@ class DownloadWorker(
                         )
                         recordCreatedOutputs(finalPaths)
 
-                        if (shouldBurnHardSub && !noCache && deferBurnUntilPostMove) {
-                            val postMoveBurnPaths = finalPaths
-                                .filter(FileUtil::exists)
-                                .distinct()
-                            if (postMoveBurnPaths.isEmpty()) {
-                                throw IOException("HardSub aborted: no authoritative files found after move for deferred burn-in")
-                            }
-                            if (shouldStopForUserRequest()) return AttemptControl.STOP
-                            Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${postMoveBurnPaths.size} mode=post-move")
-                            withOwnedExecutionSideEffect(downloadItem) {
-                                eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
-                            }
-                            currentIssueStage = DownloadIssueStage.HARD_SUB
-                            val burned = withOwnedExecutionLease(downloadItem) {
-                                burnSubtitlesInPlace(
-                                    postMoveBurnPaths,
-                                    noKeepSubs,
-                                    downloadItem.id,
-                                    downloadItem.executionId,
-                                    downloadItem.logID,
-                                    downloadItem.videoPreferences.subsLanguages,
-                                    ytdlpOutputProvenance,
-                                )
-                            }
-                            hardSubBurned = hardSubBurned || burned
-                            if (!burned) {
-                                throw IOException("HardSub aborted: no media was burned in post-move stage")
-                            }
-                            withOwnedExecutionSideEffect(downloadItem) {
-                                eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
-                            }
-                            Log.i(TAG, "HardSub completed id=${downloadItem.id} mode=post-move")
-                        }
-
-
-                        if (shouldBurnHardSub && noCache) {
-                            finalPaths = finalPaths
-                                .filter(FileUtil::exists)
-                                .distinct()
-                                .toMutableList()
-                            if (finalPaths.isEmpty()) {
-                                throw IOException("HardSub aborted: no authoritative output files detected for burn-in")
-                            }
-                            Log.i(TAG, "HardSub authoritative paths=${finalPaths.size}")
-                            if (shouldStopForUserRequest()) return AttemptControl.STOP
-                            Log.i(TAG, "HardSub start id=${downloadItem.id} title=${downloadItem.title} paths=${finalPaths.size}")
-                            withOwnedExecutionSideEffect(downloadItem) {
-                                eventBus.post(WorkerProgress(1, "Burning subtitles 1%", downloadItem.id, downloadItem.logID))
-                            }
-                            currentIssueStage = DownloadIssueStage.HARD_SUB
-                            val burned = withOwnedExecutionLease(downloadItem) {
-                                burnSubtitlesInPlace(
-                                    finalPaths,
-                                    noKeepSubs,
-                                    downloadItem.id,
-                                    downloadItem.executionId,
-                                    downloadItem.logID,
-                                    downloadItem.videoPreferences.subsLanguages,
-                                    ytdlpOutputProvenance,
-                                )
-                            }
-                            hardSubBurned = hardSubBurned || burned
-                            if (!burned) {
-                                throw IOException("HardSub aborted: no media was burned")
-                            } else {
-                                withOwnedExecutionSideEffect(downloadItem) {
-                                    eventBus.post(WorkerProgress(100, "Subtitle burn-in completed", downloadItem.id, downloadItem.logID))
-                                }
-                                Log.i(TAG, "HardSub completed id=${downloadItem.id}")
-                            }
-                        }
-
                         if (
                             downloadItem.type == DownloadType.video &&
                             !downloadItem.videoPreferences.embedSubs &&
@@ -2109,12 +2060,9 @@ class DownloadWorker(
                             add("txt")
                         }
                         finalPaths = finalPaths.filter { path ->
-                            FileUtil.exists(path) &&
+                            FileUtil.isFile(path, context) &&
                                 !isMetadataOutputPath(path) &&
-                                path.substringBefore('?')
-                                    .substringAfterLast('/')
-                                    .substringAfterLast('\\')
-                                    .substringAfterLast('.')
+                                FileUtil.fileExtension(path, context)
                                     .lowercase(Locale.US) !in nonMediaExtensions
                         }.toMutableList()
                         if (!noCache) {
@@ -2132,8 +2080,9 @@ class DownloadWorker(
                                 val strandedTempMedia = currentAuthoritativeOutputPaths()
                                     .filter { candidate ->
                                         isPathInsideDirectory(candidate, tempFileDir) &&
-                                            FileUtil.exists(candidate) &&
-                                            File(candidate).extension.lowercase(Locale.US) !in nonMediaExtensions
+                                            FileUtil.isFile(candidate, context) &&
+                                            FileUtil.fileExtension(candidate, context)
+                                                .lowercase(Locale.US) !in nonMediaExtensions
                                     }
                                 if (strandedTempMedia.isNotEmpty()) {
                                     val moveFailureDetails = FileUtil.consumeLastMoveFailureDetails()
@@ -2148,8 +2097,7 @@ class DownloadWorker(
         if (shouldStopForUserRequest()) return AttemptControl.STOP
                         if (finalPaths.isNotEmpty()) {
                             val summary = finalPaths.joinToString(limit = 5) { path ->
-                                val file = File(path)
-                                "${file.name}(size=${file.length()},mtime=${file.lastModified()})"
+                                "${FileUtil.fileName(path, context)}(size=${FileUtil.length(path, context)},mtime=${FileUtil.lastModified(path, context)})"
                             }
                             Log.i(TAG, "HardSub final paths id=${downloadItem.id} count=${finalPaths.size} sample=$summary")
                         }
@@ -2191,14 +2139,13 @@ class DownloadWorker(
                                     }, 100)
                                 } else if (finalPaths.isNotEmpty()) {
                                     val unixTime = System.currentTimeMillis() / 1000
-                                    finalPaths.first().apply {
-                                        val file = File(this)
+                                    finalPaths.first().let { storedPath ->
                                         var duration = downloadItem.duration
-                                        val d = file.getMediaDuration(context)
+                                        val d = storedPath.getMediaDuration(context)
                                         if (d > 0) duration = d.toStringDuration(Locale.US)
 
-                                        downloadItem.format.filesize = file.length()
-                                        downloadItem.format.container = file.extension
+                                        downloadItem.format.filesize = FileUtil.length(storedPath, context)
+                                        downloadItem.format.container = FileUtil.fileExtension(storedPath, context)
                                         downloadItem.duration = duration
                                     }
 
@@ -2897,8 +2844,7 @@ class DownloadWorker(
                         }
 
                         createdOutputPaths = createdOutputPaths.filter { path ->
-                            val file = File(path)
-                            file.exists() && file.isFile
+                            FileUtil.isFile(path, context)
                         }
                         primaryIssue = historyReplacementFailureIssue ?: primaryIssue
                         val failureIssues = historyReplacementFailureIssue?.let { issue ->
@@ -5949,8 +5895,8 @@ class DownloadWorker(
         if (paths.isEmpty()) return null
         val thumbExts = setOf("jpg", "jpeg", "png", "webp", "avif")
         return paths.firstOrNull { path ->
-            val file = File(path)
-            file.exists() && thumbExts.contains(file.extension.lowercase(Locale.US))
+            FileUtil.isFile(path, context) &&
+                thumbExts.contains(FileUtil.fileExtension(path, context).lowercase(Locale.US))
         }
     }
 
@@ -6098,6 +6044,9 @@ class DownloadWorker(
         selectedSubtitleLanguages: String = "",
         outputProvenance: DownloadOutputProvenance? = null,
     ): Boolean {
+        DownloadWorkerEffectTestHooks.hardSubBurnForTesting?.let { hook ->
+            return hook(paths)
+        }
         val processKey = if (downloadItemId != null && !downloadExecutionId.isNullOrBlank()) {
             FfmpegProcessKey(downloadItemId, downloadExecutionId)
         } else {
@@ -8013,10 +7962,13 @@ class DownloadWorker(
             return
         }
         val sample = paths.joinToString(limit = 5) { candidate ->
-            val file = File(candidate)
-            val exists = file.exists()
-            val size = if (exists && file.isFile) file.length() else -1L
-            "${file.name}[exists=$exists,size=$size]"
+            val exists = FileUtil.exists(candidate, context)
+            val size = if (exists && FileUtil.isFile(candidate, context)) {
+                FileUtil.length(candidate, context)
+            } else {
+                -1L
+            }
+            "${FileUtil.fileName(candidate, context)}[exists=$exists,size=$size]"
         }
         Log.i(TAG, "$label id=$downloadId count=${paths.size} sample=$sample")
     }
@@ -8063,12 +8015,16 @@ class DownloadWorker(
     }
 
     private fun isPathInsideDirectory(path: String, directory: File): Boolean {
+        if (path.startsWith("content://", ignoreCase = true)) return false
         return runCatching {
             val normalizedPath = File(path).canonicalFile.toPath().normalize()
             val normalizedDirectory = directory.canonicalFile.toPath().normalize()
             normalizedPath.startsWith(normalizedDirectory)
         }.getOrDefault(false)
     }
+
+    private fun isProviderBackedPath(path: String): Boolean =
+        path.trim().startsWith("content://", ignoreCase = true)
 
     private fun prioritizePrimaryMediaPath(paths: List<String>, downloadType: DownloadType): MutableList<String> {
         val normalized = paths
@@ -8088,6 +8044,10 @@ class DownloadWorker(
     }
 
     private fun selectPrimaryMediaPath(paths: List<String>, downloadType: DownloadType): String? {
+        // A provider URI has no meaningful java.io.File representation. Keep
+        // the exact publication order returned by moveFile instead of
+        // dropping provider outputs while trying to choose a local primary.
+        if (paths.any { it.startsWith("content://", ignoreCase = true) }) return null
         val files = paths
             .map { File(it) }
             .filter { it.exists() && it.isFile }

@@ -209,16 +209,99 @@ object FileUtil {
         }.getOrDefault(false)
     }
 
-    fun exists(path: String) : Boolean {
+    fun exists(path: String): Boolean = exists(path, App.instance)
+
+    fun exists(path: String, context: Context) : Boolean {
         if (path.isEmpty()) return false
         if (path.startsWith("content://")) {
-            return DocumentFile.fromSingleUri(App.instance, Uri.parse(path))?.exists() == true
+            return DocumentFile.fromSingleUri(context, Uri.parse(path))?.exists() == true
         }
         if (path.startsWith("file://")) {
             return runCatching { File(Uri.parse(path).path ?: "").exists() }.getOrDefault(false)
         }
         return File(path).exists()
     }
+
+    /**
+     * Provider-aware file identity helpers for stored output paths.  A
+     * published SAF/MediaStore path is an exact content URI, not a pathname
+     * that can safely be handed to java.io.File.  Keep these checks beside the
+     * existing provider-aware existence check so output/failure bookkeeping
+     * cannot silently discard an exact provider result.
+     */
+    fun isFile(path: String, context: Context = App.instance): Boolean {
+        val normalized = path.trim()
+        if (normalized.isBlank()) return false
+        if (normalized.startsWith("content://", ignoreCase = true)) {
+            return runCatching {
+                DocumentFile.fromSingleUri(context, Uri.parse(normalized))?.isFile == true
+            }.getOrDefault(false)
+        }
+        val file = if (normalized.startsWith("file://", ignoreCase = true)) {
+            runCatching { File(Uri.parse(normalized).path.orEmpty()) }.getOrNull()
+        } else {
+            File(normalized)
+        } ?: return false
+        return file.isFile
+    }
+
+    fun length(path: String, context: Context = App.instance): Long {
+        val normalized = path.trim()
+        if (normalized.isBlank()) return 0L
+        if (normalized.startsWith("content://", ignoreCase = true)) {
+            return runCatching {
+                DocumentFile.fromSingleUri(context, Uri.parse(normalized))
+                    ?.takeIf { it.isFile }
+                    ?.length()
+                    ?: 0L
+            }.getOrDefault(0L)
+        }
+        val file = if (normalized.startsWith("file://", ignoreCase = true)) {
+            runCatching { File(Uri.parse(normalized).path.orEmpty()) }.getOrNull()
+        } else {
+            File(normalized)
+        } ?: return 0L
+        return file.length()
+    }
+
+    fun lastModified(path: String, context: Context = App.instance): Long {
+        val normalized = path.trim()
+        if (normalized.isBlank()) return 0L
+        if (normalized.startsWith("content://", ignoreCase = true)) {
+            return runCatching {
+                DocumentFile.fromSingleUri(context, Uri.parse(normalized))
+                    ?.takeIf { it.isFile }
+                    ?.lastModified()
+                    ?: 0L
+            }.getOrDefault(0L)
+        }
+        val file = if (normalized.startsWith("file://", ignoreCase = true)) {
+            runCatching { File(Uri.parse(normalized).path.orEmpty()) }.getOrNull()
+        } else {
+            File(normalized)
+        } ?: return 0L
+        return file.lastModified()
+    }
+
+    fun fileName(path: String, context: Context = App.instance): String {
+        val normalized = path.trim()
+        if (normalized.isBlank()) return ""
+        if (normalized.startsWith("content://", ignoreCase = true)) {
+            return runCatching {
+                DocumentFile.fromSingleUri(context, Uri.parse(normalized))?.name
+                    ?: Uri.parse(normalized).lastPathSegment.orEmpty()
+            }.getOrDefault("")
+        }
+        val file = if (normalized.startsWith("file://", ignoreCase = true)) {
+            runCatching { File(Uri.parse(normalized).path.orEmpty()) }.getOrNull()
+        } else {
+            File(normalized)
+        } ?: return ""
+        return file.name
+    }
+
+    fun fileExtension(path: String, context: Context = App.instance): String =
+        fileName(path, context).substringAfterLast('.', "")
 
     private fun deleteZeroByteSiblingMedia(path: String) {
         val rawPath = when {
@@ -929,18 +1012,37 @@ object FileUtil {
 
     fun scanMedia(files: List<String>, context: Context) : List<String> {
         try {
-            val paths = files.distinct().sortedByDescending { File(it).length() }
+            // Keep the exact stored-path representation returned by the
+            // publication boundary.  Content URIs are provider identities;
+            // converting them to File("content://...") would lose existence,
+            // size, and ordering information and can erase authority on a
+            // later failure path.
+            val paths = files.distinct().sortedByDescending { length(it, context) }
             runCatching {
-                paths.forEach {
-                    MediaScannerConnection.scanFile(context, arrayOf(it), null, null)
+                paths.mapNotNull { rawFilesystemPath(it) }.forEach { filesystemPath ->
+                    MediaScannerConnection.scanFile(context, arrayOf(filesystemPath), null, null)
                 }
             }
-            return paths.sortedBy { File(it).lastModified() }
+            return paths.sortedBy { lastModified(it, context) }
         }catch (e: Exception){
             e.printStackTrace()
         }
 
         return listOf()
+    }
+
+    private fun rawFilesystemPath(path: String): String? {
+        val normalized = path.trim()
+        if (normalized.isBlank() || normalized.startsWith("content://", ignoreCase = true)) {
+            return null
+        }
+        return if (normalized.startsWith("file://", ignoreCase = true)) {
+            runCatching { Uri.parse(normalized).path.orEmpty() }
+                .getOrNull()
+                ?.takeIf(String::isNotBlank)
+        } else {
+            normalized
+        }
     }
 
     fun getBackupPath(context: Context) : String {

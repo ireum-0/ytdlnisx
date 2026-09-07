@@ -408,6 +408,114 @@ class DownloadOutputProductionWiringTest {
     }
 
     @Test
+    fun realWorkerBurnsHardSubBeforeDirectPublication() = runBlocking {
+        withCacheDownloads(false) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "hard-sub-direct").apply { mkdirs() }
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.video,
+                    formatNote = "best",
+                    container = "mp4",
+                    videoPreferences = VideoPreferences(embedSubs = true),
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            val burnReached = AtomicBoolean(false)
+            var ownedOutputDirectory: File? = null
+            var stagedOutput: File? = null
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    ownedOutputDirectory = outputDirectory.canonicalFile
+                    stagedOutput = File(outputDirectory, "hard-sub.mp4").apply {
+                        writeBytes(byteArrayOf(1, 2, 3, 4))
+                    }
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedOutput).absolutePath}'"
+                }
+            }
+            DownloadWorkerEffectTestHooks.hardSubBurnForTesting = { paths ->
+                burnReached.set(true)
+                val staging = requireNotNull(ownedOutputDirectory)
+                assertTrue(paths.isNotEmpty())
+                assertTrue(paths.all { File(it).canonicalPath.startsWith(staging.canonicalPath + File.separator) })
+                assertTrue(destination.listFiles().orEmpty().none { it.isFile })
+                true
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertTrue(nativeBoundaryReached.get())
+            assertTrue(burnReached.get())
+            val history = requireNotNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(1, history.downloadPath.size)
+            assertTrue(history.downloadPath.single().startsWith(destination.canonicalPath))
+            assertTrue(history.downloadPath.single().endsWith("hard-sub.mp4"))
+            assertFalse(requireNotNull(stagedOutput).exists())
+            assertFalse(requireNotNull(ownedOutputDirectory).exists())
+            assertTrue(destination.listFiles().orEmpty().any { it.name == "hard-sub.mp4" })
+        }
+    }
+
+    @Test
+    fun realWorkerHardSubFailureDoesNotPublishDirectOutput() = runBlocking {
+        withCacheDownloads(false) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "hard-sub-failure").apply { mkdirs() }
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.video,
+                    formatNote = "best",
+                    container = "mp4",
+                    videoPreferences = VideoPreferences(embedSubs = true),
+                )
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            val nativeBoundaryReached = AtomicBoolean(false)
+            val burnReached = AtomicBoolean(false)
+            var stagedOutput: File? = null
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
+                if (candidateId == downloadId) nativeBoundaryReached.set(true)
+            }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    stagedOutput = File(outputDirectory, "hard-sub-failure.mp4").apply {
+                        writeBytes(byteArrayOf(5, 6, 7, 8))
+                    }
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedOutput).absolutePath}'"
+                }
+            }
+            DownloadWorkerEffectTestHooks.hardSubBurnForTesting = {
+                burnReached.set(true)
+                false
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertTrue(nativeBoundaryReached.get())
+            assertTrue(burnReached.get())
+            assertNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertTrue(destination.listFiles().orEmpty().none { it.isFile })
+            assertFalse(requireNotNull(stagedOutput).exists())
+        }
+    }
+
+    @Test
     fun realWorkerIgnoresShlexProtectedPathLookingValueForPublication() = runBlocking {
         withCacheDownloads(true) {
             val downloadId = outputWiringDownloadIds.getAndIncrement()
@@ -861,6 +969,7 @@ class DownloadOutputProductionWiringTest {
         DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = null
         DownloadWorkerEffectTestHooks.outputBaselineReaderForTesting = null
         DownloadWorkerEffectTestHooks.videoQualityProbeForTesting = null
+        DownloadWorkerEffectTestHooks.hardSubBurnForTesting = null
         DownloadWorkerEffectTestHooks.beforeNoCacheMediaPublicationForTesting = null
         DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
     }
