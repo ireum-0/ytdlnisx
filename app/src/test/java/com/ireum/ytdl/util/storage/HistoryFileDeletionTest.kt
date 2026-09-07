@@ -1,5 +1,6 @@
 package com.ireum.ytdl.util.storage
 
+import com.ireum.ytdl.util.FileUtil
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -8,6 +9,22 @@ import java.io.File
 import kotlin.io.path.createTempDirectory
 
 class HistoryFileDeletionTest {
+    @Test
+    fun exactFileCleanupNeverDeletesSameStemZeroByteSibling() {
+        val parent = createTempDirectory("history-zero-byte-sibling-").toFile()
+        try {
+            val target = File(parent, "episode.mp4").apply { writeText("media") }
+            val sibling = File(parent, "episode.mkv").apply { createNewFile() }
+
+            FileUtil.deleteFileWithZeroByteSiblings(target.absolutePath)
+
+            assertFalse(target.exists())
+            assertTrue(sibling.exists())
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
     @Test
     fun deletionDialogDefaultsToFilesAndEachNewDialogResetsTheChoice() {
         val first = HistoryDeletionDialogState()

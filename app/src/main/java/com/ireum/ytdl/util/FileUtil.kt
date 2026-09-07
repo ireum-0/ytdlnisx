@@ -49,9 +49,6 @@ object FileUtil {
     private const val SHARED_FILE_PROVIDER_DIR = "shared"
     private const val MAX_SHARE_CACHE_COPY_BYTES = 50L * 1024L * 1024L
 
-    private val zeroByteSiblingMediaExtensions = setOf(
-        "webm", "mkv", "mp4", "m4v", "mov", "avi", "ts", "m2ts", "mp3", "m4a", "aac", "opus", "ogg", "wav", "flac"
-    )
     private val blockedShareFileNames = setOf(
         "cookies.txt",
         "keystore.properties",
@@ -97,8 +94,10 @@ object FileUtil {
     }
 
     fun deleteFileWithZeroByteSiblings(path: String) {
+        // The historical name is retained for source compatibility, but a
+        // deletion authorization is scoped to the exact target only.  A
+        // sibling's stem, extension, or zero-byte state is not provenance.
         deleteFile(path)
-        deleteZeroByteSiblingMedia(path)
     }
 
     fun deleteFilesWithZeroByteSiblings(paths: List<String>) {
@@ -115,29 +114,6 @@ object FileUtil {
         val normalizedPaths = paths.map(String::trim).filter(String::isNotBlank).distinct()
         if (normalizedPaths.isEmpty()) return
         normalizedPaths.forEach(::deleteFileFromMediaStore)
-
-        normalizedPaths
-            .map(::File)
-            .groupBy { file -> file.parentFile?.absolutePath.orEmpty() }
-            .filterKeys(String::isNotBlank)
-            .forEach { (parentPath, targets) ->
-                val parent = File(parentPath)
-                if (!parent.exists() || !parent.isDirectory) return@forEach
-                val targetPaths = targets.mapTo(hashSetOf()) { it.absolutePath.lowercase(Locale.US) }
-                val stems = targets.mapTo(hashSetOf()) { it.nameWithoutExtension }
-                parent.listFiles()
-                    ?.asSequence()
-                    ?.filter { candidate ->
-                        candidate.isFile &&
-                            candidate.length() == 0L &&
-                            candidate.nameWithoutExtension in stems &&
-                            candidate.extension.lowercase(Locale.US) in zeroByteSiblingMediaExtensions &&
-                            candidate.absolutePath.lowercase(Locale.US) !in targetPaths
-                    }
-                    ?.forEach { candidate ->
-                        if (candidate.delete()) deleteFileFromMediaStore(candidate.absolutePath)
-                    }
-            }
     }
 
     private fun deleteRawFilePath(path: String): Boolean {
@@ -302,35 +278,6 @@ object FileUtil {
 
     fun fileExtension(path: String, context: Context = App.instance): String =
         fileName(path, context).substringAfterLast('.', "")
-
-    private fun deleteZeroByteSiblingMedia(path: String) {
-        val rawPath = when {
-            path.startsWith("content://") -> return
-            path.startsWith("file://") -> Uri.parse(path).path.orEmpty()
-            else -> path
-        }.trim()
-        if (rawPath.isBlank()) return
-
-        val target = File(rawPath)
-        val parent = target.parentFile ?: return
-        val stem = target.nameWithoutExtension
-        if (!parent.exists() || !parent.isDirectory || stem.isBlank()) return
-
-        runCatching {
-            parent.listFiles()
-                ?.asSequence()
-                ?.filter { candidate ->
-                    candidate.isFile &&
-                        candidate.length() == 0L &&
-                        candidate.nameWithoutExtension == stem &&
-                        candidate.extension.lowercase(Locale.US) in zeroByteSiblingMediaExtensions
-                }
-                ?.forEach { candidate ->
-                    if (candidate.absolutePath.equals(target.absolutePath, ignoreCase = true)) return@forEach
-                    deleteFile(candidate.absolutePath)
-                }
-        }
-    }
 
     fun resolveTreeDocumentUri(treeUriString: String, relativePath: String): Uri? {
         if (treeUriString.isBlank() || relativePath.isBlank()) return null
