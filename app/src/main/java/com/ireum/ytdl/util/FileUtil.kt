@@ -157,29 +157,13 @@ object FileUtil {
         val file = File(path)
         val uri = MediaStore.Files.getContentUri("external")
 
-        val selection: String
-        val selectionArgs: Array<String>
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val parentPath = file.parentFile?.absolutePath.orEmpty()
-            val primaryRoot = Environment.getExternalStorageDirectory().absolutePath
-            if (parentPath.startsWith(primaryRoot)) {
-                val trimmed = parentPath
-                    .removePrefix(primaryRoot)
-                    .removePrefix(File.separator)
-                val relativePath = if (trimmed.isEmpty()) "" else "$trimmed${File.separator}"
-                selection = MediaStore.MediaColumns.RELATIVE_PATH + " =? AND " +
-                            MediaStore.MediaColumns.DISPLAY_NAME + " =?"
-                selectionArgs = arrayOf(relativePath, file.name)
-            } else {
-                // Non-primary storage: fall back to DATA query
-                selection = MediaStore.MediaColumns.DATA + " =?"
-                selectionArgs = arrayOf(file.absolutePath)
-            }
-        } else {
-            selection = MediaStore.MediaColumns.DATA + " =?"
-            selectionArgs = arrayOf(file.absolutePath)
-        }
+        // DATA is the only path field that identifies this exact raw target.
+        // A RELATIVE_PATH + DISPLAY_NAME predicate can match multiple MediaStore
+        // rows with the same name, so it must never be used as deletion
+        // authority for one History path. If the provider no longer exposes
+        // DATA, leave its row untouched rather than deleting a sibling.
+        val selection = MediaStore.MediaColumns.DATA + " =?"
+        val selectionArgs = arrayOf(file.absolutePath)
         return runCatching {
             contentResolver.delete(uri, selection, selectionArgs) > 0
         }.getOrDefault(false)
