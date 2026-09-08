@@ -61,6 +61,8 @@ class TerminalDownloadWorker(
     private var terminalTaskToken: String? = null
     private var terminalPublicationJournal: PublicationRecoveryJournal.Handle? = null
     private val terminalPublishedOutputPaths = mutableListOf<String>()
+    /** Set once the Terminal row has been durably deleted after publication. */
+    private var terminalSemanticCommit = false
 
     private fun cleanupTerminalOutputDirectory() {
         val directory = terminalOutputDirectory ?: return
@@ -157,7 +159,9 @@ class TerminalDownloadWorker(
         runCatching {
             NotificationUtil(context).cancelTerminalDownloadNotification(itemId)
         }
-        if (shouldCleanupTerminalCache) runCatching { cleanupTerminalOutputDirectory() }
+        if (shouldCleanupTerminalCache && !terminalSemanticCommit) {
+            runCatching { cleanupTerminalOutputDirectory() }
+        }
         runCatching {
             DBManager.getInstance(context).terminalDao.delete(itemId.toLong())
         }
@@ -171,6 +175,7 @@ class TerminalDownloadWorker(
             if (isStopped) {
                 cleanupStoppedWorker()
             }
+            TerminalExecutionRegistry.release(itemId.toLong(), terminalTaskToken)
         }
     }
 
@@ -183,6 +188,24 @@ class TerminalDownloadWorker(
 
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val terminalTaskToken = "$itemId-${UUID.randomUUID()}"
+        when (
+            TerminalExecutionRegistry.admit(
+                context = context,
+                cacheRoot = File(FileUtil.getCachePath(context)),
+                subjectId = itemId.toLong(),
+                executionToken = terminalTaskToken,
+            )
+        ) {
+            TerminalExecutionRegistry.Admission.BLOCKED -> {
+                Log.w(TAG, "Terminal execution admission blocked by prior exact publication state id=$itemId")
+                return Result.retry()
+            }
+            TerminalExecutionRegistry.Admission.ALREADY_COMMITTED -> {
+                Log.i(TAG, "Terminal execution already committed; skipping duplicate native run id=$itemId")
+                return Result.success()
+            }
+            TerminalExecutionRegistry.Admission.ACQUIRED -> Unit
+        }
         this.terminalTaskToken = terminalTaskToken
         val terminalPlan = TerminalCommandPlanFactory.create(
             context = context,
@@ -406,6 +429,14 @@ class TerminalDownloadWorker(
                                 )
                             }
                         },
+                        onOutputCommitted = { source, path ->
+                            val committed = terminalPublicationJournal?.markPublished(
+                                source.absolutePath,
+                                path,
+                            ) == true
+                            if (!committed) publicationJournalWriteFailed = true
+                            committed
+                        },
                         onOutputWithSource = { source, path ->
                             terminalPublishedOutputPaths += path
                             if (terminalPublicationJournal?.markPublished(
@@ -455,18 +486,30 @@ class TerminalDownloadWorker(
             notificationUtil.cancelTerminalDownloadNotification(itemId)
             delay(1000)
             dao.delete(itemId.toLong())
+            // From this point the semantic Terminal outcome is committed.
+            // Later marker/journal retirement is convergence debt and must
+            // not escape as a contradictory WorkManager failure.
+            terminalSemanticCommit = true
             terminalPublicationJournal?.let { journal ->
                 check(journal.markPhase(PublicationRecoveryJournal.Phase.COMMITTED)) {
                     "Terminal publication semantic commit could not be finalized"
                 }
                 retireCommittedTerminalOutput()
-                check(journal.clear()) {
-                    "Terminal publication recovery journal could not be retired"
-                }
-                terminalPublicationJournal = null
+                // Retain the COMMITTED journal as a durable idempotence
+                // tombstone until a later worker admission consumes it.  An
+                // App-start recovery pass may retire the staging root, but
+                // must not erase the only proof before WorkManager records
+                // this invocation's success.
             }
             return Result.success()
         } catch (it: Exception) {
+            if (terminalSemanticCommit) {
+                // The exact publication and DAO semantic commit already won.
+                // Reconcile best-effort and report success even when a
+                // cleanup/marker/journal sidecar failed afterwards.
+                reconcileTerminalPublicationRecovery()
+                return Result.success()
+            }
             if (isStopped || it is YoutubeDL.CanceledException) {
                 notificationUtil.cancelTerminalDownloadNotification(itemId)
                 if (!noCache) {

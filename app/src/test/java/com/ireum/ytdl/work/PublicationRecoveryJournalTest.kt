@@ -94,6 +94,60 @@ class PublicationRecoveryJournalTest {
     }
 
     @Test
+    fun reservedRawDestinationIsNotPromotedWhileSourceStillExists() {
+        val root = Files.createTempDirectory("publication-journal-raw-proof-").toFile()
+        try {
+            val source = File(root, "staging/output.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("output")
+            }
+            val destination = File(root, "published/output.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("possibly partial")
+            }
+
+            assertFalse(
+                com.ireum.ytdl.util.FileUtil.isRecoverablePublicationComplete(
+                    sourcePath = source.absolutePath,
+                    destinationPath = destination.absolutePath,
+                    context = null,
+                )
+            )
+            assertTrue(source.delete())
+            assertTrue(
+                com.ireum.ytdl.util.FileUtil.isRecoverablePublicationComplete(
+                    sourcePath = source.absolutePath,
+                    destinationPath = destination.absolutePath,
+                    context = null,
+                )
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun reservedProviderDestinationNeverGainsAuthorityFromExistenceAlone() {
+        val root = Files.createTempDirectory("publication-journal-provider-proof-").toFile()
+        try {
+            val source = File(root, "staging/output.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("output")
+            }
+            assertFalse(
+                com.ireum.ytdl.util.FileUtil.isRecoverablePublicationComplete(
+                    sourcePath = source.absolutePath,
+                    destinationPath = "content://com.example.documents/document/42",
+                    context = null,
+                )
+            )
+            assertTrue(source.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun absentReservationCanBeReboundForAProviderOrCollisionSafeRetry() {
         val root = Files.createTempDirectory("publication-journal-rebind-").toFile()
         val storage = File(root, "journal")
@@ -364,7 +418,7 @@ class PublicationRecoveryJournalTest {
     }
 
     @Test
-    fun committedTerminalJournalIsRetiredAfterStagingRootDisappears() {
+    fun committedTerminalJournalRemainsAsIdempotenceTombstoneAfterStagingRootDisappears() {
         val root = Files.createTempDirectory("terminal-committed-journal-").toFile()
         val journalStorage = File(root, "journal")
         try {
@@ -396,7 +450,14 @@ class PublicationRecoveryJournalTest {
             assertEquals(1, result.journalCount)
             assertEquals(1, result.retiredCount)
             assertTrue(destination.isFile)
-            assertTrue(PublicationRecoveryJournal.readAll(journalStorage).isEmpty())
+            // Startup reconciliation may retire the staging root, but it must
+            // retain the exact COMMITTED journal until a subsequent Terminal
+            // admission consumes it.  Clearing it here would reopen the
+            // process-death window immediately after DAO deletion.
+            assertEquals(
+                PublicationRecoveryJournal.Phase.COMMITTED,
+                PublicationRecoveryJournal.readAll(journalStorage).single().phase,
+            )
         } finally {
             root.deleteRecursively()
         }

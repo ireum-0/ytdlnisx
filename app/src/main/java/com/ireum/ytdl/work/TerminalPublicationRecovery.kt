@@ -4,6 +4,9 @@ import android.content.Context
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.storage.TerminalCacheOwnership
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -24,6 +27,127 @@ internal object TerminalPublicationRecovery {
         val quarantinedCount: Int,
         val retiredCount: Int = 0,
     )
+
+    /**
+     * Synchronous-before-native admission result.  ALREADY_COMMITTED means
+     * that a prior Terminal attempt had already published its exact outputs;
+     * the WorkManager invocation must complete as a no-op rather than execute
+     * the command again.  BLOCKED preserves an unresolved prior obligation.
+     */
+    internal enum class Admission {
+        ACQUIRED,
+        ALREADY_COMMITTED,
+        BLOCKED,
+    }
+
+    /**
+     * Reconcile exact prior Terminal publication state before a new native
+     * execution is admitted.  A row is only a mutable queue record; a
+     * COMMITTING/COMPLETE journal with all exact destinations present is the
+     * durable semantic witness.  If no exact witness exists, a prior journal
+     * or quarantine carrier blocks re-entry rather than allowing duplicate
+     * output production.
+     */
+    internal suspend fun admit(
+        context: Context,
+        cacheRoot: File,
+        subjectId: Long,
+        activeExecution: (String) -> Boolean,
+    ): Admission = withContext(Dispatchers.IO + NonCancellable) {
+        val journalStorage = File(context.filesDir, "publication-recovery")
+        val before = PublicationRecoveryJournal.readAll(journalStorage)
+            .filter {
+                it.kind == PublicationRecoveryJournal.Kind.TERMINAL &&
+                    it.subjectId == subjectId.toString()
+            }
+        if (before.any { activeExecution(it.executionId) }) return@withContext Admission.BLOCKED
+
+        fun allDestinationsExist(record: PublicationRecoveryJournal.Record): Boolean =
+            record.artifacts.all { artifact ->
+                val destination = artifact.destinationPath
+                !destination.isNullOrBlank() && destinationExists(destination, context)
+            }
+
+        val committedWitness = before.firstOrNull { record ->
+            record.phase in setOf(
+                PublicationRecoveryJournal.Phase.COMMITTING,
+                PublicationRecoveryJournal.Phase.COMPLETE,
+                PublicationRecoveryJournal.Phase.COMMITTED,
+            ) && allDestinationsExist(record)
+        }
+        if (committedWitness != null) {
+            val dao = DBManager.getInstance(context).terminalDao
+            // Adopt the durable semantic result before a new worker can
+            // create a task token.  The delete is idempotent and does not
+            // depend on row presence as proof of liveness.
+            val rowDeleted = runCatching {
+                dao.delete(subjectId)
+                dao.getTerminalById(subjectId) == null
+            }.getOrDefault(false)
+            if (!rowDeleted) {
+                // Keep the exact witness and block admission when the DAO
+                // cannot converge.  Returning ALREADY_COMMITTED here would
+                // let a later WorkManager retry observe the same row and
+                // attempt the native command again.
+                return@withContext Admission.BLOCKED
+            }
+            PublicationRecoveryJournal.open(journalStorage, committedWitness)?.let { journal ->
+                // These are convergence sidecars only.  A failure leaves the
+                // exact journal for startup recovery, but never reopens the
+                // native command.
+                val markedCommitted = runCatching {
+                    journal.markPhase(PublicationRecoveryJournal.Phase.COMMITTED)
+                }.getOrDefault(false)
+                val rootRetired = if (markedCommitted) {
+                    runCatching { retireCommittedRoot(committedWitness) }.getOrDefault(false)
+                } else {
+                    false
+                }
+                // Clear only after both the phase and exact staging-root
+                // convergence succeeded.  If either sidecar fails, the
+                // COMMITTED witness remains durable for a later admission or
+                // startup retry; it is never replaced by a best-effort scan.
+                if (markedCommitted && rootRetired) {
+                    runCatching { journal.clear() }
+                }
+            }
+            return@withContext Admission.ALREADY_COMMITTED
+        }
+
+        // Startup reconciliation may already have converted a partial
+        // journal into a marker-revoked recovery carrier.  That carrier is
+        // explicit quarantine state, not a new worker's staging root.
+        if (TerminalCacheOwnership.listRecoveryRoots(cacheRoot).any {
+                it.subjectId?.toLongOrNull() == subjectId
+            }) {
+            return@withContext Admission.BLOCKED
+        }
+
+        // A journal in any non-terminal phase is an exact prior obligation,
+        // even if its root currently has no files.  Do not let a new native
+        // execution race its recovery owner.
+        if (before.isNotEmpty()) return@withContext Admission.BLOCKED
+
+        // Run the normal startup reconciliation for records that may have
+        // become visible between the initial read and this admission check,
+        // then re-check the durable namespace once more.
+        reconcile(
+            context = context,
+            cacheRoot = cacheRoot,
+            journalStorage = journalStorage,
+            terminalRowExists = { id -> DBManager.getInstance(context).terminalDao.getTerminalById(id) != null },
+        )
+        val after = PublicationRecoveryJournal.readAll(journalStorage).filter {
+            it.kind == PublicationRecoveryJournal.Kind.TERMINAL && it.subjectId == subjectId.toString()
+        }
+        if (after.isNotEmpty() || TerminalCacheOwnership.listRecoveryRoots(cacheRoot).any {
+                it.subjectId?.toLongOrNull() == subjectId
+            }) {
+            Admission.BLOCKED
+        } else {
+            Admission.ACQUIRED
+        }
+    }
 
     fun reconcile(context: Context, cacheRoot: File): ReconcileResult = reconcile(
         cacheRoot = cacheRoot,
@@ -56,11 +180,25 @@ internal object TerminalPublicationRecovery {
                 .forEach { artifact ->
                     val reserved = artifact.reservedDestinationPath
                     if (!reserved.isNullOrBlank()) {
-                        if (destinationExists(reserved, context)) {
+                        if (FileUtil.isRecoverablePublicationComplete(
+                                sourcePath = artifact.sourcePath,
+                                destinationPath = reserved,
+                                context = context,
+                            )
+                        ) {
                             if (!journal.markPublished(artifact.sourcePath, reserved)) {
                                 reservationFailed = true
                             }
-                        } else if (!journal.clearReservation(artifact.sourcePath)) {
+                        } else if (!destinationExists(reserved, context)) {
+                            if (!journal.clearReservation(artifact.sourcePath)) {
+                                reservationFailed = true
+                            }
+                        } else {
+                            // A provider document may be visible before its
+                            // stream copy/finalization is complete.  Do not
+                            // promote from existence alone; preserve the
+                            // exact reservation for a later proof-producing
+                            // reconciliation.
                             reservationFailed = true
                         }
                     }
@@ -90,9 +228,14 @@ internal object TerminalPublicationRecovery {
                 else -> false
             }
             if (allDestinationsExist && semanticCommitKnown) {
+                // Keep a COMMITTED Terminal tombstone until the next worker
+                // admission consumes it.  Clearing it from asynchronous App
+                // startup would reopen the process-death window immediately
+                // after dao.delete(), allowing a restarted WorkManager task
+                // to run the command a second time.
                 if (retireCommittedRoot(effectiveRecord) && journal.markPhase(
                         PublicationRecoveryJournal.Phase.COMMITTED,
-                    ) && journal.clear()
+                    )
                 ) {
                     retiredCount += 1
                 }
