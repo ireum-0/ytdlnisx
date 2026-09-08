@@ -1015,19 +1015,31 @@ object FileUtil {
             // converting them to File("content://...") would lose existence,
             // size, and ordering information and can erase authority on a
             // later failure path.
-            val paths = files.distinct().sortedByDescending { length(it, context) }
+            // Media scanning is observation only.  In particular, do not let
+            // provider size/mtime (or a scanner callback) reorder the exact
+            // publication manifest: finalPaths.first() is the producer's
+            // primary-media decision and remains semantic authority.
+            val paths = mediaScanPublicationOrder(files)
             runCatching {
                 paths.mapNotNull { rawFilesystemPath(it) }.forEach { filesystemPath ->
                     MediaScannerConnection.scanFile(context, arrayOf(filesystemPath), null, null)
                 }
             }
-            return paths.sortedBy { lastModified(it, context) }
+            return paths
         }catch (e: Exception){
             e.printStackTrace()
         }
 
         return listOf()
     }
+
+    /**
+     * Preserve the exact order established by the publication carrier.  A
+     * media scanner may observe paths, but it cannot choose the primary
+     * output by size, mtime, or provider enumeration order.
+     */
+    internal fun mediaScanPublicationOrder(files: List<String>): List<String> =
+        files.distinct()
 
     private fun rawFilesystemPath(path: String): String? {
         val normalized = path.trim()
