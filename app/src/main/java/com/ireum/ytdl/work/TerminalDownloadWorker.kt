@@ -77,6 +77,7 @@ class TerminalDownloadWorker(
                     taskToken = token,
                     publishedDestinationPaths = terminalPublishedOutputPaths +
                         terminalPublicationJournal?.snapshot()?.publishedDestinations().orEmpty(),
+                    subjectId = itemId.toString(),
                 )
             ) {
                 Log.w(
@@ -100,6 +101,50 @@ class TerminalDownloadWorker(
                 TAG,
                 "Preserving Terminal staging without exact artifact ownership: ${directory.absolutePath}",
             )
+        }
+        // The worker is itself a production recovery owner.  Resolve the
+        // journal/carrier immediately when possible; App startup repeats the
+        // same exact reconciliation after process death.
+        reconcileTerminalPublicationRecovery()
+    }
+
+    private fun reconcileTerminalPublicationRecovery() {
+        runCatching {
+            TerminalPublicationRecovery.reconcile(
+                context = context,
+                cacheRoot = File(FileUtil.getCachePath(context)),
+            )
+        }.onFailure { error ->
+            Log.w(TAG, "Terminal publication recovery convergence deferred", error)
+        }
+    }
+
+    /**
+     * Retire a successfully committed Terminal attempt without recursive
+     * deletion.  Known manifest/marker files are removed exactly; unknown
+     * descendants remain and the marker is revoked so they cannot gain
+     * publication authority.
+     */
+    private fun retireCommittedTerminalOutput() {
+        val directory = terminalOutputDirectory ?: return
+        val token = terminalTaskToken ?: return
+        if (!directory.exists()) return
+        if (!directory.isDirectory) {
+            throw IOException("Terminal committed staging path is not a directory")
+        }
+        val marker = TerminalCacheOwnership.markerFile(directory)
+        if (marker.isFile && TerminalCacheOwnership.isOwned(directory, token)) {
+            if (!TerminalCacheOwnership.removeArtifactManifest(directory)) {
+                throw IOException("Terminal committed artifact manifest could not be removed")
+            }
+            if (marker.exists() && !marker.delete() && marker.exists()) {
+                throw IOException("Terminal committed ownership marker could not be removed")
+            }
+        } else if (marker.exists()) {
+            throw IOException("Terminal committed ownership marker could not be verified")
+        }
+        if (directory.listFiles()?.isEmpty() == true) {
+            directory.delete()
         }
     }
 
@@ -395,11 +440,13 @@ class TerminalDownloadWorker(
                     if (authority.hasUnprovenTemporaryArtifacts()) {
                         throw IOException("Terminal staging contains unproven output artifacts")
                     }
-                    val ownershipMarker = TerminalCacheOwnership.markerFile(outputDirectory)
-                    if (ownershipMarker.exists() && !ownershipMarker.delete() && ownershipMarker.exists()) {
-                        throw IOException("Terminal cache ownership marker could not be removed")
+                    check(
+                        terminalPublicationJournal?.markPhase(
+                            PublicationRecoveryJournal.Phase.COMMITTING,
+                        ) == true
+                    ) {
+                        "Terminal publication semantic commit could not be recorded"
                     }
-                    outputDirectory.deleteRecursively()
                 }
             }
             val redactedOutput = SensitiveTextRedactor.redactOutput(response.out)
@@ -408,8 +455,16 @@ class TerminalDownloadWorker(
             notificationUtil.cancelTerminalDownloadNotification(itemId)
             delay(1000)
             dao.delete(itemId.toLong())
-            terminalPublicationJournal?.clear()
-            terminalPublicationJournal = null
+            terminalPublicationJournal?.let { journal ->
+                check(journal.markPhase(PublicationRecoveryJournal.Phase.COMMITTED)) {
+                    "Terminal publication semantic commit could not be finalized"
+                }
+                retireCommittedTerminalOutput()
+                check(journal.clear()) {
+                    "Terminal publication recovery journal could not be retired"
+                }
+                terminalPublicationJournal = null
+            }
             return Result.success()
         } catch (it: Exception) {
             if (isStopped || it is YoutubeDL.CanceledException) {
@@ -420,6 +475,7 @@ class TerminalDownloadWorker(
                 runCatching {
                     dao.delete(itemId.toLong())
                 }
+                reconcileTerminalPublicationRecovery()
                 Log.i(TAG, "Terminal worker stopped or cancelled itemId=$itemId")
                 return Result.success()
             }
@@ -441,6 +497,7 @@ class TerminalDownloadWorker(
             Log.e(TAG, "${context.getString(R.string.failed_download)} $userMessage")
             delay(1000)
             dao.delete(itemId.toLong())
+            reconcileTerminalPublicationRecovery()
             return Result.failure()
         } finally {
             FileUtil.deleteConfigFiles(request)

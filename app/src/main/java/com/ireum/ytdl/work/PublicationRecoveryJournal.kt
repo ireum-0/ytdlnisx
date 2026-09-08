@@ -33,6 +33,12 @@ internal object PublicationRecoveryJournal {
         PUBLISHING,
         PARTIAL,
         COMPLETE,
+        /** Publication finished; Terminal semantic row finalization is pending. */
+        COMMITTING,
+        /** Terminal semantic result was durably committed. */
+        COMMITTED,
+        /** Exact remainder was durably quarantined after a failed attempt. */
+        QUARANTINED,
     }
 
     internal data class Artifact(
@@ -172,7 +178,10 @@ internal object PublicationRecoveryJournal {
         /** Persist a phase transition without retiring exact lineage. */
         @Synchronized
         fun markPhase(phase: Phase): Boolean {
-            if (phase == Phase.COMPLETE && record.artifacts.any { it.destinationPath.isNullOrBlank() }) {
+            if (
+                phase in setOf(Phase.COMPLETE, Phase.COMMITTING, Phase.COMMITTED) &&
+                record.artifacts.any { it.destinationPath.isNullOrBlank() }
+            ) {
                 return false
             }
             val next = record.copy(phase = phase)
@@ -184,7 +193,11 @@ internal object PublicationRecoveryJournal {
         /** Retire only after the caller has committed the semantic result. */
         @Synchronized
         fun clear(): Boolean {
-            if (record.phase != Phase.COMPLETE) return false
+            val canRetire = when (record.kind) {
+                Kind.DOWNLOAD -> record.phase == Phase.COMPLETE
+                Kind.TERMINAL -> record.phase == Phase.COMMITTED || record.phase == Phase.QUARANTINED
+            }
+            if (!canRetire) return false
             if (!file.exists()) return true
             return file.delete() || !file.exists()
         }

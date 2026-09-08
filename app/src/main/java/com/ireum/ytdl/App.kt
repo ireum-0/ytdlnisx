@@ -102,6 +102,7 @@ class App : Application() {
                         "Terminal publication recovery state discovered: " +
                             "journals=${reconciled.journalCount} " +
                             "quarantined=${reconciled.quarantinedCount} " +
+                            "retired=${reconciled.retiredCount} " +
                             "carriers=${recovery.size}",
                     )
                 }

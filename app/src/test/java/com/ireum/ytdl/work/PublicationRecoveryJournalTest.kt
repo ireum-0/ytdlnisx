@@ -242,6 +242,161 @@ class PublicationRecoveryJournalTest {
             assertTrue(source.isFile)
             assertTrue(CacheImportPlanner.collect(root).isEmpty())
             assertEquals(1, CacheImportPlanner.collectRecovery(root).size)
+            assertTrue(PublicationRecoveryJournal.readAll(journalStorage).isEmpty())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun verifiedTerminalFailureRetiresOnlyExactQuarantineRemainder() {
+        val root = Files.createTempDirectory("terminal-recovery-consumer-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "12-recovery"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val remainder = File(directory, "remainder.mp4").apply { writeText("remainder") }
+            val unknown = File(directory, "unknown.bin").apply { writeText("preserve") }
+            val published = File(root, "published/remainder.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("published")
+            }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(remainder.absolutePath)))
+            assertTrue(
+                TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = taskToken,
+                    subjectId = "12",
+                    publishedDestinationPaths = listOf(published.absolutePath),
+                    phase = "QUARANTINED_FAILURE",
+                )
+            )
+            assertTrue(TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(directory, taskToken))
+
+            val result = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { false },
+            )
+
+            assertEquals(1, result.retiredCount)
+            assertFalse(remainder.exists())
+            assertTrue(unknown.isFile)
+            assertTrue(published.isFile)
+            assertFalse(TerminalCacheOwnership.recoveryCarrierFile(directory).exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun liveTerminalRowPreservesQuarantineForLaterRecovery() {
+        val root = Files.createTempDirectory("terminal-recovery-live-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "13-recovery"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val remainder = File(directory, "remainder.mp4").apply { writeText("remainder") }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(remainder.absolutePath)))
+            assertTrue(
+                TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = taskToken,
+                    subjectId = "13",
+                    phase = "QUARANTINED_FAILURE",
+                )
+            )
+            assertTrue(TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(directory, taskToken))
+
+            val result = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { true },
+            )
+
+            assertEquals(0, result.retiredCount)
+            assertTrue(remainder.isFile)
+            assertTrue(TerminalCacheOwnership.recoveryCarrierFile(directory).isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun activeTerminalRowKeepsLiveJournalAndMarkerForWorkerOwnership() {
+        val root = Files.createTempDirectory("terminal-recovery-active-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "14-active"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val output = File(directory, "output.mp4").apply { writeText("output") }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(output.absolutePath)))
+            val journal = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = journalStorage,
+                    kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                    subjectId = "14",
+                    operationId = "terminal-14",
+                    executionId = taskToken,
+                    attemptId = taskToken,
+                    sourceRoot = directory,
+                    sourceFiles = listOf(output),
+                )
+            )
+            assertTrue(journal.markPhase(PublicationRecoveryJournal.Phase.PUBLISHING))
+
+            val result = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { true },
+            )
+
+            assertEquals(0, result.quarantinedCount)
+            assertTrue(TerminalCacheOwnership.markerFile(directory).isFile)
+            assertTrue(PublicationRecoveryJournal.readAll(journalStorage).isNotEmpty())
+            assertTrue(output.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun committedTerminalJournalIsRetiredAfterStagingRootDisappears() {
+        val root = Files.createTempDirectory("terminal-committed-journal-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "task-committed"
+            val staging = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val source = File(staging, "video.mp4").apply { writeText("video") }
+            val destination = File(root, "published/video.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("published")
+            }
+            val journal = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = journalStorage,
+                    kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                    subjectId = "11",
+                    operationId = "terminal-11",
+                    executionId = taskToken,
+                    attemptId = taskToken,
+                    sourceRoot = staging,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(journal.markPublished(source.absolutePath, destination.absolutePath))
+            assertTrue(journal.markPhase(PublicationRecoveryJournal.Phase.COMMITTED))
+            staging.deleteRecursively()
+
+            val result = TerminalPublicationRecovery.reconcile(root, journalStorage)
+
+            assertEquals(1, result.journalCount)
+            assertEquals(1, result.retiredCount)
+            assertTrue(destination.isFile)
+            assertTrue(PublicationRecoveryJournal.readAll(journalStorage).isEmpty())
         } finally {
             root.deleteRecursively()
         }

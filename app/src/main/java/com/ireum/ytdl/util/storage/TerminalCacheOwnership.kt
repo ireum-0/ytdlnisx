@@ -24,6 +24,7 @@ internal object TerminalCacheOwnership {
         val directory: File,
         val carrier: File,
         val taskToken: String,
+        val subjectId: String?,
         val remainingSourcePaths: List<String>,
         val publishedDestinationPaths: List<String>,
         val phase: String,
@@ -180,6 +181,7 @@ internal object TerminalCacheOwnership {
         taskToken: String,
         publishedDestinationPaths: Iterable<String> = emptyList(),
         phase: String = "PARTIAL_PUBLICATION",
+        subjectId: String? = null,
     ): Boolean {
         val root = runCatching { directory.canonicalFile }.getOrNull() ?: return false
         if (!isOwned(root, taskToken)) return false
@@ -208,6 +210,7 @@ internal object TerminalCacheOwnership {
             version = VERSION,
             taskToken = taskToken,
             sourceRoot = root.absolutePath,
+            subjectId = subjectId?.takeIf { it.toLongOrNull() != null },
             remainingSourcePaths = remaining,
             publishedDestinationPaths = published,
             phase = phase,
@@ -274,6 +277,8 @@ internal object TerminalCacheOwnership {
                     directory = root,
                     carrier = carrier.canonicalFile,
                     taskToken = taskToken,
+                    subjectId = payload.subjectId ?: taskToken.substringBefore('-')
+                        .takeIf { it.toLongOrNull() != null },
                     remainingSourcePaths = remaining,
                     publishedDestinationPaths = published,
                     phase = phase,
@@ -286,6 +291,39 @@ internal object TerminalCacheOwnership {
 
     fun clearRecoveryCarrier(recovery: RecoveryRoot): Boolean =
         !recovery.carrier.exists() || recovery.carrier.delete() || !recovery.carrier.exists()
+
+    /**
+     * Retire a recovery-only Terminal remainder after a verified semantic
+     * terminal result. Only the carrier's exact source paths are removed;
+     * unknown descendants and already-published destinations are untouched.
+     */
+    fun retireRecoveryArtifacts(recovery: RecoveryRoot): Boolean {
+        val root = runCatching { recovery.directory.canonicalFile }.getOrNull() ?: return false
+        val carrier = recoveryCarrierFile(root)
+        if (!carrier.isFile || carrier.canonicalFile != recovery.carrier.canonicalFile) return false
+        if (markerFile(root).exists()) return false
+        if (!isValidRecoveryCarrier(root, recovery.taskToken)) return false
+
+        val manifest = artifactManifestFile(root).canonicalFile
+        val exactFiles = recovery.remainingSourcePaths.mapNotNull { raw ->
+            runCatching {
+                File(raw).canonicalFile.takeIf { candidate ->
+                    isInside(candidate, root) && candidate != carrier.canonicalFile && candidate != manifest
+                }
+            }.getOrNull()
+        }
+        if (exactFiles.size != recovery.remainingSourcePaths.distinct().size) return false
+        exactFiles.forEach { file ->
+            if (file.exists() && (!file.isFile || !file.delete()) && file.exists()) return false
+        }
+
+        // These are known control files. Remove them only after all exact
+        // remainder entries have been handled; any unrelated child survives.
+        if (manifest.exists() && !manifest.delete() && manifest.exists()) return false
+        if (carrier.exists() && !carrier.delete() && carrier.exists()) return false
+        pruneEmptyDirectories(root)
+        return true
+    }
 
     fun listArtifactFiles(root: OwnedRoot): List<File> = runCatching {
         val manifest = artifactManifestFile(root.directory)
@@ -349,6 +387,7 @@ internal object TerminalCacheOwnership {
         val version: String?,
         val taskToken: String?,
         val sourceRoot: String?,
+        val subjectId: String? = null,
         val remainingSourcePaths: List<String>?,
         val publishedDestinationPaths: List<String>?,
         val phase: String?,
