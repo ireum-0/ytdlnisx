@@ -55,9 +55,15 @@ internal object HardSubMuxStageOwnership {
         }.filter(String::isNotBlank).toSortedSet()
         if (entries.isEmpty()) return false
         return runCatching {
-            val existing = readManifest(manifestFile(root)).orEmpty().toMutableSet()
+            val manifest = manifestFile(root)
+            val existingManifest = readManifest(manifest)
+            // A malformed existing carrier is evidence whose ownership cannot
+            // be established. Never replace it with a new manifest: doing so
+            // could erase exact recovery/cleanup evidence for unknown files.
+            if (manifest.exists() && existingManifest == null) return@runCatching false
+            val existing = existingManifest.orEmpty().toMutableSet()
             existing += entries
-            manifestFile(root).writeText(
+            manifest.writeText(
                 buildString {
                     append(HEADER)
                     append('\n')
@@ -68,7 +74,7 @@ internal object HardSubMuxStageOwnership {
                     }
                 },
             )
-            manifestFile(root).isFile
+            manifest.isFile
         }.getOrDefault(false)
     }
 

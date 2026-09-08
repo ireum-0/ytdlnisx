@@ -170,6 +170,17 @@ internal class DownloadOutputProvenance(
     private fun isOwnershipMarker(file: File): Boolean =
         directOwnershipMarker?.let { marker -> equivalentStoredPath(file.absolutePath, marker.absolutePath) } == true
 
+    private fun isAuthorityCarrier(file: File): Boolean =
+        isOwnershipMarker(file) ||
+            (directRoot != null &&
+                file.name == DIRECT_ARTIFACT_MANIFEST_NAME &&
+                runCatching {
+                    file.parentFile?.canonicalFile == directRoot &&
+                        file.isFile &&
+                        file.readLines().firstOrNull()?.trim() == "ytdlnisx-output-artifacts" &&
+                        file.readLines().drop(1).any { it.trim() == "files:" }
+                }.getOrDefault(false))
+
     private fun readBaseline(directory: File): BaselineSnapshot =
         runCatching {
             baselineSnapshotReader?.invoke(directory) ?: snapshotFiles(directory)
@@ -189,7 +200,7 @@ internal class DownloadOutputProvenance(
         val current = snapshotFiles(directory)
         val currentFiles = (current as? BaselineSnapshot.Complete)?.files ?: return true
         return currentFiles.any { candidate ->
-            !isOwnershipMarker(File(candidate)) &&
+            !isAuthorityCarrier(File(candidate)) &&
                 authoritative.none { equivalentStoredPath(it, candidate) }
         }
     }
@@ -257,6 +268,7 @@ internal class DownloadOutputProvenance(
         const val PRINT_MARKER = "__YTDLNISX_OUTPUT__"
         const val STRUCTURED_FILES_MARKER = "__YTDLNISX_FILES__"
         const val STRUCTURED_INFO_MARKER = "__YTDLNISX_INFO__"
+        private const val DIRECT_ARTIFACT_MANIFEST_NAME = ".ytdlnisx-output-artifacts.txt"
 
         /**
          * Parse only app-generated machine markers.  The post_process marker
