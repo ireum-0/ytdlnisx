@@ -426,10 +426,10 @@ class TerminalDownloadWorker(
                             if (!reserved) publicationJournalWriteFailed = true
                             reserved
                         },
-                        onOutputReservationFailed = { source ->
-                            val cleared = terminalPublicationJournal?.clearReservation(source.absolutePath) == true
-                            if (!cleared) publicationJournalWriteFailed = true
-                            cleared
+                        onOutputReservationUnknown = { source ->
+                            val marked = terminalPublicationJournal?.markReservationUnknown(source.absolutePath) == true
+                            if (!marked) publicationJournalWriteFailed = true
+                            marked
                         },
                         onOutputReserved = { source, path ->
                             if (terminalPublicationJournal?.reserve(source.absolutePath, path) != true) {

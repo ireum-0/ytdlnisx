@@ -134,8 +134,12 @@ internal object PublicationRecoveryJournal {
             if (index < 0) return false
             val existing = record.artifacts[index]
             if (!existing.destinationPath.isNullOrBlank()) return true
-            if (isReservationIntent(existing.reservedDestinationPath)) return true
-            if (!existing.reservedDestinationPath.isNullOrBlank()) return true
+            // An existing reservation means that a previous invocation has
+            // already crossed (or may have crossed) the external provider
+            // creation boundary. Replaying the provider call could create a
+            // collision-suffixed duplicate, so only an exact destination
+            // reservation or explicit recovery reconciliation may advance it.
+            if (!existing.reservedDestinationPath.isNullOrBlank()) return false
             val updated = record.artifacts.toMutableList()
             updated[index] = existing.copy(
                 sourcePath = source,
@@ -166,6 +170,7 @@ internal object PublicationRecoveryJournal {
             val existing = record.artifacts[index]
             if (!existing.destinationPath.isNullOrBlank()) return false
             if (existing.reservedDestinationPath.isNullOrBlank()) return true
+            if (isUnknownReservation(existing.reservedDestinationPath)) return false
             val updated = record.artifacts.toMutableList()
             updated[index] = existing.copy(reservedDestinationPath = null)
             val next = record.copy(
@@ -191,6 +196,7 @@ internal object PublicationRecoveryJournal {
             ) {
                 return false
             }
+            if (isUnknownReservation(existing.reservedDestinationPath)) return false
             val updated = record.artifacts.toMutableList()
             if (!existing.reservedDestinationPath.isNullOrBlank() &&
                 !isReservationIntent(existing.reservedDestinationPath) &&
@@ -204,6 +210,38 @@ internal object PublicationRecoveryJournal {
                 } else {
                     Phase.PARTIAL
                 },
+            )
+            if (!persist(file, next)) return false
+            record = next
+            return true
+        }
+
+        /**
+         * Persist the third provider-creation outcome: the external call
+         * completed ambiguously (for example a RemoteException or null
+         * result after the provider may already have mutated state). This is
+         * deliberately not a destination and must never be cleared or
+         * replayed as a fresh provider operation without exact reconciliation.
+         */
+        @Synchronized
+        fun markReservationUnknown(sourcePath: String): Boolean {
+            val source = normalizeSource(sourcePath) ?: return false
+            val index = record.artifacts.indexOfFirst {
+                normalizeSource(it.sourcePath) == source
+            }
+            if (index < 0) return false
+            val existing = record.artifacts[index]
+            if (!existing.destinationPath.isNullOrBlank()) return true
+            if (isUnknownReservation(existing.reservedDestinationPath)) return true
+            if (!isReservationIntent(existing.reservedDestinationPath)) return false
+            val updated = record.artifacts.toMutableList()
+            updated[index] = existing.copy(
+                sourcePath = source,
+                reservedDestinationPath = buildUnknownReservation(source),
+            )
+            val next = record.copy(
+                artifacts = updated,
+                phase = Phase.PARTIAL,
             )
             if (!persist(file, next)) return false
             record = next
@@ -465,8 +503,14 @@ internal object PublicationRecoveryJournal {
     private fun buildReservationIntent(sourcePath: String): String =
         "$RESERVATION_INTENT_PREFIX${digest(sourcePath)}"
 
+    private fun buildUnknownReservation(sourcePath: String): String =
+        "$UNKNOWN_RESERVATION_PREFIX${digest(sourcePath)}"
+
     internal fun isReservationIntent(path: String?): Boolean =
         path?.startsWith(RESERVATION_INTENT_PREFIX) == true
+
+    internal fun isUnknownReservation(path: String?): Boolean =
+        path?.startsWith(UNKNOWN_RESERVATION_PREFIX) == true
 
     private fun isInside(candidate: File, root: File): Boolean = runCatching {
         candidate.canonicalFile.toPath().normalize()
@@ -494,4 +538,5 @@ internal object PublicationRecoveryJournal {
     )
 
     private const val RESERVATION_INTENT_PREFIX = "pending://ytdlnisx/"
+    private const val UNKNOWN_RESERVATION_PREFIX = "unknown://ytdlnisx/"
 }

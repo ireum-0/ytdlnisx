@@ -171,6 +171,7 @@ class PublicationRecoveryJournalTest {
             assertTrue(handle.reserveIntent(source.absolutePath))
             val intent = handle.snapshot().reservedDestinations().single()
             assertTrue(PublicationRecoveryJournal.isReservationIntent(intent))
+            assertFalse(handle.reserveIntent(source.absolutePath))
             assertFalse(
                 com.ireum.ytdl.util.FileUtil.isRecoverablePublicationComplete(
                     sourcePath = source.absolutePath,
@@ -186,6 +187,51 @@ class PublicationRecoveryJournalTest {
                 listOf("content://media/exact/12"),
                 handle.snapshot().reservedDestinations(),
             )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun unknownProviderReservationIsDurableAndCannotBeClearedOrReplayed() {
+        val root = Files.createTempDirectory("publication-journal-unknown-").toFile()
+        val storage = File(root, "journal")
+        try {
+            val source = File(root, "staging/output.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("output")
+            }
+            val handle = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = storage,
+                    kind = PublicationRecoveryJournal.Kind.DOWNLOAD,
+                    subjectId = "13",
+                    operationId = "operation-unknown",
+                    executionId = "execution-1",
+                    attemptId = "attempt-1",
+                    sourceRoot = root,
+                    sourceFiles = listOf(source),
+                )
+            )
+
+            assertTrue(handle.reserveIntent(source.absolutePath))
+            assertTrue(handle.markReservationUnknown(source.absolutePath))
+            val unknown = handle.snapshot().reservedDestinations().single()
+            assertTrue(PublicationRecoveryJournal.isUnknownReservation(unknown))
+            assertFalse(PublicationRecoveryJournal.isReservationIntent(unknown))
+
+            // UNKNOWN means the provider may have created an opaque object;
+            // clearing the fence or replaying creation could lose the only
+            // duplicate-prevention authority.
+            assertFalse(handle.clearReservation(source.absolutePath))
+            assertFalse(handle.reserveIntent(source.absolutePath))
+            assertFalse(handle.reserve(source.absolutePath, "content://media/exact/13"))
+            assertFalse(handle.markPublished(source.absolutePath, "content://media/exact/13"))
+            assertTrue(source.isFile)
+
+            val recovered = PublicationRecoveryJournal.readAll(storage).single()
+            val recoveredUnknown = recovered.artifacts.single().reservedDestinationPath
+            assertTrue(PublicationRecoveryJournal.isUnknownReservation(recoveredUnknown))
         } finally {
             root.deleteRecursively()
         }

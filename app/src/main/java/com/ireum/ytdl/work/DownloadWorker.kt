@@ -1375,11 +1375,11 @@ class DownloadWorker(
             return reserved
         }
 
-        private fun clearPublicationIntent(source: File): Boolean {
+        private fun markPublicationReservationUnknown(source: File): Boolean {
             val journal = publicationJournal ?: return true
-            val cleared = journal.clearReservation(source.absolutePath)
-            if (!cleared) publicationJournalWriteFailed = true
-            return cleared
+            val marked = journal.markReservationUnknown(source.absolutePath)
+            if (!marked) publicationJournalWriteFailed = true
+            return marked
         }
 
         private fun retirePublicationJournal() {
@@ -1470,7 +1470,10 @@ class DownloadWorker(
                     .forEach { artifact ->
                         val reserved = artifact.reservedDestinationPath
                         if (!reserved.isNullOrBlank()) {
-                            if (PublicationRecoveryJournal.isReservationIntent(reserved)) {
+                            if (
+                                PublicationRecoveryJournal.isReservationIntent(reserved) ||
+                                PublicationRecoveryJournal.isUnknownReservation(reserved)
+                            ) {
                                 // A provider creation may have happened just
                                 // before process death, before its exact URI
                                 // reached the journal.  The intent is a
@@ -1478,7 +1481,7 @@ class DownloadWorker(
                                 // destination candidate; do not clear it or
                                 // retry into a collision-suffixed duplicate.
                                 throw IOException(
-                                    "Download publication recovery has an unresolved provider reservation intent"
+                                    "Download publication recovery has an unresolved provider reservation"
                                 )
                             } else if (FileUtil.isRecoverablePublicationComplete(
                                     sourcePath = artifact.sourcePath,
@@ -1535,10 +1538,10 @@ class DownloadWorker(
                             }
                             reserved
                         },
-                        onOutputReservationFailed = { source ->
-                            val cleared = handle.clearReservation(source.absolutePath)
-                            if (!cleared) journalWriteFailed = true
-                            cleared
+                        onOutputReservationUnknown = { source ->
+                            val marked = handle.markReservationUnknown(source.absolutePath)
+                            if (!marked) journalWriteFailed = true
+                            marked
                         },
                         onOutputReserved = { source, destination ->
                             if (!handle.reserve(source.absolutePath, destination)) {
@@ -2126,8 +2129,8 @@ class DownloadWorker(
                                                 onOutputReservationIntent = { source ->
                                                     reservePublicationIntent(source)
                                                 },
-                                                onOutputReservationFailed = { source ->
-                                                    clearPublicationIntent(source)
+                                                onOutputReservationUnknown = { source ->
+                                                    markPublicationReservationUnknown(source)
                                                 },
                                                 onOutputReserved = { source, path ->
                                                     reservePublishedOutput(source, path)
@@ -2271,8 +2274,8 @@ class DownloadWorker(
                                                 onOutputReservationIntent = { source ->
                                                     reservePublicationIntent(source)
                                                 },
-                                                onOutputReservationFailed = { source ->
-                                                    clearPublicationIntent(source)
+                                                onOutputReservationUnknown = { source ->
+                                                    markPublicationReservationUnknown(source)
                                                 },
                                                 onOutputReserved = { source, path ->
                                                     reservePublishedOutput(source, path)
@@ -8620,10 +8623,10 @@ class DownloadWorker(
                             }
                             reserved
                         },
-                        onOutputReservationFailed = { source ->
-                            val cleared = publicationJournal?.clearReservation(source.absolutePath) ?: true
-                            if (!cleared) publicationJournalWriteFailed = true
-                            cleared
+                        onOutputReservationUnknown = { source ->
+                            val marked = publicationJournal?.markReservationUnknown(source.absolutePath) ?: true
+                            if (!marked) publicationJournalWriteFailed = true
+                            marked
                         },
                         onOutputReserved = { source, path ->
                             if (publicationJournal?.reserve(source.absolutePath, path) != true) {

@@ -418,7 +418,7 @@ object FileUtil {
         onOutputWithSource: ((File, String) -> Unit)? = null,
         onOutputReserved: ((File, String) -> Unit)? = null,
         onOutputReservationIntent: ((File) -> Boolean)? = null,
-        onOutputReservationFailed: ((File) -> Boolean)? = null,
+        onOutputReservationUnknown: ((File) -> Boolean)? = null,
         onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ) : List<String> {
@@ -460,16 +460,18 @@ object FileUtil {
                 )
             }
         }
-        fun clearOutputReservationIntent(source: File) {
+        var providerReservationUnknown = false
+        fun markOutputReservationUnknown(source: File) {
+            providerReservationUnknown = true
             try {
-                if (onOutputReservationFailed != null && !onOutputReservationFailed.invoke(source)) {
+                if (onOutputReservationUnknown != null && !onOutputReservationUnknown.invoke(source)) {
                     throw IOException(
-                        "Move output reservation intent could not be cleared for ${source.absolutePath}",
+                        "Move output reservation status could not be persisted for ${source.absolutePath}",
                     )
                 }
             } catch (error: Exception) {
                 throw IOException(
-                    "Move output reservation intent could not be cleared for ${source.absolutePath}",
+                    "Move output reservation status could not be persisted for ${source.absolutePath}",
                     error,
                 )
             }
@@ -495,13 +497,18 @@ object FileUtil {
                         onOutputWithSource = onOutputWithSource,
                         onOutputReserved = ::reserveOutput,
                         onOutputReservationIntent = ::reserveOutputIntent,
-                        onOutputReservationFailed = ::clearOutputReservationIntent,
+                        onOutputReservationUnknown = ::markOutputReservationUnknown,
                         onOutputCommitted = onOutputCommitted,
                         sourceFiles = sourceFiles,
                     )
                 }.onFailure { e ->
                     moveErrors.add("MediaStore raw-path move failed raw=$destDir normalized=$normalizedDestDir error=${e.message}")
                 }.getOrNull()
+                if (providerReservationUnknown) {
+                    throw IOException(
+                        "Provider publication completion is unknown; retry is fenced",
+                    )
+                }
                 if (mediaStoreMoved != null) {
                     if (!keepCache) {
                         cleanupMovedSourceTree(originDir, sourceFiles)
@@ -525,13 +532,18 @@ object FileUtil {
                             onOutputWithSource = onOutputWithSource,
                             onOutputReserved = ::reserveOutput,
                             onOutputReservationIntent = ::reserveOutputIntent,
-                            onOutputReservationFailed = ::clearOutputReservationIntent,
+                            onOutputReservationUnknown = ::markOutputReservationUnknown,
                             onOutputCommitted = onOutputCommitted,
                             sourceFiles = sourceFiles,
                         )
                     }.onFailure { e ->
                         moveErrors.add("MediaStore fallback failed raw=$destDir normalized=$normalizedDestDir error=${e.message}")
                     }.getOrNull()
+                    if (providerReservationUnknown) {
+                        throw IOException(
+                            "Provider publication completion is unknown; retry is fenced",
+                        )
+                    }
                     if (mediaStoreMoved != null) {
                         if (!keepCache) {
                             cleanupMovedSourceTree(originDir, sourceFiles)
@@ -553,10 +565,15 @@ object FileUtil {
                     onOutputWithSource = onOutputWithSource,
                     onOutputReserved = ::reserveOutput,
                     onOutputReservationIntent = ::reserveOutputIntent,
-                    onOutputReservationFailed = ::clearOutputReservationIntent,
+                    onOutputReservationUnknown = ::markOutputReservationUnknown,
                     onOutputCommitted = onOutputCommitted,
                     sourceFiles = sourceFiles,
                 )
+                if (providerReservationUnknown) {
+                    throw IOException(
+                        "Provider publication completion is unknown; retry is fenced",
+                    )
+                }
                 fileList.addAll(safResult.paths)
                 if (safResult.errors.isNotEmpty()) {
                     hasMoveFailure = true
@@ -670,7 +687,7 @@ object FileUtil {
         onOutputWithSource: ((File, String) -> Unit)? = null,
         onOutputReserved: ((File, String) -> Unit)? = null,
         onOutputReservationIntent: ((File) -> Unit)? = null,
-        onOutputReservationFailed: ((File) -> Unit)? = null,
+        onOutputReservationUnknown: ((File) -> Unit)? = null,
         onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ): ExactSafMoveResult = withContext(Dispatchers.IO) {
@@ -701,7 +718,7 @@ object FileUtil {
                     context,
                     targetDir,
                     onReservationIntent = { onOutputReservationIntent?.invoke(source) },
-                    onReservationFailed = { onOutputReservationFailed?.invoke(source) },
+                    onReservationUnknown = { onOutputReservationUnknown?.invoke(source) },
                     onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
                     onOutputCommitted = { path -> onOutputCommitted?.invoke(source, path) ?: true },
                 )
@@ -875,7 +892,7 @@ object FileUtil {
         onOutputWithSource: ((File, String) -> Unit)? = null,
         onOutputReserved: ((File, String) -> Unit)? = null,
         onOutputReservationIntent: ((File) -> Unit)? = null,
-        onOutputReservationFailed: ((File) -> Unit)? = null,
+        onOutputReservationUnknown: ((File) -> Unit)? = null,
         onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ): List<String>? {
@@ -918,7 +935,7 @@ object FileUtil {
                     source = source,
                     relativeDir = targetRelativeDir,
                     onReservationIntent = { onOutputReservationIntent?.invoke(source) },
-                    onReservationFailed = { onOutputReservationFailed?.invoke(source) },
+                    onReservationUnknown = { onOutputReservationUnknown?.invoke(source) },
                     onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
                     onOutputCommitted = { path -> onOutputCommitted?.invoke(source, path) ?: true },
                 )
@@ -954,7 +971,7 @@ object FileUtil {
         source: File,
         relativeDir: String,
         onReservationIntent: (() -> Unit)? = null,
-        onReservationFailed: (() -> Unit)? = null,
+        onReservationUnknown: (() -> Unit)? = null,
         onDestinationReserved: ((String) -> Unit)? = null,
         onOutputCommitted: ((String) -> Boolean)? = null,
     ): MediaStoreMoveResult {
@@ -974,10 +991,10 @@ object FileUtil {
         val uri = try {
             resolver.insert(collection, values)
         } catch (error: Exception) {
-            runCatching { onReservationFailed?.invoke() }
+            runCatching { onReservationUnknown?.invoke() }
             throw error
         } ?: run {
-            onReservationFailed?.invoke()
+            onReservationUnknown?.invoke()
             throw IOException("MediaStore insert returned null for ${source.name}")
         }
 
@@ -1071,7 +1088,7 @@ object FileUtil {
         context: Context,
         dst: DocumentFile,
         onReservationIntent: (() -> Unit)? = null,
-        onReservationFailed: (() -> Unit)? = null,
+        onReservationUnknown: (() -> Unit)? = null,
         onDestinationReserved: ((String) -> Unit)? = null,
         onOutputCommitted: ((String) -> Boolean)? = null,
     ) : Uri? {
@@ -1086,11 +1103,11 @@ object FileUtil {
                 mimeType,
                 displayName
             ) ?: run {
-                onReservationFailed?.invoke()
+                onReservationUnknown?.invoke()
                 return null
             }
         } catch (error: Exception) {
-            runCatching { onReservationFailed?.invoke() }
+            runCatching { onReservationUnknown?.invoke() }
             throw error
         }
 
