@@ -148,6 +148,50 @@ class PublicationRecoveryJournalTest {
     }
 
     @Test
+    fun providerReservationIntentFencesRetryUntilExactUriIsRecorded() {
+        val root = Files.createTempDirectory("publication-journal-intent-").toFile()
+        val storage = File(root, "journal")
+        try {
+            val source = File(root, "staging/output.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("output")
+            }
+            val handle = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = storage,
+                    kind = PublicationRecoveryJournal.Kind.DOWNLOAD,
+                    subjectId = "12",
+                    operationId = "operation-intent",
+                    executionId = "execution-1",
+                    attemptId = "attempt-1",
+                    sourceRoot = root,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(handle.reserveIntent(source.absolutePath))
+            val intent = handle.snapshot().reservedDestinations().single()
+            assertTrue(PublicationRecoveryJournal.isReservationIntent(intent))
+            assertFalse(
+                com.ireum.ytdl.util.FileUtil.isRecoverablePublicationComplete(
+                    sourcePath = source.absolutePath,
+                    destinationPath = intent,
+                    context = null,
+                )
+            )
+
+            // The provider's exact URI is the only value that may replace the
+            // intent and become a publication destination.
+            assertTrue(handle.reserve(source.absolutePath, "content://media/exact/12"))
+            assertEquals(
+                listOf("content://media/exact/12"),
+                handle.snapshot().reservedDestinations(),
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun absentReservationCanBeReboundForAProviderOrCollisionSafeRetry() {
         val root = Files.createTempDirectory("publication-journal-rebind-").toFile()
         val storage = File(root, "journal")

@@ -421,6 +421,16 @@ class TerminalDownloadWorker(
                         },
                         sourceFiles = sourceFiles,
                         onOutput = { path -> movedOutputPaths.add(path) },
+                        onOutputReservationIntent = { source ->
+                            val reserved = terminalPublicationJournal?.reserveIntent(source.absolutePath) == true
+                            if (!reserved) publicationJournalWriteFailed = true
+                            reserved
+                        },
+                        onOutputReservationFailed = { source ->
+                            val cleared = terminalPublicationJournal?.clearReservation(source.absolutePath) == true
+                            if (!cleared) publicationJournalWriteFailed = true
+                            cleared
+                        },
                         onOutputReserved = { source, path ->
                             if (terminalPublicationJournal?.reserve(source.absolutePath, path) != true) {
                                 publicationJournalWriteFailed = true

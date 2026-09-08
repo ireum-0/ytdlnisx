@@ -180,7 +180,14 @@ internal object TerminalPublicationRecovery {
                 .forEach { artifact ->
                     val reserved = artifact.reservedDestinationPath
                     if (!reserved.isNullOrBlank()) {
-                        if (FileUtil.isRecoverablePublicationComplete(
+                        if (PublicationRecoveryJournal.isReservationIntent(reserved)) {
+                            // A provider create/insert can outlive the
+                            // process before the returned URI is persisted.
+                            // Keep this operation fenced in recovery-only
+                            // state; an intent is never a destination and
+                            // must not be cleared from existence checks.
+                            reservationFailed = true
+                        } else if (FileUtil.isRecoverablePublicationComplete(
                                 sourcePath = artifact.sourcePath,
                                 destinationPath = reserved,
                                 context = context,

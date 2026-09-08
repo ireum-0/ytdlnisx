@@ -100,12 +100,46 @@ internal object PublicationRecoveryJournal {
                 return normalizeDestination(existing.destinationPath) == destination
             }
             if (!existing.reservedDestinationPath.isNullOrBlank() &&
-                normalizeDestination(existing.reservedDestinationPath) != destination
+                normalizeDestination(existing.reservedDestinationPath) != destination &&
+                !isReservationIntent(existing.reservedDestinationPath)
             ) return false
             val updated = record.artifacts.toMutableList()
             updated[index] = existing.copy(
                 sourcePath = source,
                 reservedDestinationPath = destination,
+            )
+            val next = record.copy(
+                artifacts = updated,
+                phase = Phase.PUBLISHING,
+            )
+            if (!persist(file, next)) return false
+            record = next
+            return true
+        }
+
+        /**
+         * Persist an operation-bound provider creation intent before calling
+         * createDocument()/insert().  The intent is deliberately not a
+         * destination path and can never grant output authority; it only
+         * prevents a retry from racing an exact provider URI that may have
+         * been created before the process died.  The subsequent exact
+         * reserve() call replaces it with the URI returned by the provider.
+         */
+        @Synchronized
+        fun reserveIntent(sourcePath: String): Boolean {
+            val source = normalizeSource(sourcePath) ?: return false
+            val index = record.artifacts.indexOfFirst {
+                normalizeSource(it.sourcePath) == source
+            }
+            if (index < 0) return false
+            val existing = record.artifacts[index]
+            if (!existing.destinationPath.isNullOrBlank()) return true
+            if (isReservationIntent(existing.reservedDestinationPath)) return true
+            if (!existing.reservedDestinationPath.isNullOrBlank()) return true
+            val updated = record.artifacts.toMutableList()
+            updated[index] = existing.copy(
+                sourcePath = source,
+                reservedDestinationPath = buildReservationIntent(source),
             )
             val next = record.copy(
                 artifacts = updated,
@@ -159,6 +193,7 @@ internal object PublicationRecoveryJournal {
             }
             val updated = record.artifacts.toMutableList()
             if (!existing.reservedDestinationPath.isNullOrBlank() &&
+                !isReservationIntent(existing.reservedDestinationPath) &&
                 normalizeDestination(existing.reservedDestinationPath) != destination
             ) return false
             updated[index] = Artifact(source, destination, reservedDestinationPath = null)
@@ -328,6 +363,11 @@ internal object PublicationRecoveryJournal {
     internal fun readAll(context: Context): List<Record> =
         readAll(File(context.filesDir, DIRECTORY_NAME))
 
+    internal fun reservationIntentForSource(sourcePath: String): String? {
+        val source = normalizeSource(sourcePath) ?: return null
+        return buildReservationIntent(source)
+    }
+
     internal fun findDownload(
         context: Context,
         downloadId: Long,
@@ -422,6 +462,12 @@ internal object PublicationRecoveryJournal {
         }
     }
 
+    private fun buildReservationIntent(sourcePath: String): String =
+        "$RESERVATION_INTENT_PREFIX${digest(sourcePath)}"
+
+    internal fun isReservationIntent(path: String?): Boolean =
+        path?.startsWith(RESERVATION_INTENT_PREFIX) == true
+
     private fun isInside(candidate: File, root: File): Boolean = runCatching {
         candidate.canonicalFile.toPath().normalize()
             .startsWith(root.canonicalFile.toPath().normalize())
@@ -446,4 +492,6 @@ internal object PublicationRecoveryJournal {
                 .joinToString("\u0000")
         ) + ".json",
     )
+
+    private const val RESERVATION_INTENT_PREFIX = "pending://ytdlnisx/"
 }

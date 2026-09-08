@@ -417,6 +417,8 @@ object FileUtil {
         onOutput: (String) -> Unit,
         onOutputWithSource: ((File, String) -> Unit)? = null,
         onOutputReserved: ((File, String) -> Unit)? = null,
+        onOutputReservationIntent: ((File) -> Boolean)? = null,
+        onOutputReservationFailed: ((File) -> Boolean)? = null,
         onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ) : List<String> {
@@ -444,6 +446,34 @@ object FileUtil {
                 )
             }
         }
+        fun reserveOutputIntent(source: File) {
+            try {
+                if (onOutputReservationIntent != null && !onOutputReservationIntent.invoke(source)) {
+                    throw IOException(
+                        "Move output reservation intent could not be persisted for ${source.absolutePath}",
+                    )
+                }
+            } catch (error: Exception) {
+                throw IOException(
+                    "Move output reservation intent could not be persisted for ${source.absolutePath}",
+                    error,
+                )
+            }
+        }
+        fun clearOutputReservationIntent(source: File) {
+            try {
+                if (onOutputReservationFailed != null && !onOutputReservationFailed.invoke(source)) {
+                    throw IOException(
+                        "Move output reservation intent could not be cleared for ${source.absolutePath}",
+                    )
+                }
+            } catch (error: Exception) {
+                throw IOException(
+                    "Move output reservation intent could not be cleared for ${source.absolutePath}",
+                    error,
+                )
+            }
+        }
         return withContext(Dispatchers.Main){
             lastMoveFailureDetails = null
             val fileList = mutableListOf<String>()
@@ -464,6 +494,8 @@ object FileUtil {
                         onOutput = ::notifyOutput,
                         onOutputWithSource = onOutputWithSource,
                         onOutputReserved = ::reserveOutput,
+                        onOutputReservationIntent = ::reserveOutputIntent,
+                        onOutputReservationFailed = ::clearOutputReservationIntent,
                         onOutputCommitted = onOutputCommitted,
                         sourceFiles = sourceFiles,
                     )
@@ -492,6 +524,8 @@ object FileUtil {
                             onOutput = ::notifyOutput,
                             onOutputWithSource = onOutputWithSource,
                             onOutputReserved = ::reserveOutput,
+                            onOutputReservationIntent = ::reserveOutputIntent,
+                            onOutputReservationFailed = ::clearOutputReservationIntent,
                             onOutputCommitted = onOutputCommitted,
                             sourceFiles = sourceFiles,
                         )
@@ -518,6 +552,8 @@ object FileUtil {
                     onOutput = ::notifyOutput,
                     onOutputWithSource = onOutputWithSource,
                     onOutputReserved = ::reserveOutput,
+                    onOutputReservationIntent = ::reserveOutputIntent,
+                    onOutputReservationFailed = ::clearOutputReservationIntent,
                     onOutputCommitted = onOutputCommitted,
                     sourceFiles = sourceFiles,
                 )
@@ -633,6 +669,8 @@ object FileUtil {
         onOutput: (String) -> Unit,
         onOutputWithSource: ((File, String) -> Unit)? = null,
         onOutputReserved: ((File, String) -> Unit)? = null,
+        onOutputReservationIntent: ((File) -> Unit)? = null,
+        onOutputReservationFailed: ((File) -> Unit)? = null,
         onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ): ExactSafMoveResult = withContext(Dispatchers.IO) {
@@ -662,6 +700,8 @@ object FileUtil {
                     source,
                     context,
                     targetDir,
+                    onReservationIntent = { onOutputReservationIntent?.invoke(source) },
+                    onReservationFailed = { onOutputReservationFailed?.invoke(source) },
                     onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
                     onOutputCommitted = { path -> onOutputCommitted?.invoke(source, path) ?: true },
                 )
@@ -834,6 +874,8 @@ object FileUtil {
         onOutput: (String) -> Unit,
         onOutputWithSource: ((File, String) -> Unit)? = null,
         onOutputReserved: ((File, String) -> Unit)? = null,
+        onOutputReservationIntent: ((File) -> Unit)? = null,
+        onOutputReservationFailed: ((File) -> Unit)? = null,
         onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ): List<String>? {
@@ -875,6 +917,8 @@ object FileUtil {
                     context = context,
                     source = source,
                     relativeDir = targetRelativeDir,
+                    onReservationIntent = { onOutputReservationIntent?.invoke(source) },
+                    onReservationFailed = { onOutputReservationFailed?.invoke(source) },
                     onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
                     onOutputCommitted = { path -> onOutputCommitted?.invoke(source, path) ?: true },
                 )
@@ -909,6 +953,8 @@ object FileUtil {
         context: Context,
         source: File,
         relativeDir: String,
+        onReservationIntent: (() -> Unit)? = null,
+        onReservationFailed: (() -> Unit)? = null,
         onDestinationReserved: ((String) -> Unit)? = null,
         onOutputCommitted: ((String) -> Boolean)? = null,
     ): MediaStoreMoveResult {
@@ -924,8 +970,16 @@ object FileUtil {
             put(MediaStore.MediaColumns.RELATIVE_PATH, normalizedRelativeDir)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val uri = resolver.insert(collection, values)
-            ?: throw IOException("MediaStore insert returned null for ${source.name}")
+        onReservationIntent?.invoke()
+        val uri = try {
+            resolver.insert(collection, values)
+        } catch (error: Exception) {
+            runCatching { onReservationFailed?.invoke() }
+            throw error
+        } ?: run {
+            onReservationFailed?.invoke()
+            throw IOException("MediaStore insert returned null for ${source.name}")
+        }
 
         try {
             onDestinationReserved?.invoke(uri.toString())
@@ -1016,18 +1070,29 @@ object FileUtil {
         it: File,
         context: Context,
         dst: DocumentFile,
+        onReservationIntent: (() -> Unit)? = null,
+        onReservationFailed: (() -> Unit)? = null,
         onDestinationReserved: ((String) -> Unit)? = null,
         onOutputCommitted: ((String) -> Boolean)? = null,
     ) : Uri? {
         val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.extension) ?: "*/*"
         val displayName = resolveUniqueDocumentName(dst, it.name)
 
-        val destUri = DocumentsContract.createDocument(
-            context.contentResolver,
-            dst.uri,
-            mimeType,
-            displayName
-        ) ?: return null
+        onReservationIntent?.invoke()
+        val destUri = try {
+            DocumentsContract.createDocument(
+                context.contentResolver,
+                dst.uri,
+                mimeType,
+                displayName
+            ) ?: run {
+                onReservationFailed?.invoke()
+                return null
+            }
+        } catch (error: Exception) {
+            runCatching { onReservationFailed?.invoke() }
+            throw error
+        }
 
         try {
             onDestinationReserved?.invoke(destUri.toString())
