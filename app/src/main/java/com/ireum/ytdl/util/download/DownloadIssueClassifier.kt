@@ -142,6 +142,7 @@ object DownloadIssueClassifier {
                 }
                 DownloadIssueCode.FORMAT_UNAVAILABLE,
                 DownloadIssueCode.FFMPEG_FAILED,
+                DownloadIssueCode.PUBLICATION_OUTCOME_UNKNOWN,
                 DownloadIssueCode.UNKNOWN -> add(DownloadSuggestedAction.RECONFIGURE)
                 DownloadIssueCode.NETWORK_TIMEOUT -> add(DownloadSuggestedAction.OPEN_NETWORK_SETTINGS)
                 DownloadIssueCode.STORAGE_FULL -> add(DownloadSuggestedAction.OPEN_STORAGE_SETTINGS)

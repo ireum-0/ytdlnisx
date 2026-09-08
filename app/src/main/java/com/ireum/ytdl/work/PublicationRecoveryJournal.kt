@@ -3,6 +3,7 @@ package com.ireum.ytdl.work
 import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.JsonParser
+import com.ireum.ytdl.util.storage.TerminalCacheOwnership
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.Files
@@ -39,6 +40,13 @@ internal object PublicationRecoveryJournal {
         COMMITTED,
         /** Exact remainder was durably quarantined after a failed attempt. */
         QUARANTINED,
+        /**
+         * Provider creation crossed an opaque external boundary but did not
+         * return an exact destination.  This is a terminal quarantine state:
+         * it fences provider replay without pretending that an object was
+         * created or that it can be recovered by name/directory scans.
+         */
+        QUARANTINED_UNKNOWN,
     }
 
     internal data class Artifact(
@@ -248,9 +256,54 @@ internal object PublicationRecoveryJournal {
             return true
         }
 
+        /**
+         * Convert an ambiguous provider reservation into a durable terminal
+         * outcome. A pending intent is included: after a process dies between
+         * intent persistence and the provider call, this architecture cannot
+         * prove that the call was never crossed. Treating it conservatively as
+         * UNKNOWN prevents replay while the sentinel remains evidence and
+         * continues to reject clear/reserve/publish operations.
+         */
+        @Synchronized
+        fun terminalizeUnknownReservation(): Boolean {
+            if (record.phase == Phase.QUARANTINED_UNKNOWN) return true
+            if (!record.artifacts.any {
+                    isUnknownReservation(it.reservedDestinationPath) ||
+                        isReservationIntent(it.reservedDestinationPath)
+                }) {
+                return false
+            }
+            val next = record.copy(
+                artifacts = record.artifacts.map { artifact ->
+                    if (isReservationIntent(artifact.reservedDestinationPath)) {
+                        artifact.copy(
+                            reservedDestinationPath = buildUnknownReservation(artifact.sourcePath),
+                        )
+                    } else {
+                        artifact
+                    }
+                },
+                phase = Phase.QUARANTINED_UNKNOWN,
+            )
+            if (!persist(file, next)) return false
+            record = next
+            return true
+        }
+
         /** Persist a phase transition without retiring exact lineage. */
         @Synchronized
         fun markPhase(phase: Phase): Boolean {
+            if (record.phase == Phase.QUARANTINED_UNKNOWN && phase != Phase.QUARANTINED_UNKNOWN) {
+                // Once opaque provider completion has been terminalized, no
+                // generic phase transition may reopen or retire the fence.
+                return false
+            }
+            if (
+                phase == Phase.QUARANTINED_UNKNOWN &&
+                    !record.artifacts.any { isUnknownReservation(it.reservedDestinationPath) }
+            ) {
+                return false
+            }
             if (
                 phase in setOf(Phase.COMPLETE, Phase.COMMITTING, Phase.COMMITTED) &&
                 record.artifacts.any { it.destinationPath.isNullOrBlank() }
@@ -268,7 +321,25 @@ internal object PublicationRecoveryJournal {
         fun clear(): Boolean {
             val canRetire = when (record.kind) {
                 Kind.DOWNLOAD -> record.phase == Phase.COMPLETE
-                Kind.TERMINAL -> record.phase == Phase.COMMITTED || record.phase == Phase.QUARANTINED
+                Kind.TERMINAL -> when (record.phase) {
+                    Phase.COMMITTED,
+                    Phase.QUARANTINED -> true
+                    Phase.QUARANTINED_UNKNOWN -> {
+                        // UNKNOWN may be retired only after Terminal
+                        // recovery has durably installed and validated its
+                        // marker-revoked quarantine carrier.  The journal is
+                        // otherwise the sole evidence and must remain.
+                        val root = runCatching { File(record.sourceRoot).canonicalFile }
+                            .getOrNull()
+                        root != null &&
+                            !TerminalCacheOwnership.markerFile(root).isFile &&
+                            TerminalCacheOwnership.isValidRecoveryCarrier(
+                                root,
+                                record.executionId,
+                            )
+                    }
+                    else -> false
+                }
             }
             if (!canRetire) return false
             if (!file.exists()) return true
@@ -512,6 +583,9 @@ internal object PublicationRecoveryJournal {
     internal fun isUnknownReservation(path: String?): Boolean =
         path?.startsWith(UNKNOWN_RESERVATION_PREFIX) == true
 
+    internal fun isUnknownTerminal(record: Record): Boolean =
+        record.phase == Phase.QUARANTINED_UNKNOWN
+
     private fun isInside(candidate: File, root: File): Boolean = runCatching {
         candidate.canonicalFile.toPath().normalize()
             .startsWith(root.canonicalFile.toPath().normalize())
@@ -540,3 +614,12 @@ internal object PublicationRecoveryJournal {
     private const val RESERVATION_INTENT_PREFIX = "pending://ytdlnisx/"
     private const val UNKNOWN_RESERVATION_PREFIX = "unknown://ytdlnisx/"
 }
+
+/**
+ * Raised only when an exact provider destination was never obtained and the
+ * durable journal has fenced the operation from replay.  It is deliberately
+ * distinct from retryable I/O so Download can persist a terminal diagnostic.
+ */
+internal class UnknownProviderPublicationException(
+    message: String = "Provider publication outcome is unknown and has been quarantined",
+) : java.io.IOException(message)

@@ -135,6 +135,77 @@ import kotlin.text.Regex
 
 
 /**
+ * Converges opaque provider-create outcomes discovered after process death.
+ * The publication journal is the only authority inspected here; no provider
+ * destination lookup is attempted. An execution that is still owned by a
+ * live worker (or native process) is left for that worker's exact handler.
+ */
+internal suspend fun convergeUnknownProviderPublicationDebt(
+    context: Context,
+    dbManager: DBManager,
+) = withContext(Dispatchers.IO + NonCancellable) {
+    val dao = dbManager.downloadDao
+        PublicationRecoveryJournal.readAll(context)
+        .filter { record ->
+            record.kind == PublicationRecoveryJournal.Kind.DOWNLOAD &&
+                (
+                    PublicationRecoveryJournal.isUnknownTerminal(record) ||
+                        record.artifacts.any {
+                            PublicationRecoveryJournal.isUnknownReservation(it.reservedDestinationPath) ||
+                                PublicationRecoveryJournal.isReservationIntent(it.reservedDestinationPath)
+                        }
+                )
+        }
+        .forEach { record ->
+            val downloadId = record.subjectId.toLongOrNull() ?: return@forEach
+            val current = dao.getNullableDownloadById(downloadId)
+            if (
+                current != null &&
+                    current.executionId == record.executionId &&
+                    (
+                        DownloadWorkerExecutionOwners.isOwnedBy(
+                            downloadId,
+                            record.executionId,
+                        ) || DownloadWorker.hasRegisteredNativeProcess(
+                            downloadId,
+                            record.executionId,
+                        )
+                    )
+            ) return@forEach
+
+            val journal = PublicationRecoveryJournal.open(context, record)
+                ?: return@forEach
+            if (!journal.terminalizeUnknownReservation()) {
+                Log.w(
+                    "DownloadWorker",
+                    "Could not terminalize unknown provider publication id=$downloadId",
+                )
+                return@forEach
+            }
+            if (
+                current != null &&
+                    current.executionId == record.executionId &&
+                    current.status in setOf(
+                        DownloadRepository.Status.Active.name,
+                        DownloadRepository.Status.PostProcessing.name,
+                    )
+            ) {
+                val terminal = current.copy(
+                    status = DownloadRepository.Status.Error.name,
+                    lastIssueCode = DownloadIssueCode.PUBLICATION_OUTCOME_UNKNOWN.name,
+                    lastIssueStage = DownloadIssueStage.MOVE.name,
+                )
+                if (!dao.updateIfExecutionOwnedAndRunning(terminal, record.executionId)) {
+                    Log.w(
+                        "DownloadWorker",
+                        "Unknown provider publication Download row could not converge id=$downloadId",
+                    )
+                }
+            }
+        }
+}
+
+/**
  * Production startup boundary: per-Download recovery debt is retained by
  * DownloadExecutionRecovery, while a healthy queue may still be observed.
  * Only a genuinely global reconciliation failure escapes before admission.
@@ -150,6 +221,7 @@ internal suspend fun observeQueuedDownloadsAfterRecovery(
     priorityItemIds: List<Long>,
     currentTimeMillis: Long,
 ): DownloadQueueAdmission {
+    convergeUnknownProviderPublicationDebt(context, dbManager)
     val recovery = DownloadExecutionRecovery.reconcile(context, dbManager)
     if (recovery.deferredDownloadIds.isNotEmpty()) {
         Log.w(
@@ -1382,6 +1454,37 @@ class DownloadWorker(
             return marked
         }
 
+        /**
+         * UNKNOWN provider completion is not a retryable move failure.  Once
+         * an opaque provider call may have crossed its creation boundary, the
+         * journal must become a durable terminal fence before this Download
+         * reports its diagnostic outcome.  The unknown sentinel is retained;
+         * no URI is fabricated and no provider object is discovered by scan.
+         */
+        private fun terminalizeUnknownPublicationReservation(): Boolean {
+            val journal = publicationJournal ?: return false
+            val snapshot = journal.snapshot()
+            if (
+                snapshot.phase != PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN &&
+                    snapshot.artifacts.none {
+                        PublicationRecoveryJournal.isUnknownReservation(it.reservedDestinationPath) ||
+                            PublicationRecoveryJournal.isReservationIntent(it.reservedDestinationPath)
+                    }
+            ) return false
+            val terminalized = journal.terminalizeUnknownReservation()
+            if (!terminalized) publicationJournalWriteFailed = true
+            return terminalized
+        }
+
+        private fun hasUnknownPublicationReservation(): Boolean {
+            val snapshot = publicationJournal?.snapshot() ?: return false
+            return snapshot.phase == PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN ||
+                snapshot.artifacts.any {
+                    PublicationRecoveryJournal.isUnknownReservation(it.reservedDestinationPath) ||
+                        PublicationRecoveryJournal.isReservationIntent(it.reservedDestinationPath)
+                }
+        }
+
         private fun retirePublicationJournal() {
             publicationJournal?.let { handle ->
                 if (!handle.clear()) {
@@ -1453,6 +1556,20 @@ class DownloadWorker(
                 }
                 val handle = PublicationRecoveryJournal.open(context, record)
                     ?: throw IOException("Download publication recovery journal changed during read")
+                if (
+                    PublicationRecoveryJournal.isUnknownTerminal(record) ||
+                        record.artifacts.any {
+                            PublicationRecoveryJournal.isUnknownReservation(it.reservedDestinationPath) ||
+                                PublicationRecoveryJournal.isReservationIntent(it.reservedDestinationPath)
+                        }
+                ) {
+                    if (!handle.terminalizeUnknownReservation()) {
+                        throw IOException(
+                            "Download provider publication outcome could not be terminalized",
+                        )
+                    }
+                    throw UnknownProviderPublicationException()
+                }
                 record.publishedDestinations().forEach { destination ->
                     if (!FileUtil.exists(destination, context)) {
                         throw IOException(
@@ -3186,13 +3303,18 @@ class DownloadWorker(
                         } else {
                             null
                         }
+                        val providerOutcomeUnknown =
+                            terminalizeUnknownPublicationReservation() ||
+                                hasUnknownPublicationReservation()
                         val classifiedIssues = DownloadIssueClassifier.classify(
                             DownloadIssueClassifier.Input(
                                 stage = currentIssueStage,
                                 exceptionClassName = it.javaClass.name,
                                 message = it.message.orEmpty(),
                                 output = failedYtdlpState?.logging?.recentOutput.orEmpty().joinToString("\n"),
-                                destinationWritable = destinationWritable
+                                destinationWritable = destinationWritable,
+                                explicitCode = DownloadIssueCode.PUBLICATION_OUTCOME_UNKNOWN
+                                    .takeIf { providerOutcomeUnknown },
                             )
                         )
                         var primaryIssue = classifiedIssues.first()
@@ -3290,13 +3412,12 @@ class DownloadWorker(
                         }
                         val targetDeleted = historyReplacementTerminalAction ==
                             HistoryReplacementTerminalAction.TARGET_DELETED
-                        if (targetDeleted || HistoryReplacementOutcomePolicy.allowsPartialSuccess(
+                        if (!providerOutcomeUnknown && (targetDeleted || HistoryReplacementOutcomePolicy.allowsPartialSuccess(
                                 hasCreatedOutputs = createdOutputPaths.isNotEmpty(),
                                 cleanupAction = qualityCleanupAction,
                                 authoritativeAction = historyReplacementTerminalAction,
                                 cleanupCompleted = qualityCleanupCompleted,
-                            )
-                        ) {
+                            ))) {
                             val warningIssue = if (targetDeleted) {
                                 HistoryReplacementDiagnostic.targetDeletedIssue()
                             } else {
@@ -3791,9 +3912,16 @@ class DownloadWorker(
                         refreshDurableHistoryReplacementBarrier()
                         val targetDeleted = historyReplacementTerminalAction ==
                             HistoryReplacementTerminalAction.TARGET_DELETED
+                        val providerOutcomeUnknown = unexpected is UnknownProviderPublicationException ||
+                            terminalizeUnknownPublicationReservation() ||
+                            hasUnknownPublicationReservation()
                         val fallbackIssue = DownloadIssue.create(
                             stage = currentIssueStage,
-                            code = DownloadIssueCode.UNKNOWN,
+                            code = if (providerOutcomeUnknown) {
+                                DownloadIssueCode.PUBLICATION_OUTCOME_UNKNOWN
+                            } else {
+                                DownloadIssueCode.UNKNOWN
+                            },
                             details = unexpected.message.orEmpty(),
                             source = DownloadIssueSource.TYPED_EXCEPTION
                         )

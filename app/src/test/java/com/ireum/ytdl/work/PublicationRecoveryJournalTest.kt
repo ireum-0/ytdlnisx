@@ -238,6 +238,148 @@ class PublicationRecoveryJournalTest {
     }
 
     @Test
+    fun unknownProviderReservationCanBeTerminalizedWithoutLosingItsFence() {
+        val root = Files.createTempDirectory("publication-journal-unknown-terminal-").toFile()
+        val storage = File(root, "journal")
+        try {
+            val source = File(root, "staging/output.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("output")
+            }
+            val handle = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = storage,
+                    kind = PublicationRecoveryJournal.Kind.DOWNLOAD,
+                    subjectId = "14",
+                    operationId = "operation-unknown-terminal",
+                    executionId = "execution-1",
+                    attemptId = "attempt-1",
+                    sourceRoot = root,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(handle.reserveIntent(source.absolutePath))
+            assertTrue(handle.markReservationUnknown(source.absolutePath))
+            assertTrue(handle.terminalizeUnknownReservation())
+            assertTrue(handle.terminalizeUnknownReservation())
+            assertFalse(handle.markPhase(PublicationRecoveryJournal.Phase.PARTIAL))
+            assertFalse(handle.clear())
+
+            val recovered = PublicationRecoveryJournal.readAll(storage).single()
+            assertEquals(
+                PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN,
+                recovered.phase,
+            )
+            val reopened = requireNotNull(PublicationRecoveryJournal.open(storage, recovered))
+            assertFalse(reopened.clear())
+            assertFalse(reopened.reserveIntent(source.absolutePath))
+            assertFalse(reopened.reserve(source.absolutePath, "content://media/rebound/14"))
+            assertFalse(reopened.markPublished(source.absolutePath, "content://media/rebound/14"))
+            assertTrue(source.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun pendingProviderIntentConvergesConservativelyWhenCallBoundaryIsUnknown() {
+        val root = Files.createTempDirectory("publication-journal-intent-terminal-").toFile()
+        val storage = File(root, "journal")
+        try {
+            val source = File(root, "staging/output.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("output")
+            }
+            val handle = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = storage,
+                    kind = PublicationRecoveryJournal.Kind.DOWNLOAD,
+                    subjectId = "15",
+                    operationId = "operation-intent-terminal",
+                    executionId = "execution-1",
+                    attemptId = "attempt-1",
+                    sourceRoot = root,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(handle.reserveIntent(source.absolutePath))
+            assertTrue(handle.terminalizeUnknownReservation())
+
+            val recovered = PublicationRecoveryJournal.readAll(storage).single()
+            assertEquals(
+                PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN,
+                recovered.phase,
+            )
+            assertTrue(
+                PublicationRecoveryJournal.isUnknownReservation(
+                    recovered.artifacts.single().reservedDestinationPath,
+                )
+            )
+            assertFalse(handle.clearReservation(source.absolutePath))
+            assertFalse(handle.reserveIntent(source.absolutePath))
+            assertTrue(source.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun terminalUnknownReservationConvergesToQuarantineAndReconcileIsIdempotent() {
+        val root = Files.createTempDirectory("terminal-unknown-convergence-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "14-unknown"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val source = File(directory, "remainder.mp4").apply { writeText("remainder") }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(source.absolutePath)))
+            val journal = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = journalStorage,
+                    kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                    subjectId = "14",
+                    operationId = "terminal-14",
+                    executionId = taskToken,
+                    attemptId = taskToken,
+                    sourceRoot = directory,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(journal.reserveIntent(source.absolutePath))
+            assertTrue(journal.markReservationUnknown(source.absolutePath))
+            assertTrue(journal.terminalizeUnknownReservation())
+            assertFalse(journal.clear())
+
+            val first = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { true },
+                allowUnknownWithoutRow = true,
+            )
+
+            assertEquals(1, first.journalCount)
+            assertEquals(1, first.quarantinedCount)
+            assertEquals(1, first.retiredCount)
+            assertTrue(source.isFile)
+            assertFalse(TerminalCacheOwnership.markerFile(directory).exists())
+            assertTrue(TerminalCacheOwnership.recoveryCarrierFile(directory).isFile)
+            assertTrue(PublicationRecoveryJournal.readAll(journalStorage).isEmpty())
+
+            val second = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { true },
+                allowUnknownWithoutRow = true,
+            )
+            assertEquals(0, second.journalCount)
+            assertTrue(source.isFile)
+            assertTrue(TerminalCacheOwnership.recoveryCarrierFile(directory).isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun absentReservationCanBeReboundForAProviderOrCollisionSafeRetry() {
         val root = Files.createTempDirectory("publication-journal-rebind-").toFile()
         val storage = File(root, "journal")

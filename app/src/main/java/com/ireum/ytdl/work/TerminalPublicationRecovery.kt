@@ -22,6 +22,8 @@ import java.io.File
  * only carrier-listed exact remainder files after a verified terminal result.
  */
 internal object TerminalPublicationRecovery {
+    private const val UNKNOWN_QUARANTINE_PHASE = "QUARANTINED_UNKNOWN"
+
     internal data class ReconcileResult(
         val journalCount: Int,
         val quarantinedCount: Int,
@@ -37,6 +39,8 @@ internal object TerminalPublicationRecovery {
     internal enum class Admission {
         ACQUIRED,
         ALREADY_COMMITTED,
+        /** A fenced UNKNOWN provider outcome was terminalized; do not retry. */
+        TERMINAL_FAILURE,
         BLOCKED,
     }
 
@@ -61,6 +65,60 @@ internal object TerminalPublicationRecovery {
                     it.subjectId == subjectId.toString()
             }
         if (before.any { activeExecution(it.executionId) }) return@withContext Admission.BLOCKED
+
+        val unknownBefore = before.filter { record ->
+            PublicationRecoveryJournal.isUnknownTerminal(record) ||
+                record.artifacts.any {
+                    PublicationRecoveryJournal.isUnknownReservation(it.reservedDestinationPath) ||
+                        PublicationRecoveryJournal.isReservationIntent(it.reservedDestinationPath)
+                }
+        }
+        if (unknownBefore.isNotEmpty()) {
+            // The process-local execution fence is the only positive liveness
+            // proof available after a restart.  A Terminal DAO row by itself
+            // is not enough to justify replaying an opaque provider create.
+            reconcile(
+                context = context,
+                cacheRoot = cacheRoot,
+                journalStorage = journalStorage,
+                terminalRowExists = { id ->
+                    DBManager.getInstance(context).terminalDao.getTerminalById(id) != null
+                },
+                allowUnknownWithoutRow = true,
+                activeExecution = activeExecution,
+            )
+            val afterUnknown = PublicationRecoveryJournal.readAll(journalStorage)
+                .filter {
+                    it.kind == PublicationRecoveryJournal.Kind.TERMINAL &&
+                        it.subjectId == subjectId.toString()
+                }
+                .any { record ->
+                    PublicationRecoveryJournal.isUnknownTerminal(record) ||
+                        record.artifacts.any {
+                            PublicationRecoveryJournal.isUnknownReservation(
+                                it.reservedDestinationPath,
+                            )
+                        }
+                }
+            val quarantinedRemainders = TerminalCacheOwnership
+                .listRecoveryRoots(cacheRoot)
+                .filter { it.subjectId?.toLongOrNull() == subjectId }
+            if (
+                afterUnknown || quarantinedRemainders.any {
+                    it.phase == UNKNOWN_QUARANTINE_PHASE
+                }
+            ) {
+                // Terminal failure is durable in the journal/carrier.  Remove
+                // the queue row when possible so startup observers cannot
+                // treat it as runnable work; a failed delete leaves the same
+                // admission fence in place and still never runs native code.
+                runCatching {
+                    val dao = DBManager.getInstance(context).terminalDao
+                    dao.delete(subjectId)
+                }
+                return@withContext Admission.TERMINAL_FAILURE
+            }
+        }
 
         fun allDestinationsExist(record: PublicationRecoveryJournal.Record): Boolean =
             record.artifacts.all { artifact ->
@@ -117,9 +175,15 @@ internal object TerminalPublicationRecovery {
         // Startup reconciliation may already have converted a partial
         // journal into a marker-revoked recovery carrier.  That carrier is
         // explicit quarantine state, not a new worker's staging root.
-        if (TerminalCacheOwnership.listRecoveryRoots(cacheRoot).any {
-                it.subjectId?.toLongOrNull() == subjectId
-            }) {
+        val recoveryRemainders = TerminalCacheOwnership.listRecoveryRoots(cacheRoot)
+            .filter { it.subjectId?.toLongOrNull() == subjectId }
+        if (recoveryRemainders.any { it.phase == UNKNOWN_QUARANTINE_PHASE }) {
+            runCatching {
+                DBManager.getInstance(context).terminalDao.delete(subjectId)
+            }
+            return@withContext Admission.TERMINAL_FAILURE
+        }
+        if (recoveryRemainders.isNotEmpty()) {
             return@withContext Admission.BLOCKED
         }
 
@@ -160,6 +224,8 @@ internal object TerminalPublicationRecovery {
         journalStorage: File,
         context: Context? = null,
         terminalRowExists: ((Long) -> Boolean)? = null,
+        allowUnknownWithoutRow: Boolean = false,
+        activeExecution: ((String) -> Boolean)? = null,
     ): ReconcileResult {
         val terminalNamespace = runCatching {
             File(cacheRoot.canonicalFile, "TERMINAL").canonicalFile
@@ -175,21 +241,21 @@ internal object TerminalPublicationRecovery {
             // is complete.  A reservation is exact authority for one
             // destination, never a directory-membership hint.
             var reservationFailed = false
+            var unknownReservation = false
             record.artifacts
                 .filter { it.destinationPath.isNullOrBlank() }
                 .forEach { artifact ->
                     val reserved = artifact.reservedDestinationPath
                     if (!reserved.isNullOrBlank()) {
                         if (
-                            PublicationRecoveryJournal.isReservationIntent(reserved) ||
-                            PublicationRecoveryJournal.isUnknownReservation(reserved)
+                            PublicationRecoveryJournal.isUnknownReservation(reserved) ||
+                                PublicationRecoveryJournal.isReservationIntent(reserved)
                         ) {
-                            // A provider create/insert can outlive the
-                            // process before the returned URI is persisted.
-                            // Keep this operation fenced in recovery-only
-                            // state; a pending or unknown reservation is
-                            // never a destination and must not be cleared
-                            // from existence checks.
+                            // An UNKNOWN or still-pending provider intent is
+                            // terminalized below once the exact
+                            // recovery/quarantine carrier is durable. It is
+                            // never interpreted as a destination.
+                            unknownReservation = true
                             reservationFailed = true
                         } else if (FileUtil.isRecoverablePublicationComplete(
                                 sourcePath = artifact.sourcePath,
@@ -214,6 +280,81 @@ internal object TerminalPublicationRecovery {
                         }
                     }
                 }
+            if (
+                PublicationRecoveryJournal.isUnknownTerminal(record) &&
+                    record.artifacts.any {
+                        PublicationRecoveryJournal.isUnknownReservation(it.reservedDestinationPath) ||
+                            PublicationRecoveryJournal.isReservationIntent(it.reservedDestinationPath)
+                    }
+            ) {
+                unknownReservation = true
+            }
+            if (unknownReservation) {
+                val root = runCatching { File(record.sourceRoot).canonicalFile }.getOrNull()
+                val terminalNamespace = runCatching {
+                    File(cacheRoot.canonicalFile, "TERMINAL").canonicalFile
+                }.getOrNull()
+                if (
+                    root == null || terminalNamespace == null ||
+                        root.parentFile?.canonicalFile != terminalNamespace ||
+                        root.name != record.executionId ||
+                        !root.isDirectory
+                ) {
+                    // The journal itself remains the durable quarantine
+                    // evidence when no exact Terminal carrier can be safely
+                    // reconstructed.  It is still non-runnable and cannot be
+                    // replayed or promoted.
+                    journal.terminalizeUnknownReservation()
+                    return@forEach
+                }
+                val marker = TerminalCacheOwnership.markerFile(root)
+                val carrier = TerminalCacheOwnership.recoveryCarrierFile(root)
+                val markerIsLive = marker.isFile &&
+                    TerminalCacheOwnership.isOwned(root, record.executionId)
+                if (markerIsLive) {
+                    if (activeExecution?.invoke(record.executionId) == true) return@forEach
+                    if (
+                        !allowUnknownWithoutRow &&
+                            (context != null || terminalRowExists != null) &&
+                            !terminalRowAbsent(record, context, terminalRowExists)
+                    ) return@forEach
+                    if (!TerminalCacheOwnership.artifactManifestFile(root).isFile) {
+                        journal.terminalizeUnknownReservation()
+                        return@forEach
+                    }
+                    if (
+                        (!carrier.isFile ||
+                            !TerminalCacheOwnership.isValidRecoveryCarrier(
+                                root,
+                                record.executionId,
+                            )) &&
+                        !TerminalCacheOwnership.recordRecoveryCarrier(
+                            directory = root,
+                            taskToken = record.executionId,
+                            publishedDestinationPaths = record.publishedDestinations(),
+                            phase = UNKNOWN_QUARANTINE_PHASE,
+                            subjectId = record.subjectId,
+                        )
+                    ) return@forEach
+                    if (!TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(root, record.executionId)) {
+                        return@forEach
+                    }
+                    quarantinedCount += 1
+                }
+                val carrierIsValid = carrier.isFile &&
+                    TerminalCacheOwnership.isValidRecoveryCarrier(root, record.executionId)
+                if (!marker.isFile && carrierIsValid) {
+                    if (
+                        journal.terminalizeUnknownReservation() &&
+                            journal.clear()
+                    ) retiredCount += 1
+                } else if (!marker.isFile) {
+                    // Preserve the terminalized journal if a provider-bound
+                    // root cannot be converted into a recovery carrier.
+                    journal.terminalizeUnknownReservation()
+                }
+                return@forEach
+            }
             if (reservationFailed) return@forEach
             val effectiveRecord = journal.snapshot()
 

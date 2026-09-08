@@ -204,6 +204,10 @@ class TerminalDownloadWorker(
                 Log.i(TAG, "Terminal execution already committed; skipping duplicate native run id=$itemId")
                 return Result.success()
             }
+            TerminalExecutionRegistry.Admission.TERMINAL_FAILURE -> {
+                Log.e(TAG, "Terminal execution stopped after an unknown provider publication outcome id=$itemId")
+                return Result.failure()
+            }
             TerminalExecutionRegistry.Admission.ACQUIRED -> Unit
         }
         this.terminalTaskToken = terminalTaskToken

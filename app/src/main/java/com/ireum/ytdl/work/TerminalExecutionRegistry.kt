@@ -16,6 +16,7 @@ internal object TerminalExecutionRegistry {
     internal enum class Admission {
         ACQUIRED,
         ALREADY_COMMITTED,
+        TERMINAL_FAILURE,
         BLOCKED,
     }
 
@@ -39,6 +40,7 @@ internal object TerminalExecutionRegistry {
         val decision = when (recoveryDecision) {
             TerminalPublicationRecovery.Admission.ACQUIRED -> Admission.ACQUIRED
             TerminalPublicationRecovery.Admission.ALREADY_COMMITTED -> Admission.ALREADY_COMMITTED
+            TerminalPublicationRecovery.Admission.TERMINAL_FAILURE -> Admission.TERMINAL_FAILURE
             TerminalPublicationRecovery.Admission.BLOCKED -> Admission.BLOCKED
         }
         if (decision == Admission.ACQUIRED) {

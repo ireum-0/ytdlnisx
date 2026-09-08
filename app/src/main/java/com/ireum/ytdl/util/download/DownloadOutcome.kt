@@ -39,6 +39,8 @@ enum class DownloadIssueCode {
     HISTORY_REPLACEMENT_TYPE_MISMATCH,
     HISTORY_POST_COMMIT_WARNING,
     NOTIFICATION_FAILED,
+    /** An opaque provider create/insert completed without an exact URI. */
+    PUBLICATION_OUTCOME_UNKNOWN,
     UNKNOWN
 }
 

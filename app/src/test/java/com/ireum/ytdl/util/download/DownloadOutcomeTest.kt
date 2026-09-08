@@ -33,6 +33,22 @@ class DownloadOutcomeTest {
     }
 
     @Test
+    fun unknownProviderPublication_isFinalAndNotSameSettingsRetryable() {
+        val issue = DownloadIssue.create(
+            stage = DownloadIssueStage.MOVE,
+            code = DownloadIssueCode.PUBLICATION_OUTCOME_UNKNOWN,
+            details = "Opaque provider completion could not be reconciled",
+        )
+
+        assertFalse(issue.retryable)
+        assertFalse(issue.code.supportsSameSettingsRetry())
+        assertEquals(
+            DownloadOutcomeStatus.FINAL_FAILURE,
+            DownloadOutcome.failed(issue).status,
+        )
+    }
+
+    @Test
     fun issueFactory_redactsAndBoundsDetails() {
         val issue = DownloadIssue.create(
             stage = DownloadIssueStage.DOWNLOAD,
