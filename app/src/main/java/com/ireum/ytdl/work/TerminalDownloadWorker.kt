@@ -59,9 +59,34 @@ class TerminalDownloadWorker(
     private var terminalOutputDirectory: File? = null
     private var terminalOutputAuthority: TerminalOutputAuthority? = null
     private var terminalTaskToken: String? = null
+    private var terminalPublicationJournal: PublicationRecoveryJournal.Handle? = null
+    private val terminalPublishedOutputPaths = mutableListOf<String>()
 
     private fun cleanupTerminalOutputDirectory() {
         val directory = terminalOutputDirectory ?: return
+        val token = terminalTaskToken
+        if (
+            token != null &&
+            (terminalPublicationJournal != null || TerminalCacheOwnership.artifactManifestFile(directory).isFile)
+        ) {
+            // Persist the quarantine carrier before revoking live ownership.
+            // Marker-revoked state is recovery-only and is never an ordinary
+            // cache-import OwnedRoot.
+            if (!TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = token,
+                    publishedDestinationPaths = terminalPublishedOutputPaths +
+                        terminalPublicationJournal?.snapshot()?.publishedDestinations().orEmpty(),
+                )
+            ) {
+                Log.w(
+                    TAG,
+                    "Could not persist Terminal recovery carrier; retaining live marker: " +
+                        directory.absolutePath,
+                )
+                return
+            }
+        }
         // Failure/cancellation cleanup must not erase an exact remainder left
         // by a partial publication. Revoke this attempt's marker and retain
         // its manifest/files as recovery evidence; the UUID-scoped directory
@@ -301,6 +326,22 @@ class TerminalDownloadWorker(
                         outputDirectory.deleteRecursively()
                         return@withContext
                     }
+                    terminalPublicationJournal = PublicationRecoveryJournal.begin(
+                        context = context,
+                        kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                        subjectId = itemId.toString(),
+                        operationId = "terminal-$itemId",
+                        executionId = requireNotNull(terminalTaskToken),
+                        attemptId = requireNotNull(terminalTaskToken),
+                        sourceRoot = outputDirectory,
+                        sourceFiles = sourceFiles,
+                    ) ?: throw IOException("Could not persist Terminal publication recovery journal")
+                    check(
+                        terminalPublicationJournal?.markPhase(PublicationRecoveryJournal.Phase.PUBLISHING) == true
+                    ) {
+                        "Could not advance Terminal publication recovery journal"
+                    }
+                    var publicationJournalWriteFailed = false
                     val movedOutputPaths = mutableListOf<String>()
                     val returnedMovePaths = FileUtil.moveFile(
                         originDir = outputDirectory,
@@ -312,7 +353,28 @@ class TerminalDownloadWorker(
                         },
                         sourceFiles = sourceFiles,
                         onOutput = { path -> movedOutputPaths.add(path) },
+                        onOutputReserved = { source, path ->
+                            if (terminalPublicationJournal?.reserve(source.absolutePath, path) != true) {
+                                publicationJournalWriteFailed = true
+                                throw IOException(
+                                    "Terminal publication recovery destination could not be reserved"
+                                )
+                            }
+                        },
+                        onOutputWithSource = { source, path ->
+                            terminalPublishedOutputPaths += path
+                            if (terminalPublicationJournal?.markPublished(
+                                    source.absolutePath,
+                                    path,
+                                ) != true
+                            ) {
+                                publicationJournalWriteFailed = true
+                            }
+                        },
                     )
+                    if (publicationJournalWriteFailed) {
+                        throw IOException("Terminal publication recovery journal could not be advanced")
+                    }
                     val exactPublishedPaths = authority.recordMoveResults(
                         movedPaths = movedOutputPaths + returnedMovePaths,
                         sourceFiles = sourceFiles,
@@ -346,6 +408,8 @@ class TerminalDownloadWorker(
             notificationUtil.cancelTerminalDownloadNotification(itemId)
             delay(1000)
             dao.delete(itemId.toLong())
+            terminalPublicationJournal?.clear()
+            terminalPublicationJournal = null
             return Result.success()
         } catch (it: Exception) {
             if (isStopped || it is YoutubeDL.CanceledException) {

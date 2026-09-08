@@ -108,6 +108,19 @@ internal class DownloadOutputProvenance(
     fun currentAttemptPaths(): List<String> = currentAttemptPaths.toList()
 
     /**
+     * Reintroduce an exact destination recovered from a durable publication
+     * journal.  This is deliberately narrower than acceptYtdlpOutput: the
+     * caller must have already validated the journal identity and provider
+     * existence, so no destination discovery occurs here.
+     */
+    fun recordRecoveredPublishedPath(path: String): Boolean {
+        if (!attemptStarted) return false
+        val normalized = normalizeStoredPath(path) ?: return false
+        currentAttemptPaths.add(normalized)
+        return true
+    }
+
+    /**
      * Failed output processing must not erase a file whose ownership was
      * never established. This signal is for cleanup policy only; it never
      * promotes the file into the authoritative output set.

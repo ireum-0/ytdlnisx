@@ -1,21 +1,39 @@
 package com.ireum.ytdl.util.storage
 
+import com.google.gson.Gson
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /** Ownership marker for a single cached Terminal execution directory. */
 internal object TerminalCacheOwnership {
     private const val MARKER_NAME = ".ytdlnisx-terminal-owner"
     private const val ARTIFACT_MANIFEST_NAME = ".ytdlnisx-terminal-artifacts.txt"
+    private const val RECOVERY_CARRIER_NAME = ".ytdlnisx-terminal-recovery.json"
     private const val VERSION = "1"
+    private val gson = Gson()
 
     data class OwnedRoot(
         val directory: File,
         val marker: File,
     )
 
+    /** Marker-revoked state that remains discoverable only by recovery code. */
+    data class RecoveryRoot(
+        val directory: File,
+        val carrier: File,
+        val taskToken: String,
+        val remainingSourcePaths: List<String>,
+        val publishedDestinationPaths: List<String>,
+        val phase: String,
+    )
+
     fun markerFile(directory: File): File = File(directory, MARKER_NAME)
 
     fun artifactManifestFile(directory: File): File = File(directory, ARTIFACT_MANIFEST_NAME)
+
+    fun recoveryCarrierFile(directory: File): File = File(directory, RECOVERY_CARRIER_NAME)
 
     /** Remove the exact-output manifest after its entries have been consumed. */
     fun removeArtifactManifest(directory: File): Boolean {
@@ -35,7 +53,16 @@ internal object TerminalCacheOwnership {
             throw IllegalStateException("Terminal cache path is not a directory: ${root.absolutePath}")
         }
         val marker = markerFile(root).canonicalFile
+        val recoveryCarrier = recoveryCarrierFile(root).canonicalFile
         val existing = marker.takeIf(File::isFile)?.let { runCatching { parse(it.readText()) }.getOrNull() }
+        if (existing == null && recoveryCarrier.isFile) {
+            // A marker-revoked remainder is quarantine state for the prior
+            // task. Reusing that directory for a new token would let E2
+            // inherit E1's exact files while hiding the recovery carrier.
+            throw IllegalStateException(
+                "Refusing to reuse Terminal cache with a pending recovery carrier: ${root.absolutePath}"
+            )
+        }
         if (existing != null &&
             (existing["version"] != VERSION || existing["taskToken"] != taskToken)
         ) {
@@ -143,6 +170,123 @@ internal object TerminalCacheOwnership {
         return !marker.exists() || marker.delete() || !marker.exists()
     }
 
+    /**
+     * Persist the exact partial-publication state before revoking the live
+     * marker.  The carrier is intentionally separate from OwnedRoot: it is a
+     * recovery/quarantine proof and is never accepted by listOwnedRoots().
+     */
+    fun recordRecoveryCarrier(
+        directory: File,
+        taskToken: String,
+        publishedDestinationPaths: Iterable<String> = emptyList(),
+        phase: String = "PARTIAL_PUBLICATION",
+    ): Boolean {
+        val root = runCatching { directory.canonicalFile }.getOrNull() ?: return false
+        if (!isOwned(root, taskToken)) return false
+        val manifest = artifactManifestFile(root)
+        val remaining = runCatching {
+            if (!manifest.isFile) emptyList() else manifest.readLines()
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .distinct()
+                .mapNotNull { relative ->
+                    val file = File(root, relative).canonicalFile
+                    file.takeIf { isInside(it, root) && it.isFile }?.absolutePath
+                }
+        }.getOrNull() ?: return false
+        val published = publishedDestinationPaths.map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+        val carrier = recoveryCarrierFile(root)
+        if (carrier.exists() && !isValidRecoveryCarrier(root, taskToken)) {
+            // Do not overwrite an unreadable or mismatched recovery carrier;
+            // retaining the live marker is safer than revoking ownership and
+            // making the only exact recovery evidence undiscoverable.
+            return false
+        }
+        val payload = RecoveryPayload(
+            version = VERSION,
+            taskToken = taskToken,
+            sourceRoot = root.absolutePath,
+            remainingSourcePaths = remaining,
+            publishedDestinationPaths = published,
+            phase = phase,
+        )
+        return writeAtomically(carrier, payload)
+    }
+
+    /** Validate an existing recovery carrier without granting live authority. */
+    fun isValidRecoveryCarrier(directory: File, taskToken: String): Boolean {
+        val root = runCatching { directory.canonicalFile }.getOrNull() ?: return false
+        val payload = runCatching {
+            val carrier = recoveryCarrierFile(root)
+            if (!carrier.isFile) null else gson.fromJson(carrier.readText(), RecoveryPayload::class.java)
+        }.getOrNull() ?: return false
+        return payload.version == VERSION &&
+            payload.taskToken == taskToken &&
+            payload.sourceRoot == root.absolutePath &&
+            !payload.phase.isNullOrBlank() &&
+            payload.remainingSourcePaths != null &&
+            payload.publishedDestinationPaths != null
+    }
+
+    /** Explicit recovery discovery; these roots are not live import roots. */
+    fun listRecoveryRoots(cacheRoot: File): List<RecoveryRoot> {
+        val terminalRoot = runCatching { File(cacheRoot.canonicalFile, "TERMINAL").canonicalFile }
+            .getOrNull() ?: return emptyList()
+        if (!terminalRoot.isDirectory) return emptyList()
+        return terminalRoot.listFiles()
+            ?.asSequence()
+            ?.filter(File::isDirectory)
+            ?.mapNotNull { directory ->
+                val carrier = recoveryCarrierFile(directory)
+                val payload = runCatching {
+                    if (!carrier.isFile) null else gson.fromJson(
+                        carrier.readText(),
+                        RecoveryPayload::class.java,
+                    )
+                }.getOrNull() ?: return@mapNotNull null
+                val root = runCatching { directory.canonicalFile }.getOrNull() ?: return@mapNotNull null
+                val taskToken = payload.taskToken ?: return@mapNotNull null
+                val sourceRoot = payload.sourceRoot ?: return@mapNotNull null
+                val phase = payload.phase ?: return@mapNotNull null
+                val remainingRaw = payload.remainingSourcePaths ?: return@mapNotNull null
+                if (
+                    payload.version != VERSION || taskToken.isBlank() ||
+                    sourceRoot != root.absolutePath || phase.isBlank() ||
+                    markerFile(root).isFile
+                ) return@mapNotNull null
+                val remaining = remainingRaw.mapNotNull { raw ->
+                    runCatching {
+                        File(raw).canonicalFile.takeIf { it.isFile && isInside(it, root) }?.absolutePath
+                    }.getOrNull()
+                }.distinct()
+                if (remaining.size != remainingRaw.map(String::trim).filter(String::isNotBlank).distinct().size) {
+                    return@mapNotNull null
+                }
+                val published = runCatching {
+                    payload.publishedDestinationPaths.orEmpty()
+                        .map(String::trim)
+                        .filter(String::isNotBlank)
+                        .distinct()
+                }.getOrElse { return@mapNotNull null }
+                RecoveryRoot(
+                    directory = root,
+                    carrier = carrier.canonicalFile,
+                    taskToken = taskToken,
+                    remainingSourcePaths = remaining,
+                    publishedDestinationPaths = published,
+                    phase = phase,
+                )
+            }
+            ?.distinctBy { it.carrier.absolutePath }
+            ?.toList()
+            .orEmpty()
+    }
+
+    fun clearRecoveryCarrier(recovery: RecoveryRoot): Boolean =
+        !recovery.carrier.exists() || recovery.carrier.delete() || !recovery.carrier.exists()
+
     fun listArtifactFiles(root: OwnedRoot): List<File> = runCatching {
         val manifest = artifactManifestFile(root.directory)
         if (!manifest.isFile) return@runCatching emptyList()
@@ -199,5 +343,40 @@ internal object TerminalCacheOwnership {
     private fun isInside(candidate: File, root: File): Boolean = runCatching {
         candidate.canonicalFile.toPath().normalize()
             .startsWith(root.canonicalFile.toPath().normalize())
+    }.getOrDefault(false)
+
+    private data class RecoveryPayload(
+        val version: String?,
+        val taskToken: String?,
+        val sourceRoot: String?,
+        val remainingSourcePaths: List<String>?,
+        val publishedDestinationPaths: List<String>?,
+        val phase: String?,
+    )
+
+    private fun writeAtomically(file: File, payload: RecoveryPayload): Boolean = runCatching {
+        val temporary = File(file.parentFile, ".${file.name}.tmp")
+        FileOutputStream(temporary).use { output ->
+            output.write(gson.toJson(payload).toByteArray(Charsets.UTF_8))
+            output.fd.sync()
+        }
+        try {
+            Files.move(
+                temporary.toPath(),
+                file.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
+        } catch (_: Exception) {
+            // Preserve the previous carrier until the replacement move has
+            // succeeded; deleting it first would lose exact recovery state
+            // across a crash during a partial publication.
+            Files.move(
+                temporary.toPath(),
+                file.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
+        file.isFile
     }.getOrDefault(false)
 }

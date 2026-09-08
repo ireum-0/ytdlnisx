@@ -587,6 +587,41 @@ class DownloadOutputProvenanceTest {
     }
 
     @Test
+    fun directArtifactManifestIsAnAuthorityCarrierNotAnUnprovenOutput() {
+        val destination = Files.createTempDirectory("output-provenance-direct-manifest-").toFile()
+        val tempDirectory = Files.createTempDirectory("output-provenance-direct-manifest-temp-").toFile()
+        try {
+            val plan = directPlan(destination, "manifest-token")
+            val marker = requireNotNull(plan.ownershipMarker)
+            assertTrue(marker.parentFile!!.mkdirs())
+            marker.writeText(currentMarker)
+
+            val provenance = DownloadOutputProvenance(
+                tempDirectory = tempDirectory,
+                directDirectory = plan.ytdlpDirectory,
+                directOwnershipMarker = marker,
+            )
+            provenance.beginAttempt()
+            val output = write(plan.ytdlpDirectory, "video.mp4")
+            assertEquals(
+                listOf(output.canonicalPath),
+                provenance.acceptYtdlpOutput("Destination: '${output.absolutePath}'"),
+            )
+            write(plan.ytdlpDirectory, ".ytdlnisx-output-artifacts.txt").writeText(
+                "ytdlnisx-output-artifacts\nfiles:\nvideo.mp4\n",
+            )
+
+            assertFalse(provenance.hasUnprovenTemporaryArtifacts())
+            File(plan.ytdlpDirectory, ".ytdlnisx-output-artifacts.txt")
+                .writeText("not-a-manifest\n")
+            assertTrue(provenance.hasUnprovenTemporaryArtifacts())
+        } finally {
+            tempDirectory.deleteRecursively()
+            destination.deleteRecursively()
+        }
+    }
+
+    @Test
     fun structuredFilesMarkerAcceptsTheBundledYtdlpDirectMoveMap() {
         val tempDirectory = Files.createTempDirectory("output-provenance-structured-map-").toFile()
         try {

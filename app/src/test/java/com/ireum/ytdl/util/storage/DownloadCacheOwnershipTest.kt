@@ -152,6 +152,71 @@ class DownloadCacheOwnershipTest {
         }
     }
 
+    @Test
+    fun completedRecoveryRetiresOnlyTheExactPriorCacheCarrier() {
+        val root = Files.createTempDirectory("download-cache-recovery-retire-").toFile()
+        try {
+            val old = item(operationId = "operation-current", executionId = "execution-old")
+            val current = item(operationId = "operation-current", executionId = "execution-current")
+            val directory = File(root, old.id.toString()).apply { mkdirs() }
+            DownloadCacheOwnership.ensureMarker(root, old)
+            DownloadCacheOwnership.artifactManifestFile(root, old.id).writeText(
+                "ytdlnisx-download-artifacts\n" +
+                    "version=1\n" +
+                    "downloadId=${old.id}\n" +
+                    "operationId=${old.operationId}\n" +
+                    "executionId=${old.executionId}\n" +
+                    "files:\n" +
+                    "already-published.mp4\n",
+            )
+
+            assertTrue(
+                DownloadCacheOwnership.retireRecoveredExecution(
+                    cacheRoot = root,
+                    item = current,
+                    executionId = old.executionId,
+                )
+            )
+            assertFalse(DownloadCacheOwnership.markerFile(root, old.id).exists())
+            assertFalse(directory.exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun completedRecoveryPreservesUnexpectedCacheChildren() {
+        val root = Files.createTempDirectory("download-cache-recovery-preserve-").toFile()
+        try {
+            val old = item(operationId = "operation-current", executionId = "execution-old")
+            val current = item(operationId = "operation-current", executionId = "execution-current")
+            val directory = File(root, old.id.toString()).apply { mkdirs() }
+            DownloadCacheOwnership.ensureMarker(root, old)
+            DownloadCacheOwnership.artifactManifestFile(root, old.id).writeText(
+                "ytdlnisx-download-artifacts\n" +
+                    "version=1\n" +
+                    "downloadId=${old.id}\n" +
+                    "operationId=${old.operationId}\n" +
+                    "executionId=${old.executionId}\n" +
+                    "files:\n" +
+                    "already-published.mp4\n",
+            )
+            val unrelated = File(directory, "unrelated.bin").apply { writeText("keep") }
+
+            assertFalse(
+                DownloadCacheOwnership.retireRecoveredExecution(
+                    cacheRoot = root,
+                    item = current,
+                    executionId = old.executionId,
+                )
+            )
+            assertTrue(unrelated.isFile)
+            assertTrue(DownloadCacheOwnership.markerFile(root, old.id).isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     private fun item(operationId: String, executionId: String) = DownloadItem(
         id = 42L,
         url = "https://example.com/video",

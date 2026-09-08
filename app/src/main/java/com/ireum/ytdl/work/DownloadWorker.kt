@@ -1235,6 +1235,12 @@ class DownloadWorker(
         private var keepCache = false
         private var noKeepSubs = false
         private var completionIssues: MutableList<DownloadIssue> = mutableListOf()
+        private var publicationJournal: PublicationRecoveryJournal.Handle? = null
+        private val publicationAttemptId: String = UUID.randomUUID().toString()
+        private val recoveredPublicationJournals = mutableListOf<PublicationRecoveryJournal.Handle>()
+        private var publicationJournalWriteFailed = false
+        private var recoveredPublishedPaths: List<String> = emptyList()
+        private var recoveredSourceDestinations: Map<String, String> = emptyMap()
 
         private fun establishHistoryReplacementFailure(issue: DownloadIssue) {
                         historyReplacementFailureIssue = issue
@@ -1313,6 +1319,263 @@ class DownloadWorker(
                                     !isMetadataOutputPath(path)
                             }
                     }
+
+        private fun beginPublicationJournal(sourceFiles: List<File>): PublicationRecoveryJournal.Handle {
+            val existing = publicationJournal
+            if (existing != null) return existing
+            val handle = PublicationRecoveryJournal.begin(
+                context = context,
+                kind = PublicationRecoveryJournal.Kind.DOWNLOAD,
+                subjectId = downloadItem.id.toString(),
+                operationId = downloadItem.operationId,
+                executionId = downloadItem.executionId,
+                attemptId = publicationAttemptId,
+                sourceRoot = tempFileDir,
+                sourceFiles = sourceFiles,
+            ) ?: throw IOException(
+                "Could not persist Download publication recovery journal for ${downloadItem.id}"
+            )
+            check(handle.markPhase(PublicationRecoveryJournal.Phase.PUBLISHING)) {
+                "Could not advance Download publication recovery journal for ${downloadItem.id}"
+            }
+            publicationJournal = handle
+            return handle
+        }
+
+        private fun observePublishedOutput(source: File, path: String) {
+            if (publicationJournal?.markPublished(source.absolutePath, path) != true) {
+                publicationJournalWriteFailed = true
+            }
+        }
+
+        private fun reservePublishedOutput(source: File, path: String) {
+            if (publicationJournal?.reserve(source.absolutePath, path) != true) {
+                publicationJournalWriteFailed = true
+                throw IOException(
+                    "Download publication recovery destination could not be reserved for ${source.absolutePath}"
+                )
+            }
+        }
+
+        private fun retirePublicationJournal() {
+            publicationJournal?.let { handle ->
+                if (!handle.clear()) {
+                    Log.w(
+                        TAG,
+                        "Download publication recovery journal could not be retired id=${downloadItem.id}",
+                    )
+                } else {
+                    publicationJournal = null
+                }
+            }
+            recoveredPublicationJournals.removeAll { handle ->
+                if (handle.clear()) true else {
+                    Log.w(
+                        TAG,
+                        "Recovered Download publication journal could not be retired id=${downloadItem.id}",
+                    )
+                    false
+                }
+            }
+        }
+
+        /**
+         * Reconcile an older execution's exact publication debt before a new
+         * native attempt can reuse the staging root.  Only a journal-bound
+         * source/destination pair is accepted; no destination or directory
+         * scan is performed.  A mismatched operation/root remains blocked.
+         */
+        private suspend fun recoverPriorPublication(
+            outputPlan: YtdlpOutputPlan,
+        ): List<String> {
+            if (downloadItem.executionId.isBlank()) return emptyList()
+            val records = PublicationRecoveryJournal.findDownload(
+                context = context,
+                downloadId = downloadItem.id,
+                operationId = downloadItem.operationId,
+            ).filter { it.executionId != downloadItem.executionId }
+            if (records.isEmpty()) return emptyList()
+
+            val expectedRoot = runCatching {
+                (outputPlan.directStagingDirectory ?: rawTempFileDir).canonicalFile
+            }.getOrElse {
+                throw IOException("Could not resolve Download publication recovery root", it)
+            }
+            val directRecoveryNamespace = if (outputPlan.directNoCache) {
+                outputPlan.directStagingParent?.let { parent ->
+                    File(parent, ".ytdlnisx-output").canonicalFile
+                }
+            } else {
+                null
+            }
+            val recovered = linkedSetOf<String>()
+            val sourceDestinations = linkedMapOf<String, String>()
+            records.forEach { record ->
+                val recoveryRoot = runCatching { File(record.sourceRoot).canonicalFile }
+                    .getOrElse {
+                        throw IOException("Download publication recovery root is invalid", it)
+                    }
+                val rootIsAllowed = if (directRecoveryNamespace != null) {
+                    recoveryRoot.parentFile?.canonicalFile == directRecoveryNamespace &&
+                        recoveryRoot.name.matches(Regex("[0-9a-fA-F-]{36}"))
+                } else {
+                    recoveryRoot == expectedRoot
+                }
+                if (!rootIsAllowed) {
+                    throw IOException(
+                        "Download publication recovery root changed for ${downloadItem.id}"
+                    )
+                }
+                val handle = PublicationRecoveryJournal.open(context, record)
+                    ?: throw IOException("Download publication recovery journal changed during read")
+                record.publishedDestinations().forEach { destination ->
+                    if (!FileUtil.exists(destination, context)) {
+                        throw IOException(
+                            "Download publication recovery destination is unavailable: $destination"
+                        )
+                    }
+                    recovered += destination
+                }
+                // A reservation is written before FileUtil creates the
+                // destination.  If the process died after that irreversible
+                // boundary but before the source-aware callback, promote the
+                // exact reserved pair when its exact destination exists.
+                record.artifacts
+                    .filter { it.destinationPath.isNullOrBlank() }
+                    .forEach { artifact ->
+                        val reserved = artifact.reservedDestinationPath
+                        if (!reserved.isNullOrBlank()) {
+                            if (FileUtil.exists(reserved, context)) {
+                                if (!handle.markPublished(artifact.sourcePath, reserved)) {
+                                    throw IOException(
+                                        "Download publication recovery reservation could not be finalized"
+                                    )
+                                }
+                            } else if (!handle.clearReservation(artifact.sourcePath)) {
+                                throw IOException(
+                                    "Download publication recovery reservation could not be released"
+                                )
+                            }
+                        }
+                    }
+                val remaining = handle.snapshot().remainingSources().mapNotNull { raw ->
+                    runCatching {
+                        val source = File(raw).canonicalFile
+                        source.takeIf { source.isFile && isPathInsideDirectory(source.absolutePath, recoveryRoot) }
+                    }.getOrNull()
+                }
+                if (remaining.isNotEmpty()) {
+                    var journalWriteFailed = false
+                    FileUtil.moveFile(
+                        originDir = recoveryRoot,
+                        context = context,
+                        destDir = outputPlan.finalDestination,
+                        keepCache = false,
+                        progress = {},
+                        onOutput = {},
+                        onOutputReserved = { source, destination ->
+                            if (!handle.reserve(source.absolutePath, destination)) {
+                                journalWriteFailed = true
+                                throw IOException(
+                                    "Download publication recovery destination could not be reserved"
+                                )
+                            }
+                        },
+                        sourceFiles = remaining,
+                        onOutputWithSource = { source, destination ->
+                            if (!handle.markPublished(source.absolutePath, destination)) {
+                                journalWriteFailed = true
+                            }
+                        },
+                    )
+                    if (journalWriteFailed) {
+                        throw IOException("Download publication recovery journal could not be advanced")
+                    }
+                }
+                val after = handle.snapshot()
+                if (after.artifacts.any { it.destinationPath.isNullOrBlank() }) {
+                    throw IOException(
+                        "Download publication recovery remains partial for ${downloadItem.id}"
+                    )
+                }
+                after.artifacts.forEach { artifact ->
+                    val destination = artifact.destinationPath
+                        ?: throw IOException("Download publication recovery has an empty destination")
+                    if (!FileUtil.exists(destination, context)) {
+                        throw IOException(
+                            "Download publication recovery destination is unavailable: $destination"
+                        )
+                    }
+                    recovered += destination
+                    sourceDestinations[artifact.sourcePath] = destination
+                }
+                check(handle.markPhase(PublicationRecoveryJournal.Phase.COMPLETE)) {
+                    "Download publication recovery could not be completed"
+                }
+                if (!outputPlan.directNoCache) {
+                    check(
+                        DownloadCacheOwnership.retireRecoveredExecution(
+                            cacheRoot = File(FileUtil.getCachePath(context)),
+                            item = downloadItem,
+                            executionId = record.executionId,
+                        )
+                    ) {
+                        "Download cache recovery carrier could not be retired for ${downloadItem.id}"
+                    }
+                } else {
+                    check(retireRecoveredDirectStaging(recoveryRoot, record.executionId)) {
+                        "Direct output recovery carrier could not be retired for ${downloadItem.id}"
+                    }
+                }
+                recoveredPublicationJournals += handle
+            }
+            recoveredSourceDestinations = sourceDestinations
+            return recovered.toList()
+        }
+
+        /**
+         * Remove only the carrier files of a direct staging root whose exact
+         * journal is complete.  A prior execution gets a different UUID root
+         * on retry, so the root must be retired explicitly before the new
+         * attempt can proceed.  Any unexpected child keeps the root intact.
+         */
+        private fun retireRecoveredDirectStaging(
+            root: File,
+            executionId: String,
+        ): Boolean {
+            val staging = runCatching { root.canonicalFile }.getOrNull() ?: return false
+            if (!staging.exists()) return true
+            if (!staging.isDirectory) return false
+            val marker = File(staging, ".ytdlnisx-owner").canonicalFile
+            val manifest = File(staging, ".ytdlnisx-output-artifacts.txt").canonicalFile
+            if (marker.exists() && runCatching { marker.readText() }.getOrNull() !=
+                directOwnershipMarkerText(downloadItem, executionId)
+            ) return false
+            if (manifest.exists()) {
+                val lines = runCatching { manifest.readLines() }.getOrNull() ?: return false
+                val filesIndex = lines.indexOfFirst { it.trim() == "files:" }
+                if (lines.firstOrNull()?.trim() != "ytdlnisx-output-artifacts" || filesIndex < 0) {
+                    return false
+                }
+                val entries = lines.drop(filesIndex + 1)
+                    .map(String::trim)
+                    .filter(String::isNotBlank)
+                if (entries.any { relative ->
+                        val candidate = runCatching { File(staging, relative).canonicalFile }.getOrNull()
+                        candidate != null &&
+                            isPathInsideDirectory(candidate.absolutePath, staging) &&
+                            candidate.isFile
+                    }) return false
+            }
+            val unknownChildren = staging.listFiles()?.any { child ->
+                val canonical = runCatching { child.canonicalFile }.getOrNull()
+                canonical != marker && canonical != manifest
+            } ?: true
+            if (unknownChildren) return false
+            if (manifest.exists() && !manifest.delete()) return false
+            if (marker.exists() && !marker.delete()) return false
+            return !staging.exists() || staging.delete() || !staging.exists()
+        }
 
         private fun shouldStopForUserRequest(): Boolean {
                         val latest = runCatching { dao.getNullableDownloadById(downloadItem.id) }.getOrNull()
@@ -1471,6 +1734,7 @@ class DownloadWorker(
 
                     val outputPlan = ytdlpUtil.resolveOutputPlan(downloadItem)
                     ytdlpOutputPlan = outputPlan
+                    recoveredPublishedPaths = recoverPriorPublication(outputPlan)
         shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
         noCache = outputPlan.directNoCache
 
@@ -1488,6 +1752,7 @@ class DownloadWorker(
                             baselineSnapshotReader = DownloadWorkerEffectTestHooks
                                 .outputBaselineReaderForTesting,
                         ),
+                        recoveredPublishedPaths = recoveredPublishedPaths,
                         notificationTitle = notificationTitle,
                         loggingEnabled = sharedPreferences.getBoolean("log_downloads", false) &&
                             !downloadItem.incognito,
@@ -1747,6 +2012,9 @@ class DownloadWorker(
                                 )
                             }
                             val authoritativeDirectSourceFiles = authoritativeTempSourceFiles()
+                            if (authoritativeDirectSourceFiles.isNotEmpty()) {
+                                beginPublicationJournal(authoritativeDirectSourceFiles)
+                            }
                             val movedOutputPaths = mutableListOf<String>()
                             var returnedMovePaths = emptyList<String>()
                             var directMoveError: Exception? = null
@@ -1779,6 +2047,12 @@ class DownloadWorker(
                                                 },
                                                 sourceFiles = authoritativeDirectSourceFiles,
                                                 onOutput = { path -> movedOutputPaths.add(path) },
+                                                onOutputReserved = { source, path ->
+                                                    reservePublishedOutput(source, path)
+                                                },
+                                                onOutputWithSource = { source, path ->
+                                                    observePublishedOutput(source, path)
+                                                },
                                             )
                                         }
                                     }
@@ -1811,6 +2085,7 @@ class DownloadWorker(
                                     downloadLogId = downloadItem.logID,
                                     eventBus = eventBus,
                                     sourcePaths = remainingDirectSources.map { it.absolutePath },
+                                    publicationJournal = publicationJournal,
                                 )
                                 exactDirectPaths = (
                                     exactDirectPaths + ytdlpOutputProvenance
@@ -1823,7 +2098,13 @@ class DownloadWorker(
                                     source.exists() && source.isFile
                                 }
                             }
-                            finalPaths = exactDirectPaths
+                            if (publicationJournalWriteFailed) {
+                                throw IOException(
+                                    "Direct output publication recovery journal could not be advanced",
+                                    directMoveError,
+                                )
+                            }
+                            finalPaths = (recoveredPublishedPaths + exactDirectPaths)
                                 .filter { path ->
                                     FileUtil.isFile(path, context) && !isMetadataOutputPath(path)
                                 }
@@ -1878,6 +2159,9 @@ class DownloadWorker(
                                 "HardSub move start id=${downloadItem.id} from=${tempFileDir.absolutePath} to=${FileUtil.formatPath(downloadLocation)} tempSnapshot=${describeDirectorySnapshot(tempFileDir)}"
                             )
                             val authoritativeTempSourceFiles = authoritativeTempSourceFiles()
+                            if (authoritativeTempSourceFiles.isNotEmpty()) {
+                                beginPublicationJournal(authoritativeTempSourceFiles)
+                            }
                             val movedOutputPaths = mutableListOf<String>()
                             try {
                                 val returnedMovePaths = if (
@@ -1898,7 +2182,13 @@ class DownloadWorker(
                                                     eventBus.post(WorkerProgress(p, "Moving file to ${FileUtil.formatPath(downloadLocation)}", downloadItem.id, downloadItem.logID))
                                                 },
                                                 sourceFiles = authoritativeTempSourceFiles,
-                                                onOutput = { path -> movedOutputPaths.add(path) }
+                                                onOutput = { path -> movedOutputPaths.add(path) },
+                                                onOutputReserved = { source, path ->
+                                                    reservePublishedOutput(source, path)
+                                                },
+                                                onOutputWithSource = { source, path ->
+                                                    observePublishedOutput(source, path)
+                                                },
                                             )
                                         }
                                     }
@@ -1909,7 +2199,12 @@ class DownloadWorker(
                                         sourcePaths = authoritativeTempSourceFiles.map { it.absolutePath },
                                     )
                                     .orEmpty()
-                                finalPaths = exactMovedPaths
+                                if (publicationJournalWriteFailed) {
+                                    throw IOException(
+                                        "Download publication recovery journal could not be advanced",
+                                    )
+                                }
+                                finalPaths = (recoveredPublishedPaths + exactMovedPaths)
                                     .filter { path ->
                                         FileUtil.isFile(path, context) && !isMetadataOutputPath(path)
                                     }
@@ -1950,12 +2245,15 @@ class DownloadWorker(
                                 if (forceMoveUnresolved) {
                                     finalPaths = mutableListOf()
                                 } else {
-                                    finalPaths = ytdlpOutputProvenance
-                                        ?.recordMoveResults(
-                                            movedOutputPaths,
-                                            sourcePaths = authoritativeTempSourceFiles.map { it.absolutePath },
-                                        )
-                                        .orEmpty()
+                                    finalPaths = (
+                                        recoveredPublishedPaths +
+                                            ytdlpOutputProvenance
+                                                ?.recordMoveResults(
+                                                    movedOutputPaths,
+                                                    sourcePaths = authoritativeTempSourceFiles.map { it.absolutePath },
+                                                )
+                                                .orEmpty()
+                                    )
                                         .filter { path ->
                                             FileUtil.isFile(path, context) && !isMetadataOutputPath(path)
                                         }
@@ -1978,6 +2276,7 @@ class DownloadWorker(
                                             downloadLogId = downloadItem.logID,
                                             eventBus = eventBus,
                                             sourcePaths = authoritativeTempPaths,
+                                            publicationJournal = publicationJournal,
                                         )
                                         finalPaths = (
                                             finalPaths + ytdlpOutputProvenance
@@ -2666,6 +2965,11 @@ class DownloadWorker(
                                 }
                             }
                             if (terminalization == AttemptControl.STOP) return AttemptControl.STOP
+                            // The Download row/History mutation is now
+                            // terminal. Retire the exact publication carrier
+                            // only after that semantic commit; failures before
+                            // here leave the journal discoverable for retry.
+                            retirePublicationJournal()
                         }
 
                         if (ytdlpPhase.state.logging.enabled){
@@ -3985,9 +4289,29 @@ class DownloadWorker(
         private fun authoritativeTempSourceFiles(): List<File> =
             currentAuthoritativeOutputPaths()
                 .filter { path ->
-                    isPathInsideDirectory(path, tempFileDir) &&
-                        File(path).exists() &&
-                        File(path).isFile
+                    if (!isPathInsideDirectory(path, tempFileDir)) return@filter false
+                    val source = runCatching { File(path).canonicalFile }.getOrNull()
+                        ?: return@filter false
+                    val recoveredDestination = recoveredSourceDestinations[source.absolutePath]
+                    if (
+                        recoveredDestination != null &&
+                        FileUtil.exists(recoveredDestination, context)
+                    ) {
+                        // The exact source path was already published by the
+                        // recovered execution. A rerun may recreate that same
+                        // path; discard only this exact duplicate so it cannot
+                        // create a collision-suffixed second publication.
+                        if (source.exists() && !source.delete() && source.exists()) {
+                            Log.w(
+                                TAG,
+                                "Could not discard exact recovered duplicate source id=${downloadItem.id} " +
+                                    source.absolutePath,
+                            )
+                        }
+                        false
+                    } else {
+                        source.exists() && source.isFile
+                    }
                 }
                 .map { path -> File(path).canonicalFile }
                 .distinctBy { file -> file.absolutePath }
@@ -4000,6 +4324,20 @@ class DownloadWorker(
          * recovery rather than being swept as a side effect of failure.
          */
         private fun cleanupFailedOutputDirectory(directory: File): Boolean {
+            publicationJournal?.snapshot()?.let { journal ->
+                if (journal.artifacts.any { it.destinationPath.isNullOrBlank() }) {
+                    // An incomplete publication journal is the exact carrier
+                    // for stranded source files.  Generic failure cleanup
+                    // must not delete those files (or their cache manifest)
+                    // before a retry/recovery pass can reconcile them.
+                    Log.w(
+                        TAG,
+                        "Preserving incomplete Download publication journal id=${downloadItem.id} " +
+                            "for exact retry recovery",
+                    )
+                    return false
+                }
+            }
             val outputPlan = ytdlpOutputPlan
             if (outputPlan?.directNoCache == true) {
                 val staging = outputPlan.directStagingDirectory?.canonicalFile ?: return false
@@ -4021,6 +4359,7 @@ class DownloadWorker(
         val rawTempDirectory: File,
         val outputPlan: YtdlpOutputPlan,
         val outputProvenance: DownloadOutputProvenance,
+        val recoveredPublishedPaths: List<String> = emptyList(),
         val notificationTitle: String,
         val loggingEnabled: Boolean,
     )
@@ -4182,6 +4521,15 @@ class DownloadWorker(
             authoritativeOutputPaths = emptyList()
         }
 
+        fun recordRecoveredPublishedPaths(paths: Iterable<String>) {
+            paths.forEach { path ->
+                check(outputProvenance.recordRecoveredPublishedPath(path)) {
+                    "Recovered publication path could not be re-established"
+                }
+            }
+            authoritativeOutputPaths = outputProvenance.currentAttemptPaths()
+        }
+
         /**
          * A selection probe is an observation-only yt-dlp invocation. It
          * must not revoke output authority established by the completed
@@ -4259,6 +4607,7 @@ class DownloadWorker(
                 beforeRetry = false,
             )
             runtime.beginAttempt()
+            runtime.recordRecoveredPublishedPaths(input.recoveredPublishedPaths)
             DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting
                 ?.invoke(input.downloadItem.id)
             val injectedOutput = DownloadWorkerEffectTestHooks
@@ -5432,12 +5781,50 @@ class DownloadWorker(
                 marker.readText() == directOwnershipMarkerText(downloadItem)
             }.getOrDefault(false)
             if (!existingMarkerIsOwned) {
-                throw IOException(
-                    "Refusing to delete unproven direct output staging directory: " +
-                        staging.absolutePath
-                )
-            }
-            if (!DirectOutputStagingCleanup.removeExactArtifactsAndEmptyParents(
+                // A prior execution may have completed an exact publication
+                // and died before its semantic Download/History commit.  Its
+                // durable journal is the only authority that may permit
+                // rotating the old marker; a matching-looking directory is
+                // never enough.  Only the old marker and exact-artifact
+                // manifest may remain after recovery, and both are retired
+                // without touching any other child.
+                val recoveredPublication = PublicationRecoveryJournal
+                    .findDownload(
+                        context = context,
+                        downloadId = downloadItem.id,
+                        operationId = downloadItem.operationId,
+                    )
+                    .any { record ->
+                        record.sourceRoot == staging.absolutePath &&
+                            record.phase == PublicationRecoveryJournal.Phase.COMPLETE &&
+                            record.artifacts.isNotEmpty() &&
+                            record.artifacts.all { artifact ->
+                                val destination = artifact.destinationPath
+                                !destination.isNullOrBlank() &&
+                                    FileUtil.exists(destination, context)
+                            }
+                    }
+                val artifactManifest = File(staging, ".ytdlnisx-output-artifacts.txt").canonicalFile
+                val unknownChildren = staging.listFiles()?.any { child ->
+                    val canonical = runCatching { child.canonicalFile }.getOrNull()
+                    canonical != marker && canonical != artifactManifest
+                } ?: true
+                if (!recoveredPublication || unknownChildren) {
+                    throw IOException(
+                        "Refusing to delete unproven direct output staging directory: " +
+                            staging.absolutePath
+                    )
+                }
+                if (artifactManifest.exists() && !artifactManifest.delete()) {
+                    throw IOException("$cleanFailure: could not retire recovered artifact manifest")
+                }
+                if (marker.exists() && !marker.delete()) {
+                    throw IOException("$cleanFailure: could not retire recovered ownership marker")
+                }
+                if (staging.listFiles()?.isEmpty() == true && !staging.delete() && staging.exists()) {
+                    throw IOException("$cleanFailure: could not retire recovered staging directory")
+                }
+            } else if (!DirectOutputStagingCleanup.removeExactArtifactsAndEmptyParents(
                     outputPlan = outputPlan,
                     expectedMarkerText = directOwnershipMarkerText(downloadItem),
                 )
@@ -5459,10 +5846,13 @@ class DownloadWorker(
         return staging
     }
 
-    private fun directOwnershipMarkerText(downloadItem: DownloadItem): String =
+    private fun directOwnershipMarkerText(
+        downloadItem: DownloadItem,
+        executionId: String = downloadItem.executionId,
+    ): String =
         "ytdlnisx-output-owner\n" +
             "downloadId=${downloadItem.id}\n" +
-            "executionId=${downloadItem.executionId}\n"
+            "executionId=$executionId\n"
 
     private fun resetYtdlpTempDirectoryUnsafe(
         rawTempDirectory: File,
@@ -5625,6 +6015,7 @@ class DownloadWorker(
                             runningNativePostProcessingProcesses[key]?.isNotEmpty() == true
                     }
             }
+
             val processId = YtdlpProcessIdentity.download(downloadId, expectedExecutionId)
             return YoutubeDLCompat.hasProcessById(processId) ||
                 YtdlpNativeProcessBarrier.hasUnresolvedDownloadExecution(
@@ -8094,9 +8485,11 @@ class DownloadWorker(
         downloadLogId: Long?,
         eventBus: EventBus,
         sourcePaths: List<String>,
+        publicationJournal: PublicationRecoveryJournal.Handle? = null,
     ): List<String> {
         return try {
             val movedOutputPaths = mutableListOf<String>()
+            var publicationJournalWriteFailed = false
             val recovered = withOwnedExecutionLease(downloadItem) {
                 withContext(Dispatchers.IO) {
                     FileUtil.moveFile(
@@ -8122,9 +8515,25 @@ class DownloadWorker(
                             }
                             .map { path -> File(path).canonicalFile }
                             .distinctBy { file -> file.absolutePath },
-                        onOutput = { path -> movedOutputPaths.add(path) }
+                        onOutput = { path -> movedOutputPaths.add(path) },
+                        onOutputReserved = { source, path ->
+                            if (publicationJournal?.reserve(source.absolutePath, path) != true) {
+                                publicationJournalWriteFailed = true
+                                throw IOException(
+                                    "Download publication recovery destination could not be reserved"
+                                )
+                            }
+                        },
+                        onOutputWithSource = { source, path ->
+                            if (publicationJournal?.markPublished(source.absolutePath, path) != true) {
+                                publicationJournalWriteFailed = true
+                            }
+                        },
                     )
                 }
+            }
+            if (publicationJournalWriteFailed) {
+                throw IOException("Download publication recovery journal could not be advanced")
             }
             val exactRecovered = (movedOutputPaths + recovered)
                 .map { it.trim() }

@@ -15,6 +15,9 @@ import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.HistoryDateFetchManager
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.WorkManagerHandoffRecovery
+import com.ireum.ytdl.work.TerminalPublicationRecovery
+import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.storage.CacheImportPlanner
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.yausername.aria2c.Aria2c
 import com.yausername.youtubedl_android.YoutubeDL
@@ -79,6 +82,31 @@ class App : Application() {
                 DownloadExecutionRecovery.reconcile(this@App)
             } catch (failure: Exception) {
                 Log.w(TAG, "Download execution/finalization recovery failed", failure)
+            }
+        }
+        applicationScope.launch(Dispatchers.IO) {
+            try {
+                // Marker-revoked Terminal publication remnants are recovery
+                // quarantine, never ordinary cache-import roots. Discover
+                // them explicitly on every process start so a failed worker
+                // cannot make exact remainder state production-undiscoverable.
+                val cacheRoot = File(FileUtil.getCachePath(this@App))
+                val reconciled = TerminalPublicationRecovery.reconcile(
+                    context = this@App,
+                    cacheRoot = cacheRoot,
+                )
+                val recovery = CacheImportPlanner.collectRecovery(cacheRoot)
+                if (reconciled.journalCount > 0 || recovery.isNotEmpty()) {
+                    Log.w(
+                        TAG,
+                        "Terminal publication recovery state discovered: " +
+                            "journals=${reconciled.journalCount} " +
+                            "quarantined=${reconciled.quarantinedCount} " +
+                            "carriers=${recovery.size}",
+                    )
+                }
+            } catch (failure: Exception) {
+                Log.w(TAG, "Terminal publication recovery discovery failed", failure)
             }
         }
         applicationScope.launch(Dispatchers.IO) {

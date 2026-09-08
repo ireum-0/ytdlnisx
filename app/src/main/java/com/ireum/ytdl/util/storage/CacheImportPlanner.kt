@@ -10,6 +10,20 @@ internal data class CacheImportArtifact(
 )
 
 /**
+ * A marker-revoked Terminal remainder.  Recovery code may inspect this
+ * carrier explicitly, but normal cache import must never treat it as live
+ * publication authority.
+ */
+internal data class CacheRecoveryArtifact(
+    val directory: File,
+    val carrier: File,
+    val taskToken: String,
+    val remainingSourcePaths: List<String>,
+    val publishedDestinationPaths: List<String>,
+    val phase: String,
+)
+
+/**
  * Builds a migration manifest from explicit operation ownership markers.
  * Unknown files and legacy directories are deliberately not part of the
  * manifest, even when they happen to live below the configured cache root.
@@ -49,6 +63,23 @@ internal object CacheImportPlanner {
             .distinctBy { it.source.absolutePath }
             .sortedBy { it.relativePath }
     }
+
+    /**
+     * Enumerate only explicit Terminal quarantine carriers.  This is a
+     * separate API from collect(): callers must deliberately enter recovery
+     * mode, and these artifacts are never included in ordinary import.
+     */
+    fun collectRecovery(cacheRoot: File): List<CacheRecoveryArtifact> =
+        TerminalCacheOwnership.listRecoveryRoots(cacheRoot).map { root ->
+            CacheRecoveryArtifact(
+                directory = root.directory,
+                carrier = root.carrier,
+                taskToken = root.taskToken,
+                remainingSourcePaths = root.remainingSourcePaths,
+                publishedDestinationPaths = root.publishedDestinationPaths,
+                phase = root.phase,
+            )
+        }
 
     /** Pick a destination without replacing an existing unrelated file. */
     fun collisionSafeDestination(destinationRoot: File, relativePath: String): File {

@@ -408,18 +408,35 @@ object FileUtil {
     )
 
     @Throws(Exception::class)
-     suspend fun moveFile(
+    suspend fun moveFile(
         originDir: File,
         context: Context,
         destDir: String,
         keepCache: Boolean,
         progress: (p: Int) -> Unit,
         onOutput: (String) -> Unit,
+        onOutputWithSource: ((File, String) -> Unit)? = null,
+        onOutputReserved: ((File, String) -> Unit)? = null,
         sourceFiles: List<File>? = null,
     ) : List<String> {
         fun notifyOutput(path: String) {
             runCatching { onOutput(path) }
                 .onFailure { error -> Log.w("FileUtil", "Move output observer failed", error) }
+        }
+        fun notifyOutput(source: File, path: String) {
+            notifyOutput(path)
+            runCatching { onOutputWithSource?.invoke(source, path) }
+                .onFailure { error -> Log.w("FileUtil", "Move source observer failed", error) }
+        }
+        fun reserveOutput(source: File, path: String) {
+            try {
+                onOutputReserved?.invoke(source, path)
+            } catch (error: Exception) {
+                throw IOException(
+                    "Move output destination could not be durably reserved for ${source.absolutePath}",
+                    error,
+                )
+            }
         }
         return withContext(Dispatchers.Main){
             lastMoveFailureDetails = null
@@ -439,6 +456,8 @@ object FileUtil {
                         normalizedDestDir = normalizedDestDir,
                         progress = progress,
                         onOutput = ::notifyOutput,
+                        onOutputWithSource = onOutputWithSource,
+                        onOutputReserved = ::reserveOutput,
                         sourceFiles = sourceFiles,
                     )
                 }.onFailure { e ->
@@ -464,6 +483,8 @@ object FileUtil {
                             normalizedDestDir = normalizedDestDir,
                             progress = progress,
                             onOutput = ::notifyOutput,
+                            onOutputWithSource = onOutputWithSource,
+                            onOutputReserved = ::reserveOutput,
                             sourceFiles = sourceFiles,
                         )
                     }.onFailure { e ->
@@ -487,6 +508,8 @@ object FileUtil {
                     destinationDir = safDestinationDir,
                     progress = progress,
                     onOutput = ::notifyOutput,
+                    onOutputWithSource = onOutputWithSource,
+                    onOutputReserved = ::reserveOutput,
                     sourceFiles = sourceFiles,
                 )
                 fileList.addAll(safResult.paths)
@@ -526,18 +549,19 @@ object FileUtil {
                         val relativePath = source.relativeTo(originDir).path
                         val target = uniqueDestinationFile(File(dir, relativePath))
                         target.parentFile?.mkdirs()
+                        reserveOutput(source, target.absolutePath)
                         if (Build.VERSION.SDK_INT >= 26) {
                             val movedPath = Files.move(
                                 source.toPath(),
                                 target.toPath(),
                             ).absolutePathString()
                             fileList.add(movedPath)
-                            notifyOutput(movedPath)
+                            notifyOutput(source, movedPath)
                         } else {
                             source.copyTo(target, false)
                             source.delete()
                             fileList.add(target.absolutePath)
-                            notifyOutput(target.absolutePath)
+                            notifyOutput(source, target.absolutePath)
                         }
                     } catch (e: Exception) {
                         hasMoveFailure = true
@@ -589,6 +613,8 @@ object FileUtil {
         destinationDir: DocumentFile,
         progress: (p: Int) -> Unit,
         onOutput: (String) -> Unit,
+        onOutputWithSource: ((File, String) -> Unit)? = null,
+        onOutputReserved: ((File, String) -> Unit)? = null,
         sourceFiles: List<File>? = null,
     ): ExactSafMoveResult = withContext(Dispatchers.IO) {
         val skipPattern = "(^config.*.\\.txt\$)|(rList)|(.*.part-Frag.*)|(.*.live_chat)|(.*.ytdl)".toRegex()
@@ -613,11 +639,18 @@ object FileUtil {
                     relativeParent = relativeParent,
                     cache = directoryCache,
                 ) ?: throw IOException("Could not create SAF destination directory for ${source.absolutePath}")
-                val destinationUri = moveFileInputStream(source, context, targetDir)
+                val destinationUri = moveFileInputStream(
+                    source,
+                    context,
+                    targetDir,
+                    onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
+                )
                     ?: throw IOException("Could not create SAF output for ${source.absolutePath}")
                 val storedPath = destinationUri.toString()
                 outputs.add(storedPath)
                 onOutput(storedPath)
+                runCatching { onOutputWithSource?.invoke(source, storedPath) }
+                    .onFailure { error -> Log.w("FileUtil", "Move source observer failed", error) }
                 if (!source.delete()) {
                     errors.add("Failed to delete moved SAF source ${source.absolutePath}")
                 }
@@ -779,6 +812,8 @@ object FileUtil {
         normalizedDestDir: String,
         progress: (p: Int) -> Unit,
         onOutput: (String) -> Unit,
+        onOutputWithSource: ((File, String) -> Unit)? = null,
+        onOutputReserved: ((File, String) -> Unit)? = null,
         sourceFiles: List<File>? = null,
     ): List<String>? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
@@ -815,9 +850,16 @@ object FileUtil {
                     .filter { it.isNotBlank() }
                     .joinToString("/")
                     .trim('/')
-                val storedPath = moveSingleFileToPrimaryMediaStore(context, source, targetRelativeDir)
-                outputs.add(storedPath)
-                onOutput(storedPath)
+                val moved = moveSingleFileToPrimaryMediaStore(
+                    context = context,
+                    source = source,
+                    relativeDir = targetRelativeDir,
+                    onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
+                )
+                outputs.add(moved.storedPath)
+                onOutput(moved.storedPath)
+                runCatching { onOutputWithSource?.invoke(source, moved.providerUri) }
+                    .onFailure { error -> Log.w("FileUtil", "Move source observer failed", error) }
                 source.delete()
                 progress((((index + 1).toDouble() / files.size.toDouble()) * 100).toInt())
             }
@@ -825,7 +867,17 @@ object FileUtil {
         }
     }
 
-    private fun moveSingleFileToPrimaryMediaStore(context: Context, source: File, relativeDir: String): String {
+    private data class MediaStoreMoveResult(
+        val storedPath: String,
+        val providerUri: String,
+    )
+
+    private fun moveSingleFileToPrimaryMediaStore(
+        context: Context,
+        source: File,
+        relativeDir: String,
+        onDestinationReserved: ((String) -> Unit)? = null,
+    ): MediaStoreMoveResult {
         val resolver = context.contentResolver
         val normalizedRelativeDir = relativeDir.trim('/', '\\').replace('\\', '/') + "/"
         val displayName = resolveUniqueMediaStoreName(context, normalizedRelativeDir, source.name)
@@ -842,6 +894,7 @@ object FileUtil {
             ?: throw IOException("MediaStore insert returned null for ${source.name}")
 
         try {
+            onDestinationReserved?.invoke(uri.toString())
             resolver.openOutputStream(uri)?.use { output ->
                 source.inputStream().use { input ->
                     input.copyTo(output)
@@ -860,7 +913,10 @@ object FileUtil {
         }
 
         val primaryRoot = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/', '\\')
-        return "$primaryRoot/${normalizedRelativeDir}${displayName}"
+        return MediaStoreMoveResult(
+            storedPath = "$primaryRoot/${normalizedRelativeDir}${displayName}",
+            providerUri = uri.toString(),
+        )
     }
 
     private fun resolvePrimaryMediaStoreCollection(relativeDir: String, mimeType: String): Uri {
@@ -906,7 +962,12 @@ object FileUtil {
         } ?: false
     }
 
-    private fun moveFileInputStream(it: File, context: Context, dst: DocumentFile) : Uri? {
+    private fun moveFileInputStream(
+        it: File,
+        context: Context,
+        dst: DocumentFile,
+        onDestinationReserved: ((String) -> Unit)? = null,
+    ) : Uri? {
         val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.extension) ?: "*/*"
         val displayName = resolveUniqueDocumentName(dst, it.name)
 
@@ -917,12 +978,18 @@ object FileUtil {
             displayName
         ) ?: return null
 
-        val inputStream = it.inputStream()
-        val outputStream =
-            context.contentResolver.openOutputStream(destUri) ?: return null
-        inputStream.copyTo(outputStream)
-        inputStream.closeQuietly()
-        outputStream.closeQuietly()
+        try {
+            onDestinationReserved?.invoke(destUri.toString())
+            val inputStream = it.inputStream()
+            val outputStream = context.contentResolver.openOutputStream(destUri)
+                ?: throw IOException("Could not open SAF output stream for ${it.name}")
+            inputStream.copyTo(outputStream)
+            inputStream.closeQuietly()
+            outputStream.closeQuietly()
+        } catch (error: Exception) {
+            runCatching { context.contentResolver.delete(destUri, null, null) }
+            throw error
+        }
 
         return destUri
     }

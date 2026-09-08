@@ -284,6 +284,52 @@ internal object DownloadCacheOwnership {
         return removed
     }
 
+    /**
+     * Retire a prior execution's empty cache carrier after its exact
+     * publication journal has been fully reconciled.  The old marker and
+     * manifest are removed only when their identities match the supplied
+     * execution and no child remains; unknown descendants always block.
+     */
+    fun retireRecoveredExecution(
+        cacheRoot: File,
+        item: DownloadItem,
+        executionId: String,
+    ): Boolean {
+        if (item.id <= 0L || item.operationId.isBlank() || executionId.isBlank()) return false
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
+        val marker = markerFile(root, item.id).canonicalFile
+        if (!marker.exists()) return true
+        val fields = runCatching { if (marker.isFile) parse(marker.readText()) else emptyMap() }
+            .getOrDefault(emptyMap())
+        if (
+            fields["version"] != VERSION ||
+            fields["downloadId"]?.toLongOrNull() != item.id ||
+            fields["operationId"] != item.operationId ||
+            fields["executionId"] != executionId
+        ) return false
+        val directory = File(root, item.id.toString()).canonicalFile
+        if (!directory.exists()) {
+            return marker.delete() || !marker.exists()
+        }
+        if (!directory.isDirectory || directory.parentFile?.canonicalFile != root) return false
+        val manifest = artifactManifestFile(root, item.id).canonicalFile
+        if (manifest.exists()) {
+            val entries = readArtifactManifest(root, item.id, item.operationId, executionId)
+                ?: return false
+            // A complete publication journal proves every listed source has
+            // been consumed.  If any source still exists, do not retire the
+            // carrier or erase it as a cleanup side effect.
+            if (entries.any { relative ->
+                    val candidate = runCatching { File(directory, relative).canonicalFile }.getOrNull()
+                    candidate != null && isInside(candidate, directory) && candidate.isFile
+                }) return false
+            if (!manifest.delete() && manifest.exists()) return false
+        }
+        if (directory.listFiles()?.isNotEmpty() == true) return false
+        if (!directory.delete() && directory.exists()) return false
+        return marker.delete() || !marker.exists()
+    }
+
     fun listArtifactFiles(root: OwnedRoot): List<File> {
         val markerFields = runCatching { parse(root.marker.readText()) }.getOrDefault(emptyMap())
         val entries = readArtifactManifest(
