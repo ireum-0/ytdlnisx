@@ -316,13 +316,20 @@ internal object DownloadCacheOwnership {
         if (manifest.exists()) {
             val entries = readArtifactManifest(root, item.id, item.operationId, executionId)
                 ?: return false
-            // A complete publication journal proves every listed source has
-            // been consumed.  If any source still exists, do not retire the
-            // carrier or erase it as a cleanup side effect.
-            if (entries.any { relative ->
-                    val candidate = runCatching { File(directory, relative).canonicalFile }.getOrNull()
-                    candidate != null && isInside(candidate, directory) && candidate.isFile
-                }) return false
+            // A complete publication journal is exact authority for its
+            // listed source artifacts.  A crash can leave a copied source
+            // behind after the destination was durably recorded; remove only
+            // those exact entries so a retry cannot publish a collision-
+            // suffixed duplicate.  Unknown descendants remain untouched and
+            // still block retirement.
+            entries.forEach { relative ->
+                val candidate = runCatching { File(directory, relative).canonicalFile }.getOrNull()
+                    ?: return false
+                if (!isInside(candidate, directory) || candidate == directory) return false
+                if (candidate.exists() && (!candidate.isFile || !candidate.delete()) && candidate.exists()) {
+                    return false
+                }
+            }
             if (!manifest.delete() && manifest.exists()) return false
         }
         if (directory.listFiles()?.isNotEmpty() == true) return false

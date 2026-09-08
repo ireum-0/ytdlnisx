@@ -417,6 +417,7 @@ object FileUtil {
         onOutput: (String) -> Unit,
         onOutputWithSource: ((File, String) -> Unit)? = null,
         onOutputReserved: ((File, String) -> Unit)? = null,
+        onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ) : List<String> {
         fun notifyOutput(path: String) {
@@ -424,6 +425,11 @@ object FileUtil {
                 .onFailure { error -> Log.w("FileUtil", "Move output observer failed", error) }
         }
         fun notifyOutput(source: File, path: String) {
+            if (onOutputCommitted != null && !onOutputCommitted.invoke(source, path)) {
+                throw IOException(
+                    "Move output could not durably record the exact publication for ${source.absolutePath}",
+                )
+            }
             notifyOutput(path)
             runCatching { onOutputWithSource?.invoke(source, path) }
                 .onFailure { error -> Log.w("FileUtil", "Move source observer failed", error) }
@@ -458,6 +464,7 @@ object FileUtil {
                         onOutput = ::notifyOutput,
                         onOutputWithSource = onOutputWithSource,
                         onOutputReserved = ::reserveOutput,
+                        onOutputCommitted = onOutputCommitted,
                         sourceFiles = sourceFiles,
                     )
                 }.onFailure { e ->
@@ -485,6 +492,7 @@ object FileUtil {
                             onOutput = ::notifyOutput,
                             onOutputWithSource = onOutputWithSource,
                             onOutputReserved = ::reserveOutput,
+                            onOutputCommitted = onOutputCommitted,
                             sourceFiles = sourceFiles,
                         )
                     }.onFailure { e ->
@@ -510,6 +518,7 @@ object FileUtil {
                     onOutput = ::notifyOutput,
                     onOutputWithSource = onOutputWithSource,
                     onOutputReserved = ::reserveOutput,
+                    onOutputCommitted = onOutputCommitted,
                     sourceFiles = sourceFiles,
                 )
                 fileList.addAll(safResult.paths)
@@ -559,9 +568,18 @@ object FileUtil {
                             notifyOutput(source, movedPath)
                         } else {
                             source.copyTo(target, false)
-                            source.delete()
                             fileList.add(target.absolutePath)
+                            // The copy is the irreversible publication
+                            // boundary. Record the exact destination before
+                            // retiring the source so a crash between copy and
+                            // delete can be recovered without a destination
+                            // scan or collision-suffixed duplicate.
                             notifyOutput(source, target.absolutePath)
+                            if (!source.delete() && source.exists()) {
+                                throw IOException(
+                                    "Could not retire copied source ${source.absolutePath}",
+                                )
+                            }
                         }
                     } catch (e: Exception) {
                         hasMoveFailure = true
@@ -615,6 +633,7 @@ object FileUtil {
         onOutput: (String) -> Unit,
         onOutputWithSource: ((File, String) -> Unit)? = null,
         onOutputReserved: ((File, String) -> Unit)? = null,
+        onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ): ExactSafMoveResult = withContext(Dispatchers.IO) {
         val skipPattern = "(^config.*.\\.txt\$)|(rList)|(.*.part-Frag.*)|(.*.live_chat)|(.*.ytdl)".toRegex()
@@ -644,6 +663,7 @@ object FileUtil {
                     context,
                     targetDir,
                     onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
+                    onOutputCommitted = { path -> onOutputCommitted?.invoke(source, path) ?: true },
                 )
                     ?: throw IOException("Could not create SAF output for ${source.absolutePath}")
                 val storedPath = destinationUri.toString()
@@ -814,6 +834,7 @@ object FileUtil {
         onOutput: (String) -> Unit,
         onOutputWithSource: ((File, String) -> Unit)? = null,
         onOutputReserved: ((File, String) -> Unit)? = null,
+        onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ): List<String>? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
@@ -855,12 +876,25 @@ object FileUtil {
                     source = source,
                     relativeDir = targetRelativeDir,
                     onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
+                    onOutputCommitted = { path -> onOutputCommitted?.invoke(source, path) ?: true },
                 )
-                outputs.add(moved.storedPath)
-                onOutput(moved.storedPath)
+                // ContentResolver.insert() is the sole authority for the
+                // published MediaStore row.  Keep that exact URI in the
+                // output carrier; a synthesized RELATIVE_PATH/DISPLAY_NAME
+                // pathname can identify a different row after a collision.
+                outputs.add(moved.providerUri)
+                onOutput(moved.providerUri)
                 runCatching { onOutputWithSource?.invoke(source, moved.providerUri) }
                     .onFailure { error -> Log.w("FileUtil", "Move source observer failed", error) }
-                source.delete()
+                if (!source.delete() && source.exists()) {
+                    // The provider row is already an exact, finalized
+                    // publication and has been durably reported above. Keep
+                    // the source in the recovery carrier when it cannot be
+                    // retired instead of silently pretending the move was
+                    // complete and clearing the only duplicate-prevention
+                    // evidence.
+                    throw IOException("Could not retire MediaStore source ${source.absolutePath}")
+                }
                 progress((((index + 1).toDouble() / files.size.toDouble()) * 100).toInt())
             }
             outputs
@@ -868,7 +902,6 @@ object FileUtil {
     }
 
     private data class MediaStoreMoveResult(
-        val storedPath: String,
         val providerUri: String,
     )
 
@@ -877,6 +910,7 @@ object FileUtil {
         source: File,
         relativeDir: String,
         onDestinationReserved: ((String) -> Unit)? = null,
+        onOutputCommitted: ((String) -> Boolean)? = null,
     ): MediaStoreMoveResult {
         val resolver = context.contentResolver
         val normalizedRelativeDir = relativeDir.trim('/', '\\').replace('\\', '/') + "/"
@@ -901,20 +935,36 @@ object FileUtil {
                 }
             } ?: throw IOException("Could not open MediaStore output stream for ${source.name}")
 
-            resolver.update(
+            val finalizedRows = resolver.update(
                 uri,
                 ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
                 null,
                 null
             )
+            if (finalizedRows != 1) {
+                throw IOException(
+                    "MediaStore publication finalization was not acknowledged for ${source.name}: " +
+                        "affectedRows=$finalizedRows",
+                )
+            }
+            if (onOutputCommitted != null && !onOutputCommitted.invoke(uri.toString())) {
+                throw IOException(
+                    "MediaStore publication could not durably record ${uri}",
+                )
+            }
         } catch (e: Exception) {
-            runCatching { resolver.delete(uri, null, null) }
+            val deletedRows = runCatching { resolver.delete(uri, null, null) }.getOrDefault(0)
+            if (deletedRows != 1) {
+                e.addSuppressed(
+                    IOException(
+                        "MediaStore cleanup was not acknowledged for ${uri}: affectedRows=$deletedRows",
+                    ),
+                )
+            }
             throw e
         }
 
-        val primaryRoot = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/', '\\')
         return MediaStoreMoveResult(
-            storedPath = "$primaryRoot/${normalizedRelativeDir}${displayName}",
             providerUri = uri.toString(),
         )
     }
@@ -967,6 +1017,7 @@ object FileUtil {
         context: Context,
         dst: DocumentFile,
         onDestinationReserved: ((String) -> Unit)? = null,
+        onOutputCommitted: ((String) -> Boolean)? = null,
     ) : Uri? {
         val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.extension) ?: "*/*"
         val displayName = resolveUniqueDocumentName(dst, it.name)
@@ -986,8 +1037,22 @@ object FileUtil {
             inputStream.copyTo(outputStream)
             inputStream.closeQuietly()
             outputStream.closeQuietly()
+            if (onOutputCommitted != null && !onOutputCommitted.invoke(destUri.toString())) {
+                throw IOException(
+                    "SAF publication could not durably record ${destUri}",
+                )
+            }
         } catch (error: Exception) {
-            runCatching { context.contentResolver.delete(destUri, null, null) }
+            val deletedRows = runCatching {
+                context.contentResolver.delete(destUri, null, null)
+            }.getOrDefault(0)
+            if (deletedRows != 1) {
+                error.addSuppressed(
+                    IOException(
+                        "SAF cleanup was not acknowledged for ${destUri}: affectedRows=$deletedRows",
+                    ),
+                )
+            }
             throw error
         }
 
@@ -1031,6 +1096,59 @@ object FileUtil {
         }
 
         return listOf()
+    }
+
+    /**
+     * A reserved publication may be promoted after restart only when the
+     * physical boundary itself proves completion.  Raw moves have that proof
+     * when the exact source is gone after the destination exists.  Provider
+     * rows require a positive MediaStore finalization acknowledgement;
+     * generic SAF existence is deliberately insufficient because it cannot
+     * distinguish a partial copy from a complete document.
+     */
+    internal fun isRecoverablePublicationComplete(
+        sourcePath: String,
+        destinationPath: String,
+        context: Context? = null,
+    ): Boolean {
+        val destination = destinationPath.trim()
+        if (destination.isBlank()) return false
+        if (destination.startsWith("content://", ignoreCase = true)) {
+            return context?.let { isFinalizedMediaStoreUri(destination, it) } == true
+        }
+        val source = runCatching {
+            val raw = if (sourcePath.startsWith("file://", ignoreCase = true)) {
+                Uri.parse(sourcePath).path.orEmpty()
+            } else {
+                sourcePath
+            }
+            File(raw).canonicalFile
+        }.getOrNull() ?: return false
+        val destinationExists = if (context == null) {
+            runCatching { File(destination).exists() }.getOrDefault(false)
+        } else {
+            exists(destination, context)
+        }
+        return destinationExists && !source.exists()
+    }
+
+    private fun isFinalizedMediaStoreUri(path: String, context: Context): Boolean {
+        val uri = runCatching { Uri.parse(path) }.getOrNull() ?: return false
+        if (!uri.scheme.equals("content", ignoreCase = true)) return false
+        if (DocumentsContract.isDocumentUri(context, uri)) return false
+        return runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(MediaStore.MediaColumns.IS_PENDING),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use false
+                val index = cursor.getColumnIndex(MediaStore.MediaColumns.IS_PENDING)
+                index >= 0 && cursor.getInt(index) == 0
+            } == true
+        }.getOrDefault(false)
     }
 
     /**

@@ -1348,6 +1348,17 @@ class DownloadWorker(
             }
         }
 
+        /**
+         * Commit the exact destination at FileUtil's irreversible boundary.
+         * Unlike the diagnostic observer, this callback is allowed to abort
+         * source retirement when the durable journal write is not confirmed.
+         */
+        private fun commitPublishedOutput(source: File, path: String): Boolean {
+            val committed = publicationJournal?.markPublished(source.absolutePath, path) == true
+            if (!committed) publicationJournalWriteFailed = true
+            return committed
+        }
+
         private fun reservePublishedOutput(source: File, path: String) {
             if (publicationJournal?.reserve(source.absolutePath, path) != true) {
                 publicationJournalWriteFailed = true
@@ -1445,15 +1456,32 @@ class DownloadWorker(
                     .forEach { artifact ->
                         val reserved = artifact.reservedDestinationPath
                         if (!reserved.isNullOrBlank()) {
-                            if (FileUtil.exists(reserved, context)) {
+                            if (FileUtil.isRecoverablePublicationComplete(
+                                    sourcePath = artifact.sourcePath,
+                                    destinationPath = reserved,
+                                    context = context,
+                                )
+                            ) {
                                 if (!handle.markPublished(artifact.sourcePath, reserved)) {
                                     throw IOException(
                                         "Download publication recovery reservation could not be finalized"
                                     )
                                 }
-                            } else if (!handle.clearReservation(artifact.sourcePath)) {
+                            } else if (!FileUtil.exists(reserved, context)) {
+                                if (!handle.clearReservation(artifact.sourcePath)) {
+                                    throw IOException(
+                                        "Download publication recovery reservation could not be released"
+                                    )
+                                }
+                            } else {
+                                // A provider document can exist while its
+                                // copy is still partial.  Existence alone is
+                                // not publication authority; retain the
+                                // exact reservation/source debt and fail
+                                // closed instead of promoting it or creating
+                                // a collision-suffixed duplicate.
                                 throw IOException(
-                                    "Download publication recovery reservation could not be released"
+                                    "Download publication recovery reservation has no completion proof: $reserved"
                                 )
                             }
                         }
@@ -1486,6 +1514,11 @@ class DownloadWorker(
                             if (!handle.markPublished(source.absolutePath, destination)) {
                                 journalWriteFailed = true
                             }
+                        },
+                        onOutputCommitted = { source, destination ->
+                            val committed = handle.markPublished(source.absolutePath, destination)
+                            if (!committed) journalWriteFailed = true
+                            committed
                         },
                     )
                     if (journalWriteFailed) {
@@ -1560,12 +1593,16 @@ class DownloadWorker(
                 val entries = lines.drop(filesIndex + 1)
                     .map(String::trim)
                     .filter(String::isNotBlank)
-                if (entries.any { relative ->
-                        val candidate = runCatching { File(staging, relative).canonicalFile }.getOrNull()
-                        candidate != null &&
-                            isPathInsideDirectory(candidate.absolutePath, staging) &&
-                            candidate.isFile
-                    }) return false
+                entries.forEach { relative ->
+                    val candidate = runCatching { File(staging, relative).canonicalFile }.getOrNull()
+                        ?: return false
+                    if (!isPathInsideDirectory(candidate.absolutePath, staging) || candidate == staging) {
+                        return false
+                    }
+                    if (candidate.exists() && (!candidate.isFile || !candidate.delete()) && candidate.exists()) {
+                        return false
+                    }
+                }
             }
             val unknownChildren = staging.listFiles()?.any { child ->
                 val canonical = runCatching { child.canonicalFile }.getOrNull()
@@ -2050,6 +2087,9 @@ class DownloadWorker(
                                                 onOutputReserved = { source, path ->
                                                     reservePublishedOutput(source, path)
                                                 },
+                                                onOutputCommitted = { source, path ->
+                                                    commitPublishedOutput(source, path)
+                                                },
                                                 onOutputWithSource = { source, path ->
                                                     observePublishedOutput(source, path)
                                                 },
@@ -2185,6 +2225,9 @@ class DownloadWorker(
                                                 onOutput = { path -> movedOutputPaths.add(path) },
                                                 onOutputReserved = { source, path ->
                                                     reservePublishedOutput(source, path)
+                                                },
+                                                onOutputCommitted = { source, path ->
+                                                    commitPublishedOutput(source, path)
                                                 },
                                                 onOutputWithSource = { source, path ->
                                                     observePublishedOutput(source, path)
@@ -8528,6 +8571,11 @@ class DownloadWorker(
                             if (publicationJournal?.markPublished(source.absolutePath, path) != true) {
                                 publicationJournalWriteFailed = true
                             }
+                        },
+                        onOutputCommitted = { source, path ->
+                            val committed = publicationJournal?.markPublished(source.absolutePath, path) ?: true
+                            if (!committed) publicationJournalWriteFailed = true
+                            committed
                         },
                     )
                 }
