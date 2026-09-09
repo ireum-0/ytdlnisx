@@ -202,6 +202,12 @@ internal object TerminalExecutionRecovery {
         subjectId: Long,
         activeExecution: (String) -> Boolean,
     ): Admission {
+        // Admission can be the first recovery entrypoint after process death.
+        // Configure the native marker namespace before attempting to rebind a
+        // generation prepared immediately before launch; otherwise the marker
+        // is observed as UNKNOWN merely because the process-local barrier had
+        // not yet been initialized.
+        YtdlpNativeProcessBarrier.configure(context)
         val file = recordFile(File(context.filesDir, DIRECTORY_NAME), subjectId)
         if (!file.exists()) return Admission.NO_WITNESS
         val record = read(file) ?: return Admission.TERMINAL_FAILURE
