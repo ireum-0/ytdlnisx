@@ -407,14 +407,6 @@ class TerminalDownloadWorker(
                 dao.updateLog(removedOptionWarning, itemId.toLong())
             }
 
-            if (!TerminalExecutionRecovery.markNativeStarted(
-                    context = context,
-                    subjectId = itemId.toLong(),
-                    executionToken = requireNotNull(terminalTaskToken),
-                )
-            ) {
-                throw IOException("Could not persist Terminal native-start responsibility")
-            }
             TerminalDownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting
                 ?.invoke(itemId, terminalOutputDirectory)
             val injectedOutput = terminalOutputDirectory?.let { outputDirectory ->
@@ -426,6 +418,13 @@ class TerminalDownloadWorker(
                 .ytdlpResponseForTesting
                 ?.invoke(itemId, terminalOutputDirectory)
             val response = if (injectedResponseOutput != null) {
+                check(
+                    TerminalExecutionRecovery.markNativeStarted(
+                        context = context,
+                        subjectId = itemId.toLong(),
+                        executionToken = requireNotNull(terminalTaskToken),
+                    ),
+                ) { "Could not persist Terminal native-start responsibility" }
                 YoutubeDLResponse(
                     emptyList(),
                     0,
@@ -434,6 +433,13 @@ class TerminalDownloadWorker(
                     "",
                 )
             } else if (injectedOutput != null) {
+                check(
+                    TerminalExecutionRecovery.markNativeStarted(
+                        context = context,
+                        subjectId = itemId.toLong(),
+                        executionToken = requireNotNull(terminalTaskToken),
+                    ),
+                ) { "Could not persist Terminal native-start responsibility" }
                 YoutubeDLResponse(
                     emptyList(),
                     0,
@@ -461,15 +467,24 @@ class TerminalDownloadWorker(
                         dao.updateLog(redactedLine, itemId.toLong())
                     }
                     },
-                    onProcessRegistered = {
-                        val generationToken = YtdlpNativeProcessBarrier.generationTokenFor(processId)
-                            ?: throw IOException("Terminal native generation was not published")
+                    onNativeGenerationPrepared = { generationToken ->
                         if (!TerminalExecutionRecovery.bindNativeGeneration(
                                 context = context,
                                 subjectId = itemId.toLong(),
                                 executionToken = requireNotNull(terminalTaskToken),
                                 generationToken = generationToken,
                             )
+                        ) {
+                            throw IOException(
+                                "Terminal native generation responsibility could not be persisted",
+                            )
+                        }
+                    },
+                    onProcessRegistered = {
+                        val generationToken = YtdlpNativeProcessBarrier.generationTokenFor(processId)
+                            ?: throw IOException("Terminal native generation was not published")
+                        if (TerminalExecutionRecovery.read(context, itemId.toLong())
+                                ?.nativeGenerationToken != generationToken
                         ) {
                             throw IOException("Terminal native generation responsibility could not be persisted")
                         }

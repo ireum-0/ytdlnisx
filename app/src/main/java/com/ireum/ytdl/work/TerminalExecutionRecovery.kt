@@ -268,12 +268,22 @@ internal object TerminalExecutionRecovery {
     ): Boolean {
         if (generationToken.isBlank()) return false
         return update(storageDirectory, subjectId, executionToken) { current ->
-            if (current.phase != Phase.NATIVE_STARTED) return@update null
+            // The generation marker is prepared immediately before launch.
+            // Binding it is the durable handoff that changes ADMITTED into
+            // NATIVE_STARTED; accepting both phases also lets restart
+            // recovery consume a marker written between prepare() and the
+            // original bind callback without inventing a second execution.
+            if (current.phase != Phase.ADMITTED && current.phase != Phase.NATIVE_STARTED) {
+                return@update null
+            }
             if (
                 current.nativeGenerationToken != null &&
                     current.nativeGenerationToken != generationToken
             ) return@update null
-            current.copy(nativeGenerationToken = generationToken)
+            current.copy(
+                phase = Phase.NATIVE_STARTED,
+                nativeGenerationToken = generationToken,
+            )
         }
     }
 
@@ -569,6 +579,31 @@ internal object TerminalExecutionRecovery {
     }
 
     private fun reconcileRecord(context: Context, record: Record): Boolean {
+        // A process can die after the native barrier has durably created its
+        // exact generation marker but before the pre-launch bind callback
+        // reaches this journal. Rebind only a readable exact marker for the
+        // same Terminal process identity. An unreadable marker remains
+        // durable debt; it is never treated as proof that no native launch
+        // occurred.
+        if (record.phase == Phase.ADMITTED && record.nativeGenerationToken.isNullOrBlank()) {
+            when (val observation = YtdlpNativeProcessBarrier.observeGeneration(record.processId)) {
+                is YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION -> {
+                    if (!bindNativeGeneration(
+                            context = context,
+                            subjectId = record.subjectId,
+                            executionToken = record.executionToken,
+                            generationToken = observation.token,
+                        )
+                    ) return false
+                    val rebound = read(context, record.subjectId) ?: return false
+                    return reconcileRecord(context, rebound)
+                }
+                YtdlpNativeProcessBarrier.GenerationObservation.UNKNOWN,
+                is YtdlpNativeProcessBarrier.GenerationObservation.LEGACY_IDENTITY ->
+                    return false
+                YtdlpNativeProcessBarrier.GenerationObservation.ABSENT -> Unit
+            }
+        }
         return when (record.phase) {
             Phase.ADMITTED -> {
                 val marked = markTerminalFailure(

@@ -344,6 +344,7 @@ sys.exit(exit_code)
         processId: String? = null,
         redirectErrorStream: Boolean = false,
         callback: ((Float, Long, String) -> Unit)? = null,
+        onNativeGenerationPrepared: ((String) -> Unit)? = null,
         onProcessRegistered: (() -> Unit)? = null,
     ): YoutubeDLResponse {
         val result = executeWithQuiescence(
@@ -352,6 +353,7 @@ sys.exit(exit_code)
             processId = processId,
             redirectErrorStream = redirectErrorStream,
             callback = callback,
+            onNativeGenerationPrepared = onNativeGenerationPrepared,
             onProcessRegistered = onProcessRegistered,
         )
         if (processId != null && !result.nativeQuiescent) {
@@ -379,6 +381,7 @@ sys.exit(exit_code)
         processId: String? = null,
         redirectErrorStream: Boolean = false,
         callback: ((Float, Long, String) -> Unit)? = null,
+        onNativeGenerationPrepared: ((String) -> Unit)? = null,
         onProcessRegistered: (() -> Unit)? = null,
     ): ExecutionResult {
         val runtime = runtimeLayout(context)
@@ -491,6 +494,14 @@ sys.exit(exit_code)
         var rootFailure: Throwable? = null
         var response: YoutubeDLResponse? = null
         try {
+            // The exact marker is durable at this point. The caller must
+            // durably bind that generation to its execution witness before
+            // this try block crosses ProcessBuilder.start(). A callback
+            // failure is handled by the same marker recovery path below, so
+            // launch is never allowed with an unbound generation.
+            descendantBarrier?.let { prepared ->
+                onNativeGenerationPrepared?.invoke(prepared.generationToken)
+            }
             process = try {
                 processStarterOverrideForTesting?.invoke(
                     processCommand.toList(),

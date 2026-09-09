@@ -64,6 +64,31 @@ class TerminalExecutionRecoveryTest {
     }
 
     @Test
+    fun preparedGenerationBindsAdmissionBeforeNativeStart() {
+        val root = Files.createTempDirectory("terminal-execution-prepared-").toFile()
+        try {
+            assertTrue(TerminalExecutionRecovery.begin(root, 46L, "46-e1", "terminal:46"))
+            assertEquals(
+                TerminalExecutionRecovery.Phase.ADMITTED,
+                TerminalExecutionRecovery.read(root, 46L)?.phase,
+            )
+            assertTrue(
+                TerminalExecutionRecovery.bindNativeGeneration(
+                    root,
+                    46L,
+                    "46-e1",
+                    "generation-1",
+                ),
+            )
+            val record = TerminalExecutionRecovery.read(root, 46L)
+            assertEquals(TerminalExecutionRecovery.Phase.NATIVE_STARTED, record?.phase)
+            assertEquals("generation-1", record?.nativeGenerationToken)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun unresolvedNativeStopRetainsDurablePendingOwnerUntilPositiveProof() {
         val root = Files.createTempDirectory("terminal-execution-stop-").toFile()
         try {
