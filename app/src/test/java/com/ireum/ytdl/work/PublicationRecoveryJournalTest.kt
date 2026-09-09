@@ -259,6 +259,37 @@ class PublicationRecoveryJournalTest {
     }
 
     @Test
+    fun exactDestinationCannotAuthorizeAnotherProviderCreateIntent() {
+        val root = Files.createTempDirectory("publication-journal-exact-replay-").toFile()
+        val storage = File(root, "journal")
+        try {
+            val source = File(root, "staging/output.mp4").apply {
+                parentFile?.mkdirs()
+                writeText("output")
+            }
+            val handle = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = storage,
+                    kind = PublicationRecoveryJournal.Kind.DOWNLOAD,
+                    subjectId = "16",
+                    operationId = "operation-exact-replay",
+                    executionId = "execution-1",
+                    attemptId = "attempt-1",
+                    sourceRoot = root,
+                    sourceFiles = listOf(source),
+                )
+            )
+            val exact = "content://media/exact/16"
+            assertTrue(handle.reserve(source.absolutePath, exact))
+            assertTrue(handle.markPublished(source.absolutePath, exact))
+            assertFalse(handle.reserveIntent(source.absolutePath))
+            assertEquals(exact, handle.snapshot().artifacts.single().destinationPath)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun unknownProviderReservationIsDurableAndCannotBeClearedOrReplayed() {
         val root = Files.createTempDirectory("publication-journal-unknown-").toFile()
         val storage = File(root, "journal")

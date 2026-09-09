@@ -1327,6 +1327,8 @@ class DownloadWorker(
         private var publicationJournalWriteFailed = false
         private var recoveredPublishedPaths: List<String> = emptyList()
         private var recoveredSourceDestinations: Map<String, String> = emptyMap()
+        /** A prior exact publication is retained as recovery debt; producer replay is forbidden. */
+        private var priorPublicationFinalizationRequired = false
 
         private fun establishHistoryReplacementFailure(issue: DownloadIssue) {
                         historyReplacementFailureIssue = issue
@@ -1766,7 +1768,15 @@ class DownloadWorker(
                 recoveredPublicationJournals += handle
             }
             recoveredSourceDestinations = sourceDestinations
-            return recovered.toList()
+            if (recovered.isNotEmpty()) {
+                // The prior generation owns these exact destinations.  This
+                // worker has no durable History/no-History finalization
+                // witness to adopt here, so fail closed instead of feeding
+                // recovered paths into a fresh producer generation.
+                priorPublicationFinalizationRequired = true
+                throw PriorPublicationFinalizationRequiredException()
+            }
+            return emptyList()
         }
 
         /**
@@ -3233,7 +3243,9 @@ class DownloadWorker(
                             // terminal. Retire the exact publication carrier
                             // only after that semantic commit; failures before
                             // here leave the journal discoverable for retry.
-                            retirePublicationJournal()
+                            if (!priorPublicationFinalizationRequired) {
+                                retirePublicationJournal()
+                            }
                         }
 
                         if (ytdlpPhase.state.logging.enabled){
@@ -3963,6 +3975,7 @@ class DownloadWorker(
                         val targetDeleted = historyReplacementTerminalAction ==
                             HistoryReplacementTerminalAction.TARGET_DELETED
                         val providerOutcomeUnknown = unexpected is UnknownProviderPublicationException ||
+                            unexpected is PriorPublicationFinalizationRequiredException ||
                             terminalizeUnknownPublicationReservation() ||
                             hasUnknownPublicationReservation()
                         val fallbackIssue = DownloadIssue.create(

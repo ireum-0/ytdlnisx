@@ -163,7 +163,11 @@ internal object PublicationRecoveryJournal {
             }
             if (index < 0) return false
             val existing = record.artifacts[index]
-            if (!existing.destinationPath.isNullOrBlank()) return true
+            // An exact destination is already the publication authority. A
+            // caller that reaches provider creation again must not be
+            // rewarded with a second object; it must reconcile this record's
+            // source-retirement/finalization debt instead.
+            if (!existing.destinationPath.isNullOrBlank()) return false
             // An existing reservation means that a previous invocation has
             // already crossed (or may have crossed) the external provider
             // creation boundary. Replaying the provider call could create a
@@ -682,4 +686,13 @@ internal object PublicationRecoveryJournal {
  */
 internal class UnknownProviderPublicationException(
     message: String = "Provider publication outcome is unknown and has been quarantined",
+) : java.io.IOException(message)
+
+/**
+ * A prior execution has exact publication evidence, but this worker cannot
+ * safely reconstruct its semantic finalization in the current attempt.  The
+ * durable journal remains authoritative and producer replay is forbidden.
+ */
+internal class PriorPublicationFinalizationRequiredException(
+    message: String = "Prior Download publication requires durable finalization",
 ) : java.io.IOException(message)
