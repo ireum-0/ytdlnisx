@@ -287,6 +287,10 @@ sys.exit(exit_code)
     internal var processStarterOverrideForTesting:
         ((List<String>, Map<String, String>, Boolean) -> Process)? = null
 
+    /** Deterministic stop/quiescence seam for Terminal lifecycle tests. */
+    @Volatile
+    internal var destroyProcessOverrideForTesting: ((String, String?) -> Boolean)? = null
+
     @Volatile
     internal var runtimeLayoutOverrideForTesting: RuntimeLayout? = null
 
@@ -607,6 +611,39 @@ sys.exit(exit_code)
         destroyProcessByIdAndAwait(processId)
 
     internal fun destroyProcessByIdAndAwait(processId: String): Boolean {
+        destroyProcessOverrideForTesting?.let { return it(processId, null) }
+        return destroyTrackedProcess(processId)
+    }
+
+    /**
+     * Stops only the exact native generation recorded by a Terminal/Download
+     * execution. A newer marker for the shared product process ID is never
+     * addressed by an older recovery witness.
+     */
+    internal fun destroyProcessByIdForGeneration(
+        processId: String,
+        expectedGenerationToken: String?,
+    ): Boolean {
+        destroyProcessOverrideForTesting?.let {
+            return it(processId, expectedGenerationToken)
+        }
+        if (expectedGenerationToken != null) {
+            val currentGeneration = YtdlpNativeProcessBarrier.generationTokenFor(processId)
+            if (
+                currentGeneration != null &&
+                    currentGeneration != expectedGenerationToken
+            ) {
+                return false
+            }
+            if (
+                currentGeneration == null &&
+                    YtdlpNativeProcessBarrier.hasUnresolved(processId)
+            ) {
+                // The marker is unreadable/malformed or otherwise opaque;
+                // numeric process identity is not enough to signal it.
+                return false
+            }
+        }
         return destroyTrackedProcess(processId)
     }
 

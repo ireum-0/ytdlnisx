@@ -25,6 +25,7 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
 import com.ireum.ytdl.util.storage.TerminalCacheOwnership
 import com.yausername.youtubedl_android.YoutubeDL
@@ -47,6 +48,14 @@ internal object TerminalDownloadWorkerEffectTestHooks {
      */
     @Volatile
     internal var ytdlpSuccessWithOutputDirectoryForTesting: ((Int, File) -> String?)? = null
+
+    /** Observes the real worker immediately before its native/output seam. */
+    @Volatile
+    internal var beforeYtdlpExecutionForTesting: ((Int, File?) -> Unit)? = null
+
+    /** Optional full response seam so no-cache/no-output paths can be wired. */
+    @Volatile
+    internal var ytdlpResponseForTesting: ((Int, File?) -> String?)? = null
 }
 
 
@@ -125,9 +134,14 @@ class TerminalDownloadWorker(
 
     private fun reconcileTerminalPublicationRecovery() {
         runCatching {
+            TerminalExecutionRecovery.reconcile(
+                context = context,
+                activeExecution = { token -> TerminalExecutionRegistry.isActiveNow(token) },
+            )
             TerminalPublicationRecovery.reconcile(
                 context = context,
                 cacheRoot = File(FileUtil.getCachePath(context)),
+                activeExecution = { token -> TerminalExecutionRegistry.isActiveNow(token) },
             )
         }.onFailure { error ->
             Log.w(TAG, "Terminal publication recovery convergence deferred", error)
@@ -166,19 +180,61 @@ class TerminalDownloadWorker(
     private suspend fun cleanupStoppedWorker() = withContext(Dispatchers.IO + NonCancellable) {
         if (itemId == 0) return@withContext
 
-        val processId = YtdlpProcessIdentity.terminal(itemId.toLong())
-        YoutubeDL.getInstance().destroyProcessById(processId)
-        YoutubeDLCompat.destroyProcessById(processId)
+        val token = terminalTaskToken
+            ?: TerminalExecutionRecovery.read(context, itemId.toLong())?.executionToken
+        if (token.isNullOrBlank()) {
+            Log.w(TAG, "Stopped Terminal worker has no durable execution witness id=$itemId")
+            return@withContext
+        }
+        // Persist the native-stop obligation before attempting destruction.
+        // A false/unresolved destroy result keeps the row, witness, and any
+        // cache ownership intact so a later recovery pass can retry the exact
+        // generation; no new Terminal worker can be admitted meanwhile.
+        if (!TerminalExecutionRecovery.convergeTerminal(
+                context = context,
+                subjectId = itemId.toLong(),
+                executionToken = token,
+                outcome = TerminalExecutionRecovery.Outcome.STOPPED,
+            )
+        ) {
+            Log.w(TAG, "Terminal native quiescence unresolved; retaining durable owner id=$itemId")
+            return@withContext
+        }
         runCatching {
             NotificationUtil(context).cancelTerminalDownloadNotification(itemId)
         }
         if (shouldCleanupTerminalCache && !terminalSemanticCommit) {
             runCatching { cleanupTerminalOutputDirectory() }
         }
-        runCatching {
-            DBManager.getInstance(context).terminalDao.delete(itemId.toLong())
+        val rowConverged = runCatching {
+            val dao = DBManager.getInstance(context).terminalDao
+            dao.delete(itemId.toLong())
+            dao.getTerminalById(itemId.toLong()) == null
+        }.getOrDefault(false)
+        if (!rowConverged) {
+            Log.w(TAG, "Terminal stop row convergence deferred id=$itemId")
         }
-        Log.i(TAG, "Stopped terminal worker cleanup completed for itemId=$itemId")
+        Log.i(TAG, "Stopped terminal worker cleanup completed for itemId=$itemId converged=$rowConverged")
+    }
+
+    private suspend fun convergeTerminalOutcome(
+        outcome: TerminalExecutionRecovery.Outcome,
+    ): Boolean = withContext(Dispatchers.IO + NonCancellable) {
+        val token = terminalTaskToken
+            ?: TerminalExecutionRecovery.read(context, itemId.toLong())?.executionToken
+            ?: return@withContext false
+        if (!TerminalExecutionRecovery.convergeTerminal(
+                context = context,
+                subjectId = itemId.toLong(),
+                executionToken = token,
+                outcome = outcome,
+            )
+        ) return@withContext false
+        runCatching {
+            val dao = DBManager.getInstance(context).terminalDao
+            dao.delete(itemId.toLong())
+        }
+        true
     }
 
     override suspend fun doWork(): Result {
@@ -188,7 +244,11 @@ class TerminalDownloadWorker(
             if (isStopped) {
                 cleanupStoppedWorker()
             }
-            TerminalExecutionRegistry.release(itemId.toLong(), terminalTaskToken)
+            TerminalExecutionRegistry.release(
+                context,
+                itemId.toLong(),
+                terminalTaskToken ?: TerminalExecutionRecovery.read(context, itemId.toLong())?.executionToken,
+            )
         }
     }
 
@@ -198,15 +258,24 @@ class TerminalDownloadWorker(
         val dao = DBManager.getInstance(context).terminalDao
         if (itemId == 0) return Result.failure()
         if (command.isNullOrBlank()) return Result.failure()
+        // A stale WorkManager request can outlive semantic Terminal row
+        // convergence.  It has no subject authority once the row is gone and
+        // must not recreate an execution merely from its copied input data.
+        if (dao.getTerminalById(itemId.toLong()) == null) {
+            Log.i(TAG, "Skipping Terminal request whose row is already converged id=$itemId")
+            return Result.success()
+        }
 
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val terminalTaskToken = "$itemId-${UUID.randomUUID()}"
+        val processId = YtdlpProcessIdentity.terminal(itemId.toLong())
         when (
             TerminalExecutionRegistry.admit(
                 context = context,
                 cacheRoot = File(FileUtil.getCachePath(context)),
                 subjectId = itemId.toLong(),
                 executionToken = terminalTaskToken,
+                processId = processId,
             )
         ) {
             TerminalExecutionRegistry.Admission.BLOCKED -> {
@@ -221,9 +290,27 @@ class TerminalDownloadWorker(
                 Log.e(TAG, "Terminal execution stopped after an unknown provider publication outcome id=$itemId")
                 return Result.failure()
             }
+            TerminalExecutionRegistry.Admission.RECOVERY_FAILURE -> {
+                Log.e(TAG, "Terminal execution could not establish durable recovery ownership id=$itemId")
+                return Result.failure()
+            }
             TerminalExecutionRegistry.Admission.ACQUIRED -> Unit
         }
         this.terminalTaskToken = terminalTaskToken
+        // Recovery may have converged the queue row between the initial
+        // input check and durable admission.  Re-check the subject before any
+        // setup/native boundary; an input snapshot alone is not permission to
+        // resurrect a semantically retired Terminal item.
+        if (dao.getTerminalById(itemId.toLong()) == null) {
+            TerminalExecutionRecovery.abandonAdmission(
+                context = context,
+                subjectId = itemId.toLong(),
+                executionToken = terminalTaskToken,
+            )
+            Log.i(TAG, "Skipping Terminal execution converged during admission id=$itemId")
+            return Result.success()
+        }
+        return try {
         val terminalPlan = TerminalCommandPlanFactory.create(
             context = context,
             preferences = sharedPreferences,
@@ -248,9 +335,8 @@ class TerminalDownloadWorker(
         runCatching {
             setForeground(foregroundInfo)
             delay(500)
-        }.onFailure {
-            Log.e(TAG, "Failed to enter foreground", it)
-            return Result.retry()
+        }.getOrElse { error ->
+            throw IOException("Failed to enter Terminal foreground", error)
         }
 
         val downloadLocation = terminalPlan.downloadLocation
@@ -321,15 +407,33 @@ class TerminalDownloadWorker(
                 dao.updateLog(removedOptionWarning, itemId.toLong())
             }
 
-            val processId = YtdlpProcessIdentity.terminal(itemId.toLong())
-            YoutubeDL.getInstance().destroyProcessById(processId)
-            YoutubeDLCompat.destroyProcessById(processId)
+            if (!TerminalExecutionRecovery.markNativeStarted(
+                    context = context,
+                    subjectId = itemId.toLong(),
+                    executionToken = requireNotNull(terminalTaskToken),
+                )
+            ) {
+                throw IOException("Could not persist Terminal native-start responsibility")
+            }
+            TerminalDownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting
+                ?.invoke(itemId, terminalOutputDirectory)
             val injectedOutput = terminalOutputDirectory?.let { outputDirectory ->
                 TerminalDownloadWorkerEffectTestHooks
                     .ytdlpSuccessWithOutputDirectoryForTesting
                     ?.invoke(itemId, outputDirectory)
             }
-            val response = if (injectedOutput != null) {
+            val injectedResponseOutput = TerminalDownloadWorkerEffectTestHooks
+                .ytdlpResponseForTesting
+                ?.invoke(itemId, terminalOutputDirectory)
+            val response = if (injectedResponseOutput != null) {
+                YoutubeDLResponse(
+                    emptyList(),
+                    0,
+                    0L,
+                    injectedResponseOutput,
+                    "",
+                )
+            } else if (injectedOutput != null) {
                 YoutubeDLResponse(
                     emptyList(),
                     0,
@@ -357,7 +461,29 @@ class TerminalDownloadWorker(
                         dao.updateLog(redactedLine, itemId.toLong())
                     }
                     },
+                    onProcessRegistered = {
+                        val generationToken = YtdlpNativeProcessBarrier.generationTokenFor(processId)
+                            ?: throw IOException("Terminal native generation was not published")
+                        if (!TerminalExecutionRecovery.bindNativeGeneration(
+                                context = context,
+                                subjectId = itemId.toLong(),
+                                executionToken = requireNotNull(terminalTaskToken),
+                                generationToken = generationToken,
+                            )
+                        ) {
+                            throw IOException("Terminal native generation responsibility could not be persisted")
+                        }
+                    },
                 )
+            }
+
+            if (!TerminalExecutionRecovery.markNativeFinished(
+                    context = context,
+                    subjectId = itemId.toLong(),
+                    executionToken = requireNotNull(terminalTaskToken),
+                )
+            ) {
+                throw IOException("Could not persist Terminal native completion")
             }
 
             withContext(Dispatchers.IO) {
@@ -517,11 +643,33 @@ class TerminalDownloadWorker(
             dao.updateLog(redactedOutput, itemId.toLong())
             notificationUtil.cancelTerminalDownloadNotification(itemId)
             delay(1000)
+            if (!TerminalExecutionRecovery.markCommitting(
+                    context = context,
+                    subjectId = itemId.toLong(),
+                    executionToken = requireNotNull(terminalTaskToken),
+                )
+            ) {
+                throw IOException("Terminal semantic commit responsibility could not be persisted")
+            }
             dao.delete(itemId.toLong())
+            if (dao.getTerminalById(itemId.toLong()) != null) {
+                throw IOException("Terminal semantic row deletion could not be confirmed")
+            }
             // From this point the semantic Terminal outcome is committed.
             // Later marker/journal retirement is convergence debt and must
             // not escape as a contradictory WorkManager failure.
             terminalSemanticCommit = true
+            if (!TerminalExecutionRecovery.markCommitted(
+                    context = context,
+                    subjectId = itemId.toLong(),
+                    executionToken = requireNotNull(terminalTaskToken),
+                )
+            ) {
+                // COMMITTING is itself a durable idempotence witness. Keep it
+                // for startup convergence rather than turning a committed
+                // Terminal result into a contradictory Worker failure.
+                Log.w(TAG, "Terminal execution tombstone finalization deferred id=$itemId")
+            }
             terminalPublicationJournal?.let { journal ->
                 check(journal.markPhase(PublicationRecoveryJournal.Phase.COMMITTED)) {
                     "Terminal publication semantic commit could not be finalized"
@@ -542,17 +690,21 @@ class TerminalDownloadWorker(
                 reconcileTerminalPublicationRecovery()
                 return Result.success()
             }
-            if (isStopped || it is YoutubeDL.CanceledException) {
+            if (isStopped) {
                 notificationUtil.cancelTerminalDownloadNotification(itemId)
-                if (!noCache) {
+                // cleanupStoppedWorker() owns the durable stop/quiescence
+                // protocol from doWork's NonCancellable finally block.
+                Log.i(TAG, "Terminal worker stop requested; deferring convergence id=$itemId")
+                return Result.failure()
+            }
+            if (it is YoutubeDL.CanceledException) {
+                val converged = convergeTerminalOutcome(TerminalExecutionRecovery.Outcome.STOPPED)
+                if (converged && !noCache) {
                     cleanupTerminalOutputDirectory()
                 }
-                runCatching {
-                    dao.delete(itemId.toLong())
-                }
                 reconcileTerminalPublicationRecovery()
-                Log.i(TAG, "Terminal worker stopped or cancelled itemId=$itemId")
-                return Result.success()
+                Log.i(TAG, "Terminal worker cancelled id=$itemId converged=$converged")
+                return if (converged) Result.success() else Result.failure()
             }
             val redactedMessage = it.message?.let { message ->
                 SensitiveTextRedactor.redactOutput(message)
@@ -566,18 +718,30 @@ class TerminalDownloadWorker(
                 dao.updateLog(redactedMessage, itemId.toLong())
             }
             notificationUtil.cancelTerminalDownloadNotification(itemId)
-            if (!noCache) {
+            val converged = convergeTerminalOutcome(TerminalExecutionRecovery.Outcome.FAILURE)
+            if (converged && !noCache) {
                 cleanupTerminalOutputDirectory()
             }
             Log.e(TAG, "${context.getString(R.string.failed_download)} $userMessage")
             delay(1000)
-            dao.delete(itemId.toLong())
             reconcileTerminalPublicationRecovery()
             return Result.failure()
         } finally {
             FileUtil.deleteConfigFiles(request)
         }
-        return Result.success()
+        Result.success()
+        } catch (setupFailure: Exception) {
+            // Admission already established a durable execution witness. Any
+            // setup failure before the handled execution region must still
+            // converge through that witness; it may never escape through the
+            // outer finally with only the process-local token remaining.
+            val converged = convergeTerminalOutcome(TerminalExecutionRecovery.Outcome.FAILURE)
+            if (converged && shouldCleanupTerminalCache) {
+                runCatching { cleanupTerminalOutputDirectory() }
+            }
+            Log.e(TAG, "Terminal setup failed after durable admission id=$itemId", setupFailure)
+            Result.failure()
+        }
     }
 
     companion object {

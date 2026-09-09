@@ -16,6 +16,8 @@ import com.ireum.ytdl.work.HistoryDateFetchManager
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import com.ireum.ytdl.work.TerminalPublicationRecovery
+import com.ireum.ytdl.work.TerminalExecutionRecovery
+import com.ireum.ytdl.work.TerminalExecutionRegistry
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.storage.CacheImportPlanner
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
@@ -86,6 +88,14 @@ class App : Application() {
         }
         applicationScope.launch(Dispatchers.IO) {
             try {
+                // Terminal execution ownership exists even for direct/no-
+                // cache and no-output commands. Reconcile it before
+                // publication-carrier cleanup so a restarted worker cannot
+                // rerun an admitted native generation.
+                val execution = TerminalExecutionRecovery.reconcile(
+                    context = this@App,
+                    activeExecution = { token -> TerminalExecutionRegistry.isActiveNow(token) },
+                )
                 // Marker-revoked Terminal publication remnants are recovery
                 // quarantine, never ordinary cache-import roots. Discover
                 // them explicitly on every process start so a failed worker
@@ -94,12 +104,16 @@ class App : Application() {
                 val reconciled = TerminalPublicationRecovery.reconcile(
                     context = this@App,
                     cacheRoot = cacheRoot,
+                    activeExecution = { token -> TerminalExecutionRegistry.isActiveNow(token) },
                 )
                 val recovery = CacheImportPlanner.collectRecovery(cacheRoot)
-                if (reconciled.journalCount > 0 || recovery.isNotEmpty()) {
+                if (execution.discovered > 0 || reconciled.journalCount > 0 || recovery.isNotEmpty()) {
                     Log.w(
                         TAG,
-                        "Terminal publication recovery state discovered: " +
+                        "Terminal execution/publication recovery state discovered: " +
+                            "executions=${execution.discovered} " +
+                            "executionConverged=${execution.converged} " +
+                            "executionDeferred=${execution.deferred} " +
                             "journals=${reconciled.journalCount} " +
                             "quarantined=${reconciled.quarantinedCount} " +
                             "retired=${reconciled.retiredCount} " +

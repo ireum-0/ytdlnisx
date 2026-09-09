@@ -6,9 +6,7 @@ import android.content.Intent
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.util.NotificationUtil
-import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
-import com.ireum.ytdl.work.YtdlpProcessIdentity
-import com.yausername.youtubedl_android.YoutubeDL
+import com.ireum.ytdl.work.TerminalExecutionRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -22,12 +20,22 @@ class CancelTerminalNotificationReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val processId = YtdlpProcessIdentity.terminal(terminalId)
-                YoutubeDL.getInstance().destroyProcessById(processId)
-                YoutubeDLCompat.destroyProcessById(processId)
-                WorkManager.getInstance(context).cancelUniqueWork(terminalId.toString())
+                val cancellationRequested = runCatching {
+                    WorkManager.getInstance(context)
+                        .cancelUniqueWork(terminalId.toString())
+                        .result
+                        .get()
+                }.isSuccess
+                if (!cancellationRequested || !TerminalExecutionRegistry.cancel(context, terminalId)) {
+                    // Native quiescence or cancellation is unresolved. Keep
+                    // the exact row/witness; startup recovery owns the next
+                    // attempt and no new native work can be admitted.
+                    NotificationUtil(context).cancelTerminalDownloadNotification(terminalId.toInt())
+                    return@launch
+                }
                 NotificationUtil(context).cancelTerminalDownloadNotification(terminalId.toInt())
-                DBManager.getInstance(context).terminalDao.delete(terminalId)
+                val dao = DBManager.getInstance(context).terminalDao
+                dao.delete(terminalId)
             } finally {
                 pendingResult.finish()
             }

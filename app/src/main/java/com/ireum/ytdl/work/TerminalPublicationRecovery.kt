@@ -3,9 +3,11 @@ package com.ireum.ytdl.work
 import android.content.Context
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.storage.TerminalCacheOwnership
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -57,6 +59,7 @@ internal object TerminalPublicationRecovery {
         cacheRoot: File,
         subjectId: Long,
         activeExecution: (String) -> Boolean,
+        admittingExecutionToken: String? = null,
     ): Admission = withContext(Dispatchers.IO + NonCancellable) {
         val journalStorage = File(context.filesDir, "publication-recovery")
         val before = PublicationRecoveryJournal.readAll(journalStorage)
@@ -184,7 +187,50 @@ internal object TerminalPublicationRecovery {
             return@withContext Admission.TERMINAL_FAILURE
         }
         if (recoveryRemainders.isNotEmpty()) {
-            return@withContext Admission.BLOCKED
+            // A marker-revoked generic carrier is an abandoned failed
+            // execution, not a live owner.  Once the exact Terminal native
+            // identity is positively absent, install a durable terminal
+            // tombstone before deleting the stale queue row. This gives the
+            // old carrier a convergence owner and prevents a permanent
+            // BLOCKED -> WorkManager retry fixed point. A live/opaque native
+            // generation remains blocked and is never stolen by recovery.
+            if (recoveryRemainders.any { activeExecution(it.taskToken) } ||
+                YoutubeDLCompat.hasProcessById(YtdlpProcessIdentity.terminal(subjectId))
+            ) {
+                return@withContext Admission.BLOCKED
+            }
+            val generic = recoveryRemainders.first()
+            val provisionalWitness = admittingExecutionToken?.let { token ->
+                TerminalExecutionRecovery.read(context, subjectId)?.let { witness ->
+                    witness.executionToken == token &&
+                        witness.phase == TerminalExecutionRecovery.Phase.ADMITTED
+                }
+            } == true
+            if (
+                !provisionalWitness &&
+                !TerminalExecutionRecovery.recordLegacyTerminalFailure(
+                    context = context,
+                    subjectId = subjectId,
+                    executionToken = generic.taskToken,
+                    processId = YtdlpProcessIdentity.terminal(subjectId),
+                )
+            ) {
+                return@withContext Admission.BLOCKED
+            }
+            runCatching {
+                DBManager.getInstance(context).terminalDao.delete(subjectId)
+            }
+            reconcile(
+                context = context,
+                cacheRoot = cacheRoot,
+                journalStorage = journalStorage,
+                terminalRowExists = { id ->
+                    DBManager.getInstance(context).terminalDao.getTerminalById(id) != null
+                },
+                allowUnknownWithoutRow = true,
+                activeExecution = activeExecution,
+            )
+            return@withContext Admission.TERMINAL_FAILURE
         }
 
         // A journal in any non-terminal phase is an exact prior obligation,
@@ -200,6 +246,7 @@ internal object TerminalPublicationRecovery {
             cacheRoot = cacheRoot,
             journalStorage = journalStorage,
             terminalRowExists = { id -> DBManager.getInstance(context).terminalDao.getTerminalById(id) != null },
+            activeExecution = activeExecution,
         )
         val after = PublicationRecoveryJournal.readAll(journalStorage).filter {
             it.kind == PublicationRecoveryJournal.Kind.TERMINAL && it.subjectId == subjectId.toString()
@@ -213,10 +260,15 @@ internal object TerminalPublicationRecovery {
         }
     }
 
-    fun reconcile(context: Context, cacheRoot: File): ReconcileResult = reconcile(
+    fun reconcile(
+        context: Context,
+        cacheRoot: File,
+        activeExecution: ((String) -> Boolean)? = null,
+    ): ReconcileResult = reconcile(
         cacheRoot = cacheRoot,
         journalStorage = File(context.filesDir, "publication-recovery"),
         context = context,
+        activeExecution = activeExecution,
     )
 
     internal fun reconcile(
@@ -501,7 +553,32 @@ internal object TerminalPublicationRecovery {
         // retry/re-entry may still be converging, so preserve the carrier.
         TerminalCacheOwnership.listRecoveryRoots(cacheRoot).forEach { recovery ->
             val subjectId = recovery.subjectId?.toLongOrNull() ?: return@forEach
-            if (!terminalRowAbsent(subjectId, context, terminalRowExists)) return@forEach
+            if (!terminalRowAbsent(subjectId, context, terminalRowExists)) {
+                // Generic marker-revoked state has a finite convergence owner
+                // once no exact native generation is live. Preserve an
+                // active/opaque generation as BLOCKED; otherwise install a
+                // terminal tombstone before retiring the stale queue row.
+                if (
+                    recovery.phase in setOf("PARTIAL_PUBLICATION", "QUARANTINED_FAILURE") &&
+                    context != null &&
+                    activeExecution != null &&
+                    activeExecution.invoke(recovery.taskToken) != true &&
+                    !YoutubeDLCompat.hasProcessById(YtdlpProcessIdentity.terminal(subjectId)) &&
+                    TerminalExecutionRecovery.recordLegacyTerminalFailure(
+                        context = context,
+                        subjectId = subjectId,
+                        executionToken = recovery.taskToken,
+                        processId = YtdlpProcessIdentity.terminal(subjectId),
+                    )
+                ) {
+                    runCatching {
+                        runBlocking(Dispatchers.IO) {
+                            DBManager.getInstance(context).terminalDao.delete(subjectId)
+                        }
+                    }
+                }
+                if (!terminalRowAbsent(subjectId, context, terminalRowExists)) return@forEach
+            }
             // A generic carrier cannot become the successor of an UNKNOWN
             // journal.  Keep both durable records until an explicit
             // QUARANTINED_UNKNOWN carrier is established; otherwise generic

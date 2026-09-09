@@ -11,15 +11,12 @@ import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.dao.TerminalDao
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.util.NotificationUtil
-import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.work.TerminalDownloadWorker
-import com.ireum.ytdl.work.YtdlpProcessIdentity
-import com.yausername.youtubedl_android.YoutubeDL
+import com.ireum.ytdl.work.TerminalExecutionRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.delay
 
 
 class TerminalViewModel(private val application: Application) : AndroidViewModel(application) {
@@ -68,11 +65,16 @@ class TerminalViewModel(private val application: Application) : AndroidViewModel
     }
 
     fun cancelTerminalDownload(id: Long) = viewModelScope.launch(Dispatchers.IO) {
-        val processId = YtdlpProcessIdentity.terminal(id)
-        YoutubeDL.getInstance().destroyProcessById(processId)
-        YoutubeDLCompat.destroyProcessById(processId)
-        WorkManager.getInstance(application).cancelUniqueWork(id.toString())
-        delay(200)
+        val cancellationRequested = runCatching {
+            WorkManager.getInstance(application)
+                .cancelUniqueWork(id.toString())
+                .result
+                .get()
+        }.isSuccess
+        if (!cancellationRequested || !TerminalExecutionRegistry.cancel(application, id)) {
+            notificationUtil.cancelTerminalDownloadNotification(id.toInt())
+            return@launch
+        }
         notificationUtil.cancelTerminalDownloadNotification(id.toInt())
         delete(id)
     }
