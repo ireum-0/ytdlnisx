@@ -421,6 +421,7 @@ object FileUtil {
         onOutputReservationUnknown: ((File) -> Boolean)? = null,
         onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
+        onOutputReservationRolledBack: ((File) -> Boolean)? = null,
     ) : List<String> {
         fun notifyOutput(path: String) {
             runCatching { onOutput(path) }
@@ -460,20 +461,47 @@ object FileUtil {
                 )
             }
         }
+        val providerPublicationTracker = ProviderPublicationTracker()
         var providerReservationUnknown = false
         fun markOutputReservationUnknown(source: File) {
             providerReservationUnknown = true
+            providerPublicationTracker.unresolvedSideEffect()
             try {
                 if (onOutputReservationUnknown != null && !onOutputReservationUnknown.invoke(source)) {
-                    throw IOException(
+                    throw UnresolvedProviderPublicationException(
                         "Move output reservation status could not be persisted for ${source.absolutePath}",
                     )
                 }
             } catch (error: Exception) {
-                throw IOException(
+                throw UnresolvedProviderPublicationException(
                     "Move output reservation status could not be persisted for ${source.absolutePath}",
                     error,
                 )
+            }
+        }
+        fun markProviderReservationEstablished() {
+            providerPublicationTracker.exactReservationEstablished()
+        }
+        fun markProviderReservationRolledBack(source: File): Boolean {
+            val recorded = runCatching {
+                onOutputReservationRolledBack?.invoke(source) ?: true
+            }.getOrDefault(false)
+            if (recorded) {
+                providerPublicationTracker.rollbackProven()
+            }
+            return recorded
+        }
+        fun throwIfProviderPublicationFenced() {
+            when (providerPublicationTracker.outcome) {
+                ProviderPublicationOutcome.UNRESOLVED_EXTERNAL_SIDE_EFFECT ->
+                    throw UnresolvedProviderPublicationException(
+                        "Provider publication completion is unknown; retry and fallback are fenced",
+                    )
+                ProviderPublicationOutcome.EXACT_SIDE_EFFECT_DURABLE ->
+                    throw IOException(
+                        "Exact provider publication remains recoverable; fallback is fenced",
+                    )
+                ProviderPublicationOutcome.NO_EXTERNAL_SIDE_EFFECT -> Unit
             }
         }
         return withContext(Dispatchers.Main){
@@ -499,22 +527,23 @@ object FileUtil {
                         onOutputReservationIntent = ::reserveOutputIntent,
                         onOutputReservationUnknown = ::markOutputReservationUnknown,
                         onOutputCommitted = onOutputCommitted,
+                        onReservationEstablished = ::markProviderReservationEstablished,
+                        onReservationRolledBack = ::markProviderReservationRolledBack,
                         sourceFiles = sourceFiles,
                     )
                 }.onFailure { e ->
                     moveErrors.add("MediaStore raw-path move failed raw=$destDir normalized=$normalizedDestDir error=${e.message}")
                 }.getOrNull()
-                if (providerReservationUnknown) {
-                    throw IOException(
-                        "Provider publication completion is unknown; retry is fenced",
-                    )
-                }
                 if (mediaStoreMoved != null) {
                     if (!keepCache) {
                         cleanupMovedSourceTree(originDir, sourceFiles)
                     }
                     val scanned = scanMedia(mediaStoreMoved, context)
                     return@withContext scanned.ifEmpty { mediaStoreMoved }
+                }
+                if (providerReservationUnknown) throwIfProviderPublicationFenced()
+                if (providerPublicationTracker.outcome != ProviderPublicationOutcome.NO_EXTERNAL_SIDE_EFFECT) {
+                    throwIfProviderPublicationFenced()
                 }
             }
             val safDestinationDir = if (!directFileWrite) {
@@ -534,22 +563,23 @@ object FileUtil {
                             onOutputReservationIntent = ::reserveOutputIntent,
                             onOutputReservationUnknown = ::markOutputReservationUnknown,
                             onOutputCommitted = onOutputCommitted,
+                            onReservationEstablished = ::markProviderReservationEstablished,
+                            onReservationRolledBack = ::markProviderReservationRolledBack,
                             sourceFiles = sourceFiles,
                         )
                     }.onFailure { e ->
                         moveErrors.add("MediaStore fallback failed raw=$destDir normalized=$normalizedDestDir error=${e.message}")
                     }.getOrNull()
-                    if (providerReservationUnknown) {
-                        throw IOException(
-                            "Provider publication completion is unknown; retry is fenced",
-                        )
-                    }
                     if (mediaStoreMoved != null) {
                         if (!keepCache) {
                             cleanupMovedSourceTree(originDir, sourceFiles)
                         }
                         val scanned = scanMedia(mediaStoreMoved, context)
                         return@withContext scanned.ifEmpty { mediaStoreMoved }
+                    }
+                    if (providerReservationUnknown) throwIfProviderPublicationFenced()
+                    if (providerPublicationTracker.outcome != ProviderPublicationOutcome.NO_EXTERNAL_SIDE_EFFECT) {
+                        throwIfProviderPublicationFenced()
                     }
                 }
 
@@ -567,13 +597,11 @@ object FileUtil {
                     onOutputReservationIntent = ::reserveOutputIntent,
                     onOutputReservationUnknown = ::markOutputReservationUnknown,
                     onOutputCommitted = onOutputCommitted,
+                    onReservationEstablished = ::markProviderReservationEstablished,
+                    onReservationRolledBack = ::markProviderReservationRolledBack,
                     sourceFiles = sourceFiles,
                 )
-                if (providerReservationUnknown) {
-                    throw IOException(
-                        "Provider publication completion is unknown; retry is fenced",
-                    )
-                }
+                if (providerReservationUnknown) throwIfProviderPublicationFenced()
                 fileList.addAll(safResult.paths)
                 if (safResult.errors.isNotEmpty()) {
                     hasMoveFailure = true
@@ -689,6 +717,8 @@ object FileUtil {
         onOutputReservationIntent: ((File) -> Unit)? = null,
         onOutputReservationUnknown: ((File) -> Unit)? = null,
         onOutputCommitted: ((File, String) -> Boolean)? = null,
+        onReservationEstablished: (() -> Unit)? = null,
+        onReservationRolledBack: ((File) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ): ExactSafMoveResult = withContext(Dispatchers.IO) {
         val skipPattern = "(^config.*.\\.txt\$)|(rList)|(.*.part-Frag.*)|(.*.live_chat)|(.*.ytdl)".toRegex()
@@ -720,6 +750,10 @@ object FileUtil {
                     onReservationIntent = { onOutputReservationIntent?.invoke(source) },
                     onReservationUnknown = { onOutputReservationUnknown?.invoke(source) },
                     onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
+                    onReservationEstablished = onReservationEstablished,
+                    onReservationRolledBack = {
+                        onReservationRolledBack?.invoke(source) ?: true
+                    },
                     onOutputCommitted = { path -> onOutputCommitted?.invoke(source, path) ?: true },
                 )
                     ?: throw IOException("Could not create SAF output for ${source.absolutePath}")
@@ -731,6 +765,8 @@ object FileUtil {
                 if (!source.delete()) {
                     errors.add("Failed to delete moved SAF source ${source.absolutePath}")
                 }
+            } catch (error: UnresolvedProviderPublicationException) {
+                throw error
             } catch (error: Exception) {
                 errors.add("${source.absolutePath}: ${error.message ?: error.javaClass.simpleName}")
             }
@@ -894,6 +930,8 @@ object FileUtil {
         onOutputReservationIntent: ((File) -> Unit)? = null,
         onOutputReservationUnknown: ((File) -> Unit)? = null,
         onOutputCommitted: ((File, String) -> Boolean)? = null,
+        onReservationEstablished: (() -> Unit)? = null,
+        onReservationRolledBack: ((File) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
     ): List<String>? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
@@ -937,6 +975,10 @@ object FileUtil {
                     onReservationIntent = { onOutputReservationIntent?.invoke(source) },
                     onReservationUnknown = { onOutputReservationUnknown?.invoke(source) },
                     onDestinationReserved = { path -> onOutputReserved?.invoke(source, path) },
+                    onReservationEstablished = onReservationEstablished,
+                    onReservationRolledBack = {
+                        onReservationRolledBack?.invoke(source) ?: true
+                    },
                     onOutputCommitted = { path -> onOutputCommitted?.invoke(source, path) ?: true },
                 )
                 // ContentResolver.insert() is the sole authority for the
@@ -973,6 +1015,8 @@ object FileUtil {
         onReservationIntent: (() -> Unit)? = null,
         onReservationUnknown: (() -> Unit)? = null,
         onDestinationReserved: ((String) -> Unit)? = null,
+        onReservationEstablished: (() -> Unit)? = null,
+        onReservationRolledBack: (() -> Boolean)? = null,
         onOutputCommitted: ((String) -> Boolean)? = null,
     ): MediaStoreMoveResult {
         val resolver = context.contentResolver
@@ -992,14 +1036,44 @@ object FileUtil {
             resolver.insert(collection, values)
         } catch (error: Exception) {
             runCatching { onReservationUnknown?.invoke() }
-            throw error
+            throw UnresolvedProviderPublicationException(
+                "MediaStore insert completion is unknown for ${source.name}",
+                error,
+            )
         } ?: run {
             onReservationUnknown?.invoke()
-            throw IOException("MediaStore insert returned null for ${source.name}")
+            throw UnresolvedProviderPublicationException(
+                "MediaStore insert returned no exact URI for ${source.name}",
+            )
         }
 
+        var providerObjectRolledBack = false
         try {
-            onDestinationReserved?.invoke(uri.toString())
+            try {
+                onDestinationReserved?.invoke(uri.toString())
+            } catch (reservationError: Exception) {
+                when (resolveProviderReservationFailure(
+                    rollbackProviderObject = {
+                        resolver.delete(uri, null, null) == 1
+                    },
+                    clearReservation = {
+                        onReservationRolledBack?.invoke() ?: true
+                    },
+                )) {
+                    ProviderReservationRecovery.ROLLED_BACK -> {
+                        providerObjectRolledBack = true
+                        throw reservationError
+                    }
+                    ProviderReservationRecovery.UNRESOLVED -> Unit
+                }
+                runCatching { onReservationUnknown?.invoke() }
+                throw UnresolvedProviderPublicationException(
+                    "MediaStore create completed but exact reservation could not be established for ${source.name}",
+                    reservationError,
+                )
+            }
+            onReservationEstablished?.invoke()
+
             resolver.openOutputStream(uri)?.use { output ->
                 source.inputStream().use { input ->
                     input.copyTo(output)
@@ -1023,9 +1097,23 @@ object FileUtil {
                     "MediaStore publication could not durably record ${uri}",
                 )
             }
+        } catch (e: UnresolvedProviderPublicationException) {
+            throw e
         } catch (e: Exception) {
+            if (providerObjectRolledBack) throw e
             val deletedRows = runCatching { resolver.delete(uri, null, null) }.getOrDefault(0)
-            if (deletedRows != 1) {
+            if (deletedRows == 1) {
+                val rollbackRecorded = runCatching {
+                    onReservationRolledBack?.invoke() ?: true
+                }.getOrDefault(false)
+                if (!rollbackRecorded) {
+                    runCatching { onReservationUnknown?.invoke() }
+                    throw UnresolvedProviderPublicationException(
+                        "MediaStore cleanup was acknowledged but exact reservation retirement was not durable for ${source.name}",
+                        e,
+                    )
+                }
+            } else {
                 e.addSuppressed(
                     IOException(
                         "MediaStore cleanup was not acknowledged for ${uri}: affectedRows=$deletedRows",
@@ -1090,6 +1178,8 @@ object FileUtil {
         onReservationIntent: (() -> Unit)? = null,
         onReservationUnknown: (() -> Unit)? = null,
         onDestinationReserved: ((String) -> Unit)? = null,
+        onReservationEstablished: (() -> Unit)? = null,
+        onReservationRolledBack: (() -> Boolean)? = null,
         onOutputCommitted: ((String) -> Boolean)? = null,
     ) : Uri? {
         val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.extension) ?: "*/*"
@@ -1103,16 +1193,54 @@ object FileUtil {
                 mimeType,
                 displayName
             ) ?: run {
-                onReservationUnknown?.invoke()
-                return null
+                try {
+                    onReservationUnknown?.invoke()
+                } catch (error: Exception) {
+                    throw UnresolvedProviderPublicationException(
+                        "SAF create returned no exact URI and the unknown reservation could not be recorded for ${it.name}",
+                        error,
+                    )
+                }
+                throw UnresolvedProviderPublicationException(
+                    "SAF create returned no exact URI for ${it.name}",
+                )
             }
+        } catch (error: UnresolvedProviderPublicationException) {
+            throw error
         } catch (error: Exception) {
             runCatching { onReservationUnknown?.invoke() }
-            throw error
+            throw UnresolvedProviderPublicationException(
+                "SAF create completion is unknown for ${it.name}",
+                error,
+            )
         }
 
+        var providerObjectRolledBack = false
         try {
-            onDestinationReserved?.invoke(destUri.toString())
+            try {
+                onDestinationReserved?.invoke(destUri.toString())
+            } catch (reservationError: Exception) {
+                when (resolveProviderReservationFailure(
+                    rollbackProviderObject = {
+                        context.contentResolver.delete(destUri, null, null) == 1
+                    },
+                    clearReservation = {
+                        onReservationRolledBack?.invoke() ?: true
+                    },
+                )) {
+                    ProviderReservationRecovery.ROLLED_BACK -> {
+                        providerObjectRolledBack = true
+                        throw reservationError
+                    }
+                    ProviderReservationRecovery.UNRESOLVED -> Unit
+                }
+                runCatching { onReservationUnknown?.invoke() }
+                throw UnresolvedProviderPublicationException(
+                    "SAF create completed but exact reservation could not be established for ${it.name}",
+                    reservationError,
+                )
+            }
+            onReservationEstablished?.invoke()
             val inputStream = it.inputStream()
             val outputStream = context.contentResolver.openOutputStream(destUri)
                 ?: throw IOException("Could not open SAF output stream for ${it.name}")
@@ -1124,11 +1252,25 @@ object FileUtil {
                     "SAF publication could not durably record ${destUri}",
                 )
             }
+        } catch (error: UnresolvedProviderPublicationException) {
+            throw error
         } catch (error: Exception) {
+            if (providerObjectRolledBack) throw error
             val deletedRows = runCatching {
                 context.contentResolver.delete(destUri, null, null)
             }.getOrDefault(0)
-            if (deletedRows != 1) {
+            if (deletedRows == 1) {
+                val rollbackRecorded = runCatching {
+                    onReservationRolledBack?.invoke() ?: true
+                }.getOrDefault(false)
+                if (!rollbackRecorded) {
+                    runCatching { onReservationUnknown?.invoke() }
+                    throw UnresolvedProviderPublicationException(
+                        "SAF cleanup was acknowledged but exact reservation retirement was not durable for ${it.name}",
+                        error,
+                    )
+                }
+            } else {
                 error.addSuppressed(
                     IOException(
                         "SAF cleanup was not acknowledged for ${destUri}: affectedRows=$deletedRows",

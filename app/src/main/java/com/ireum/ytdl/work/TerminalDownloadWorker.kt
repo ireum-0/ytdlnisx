@@ -435,6 +435,11 @@ class TerminalDownloadWorker(
                             if (!marked) publicationJournalWriteFailed = true
                             marked
                         },
+                        onOutputReservationRolledBack = { source ->
+                            val cleared = terminalPublicationJournal?.clearReservation(source.absolutePath) == true
+                            if (!cleared) publicationJournalWriteFailed = true
+                            cleared
+                        },
                         onOutputReserved = { source, path ->
                             if (terminalPublicationJournal?.reserve(source.absolutePath, path) != true) {
                                 publicationJournalWriteFailed = true

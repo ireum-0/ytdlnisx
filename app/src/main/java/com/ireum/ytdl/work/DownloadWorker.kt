@@ -1455,6 +1455,19 @@ class DownloadWorker(
         }
 
         /**
+         * Clear a provider reservation only after FileUtil has positively
+         * acknowledged rollback of the exact provider object.  A failed
+         * journal write keeps the publication fenced rather than allowing a
+         * later route to create a second provider object.
+         */
+        private fun markPublicationReservationRolledBack(source: File): Boolean {
+            val journal = publicationJournal ?: return true
+            val cleared = journal.clearReservation(source.absolutePath)
+            if (!cleared) publicationJournalWriteFailed = true
+            return cleared
+        }
+
+        /**
          * UNKNOWN provider completion is not a retryable move failure.  Once
          * an opaque provider call may have crossed its creation boundary, the
          * journal must become a durable terminal fence before this Download
@@ -1659,6 +1672,11 @@ class DownloadWorker(
                             val marked = handle.markReservationUnknown(source.absolutePath)
                             if (!marked) journalWriteFailed = true
                             marked
+                        },
+                        onOutputReservationRolledBack = { source ->
+                            val cleared = handle.clearReservation(source.absolutePath)
+                            if (!cleared) journalWriteFailed = true
+                            cleared
                         },
                         onOutputReserved = { source, destination ->
                             if (!handle.reserve(source.absolutePath, destination)) {
@@ -2249,6 +2267,9 @@ class DownloadWorker(
                                                 onOutputReservationUnknown = { source ->
                                                     markPublicationReservationUnknown(source)
                                                 },
+                                                onOutputReservationRolledBack = { source ->
+                                                    markPublicationReservationRolledBack(source)
+                                                },
                                                 onOutputReserved = { source, path ->
                                                     reservePublishedOutput(source, path)
                                                 },
@@ -2393,6 +2414,9 @@ class DownloadWorker(
                                                 },
                                                 onOutputReservationUnknown = { source ->
                                                     markPublicationReservationUnknown(source)
+                                                },
+                                                onOutputReservationRolledBack = { source ->
+                                                    markPublicationReservationRolledBack(source)
                                                 },
                                                 onOutputReserved = { source, path ->
                                                     reservePublishedOutput(source, path)
@@ -8755,6 +8779,11 @@ class DownloadWorker(
                             val marked = publicationJournal?.markReservationUnknown(source.absolutePath) ?: true
                             if (!marked) publicationJournalWriteFailed = true
                             marked
+                        },
+                        onOutputReservationRolledBack = { source ->
+                            val cleared = publicationJournal?.clearReservation(source.absolutePath) ?: true
+                            if (!cleared) publicationJournalWriteFailed = true
+                            cleared
                         },
                         onOutputReserved = { source, path ->
                             if (publicationJournal?.reserve(source.absolutePath, path) != true) {
