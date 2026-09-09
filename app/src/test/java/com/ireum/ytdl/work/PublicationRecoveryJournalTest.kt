@@ -1187,4 +1187,20 @@ class PublicationRecoveryJournalTest {
             root.deleteRecursively()
         }
     }
+
+    @Test
+    fun malformedTerminalRecoveryCarrierIsOpaqueRatherThanHealthyEmpty() {
+        val root = Files.createTempDirectory("terminal-recovery-discovery-").toFile()
+        try {
+            val terminal = File(root, "TERMINAL/task-opaque").apply { mkdirs() }
+            TerminalCacheOwnership.recoveryCarrierFile(terminal).writeText("not-json")
+            val result = TerminalCacheOwnership.discoverRecoveryRoots(root)
+            assertTrue(result is TerminalCacheOwnership.RecoveryDiscovery.Opaque)
+            val opaque = result as TerminalCacheOwnership.RecoveryDiscovery.Opaque
+            assertTrue(opaque.opaqueDirectories.contains(terminal.absolutePath))
+            assertTrue(opaque.roots.isEmpty())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
 }

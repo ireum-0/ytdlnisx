@@ -116,8 +116,15 @@ internal object TerminalPublicationRecovery {
                             )
                         }
                 }
-            val quarantinedRemainders = TerminalCacheOwnership
-                .listRecoveryRoots(cacheRoot)
+            val quarantinedRemainders = when (
+                val discovery = TerminalCacheOwnership.discoverRecoveryRoots(cacheRoot)
+            ) {
+                is TerminalCacheOwnership.RecoveryDiscovery.Healthy -> discovery.roots
+                is TerminalCacheOwnership.RecoveryDiscovery.Unavailable,
+                is TerminalCacheOwnership.RecoveryDiscovery.Opaque -> {
+                    return@withContext Admission.BLOCKED
+                }
+            }
                 .filter { it.subjectId?.toLongOrNull() == subjectId }
             if (
                 afterUnknown || quarantinedRemainders.any {
@@ -191,7 +198,15 @@ internal object TerminalPublicationRecovery {
         // Startup reconciliation may already have converted a partial
         // journal into a marker-revoked recovery carrier.  That carrier is
         // explicit quarantine state, not a new worker's staging root.
-        val recoveryRemainders = TerminalCacheOwnership.listRecoveryRoots(cacheRoot)
+        val recoveryRemainders = when (
+            val discovery = TerminalCacheOwnership.discoverRecoveryRoots(cacheRoot)
+        ) {
+            is TerminalCacheOwnership.RecoveryDiscovery.Healthy -> discovery.roots
+            is TerminalCacheOwnership.RecoveryDiscovery.Unavailable,
+            is TerminalCacheOwnership.RecoveryDiscovery.Opaque -> {
+                return@withContext Admission.BLOCKED
+            }
+        }
             .filter { it.subjectId?.toLongOrNull() == subjectId }
         if (recoveryRemainders.any { it.phase == UNKNOWN_QUARANTINE_PHASE }) {
             runCatching {
@@ -270,7 +285,16 @@ internal object TerminalPublicationRecovery {
         }.filter {
             it.kind == PublicationRecoveryJournal.Kind.TERMINAL && it.subjectId == subjectId.toString()
         }
-        if (after.isNotEmpty() || TerminalCacheOwnership.listRecoveryRoots(cacheRoot).any {
+        val finalRecoveryRoots = when (
+            val discovery = TerminalCacheOwnership.discoverRecoveryRoots(cacheRoot)
+        ) {
+            is TerminalCacheOwnership.RecoveryDiscovery.Healthy -> discovery.roots
+            is TerminalCacheOwnership.RecoveryDiscovery.Unavailable,
+            is TerminalCacheOwnership.RecoveryDiscovery.Opaque -> {
+                return@withContext Admission.BLOCKED
+            }
+        }
+        if (after.isNotEmpty() || finalRecoveryRoots.any {
                 it.subjectId?.toLongOrNull() == subjectId
             }) {
             Admission.BLOCKED
@@ -581,7 +605,17 @@ internal object TerminalPublicationRecovery {
         // exact remaining files and control records; published destinations
         // and unknown descendants remain untouched. A live row means a
         // retry/re-entry may still be converging, so preserve the carrier.
-        TerminalCacheOwnership.listRecoveryRoots(cacheRoot).forEach { recovery ->
+        val recoveryDiscovery = TerminalCacheOwnership.discoverRecoveryRoots(cacheRoot)
+        val recoveryRoots = when (recoveryDiscovery) {
+            is TerminalCacheOwnership.RecoveryDiscovery.Healthy -> recoveryDiscovery.roots
+            is TerminalCacheOwnership.RecoveryDiscovery.Unavailable -> {
+                return ReconcileResult(records.size, quarantinedCount, retiredCount, true)
+            }
+            is TerminalCacheOwnership.RecoveryDiscovery.Opaque -> {
+                return ReconcileResult(records.size, quarantinedCount, retiredCount, true)
+            }
+        }
+        recoveryRoots.forEach { recovery ->
             val subjectId = recovery.subjectId?.toLongOrNull() ?: return@forEach
             if (!terminalRowAbsent(subjectId, context, terminalRowExists)) {
                 // Generic marker-revoked state has a finite convergence owner

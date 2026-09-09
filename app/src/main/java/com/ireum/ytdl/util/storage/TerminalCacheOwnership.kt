@@ -30,6 +30,22 @@ internal object TerminalCacheOwnership {
         val phase: String,
     )
 
+    /** Recovery namespace health must not be collapsed into an empty list. */
+    sealed interface RecoveryDiscovery {
+        val roots: List<RecoveryRoot>
+
+        data class Healthy(override val roots: List<RecoveryRoot>) : RecoveryDiscovery
+
+        data class Unavailable(val reason: String) : RecoveryDiscovery {
+            override val roots: List<RecoveryRoot> = emptyList()
+        }
+
+        data class Opaque(
+            override val roots: List<RecoveryRoot>,
+            val opaqueDirectories: List<String>,
+        ) : RecoveryDiscovery
+    }
+
     fun markerFile(directory: File): File = File(directory, MARKER_NAME)
 
     fun artifactManifestFile(directory: File): File = File(directory, ARTIFACT_MANIFEST_NAME)
@@ -248,46 +264,66 @@ internal object TerminalCacheOwnership {
     }
 
     /** Explicit recovery discovery; these roots are not live import roots. */
-    fun listRecoveryRoots(cacheRoot: File): List<RecoveryRoot> {
+    fun discoverRecoveryRoots(cacheRoot: File): RecoveryDiscovery {
         val terminalRoot = runCatching { File(cacheRoot.canonicalFile, "TERMINAL").canonicalFile }
-            .getOrNull() ?: return emptyList()
-        if (!terminalRoot.isDirectory) return emptyList()
-        return terminalRoot.listFiles()
-            ?.asSequence()
-            ?.filter(File::isDirectory)
-            ?.mapNotNull { directory ->
+            .getOrNull() ?: return RecoveryDiscovery.Unavailable("terminal cache root is invalid")
+        if (!terminalRoot.exists()) return RecoveryDiscovery.Healthy(emptyList())
+        if (!terminalRoot.isDirectory) {
+            return RecoveryDiscovery.Unavailable("terminal cache root is not a directory")
+        }
+        val directories = try {
+            terminalRoot.listFiles()
+                ?: return RecoveryDiscovery.Unavailable("terminal recovery listing failed")
+        } catch (error: SecurityException) {
+            return RecoveryDiscovery.Unavailable(
+                "terminal recovery listing denied: ${error::class.java.simpleName}",
+            )
+        }
+        val roots = mutableListOf<RecoveryRoot>()
+        val opaque = mutableListOf<String>()
+        directories.asSequence()
+            .filter(File::isDirectory)
+            .forEach { directory ->
                 val carrier = recoveryCarrierFile(directory)
+                if (!carrier.isFile) {
+                    opaque += directory.absolutePath
+                    return@forEach
+                }
                 val payload = runCatching {
-                    if (!carrier.isFile) null else gson.fromJson(
-                        carrier.readText(),
-                        RecoveryPayload::class.java,
-                    )
-                }.getOrNull() ?: return@mapNotNull null
-                val root = runCatching { directory.canonicalFile }.getOrNull() ?: return@mapNotNull null
-                val taskToken = payload.taskToken ?: return@mapNotNull null
-                val sourceRoot = payload.sourceRoot ?: return@mapNotNull null
-                val phase = payload.phase ?: return@mapNotNull null
-                val remainingRaw = payload.remainingSourcePaths ?: return@mapNotNull null
+                    gson.fromJson(carrier.readText(), RecoveryPayload::class.java)
+                }.getOrNull()
+                val root = runCatching { directory.canonicalFile }.getOrNull()
+                val taskToken = payload?.taskToken
+                val sourceRoot = payload?.sourceRoot
+                val phase = payload?.phase
+                val remainingRaw = payload?.remainingSourcePaths
                 if (
-                    payload.version != VERSION || taskToken.isBlank() ||
-                    sourceRoot != root.absolutePath || phase.isBlank() ||
-                    markerFile(root).isFile
-                ) return@mapNotNull null
+                    payload == null || root == null || payload.version != VERSION ||
+                    taskToken.isNullOrBlank() || sourceRoot != root.absolutePath ||
+                    phase.isNullOrBlank() || markerFile(root).isFile || remainingRaw == null
+                ) {
+                    opaque += directory.absolutePath
+                    return@forEach
+                }
                 val remaining = remainingRaw.mapNotNull { raw ->
                     runCatching {
                         File(raw).canonicalFile.takeIf { it.isFile && isInside(it, root) }?.absolutePath
                     }.getOrNull()
                 }.distinct()
                 if (remaining.size != remainingRaw.map(String::trim).filter(String::isNotBlank).distinct().size) {
-                    return@mapNotNull null
+                    opaque += directory.absolutePath
+                    return@forEach
                 }
                 val published = runCatching {
                     payload.publishedDestinationPaths.orEmpty()
                         .map(String::trim)
                         .filter(String::isNotBlank)
                         .distinct()
-                }.getOrElse { return@mapNotNull null }
-                RecoveryRoot(
+                }.getOrElse {
+                    opaque += directory.absolutePath
+                    return@forEach
+                }
+                roots += RecoveryRoot(
                     directory = root,
                     carrier = carrier.canonicalFile,
                     taskToken = taskToken,
@@ -298,10 +334,18 @@ internal object TerminalCacheOwnership {
                     phase = phase,
                 )
             }
-            ?.distinctBy { it.carrier.absolutePath }
-            ?.toList()
-            .orEmpty()
+        return if (opaque.isEmpty()) {
+            RecoveryDiscovery.Healthy(roots.distinctBy { it.carrier.absolutePath })
+        } else {
+            RecoveryDiscovery.Opaque(
+                roots = roots.distinctBy { it.carrier.absolutePath },
+                opaqueDirectories = opaque.distinct(),
+            )
+        }
     }
+
+    fun listRecoveryRoots(cacheRoot: File): List<RecoveryRoot> =
+        discoverRecoveryRoots(cacheRoot).roots
 
     fun clearRecoveryCarrier(recovery: RecoveryRoot): Boolean =
         !recovery.carrier.exists() || recovery.carrier.delete() || !recovery.carrier.exists()
