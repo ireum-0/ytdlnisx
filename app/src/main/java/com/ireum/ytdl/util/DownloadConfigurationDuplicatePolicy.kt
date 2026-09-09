@@ -5,6 +5,7 @@ import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpCommandTokenizer
 
 internal object DownloadConfigurationDuplicatePolicy {
     fun matches(first: DownloadItem, second: DownloadItem): Boolean =
@@ -15,8 +16,36 @@ internal object DownloadConfigurationDuplicatePolicy {
         requested: DownloadItem,
     ): DownloadItem? = candidates.firstOrNull { matches(it, requested) }
 
+    /**
+     * Normalize only source-media URL tokens in a persisted yt-dlp command.
+     * Tokenization is important here: a URL carried by an option value must
+     * not be rewritten by a raw substring replacement.  All other command
+     * tokens remain part of configuration identity.
+     */
+    fun normalizeCommandForComparison(command: String): String {
+        val tokens = YtdlpCommandTokenizer.tokenize(command) ?: return command
+        return YtdlpCommandTokenizer.render(
+            tokens.map { token ->
+                if (MediaPublishedDateSource.youtubeVideoId(token) != null) {
+                    canonicalMediaIdentity(token)
+                } else {
+                    token
+                }
+            },
+        )
+    }
+
+    fun commandsMatch(first: String, second: String): Boolean {
+        val volatile = Regex("(-P \\\"(.*?)\\\")|(--trim-filenames \\\"(.*?)\\\")")
+        return normalizeCommandForComparison(first).replace(volatile, "") ==
+            normalizeCommandForComparison(second).replace(volatile, "")
+    }
+
     private fun requestConfiguration(item: DownloadItem) = RequestConfiguration(
-        url = item.url,
+        // The source URL is media identity, not user spelling.  Keep every
+        // other request field below in the configuration identity so two
+        // differently configured downloads of the same video remain distinct.
+        url = canonicalMediaIdentity(item.url),
         playlistUrl = item.playlistURL,
         playlistIndex = item.playlistIndex,
         title = item.title,
@@ -37,6 +66,11 @@ internal object DownloadConfigurationDuplicatePolicy {
         rowNumber = item.rowNumber,
         observeSourceId = item.observeSourceId,
     )
+
+    private fun canonicalMediaIdentity(value: String): String {
+        val trimmed = value.trim()
+        return MediaPublishedDateSource.youtubeVideoId(trimmed)?.let { "youtube:$it" } ?: trimmed
+    }
 
     private data class RequestConfiguration(
         val url: String,

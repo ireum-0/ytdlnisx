@@ -845,8 +845,10 @@ class ObserveSourceWorker(
                                         .filter { item -> item.downloadPath.any { path -> FileUtil.exists(path) } }
                                 }
                                 val existingHistory = history.firstOrNull { h ->
-                                    h.command.replace("(-P \"(.*?)\")|(--trim-filenames \"(.*?)\")".toRegex(), "") ==
-                                        parsedCurrentCommand.replace("(-P \"(.*?)\")|(--trim-filenames \"(.*?)\")".toRegex(), "")
+                                    DownloadConfigurationDuplicatePolicy.commandsMatch(
+                                        h.command,
+                                        parsedCurrentCommand,
+                                    )
                                 }
                                 if (existingHistory != null) {
                                     isDuplicate = true

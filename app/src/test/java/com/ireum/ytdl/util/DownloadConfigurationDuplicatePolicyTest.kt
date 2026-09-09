@@ -101,6 +101,37 @@ class DownloadConfigurationDuplicatePolicyTest {
         )
     }
 
+    @Test
+    fun supportedYoutubeUrlSpellingsShareConfigurationIdentity() {
+        val requested = downloadItem().copy(url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        val equivalentForms = listOf(
+            "https://youtu.be/dQw4w9WgXcQ",
+            "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+        )
+
+        equivalentForms.forEach { url ->
+            assertTrue(
+                "expected supported URL form to match: $url",
+                DownloadConfigurationDuplicatePolicy.matches(requested, requested.copy(url = url)),
+            )
+        }
+    }
+
+    @Test
+    fun commandComparisonCanonicalizesOnlyMediaUrlTokens() {
+        val first = "yt-dlp https://www.youtube.com/watch?v=dQw4w9WgXcQ --referer https://example.com"
+        val second = "yt-dlp https://youtu.be/dQw4w9WgXcQ --referer https://example.com"
+
+        assertTrue(DownloadConfigurationDuplicatePolicy.commandsMatch(first, second))
+        assertFalse(
+            DownloadConfigurationDuplicatePolicy.commandsMatch(
+                first,
+                second.replace("--referer https://example.com", "--referer https://other.example"),
+            ),
+        )
+    }
+
     private fun downloadItem() = DownloadItem(
         id = 0L,
         url = "https://example.com/video",

@@ -2498,9 +2498,17 @@ class DownloadViewModel private constructor(
                                 "config history lookup id=${it.id} exactCount=${history.size} canonicalCount=${canonicalHistory.size} requestUrl=${it.url} canonical=$canonicalUrl equivalents=$equivalentUrls"
                             )
 
-                            val existingHistoryItem = history.firstOrNull { h ->
-                                h.command.replace("(-P \"(.*?)\")|(--trim-filenames \"(.*?)\")".toRegex(), "") ==
-                                    parsedCurrentCommand.replace("(-P \"(.*?)\")|(--trim-filenames \"(.*?)\")".toRegex(), "")
+                            // The equivalent-URL query is the authoritative
+                            // candidate set.  The exact-spelling query above
+                            // is retained only for diagnostics/backward
+                            // compatibility; using it for the match would
+                            // make supported YouTube URL spellings diverge
+                            // from active/queued duplicate policy.
+                            val existingHistoryItem = canonicalHistory.firstOrNull { h ->
+                                DownloadConfigurationDuplicatePolicy.commandsMatch(
+                                    h.command,
+                                    parsedCurrentCommand,
+                                )
                             }
 
                             if (existingHistoryItem != null) {
