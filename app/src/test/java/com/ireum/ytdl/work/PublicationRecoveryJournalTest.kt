@@ -349,6 +349,16 @@ class PublicationRecoveryJournalTest {
             assertTrue(journal.markReservationUnknown(source.absolutePath))
             assertTrue(journal.terminalizeUnknownReservation())
             assertFalse(journal.clear())
+            // Simulate the crash-equivalent dual-evidence window: the
+            // successor carrier is durable while the journal still exists.
+            assertTrue(
+                TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = taskToken,
+                    subjectId = "14",
+                    phase = "QUARANTINED_UNKNOWN",
+                )
+            )
 
             val first = TerminalPublicationRecovery.reconcile(
                 cacheRoot = root,
@@ -363,6 +373,10 @@ class PublicationRecoveryJournalTest {
             assertTrue(source.isFile)
             assertFalse(TerminalCacheOwnership.markerFile(directory).exists())
             assertTrue(TerminalCacheOwnership.recoveryCarrierFile(directory).isFile)
+            assertEquals(
+                "QUARANTINED_UNKNOWN",
+                TerminalCacheOwnership.listRecoveryRoots(root).single().phase,
+            )
             assertTrue(PublicationRecoveryJournal.readAll(journalStorage).isEmpty())
 
             val second = TerminalPublicationRecovery.reconcile(
@@ -374,6 +388,352 @@ class PublicationRecoveryJournalTest {
             assertEquals(0, second.journalCount)
             assertTrue(source.isFile)
             assertTrue(TerminalCacheOwnership.recoveryCarrierFile(directory).isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun unknownCarrierWithAbsentTerminalRowRemainsTerminalAndDiscoverable() {
+        val root = Files.createTempDirectory("terminal-unknown-carrier-absent-row-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "15-unknown-carrier"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val source = File(directory, "remainder.mp4").apply { writeText("remainder") }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(source.absolutePath)))
+            val journal = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = journalStorage,
+                    kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                    subjectId = "15",
+                    operationId = "terminal-15",
+                    executionId = taskToken,
+                    attemptId = taskToken,
+                    sourceRoot = directory,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(journal.reserveIntent(source.absolutePath))
+            assertTrue(journal.markReservationUnknown(source.absolutePath))
+            assertTrue(journal.terminalizeUnknownReservation())
+            assertTrue(
+                TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = taskToken,
+                    subjectId = "15",
+                    phase = "QUARANTINED_UNKNOWN",
+                )
+            )
+            assertTrue(TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(directory, taskToken))
+
+            val result = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { false },
+                allowUnknownWithoutRow = true,
+            )
+
+            assertEquals(1, result.journalCount)
+            assertEquals(1, result.retiredCount)
+            assertTrue(source.isFile)
+            assertTrue(TerminalCacheOwnership.recoveryCarrierFile(directory).isFile)
+            assertTrue(PublicationRecoveryJournal.readAll(journalStorage).isEmpty())
+            assertEquals(
+                "QUARANTINED_UNKNOWN",
+                TerminalCacheOwnership.listRecoveryRoots(root).single().phase,
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun genericCarrierCannotReplaceUnknownTerminalJournal() {
+        val root = Files.createTempDirectory("terminal-unknown-generic-carrier-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "16-unknown-generic"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val source = File(directory, "remainder.mp4").apply { writeText("remainder") }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(source.absolutePath)))
+            val journal = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = journalStorage,
+                    kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                    subjectId = "16",
+                    operationId = "terminal-16",
+                    executionId = taskToken,
+                    attemptId = taskToken,
+                    sourceRoot = directory,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(journal.reserveIntent(source.absolutePath))
+            assertTrue(journal.markReservationUnknown(source.absolutePath))
+            assertTrue(journal.terminalizeUnknownReservation())
+            assertTrue(
+                TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = taskToken,
+                    subjectId = "16",
+                    phase = "PARTIAL_PUBLICATION",
+                )
+            )
+            assertTrue(TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(directory, taskToken))
+
+            val result = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { true },
+                allowUnknownWithoutRow = true,
+            )
+
+            assertEquals(1, result.journalCount)
+            assertEquals(0, result.retiredCount)
+            assertEquals(
+                PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN,
+                PublicationRecoveryJournal.readAll(journalStorage).single().phase,
+            )
+            assertEquals(
+                "PARTIAL_PUBLICATION",
+                TerminalCacheOwnership.listRecoveryRoots(root).single().phase,
+            )
+            val retained = requireNotNull(
+                PublicationRecoveryJournal.open(
+                    journalStorage,
+                    PublicationRecoveryJournal.readAll(journalStorage).single(),
+                )
+            )
+            assertFalse(retained.clear())
+            assertTrue(source.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun genericCarrierCannotRetireUnknownJournalWhenTerminalRowIsAbsent() {
+        val root = Files.createTempDirectory("terminal-unknown-generic-absent-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "17-unknown-generic"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val source = File(directory, "remainder.mp4").apply { writeText("remainder") }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(source.absolutePath)))
+            val journal = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = journalStorage,
+                    kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                    subjectId = "17",
+                    operationId = "terminal-17",
+                    executionId = taskToken,
+                    attemptId = taskToken,
+                    sourceRoot = directory,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(journal.reserveIntent(source.absolutePath))
+            assertTrue(journal.markReservationUnknown(source.absolutePath))
+            assertTrue(journal.terminalizeUnknownReservation())
+            assertTrue(
+                TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = taskToken,
+                    subjectId = "17",
+                    phase = "PARTIAL_PUBLICATION",
+                )
+            )
+            assertTrue(TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(directory, taskToken))
+
+            val result = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { false },
+                allowUnknownWithoutRow = true,
+            )
+
+            assertEquals(1, result.journalCount)
+            assertEquals(0, result.retiredCount)
+            assertEquals(
+                PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN,
+                PublicationRecoveryJournal.readAll(journalStorage).single().phase,
+            )
+            assertTrue(TerminalCacheOwnership.recoveryCarrierFile(directory).isFile)
+            assertTrue(source.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun liveGenericCarrierIsUpgradedToUnknownBeforeJournalRetirement() {
+        val root = Files.createTempDirectory("terminal-unknown-upgrade-carrier-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "20-unknown-upgrade"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val source = File(directory, "remainder.mp4").apply { writeText("remainder") }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(source.absolutePath)))
+            val journal = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = journalStorage,
+                    kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                    subjectId = "20",
+                    operationId = "terminal-20",
+                    executionId = taskToken,
+                    attemptId = taskToken,
+                    sourceRoot = directory,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(journal.reserveIntent(source.absolutePath))
+            assertTrue(journal.markReservationUnknown(source.absolutePath))
+            assertTrue(journal.terminalizeUnknownReservation())
+            assertTrue(
+                TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = taskToken,
+                    subjectId = "20",
+                    phase = "PARTIAL_PUBLICATION",
+                )
+            )
+
+            val result = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { false },
+                allowUnknownWithoutRow = true,
+            )
+
+            assertEquals(1, result.quarantinedCount)
+            assertEquals(1, result.retiredCount)
+            assertTrue(PublicationRecoveryJournal.readAll(journalStorage).isEmpty())
+            assertEquals(
+                "QUARANTINED_UNKNOWN",
+                TerminalCacheOwnership.listRecoveryRoots(root).single().phase,
+            )
+            assertTrue(source.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun mismatchedTerminalCarrierCannotReplaceUnknownJournal() {
+        val root = Files.createTempDirectory("terminal-unknown-mismatched-carrier-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "18-unknown-mismatch"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val source = File(directory, "remainder.mp4").apply { writeText("remainder") }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(source.absolutePath)))
+            val journal = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = journalStorage,
+                    kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                    subjectId = "18",
+                    operationId = "terminal-18",
+                    executionId = taskToken,
+                    attemptId = taskToken,
+                    sourceRoot = directory,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(journal.reserveIntent(source.absolutePath))
+            assertTrue(journal.markReservationUnknown(source.absolutePath))
+            assertTrue(journal.terminalizeUnknownReservation())
+            assertTrue(
+                TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = taskToken,
+                    subjectId = "18",
+                    phase = "QUARANTINED_UNKNOWN",
+                )
+            )
+            val carrier = TerminalCacheOwnership.recoveryCarrierFile(directory)
+            carrier.writeText(
+                carrier.readText().replace(
+                    "\"taskToken\":\"$taskToken\"",
+                    "\"taskToken\":\"other-token\"",
+                )
+            )
+            assertTrue(TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(directory, taskToken))
+
+            val result = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { true },
+                allowUnknownWithoutRow = true,
+            )
+
+            assertEquals(1, result.journalCount)
+            assertEquals(0, result.retiredCount)
+            assertEquals(
+                PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN,
+                PublicationRecoveryJournal.readAll(journalStorage).single().phase,
+            )
+            assertTrue(source.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun malformedCarrierLeavesUnknownJournalAuthoritative() {
+        val root = Files.createTempDirectory("terminal-unknown-malformed-carrier-").toFile()
+        val journalStorage = File(root, "journal")
+        try {
+            val taskToken = "19-unknown-malformed"
+            val directory = File(root, "TERMINAL/$taskToken").apply { mkdirs() }
+            val source = File(directory, "remainder.mp4").apply { writeText("remainder") }
+            TerminalCacheOwnership.ensureMarker(directory, taskToken)
+            assertTrue(TerminalCacheOwnership.recordArtifacts(directory, listOf(source.absolutePath)))
+            val journal = requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = journalStorage,
+                    kind = PublicationRecoveryJournal.Kind.TERMINAL,
+                    subjectId = "19",
+                    operationId = "terminal-19",
+                    executionId = taskToken,
+                    attemptId = taskToken,
+                    sourceRoot = directory,
+                    sourceFiles = listOf(source),
+                )
+            )
+            assertTrue(journal.reserveIntent(source.absolutePath))
+            assertTrue(journal.markReservationUnknown(source.absolutePath))
+            assertTrue(journal.terminalizeUnknownReservation())
+            assertTrue(
+                TerminalCacheOwnership.recordRecoveryCarrier(
+                    directory = directory,
+                    taskToken = taskToken,
+                    subjectId = "19",
+                    phase = "QUARANTINED_UNKNOWN",
+                )
+            )
+            TerminalCacheOwnership.recoveryCarrierFile(directory).writeText("not-json\n")
+            assertTrue(TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(directory, taskToken))
+
+            val result = TerminalPublicationRecovery.reconcile(
+                cacheRoot = root,
+                journalStorage = journalStorage,
+                terminalRowExists = { false },
+                allowUnknownWithoutRow = true,
+            )
+
+            assertEquals(1, result.journalCount)
+            assertEquals(0, result.retiredCount)
+            assertEquals(
+                PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN,
+                PublicationRecoveryJournal.readAll(journalStorage).single().phase,
+            )
+            assertTrue(source.isFile)
         } finally {
             root.deleteRecursively()
         }

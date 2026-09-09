@@ -218,8 +218,20 @@ internal object TerminalCacheOwnership {
         return writeAtomically(carrier, payload)
     }
 
-    /** Validate an existing recovery carrier without granting live authority. */
-    fun isValidRecoveryCarrier(directory: File, taskToken: String): Boolean {
+    /**
+     * Validate an existing recovery carrier without granting live authority.
+     *
+     * A caller handling a semantically terminal phase (for example
+     * QUARANTINED_UNKNOWN) must require that exact phase here.  A carrier's
+     * structural validity alone is not proof that it preserves the journal's
+     * terminal meaning.
+     */
+    fun isValidRecoveryCarrier(
+        directory: File,
+        taskToken: String,
+        requiredPhase: String? = null,
+        requiredSubjectId: String? = null,
+    ): Boolean {
         val root = runCatching { directory.canonicalFile }.getOrNull() ?: return false
         val payload = runCatching {
             val carrier = recoveryCarrierFile(root)
@@ -229,6 +241,8 @@ internal object TerminalCacheOwnership {
             payload.taskToken == taskToken &&
             payload.sourceRoot == root.absolutePath &&
             !payload.phase.isNullOrBlank() &&
+            (requiredPhase == null || payload.phase == requiredPhase) &&
+            (requiredSubjectId == null || payload.subjectId == requiredSubjectId) &&
             payload.remainingSourcePaths != null &&
             payload.publishedDestinationPaths != null
     }

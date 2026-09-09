@@ -71,6 +71,14 @@ class TerminalDownloadWorker(
             token != null &&
             (terminalPublicationJournal != null || TerminalCacheOwnership.artifactManifestFile(directory).isFile)
         ) {
+            val journalSnapshot = terminalPublicationJournal?.snapshot()
+            val unknownQuarantine = journalSnapshot?.let { record ->
+                record.phase == PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN ||
+                    record.artifacts.any {
+                        PublicationRecoveryJournal.isUnknownReservation(it.reservedDestinationPath) ||
+                            PublicationRecoveryJournal.isReservationIntent(it.reservedDestinationPath)
+                    }
+            } == true
             // Persist the quarantine carrier before revoking live ownership.
             // Marker-revoked state is recovery-only and is never an ordinary
             // cache-import OwnedRoot.
@@ -78,7 +86,12 @@ class TerminalDownloadWorker(
                     directory = directory,
                     taskToken = token,
                     publishedDestinationPaths = terminalPublishedOutputPaths +
-                        terminalPublicationJournal?.snapshot()?.publishedDestinations().orEmpty(),
+                        journalSnapshot?.publishedDestinations().orEmpty(),
+                    phase = if (unknownQuarantine) {
+                        PublicationRecoveryJournal.Phase.QUARANTINED_UNKNOWN.name
+                    } else {
+                        "PARTIAL_PUBLICATION"
+                    },
                     subjectId = itemId.toString(),
                 )
             ) {

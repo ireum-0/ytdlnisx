@@ -232,6 +232,18 @@ internal object TerminalPublicationRecovery {
         }.getOrNull()
         val records = PublicationRecoveryJournal.readAll(journalStorage)
             .filter { it.kind == PublicationRecoveryJournal.Kind.TERMINAL }
+        val unknownRecoveryRoots = records.asSequence()
+            .filter { record ->
+                PublicationRecoveryJournal.isUnknownTerminal(record) ||
+                    record.artifacts.any {
+                        PublicationRecoveryJournal.isUnknownReservation(it.reservedDestinationPath) ||
+                            PublicationRecoveryJournal.isReservationIntent(it.reservedDestinationPath)
+                    }
+            }
+            .mapNotNull { record ->
+                runCatching { File(record.sourceRoot).canonicalFile.absolutePath }.getOrNull()
+            }
+            .toSet()
         var quarantinedCount = 0
         var retiredCount = 0
         records.forEach { record ->
@@ -327,6 +339,8 @@ internal object TerminalPublicationRecovery {
                             !TerminalCacheOwnership.isValidRecoveryCarrier(
                                 root,
                                 record.executionId,
+                                requiredPhase = UNKNOWN_QUARANTINE_PHASE,
+                                requiredSubjectId = record.subjectId,
                             )) &&
                         !TerminalCacheOwnership.recordRecoveryCarrier(
                             directory = root,
@@ -342,7 +356,12 @@ internal object TerminalPublicationRecovery {
                     quarantinedCount += 1
                 }
                 val carrierIsValid = carrier.isFile &&
-                    TerminalCacheOwnership.isValidRecoveryCarrier(root, record.executionId)
+                    TerminalCacheOwnership.isValidRecoveryCarrier(
+                        root,
+                        record.executionId,
+                        requiredPhase = UNKNOWN_QUARANTINE_PHASE,
+                        requiredSubjectId = record.subjectId,
+                    )
                 if (!marker.isFile && carrierIsValid) {
                     if (
                         journal.terminalizeUnknownReservation() &&
@@ -483,6 +502,12 @@ internal object TerminalPublicationRecovery {
         TerminalCacheOwnership.listRecoveryRoots(cacheRoot).forEach { recovery ->
             val subjectId = recovery.subjectId?.toLongOrNull() ?: return@forEach
             if (!terminalRowAbsent(subjectId, context, terminalRowExists)) return@forEach
+            // A generic carrier cannot become the successor of an UNKNOWN
+            // journal.  Keep both durable records until an explicit
+            // QUARANTINED_UNKNOWN carrier is established; otherwise generic
+            // retirement could erase the remaining source while the UNKNOWN
+            // journal is still the only semantic fence.
+            if (unknownRecoveryRoots.contains(recovery.directory.absolutePath)) return@forEach
             if (recovery.phase !in setOf("PARTIAL_PUBLICATION", "QUARANTINED_FAILURE")) {
                 return@forEach
             }

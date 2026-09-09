@@ -336,6 +336,8 @@ internal object PublicationRecoveryJournal {
                             TerminalCacheOwnership.isValidRecoveryCarrier(
                                 root,
                                 record.executionId,
+                                requiredPhase = Phase.QUARANTINED_UNKNOWN.name,
+                                requiredSubjectId = record.subjectId,
                             )
                     }
                     else -> false
