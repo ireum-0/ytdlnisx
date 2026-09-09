@@ -286,7 +286,13 @@ internal object TerminalCacheOwnership {
             .forEach { directory ->
                 val carrier = recoveryCarrierFile(directory)
                 if (!carrier.isFile) {
-                    opaque += directory.absolutePath
+                    // A live marker identifies an ordinary owned execution,
+                    // not a recovery carrier. It is intentionally absent
+                    // from this namespace; the execution/journal consumer
+                    // owns its liveness decision separately.
+                    if (!markerFile(directory).isFile) {
+                        opaque += directory.absolutePath
+                    }
                     return@forEach
                 }
                 val payload = runCatching {
