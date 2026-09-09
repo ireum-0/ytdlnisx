@@ -106,7 +106,7 @@ If an exception occurs after the ordinary insert has committed, the catch block 
 
 and persists the Error state.
 
-Therefore H1 may already be a durable ordinary success while the same Download is projected back to Error and offered for retry.
+Therefore H1 may already be a durable ordinary success while the same Download is projected back to Error. This is a semantic downgrade even though the normal manual retry path performs an additional `hasValidOutput` check and blocks retry while a History row for this Download still references an existing output. The startup-recovery J1 path does not pass through that retry-policy guard; furthermore an Error projection must not be treated as equivalent to a correctly retained committed-primary finalization state.
 
 This is the same root as P2-J: ordinary History commit is not recognized as stronger primary/finalization authority.
 
