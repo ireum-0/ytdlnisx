@@ -145,7 +145,21 @@ internal suspend fun convergeUnknownProviderPublicationDebt(
     dbManager: DBManager,
 ) = withContext(Dispatchers.IO + NonCancellable) {
     val dao = dbManager.downloadDao
-        PublicationRecoveryJournal.readAll(context)
+    val discovered = when (val result = PublicationRecoveryJournal.discover(context)) {
+        is PublicationRecoveryJournal.DiscoveryResult.Healthy -> result.records
+        is PublicationRecoveryJournal.DiscoveryResult.Unavailable -> {
+            Log.w("DownloadWorker", "Publication recovery namespace unavailable: ${result.reason}")
+            return@withContext
+        }
+        is PublicationRecoveryJournal.DiscoveryResult.Opaque -> {
+            Log.w(
+                "DownloadWorker",
+                "Publication recovery namespace contains opaque debt: ${result.opaqueFiles}",
+            )
+            return@withContext
+        }
+    }
+    discovered
         .filter { record ->
             record.kind == PublicationRecoveryJournal.Kind.DOWNLOAD &&
                 (
@@ -1530,11 +1544,23 @@ class DownloadWorker(
             outputPlan: YtdlpOutputPlan,
         ): List<String> {
             if (downloadItem.executionId.isBlank()) return emptyList()
-            val records = PublicationRecoveryJournal.findDownload(
+            val records = when (val discovery = PublicationRecoveryJournal.findDownloadDiscovery(
                 context = context,
                 downloadId = downloadItem.id,
                 operationId = downloadItem.operationId,
-            ).filter { it.executionId != downloadItem.executionId }
+            )) {
+                is PublicationRecoveryJournal.DiscoveryResult.Healthy -> discovery.records
+                is PublicationRecoveryJournal.DiscoveryResult.Unavailable -> {
+                    throw IOException(
+                        "Download publication recovery namespace unavailable: ${discovery.reason}",
+                    )
+                }
+                is PublicationRecoveryJournal.DiscoveryResult.Opaque -> {
+                    throw IOException(
+                        "Download publication recovery namespace contains opaque debt",
+                    )
+                }
+            }.filter { it.executionId != downloadItem.executionId }
             if (records.isEmpty()) return emptyList()
 
             val expectedRoot = runCatching {

@@ -12,6 +12,72 @@ import org.junit.Test
 
 class PublicationRecoveryJournalTest {
     @Test
+    fun discoveryDistinguishesHealthyEmptyFromUnavailableAndOpaqueDebt() {
+        val root = Files.createTempDirectory("publication-discovery-").toFile()
+        try {
+            val absent = File(root, "absent")
+            assertTrue(
+                PublicationRecoveryJournal.discover(absent) is
+                    PublicationRecoveryJournal.DiscoveryResult.Healthy,
+            )
+
+            val empty = File(root, "empty").apply { mkdirs() }
+            val healthy = PublicationRecoveryJournal.discover(empty)
+            assertTrue(healthy is PublicationRecoveryJournal.DiscoveryResult.Healthy)
+            assertTrue(healthy.records.isEmpty())
+
+            val notDirectory = File(root, "not-directory").apply { writeText("state") }
+            assertTrue(
+                PublicationRecoveryJournal.discover(notDirectory) is
+                    PublicationRecoveryJournal.DiscoveryResult.Unavailable,
+            )
+
+            val opaque = File(empty, "ytdlnisx-publication-corrupt.json").apply {
+                writeText("{not-json")
+            }
+            val opaqueResult = PublicationRecoveryJournal.discover(empty)
+            assertTrue(opaqueResult is PublicationRecoveryJournal.DiscoveryResult.Opaque)
+            val opaqueState = opaqueResult as PublicationRecoveryJournal.DiscoveryResult.Opaque
+            assertTrue(opaqueState.opaqueFiles.contains(opaque.absolutePath))
+            assertTrue(opaqueState.records.isEmpty())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun discoveryRetainsHealthyRecordsAlongsideOpaqueDebt() {
+        val root = Files.createTempDirectory("publication-discovery-mixed-").toFile()
+        val storage = File(root, "journal")
+        try {
+            val source = File(root, "source.mp4").apply { writeText("source") }
+            requireNotNull(
+                PublicationRecoveryJournal.begin(
+                    storageDirectory = storage,
+                    kind = PublicationRecoveryJournal.Kind.DOWNLOAD,
+                    subjectId = "1",
+                    operationId = "op",
+                    executionId = "exec",
+                    attemptId = "attempt",
+                    sourceRoot = root,
+                    sourceFiles = listOf(source),
+                )
+            )
+            val opaque = File(storage, "ytdlnisx-publication-opaque.json").apply {
+                writeText("unknown-schema")
+            }
+
+            val result = PublicationRecoveryJournal.discover(storage)
+            assertTrue(result is PublicationRecoveryJournal.DiscoveryResult.Opaque)
+            val opaqueState = result as PublicationRecoveryJournal.DiscoveryResult.Opaque
+            assertEquals(1, opaqueState.records.size)
+            assertTrue(opaqueState.opaqueFiles.contains(opaque.absolutePath))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun exactSourceDestinationPairsSurviveRestartUntilExplicitRetirement() {
         val root = Files.createTempDirectory("publication-journal-").toFile()
         val storage = File(root, "journal")

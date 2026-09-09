@@ -30,6 +30,7 @@ internal object TerminalPublicationRecovery {
         val journalCount: Int,
         val quarantinedCount: Int,
         val retiredCount: Int = 0,
+        val discoveryBlocked: Boolean = false,
     )
 
     /**
@@ -62,8 +63,15 @@ internal object TerminalPublicationRecovery {
         admittingExecutionToken: String? = null,
     ): Admission = withContext(Dispatchers.IO + NonCancellable) {
         val journalStorage = File(context.filesDir, "publication-recovery")
-        val before = PublicationRecoveryJournal.readAll(journalStorage)
-            .filter {
+        val before = when (val discovery = PublicationRecoveryJournal.discover(journalStorage)) {
+            is PublicationRecoveryJournal.DiscoveryResult.Healthy -> discovery.records
+            is PublicationRecoveryJournal.DiscoveryResult.Unavailable,
+            is PublicationRecoveryJournal.DiscoveryResult.Opaque -> {
+                // Admission must not infer a clean namespace from an
+                // unreadable or malformed journal directory.
+                return@withContext Admission.BLOCKED
+            }
+        }.filter {
                 it.kind == PublicationRecoveryJournal.Kind.TERMINAL &&
                     it.subjectId == subjectId.toString()
             }
@@ -90,8 +98,13 @@ internal object TerminalPublicationRecovery {
                 allowUnknownWithoutRow = true,
                 activeExecution = activeExecution,
             )
-            val afterUnknown = PublicationRecoveryJournal.readAll(journalStorage)
-                .filter {
+            val afterUnknown = when (val discovery = PublicationRecoveryJournal.discover(journalStorage)) {
+                is PublicationRecoveryJournal.DiscoveryResult.Healthy -> discovery.records
+                is PublicationRecoveryJournal.DiscoveryResult.Unavailable,
+                is PublicationRecoveryJournal.DiscoveryResult.Opaque -> {
+                    return@withContext Admission.BLOCKED
+                }
+            }.filter {
                     it.kind == PublicationRecoveryJournal.Kind.TERMINAL &&
                         it.subjectId == subjectId.toString()
                 }
@@ -248,7 +261,13 @@ internal object TerminalPublicationRecovery {
             terminalRowExists = { id -> DBManager.getInstance(context).terminalDao.getTerminalById(id) != null },
             activeExecution = activeExecution,
         )
-        val after = PublicationRecoveryJournal.readAll(journalStorage).filter {
+        val after = when (val discovery = PublicationRecoveryJournal.discover(journalStorage)) {
+            is PublicationRecoveryJournal.DiscoveryResult.Healthy -> discovery.records
+            is PublicationRecoveryJournal.DiscoveryResult.Unavailable,
+            is PublicationRecoveryJournal.DiscoveryResult.Opaque -> {
+                return@withContext Admission.BLOCKED
+            }
+        }.filter {
             it.kind == PublicationRecoveryJournal.Kind.TERMINAL && it.subjectId == subjectId.toString()
         }
         if (after.isNotEmpty() || TerminalCacheOwnership.listRecoveryRoots(cacheRoot).any {
@@ -282,8 +301,19 @@ internal object TerminalPublicationRecovery {
         val terminalNamespace = runCatching {
             File(cacheRoot.canonicalFile, "TERMINAL").canonicalFile
         }.getOrNull()
-        val records = PublicationRecoveryJournal.readAll(journalStorage)
-            .filter { it.kind == PublicationRecoveryJournal.Kind.TERMINAL }
+        val records = when (val discovery = PublicationRecoveryJournal.discover(journalStorage)) {
+            is PublicationRecoveryJournal.DiscoveryResult.Healthy -> discovery.records
+            is PublicationRecoveryJournal.DiscoveryResult.Unavailable -> {
+                return ReconcileResult(0, 0, discoveryBlocked = true)
+            }
+            is PublicationRecoveryJournal.DiscoveryResult.Opaque -> {
+                return ReconcileResult(
+                    journalCount = discovery.records.size,
+                    quarantinedCount = 0,
+                    discoveryBlocked = true,
+                )
+            }
+        }.filter { it.kind == PublicationRecoveryJournal.Kind.TERMINAL }
         val unknownRecoveryRoots = records.asSequence()
             .filter { record ->
                 PublicationRecoveryJournal.isUnknownTerminal(record) ||

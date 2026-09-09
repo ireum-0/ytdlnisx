@@ -82,6 +82,28 @@ internal object PublicationRecoveryJournal {
             .distinct()
     }
 
+    /**
+     * Discovery is deliberately richer than a List.  A missing namespace is
+     * a healthy empty state, while an unreadable directory or malformed
+     * journal is durable evidence that must fence admission.
+     */
+    internal sealed interface DiscoveryResult {
+        val records: List<Record>
+
+        data class Healthy(override val records: List<Record>) : DiscoveryResult
+
+        data class Unavailable(
+            val reason: String,
+        ) : DiscoveryResult {
+            override val records: List<Record> = emptyList()
+        }
+
+        data class Opaque(
+            override val records: List<Record>,
+            val opaqueFiles: List<String>,
+        ) : DiscoveryResult
+    }
+
     /** A synchronized handle used by the move callback at the exact boundary. */
     internal class Handle internal constructor(
         private val file: File,
@@ -449,30 +471,45 @@ internal object PublicationRecoveryJournal {
     }
 
     internal fun readAll(storageDirectory: File): List<Record> {
-        if (!storageDirectory.isDirectory) return emptyList()
-        return storageDirectory.listFiles()
-            .orEmpty()
-            .asSequence()
+        // Legacy callers retain the old projection; correctness-sensitive
+        // consumers use discover() so unavailable/opaque state is not
+        // reinterpreted as an empty namespace.
+        return discover(storageDirectory).records
+    }
+
+    internal fun discover(storageDirectory: File): DiscoveryResult {
+        if (!storageDirectory.exists()) return DiscoveryResult.Healthy(emptyList())
+        if (!storageDirectory.isDirectory) {
+            return DiscoveryResult.Unavailable("publication namespace is not a directory")
+        }
+        val files = try {
+            storageDirectory.listFiles()
+                ?: return DiscoveryResult.Unavailable("publication namespace listing failed")
+        } catch (error: SecurityException) {
+            return DiscoveryResult.Unavailable(
+                "publication namespace listing denied: ${error::class.java.simpleName}",
+            )
+        }
+        val records = mutableListOf<Record>()
+        val opaque = mutableListOf<String>()
+        files.asSequence()
             .filter { it.isFile && it.name.startsWith(FILE_PREFIX) && it.extension == "json" }
-            .mapNotNull(::read)
-            .filter { record -> runCatching {
-                record.version == SCHEMA_VERSION &&
-                    record.subjectId.isNotBlank() && record.operationId.isNotBlank() &&
-                    record.executionId.isNotBlank() && record.attemptId.isNotBlank() &&
-                    record.sourceRoot.isNotBlank() && record.artifacts.isNotEmpty() &&
-                    record.artifacts.all { artifact ->
-                        artifact.sourcePath.isNotBlank() &&
-                            (artifact.destinationPath == null || artifact.destinationPath.isNotBlank()) &&
-                            (artifact.reservedDestinationPath == null || artifact.reservedDestinationPath.isNotBlank()) &&
-                            (artifact.destinationPath.isNullOrBlank() || artifact.reservedDestinationPath.isNullOrBlank())
-                    }
-            }.getOrDefault(false)
+            .forEach { file ->
+                val record = read(file)
+                if (record == null) opaque += file.absolutePath else records += record
             }
-            .toList()
+        return if (opaque.isEmpty()) {
+            DiscoveryResult.Healthy(records)
+        } else {
+            DiscoveryResult.Opaque(records, opaque.distinct())
+        }
     }
 
     internal fun readAll(context: Context): List<Record> =
         readAll(File(context.filesDir, DIRECTORY_NAME))
+
+    internal fun discover(context: Context): DiscoveryResult =
+        discover(File(context.filesDir, DIRECTORY_NAME))
 
     internal fun reservationIntentForSource(sourcePath: String): String? {
         val source = normalizeSource(sourcePath) ?: return null
@@ -486,6 +523,27 @@ internal object PublicationRecoveryJournal {
     ): List<Record> = readAll(context).filter {
         it.kind == Kind.DOWNLOAD && it.subjectId == downloadId.toString() &&
             it.operationId == operationId
+    }
+
+    internal fun findDownloadDiscovery(
+        context: Context,
+        downloadId: Long,
+        operationId: String,
+    ): DiscoveryResult = when (val discovery = discover(context)) {
+        is DiscoveryResult.Healthy -> DiscoveryResult.Healthy(
+            discovery.records.filter {
+                it.kind == Kind.DOWNLOAD && it.subjectId == downloadId.toString() &&
+                    it.operationId == operationId
+            },
+        )
+        is DiscoveryResult.Unavailable -> discovery
+        is DiscoveryResult.Opaque -> DiscoveryResult.Opaque(
+            records = discovery.records.filter {
+                it.kind == Kind.DOWNLOAD && it.subjectId == downloadId.toString() &&
+                    it.operationId == operationId
+            },
+            opaqueFiles = discovery.opaqueFiles,
+        )
     }
 
     private fun read(file: File): Record? = runCatching {
