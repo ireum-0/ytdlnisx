@@ -93,6 +93,22 @@ internal object TerminalExecutionRecovery {
         val deferred: Int,
     )
 
+    /** Explicit discovery status for the execution-witness namespace. */
+    internal sealed interface DiscoveryResult {
+        val records: List<Record>
+
+        data class Healthy(override val records: List<Record>) : DiscoveryResult
+
+        data class Unavailable(val reason: String) : DiscoveryResult {
+            override val records: List<Record> = emptyList()
+        }
+
+        data class Opaque(
+            override val records: List<Record>,
+            val opaqueFiles: List<String>,
+        ) : DiscoveryResult
+    }
+
     /** Deterministic test seam; production uses checked atomic writes. */
     @Volatile
     internal var persistenceFailureForTesting: Boolean = false
@@ -181,14 +197,39 @@ internal object TerminalExecutionRecovery {
         readAll(File(context.filesDir, DIRECTORY_NAME))
 
     internal fun readAll(storageDirectory: File): List<Record> {
-        if (!storageDirectory.isDirectory) return emptyList()
-        return storageDirectory.listFiles()
-            .orEmpty()
-            .asSequence()
-            .filter { it.isFile && it.name.startsWith(FILE_PREFIX) && it.extension == "json" }
-            .mapNotNull(::read)
-            .filter(::isValid)
-            .toList()
+        return discover(storageDirectory).records
+    }
+
+    /**
+     * Discover execution witnesses without treating an unreadable namespace
+     * or malformed witness as healthy absence of debt.
+     */
+    internal fun discover(storageDirectory: File): DiscoveryResult {
+        if (!storageDirectory.exists()) return DiscoveryResult.Healthy(emptyList())
+        if (!storageDirectory.isDirectory) {
+            return DiscoveryResult.Unavailable("terminal execution recovery is not a directory")
+        }
+        val files = try {
+            storageDirectory.listFiles()
+                ?: return DiscoveryResult.Unavailable("terminal execution recovery listing failed")
+        } catch (error: SecurityException) {
+            return DiscoveryResult.Unavailable(
+                "terminal execution recovery listing denied: ${error::class.java.simpleName}",
+            )
+        }
+        val candidates = files.filter {
+            it.isFile && it.name.startsWith(FILE_PREFIX) && it.extension == "json"
+        }
+        val records = candidates.mapNotNull(::read).filter(::isValid)
+        val validPaths = records.map { recordFile(storageDirectory, it.subjectId).canonicalPath }.toSet()
+        val opaqueFiles = candidates.filter { candidate ->
+            runCatching { candidate.canonicalPath !in validPaths }.getOrDefault(true)
+        }.map(File::getAbsolutePath)
+        return if (opaqueFiles.isEmpty()) {
+            DiscoveryResult.Healthy(records)
+        } else {
+            DiscoveryResult.Opaque(records, opaqueFiles)
+        }
     }
 
     /**
@@ -208,7 +249,13 @@ internal object TerminalExecutionRecovery {
         // is observed as UNKNOWN merely because the process-local barrier had
         // not yet been initialized.
         YtdlpNativeProcessBarrier.configure(context)
-        val file = recordFile(File(context.filesDir, DIRECTORY_NAME), subjectId)
+        val storageDirectory = File(context.filesDir, DIRECTORY_NAME)
+        when (discover(storageDirectory)) {
+            is DiscoveryResult.Unavailable,
+            is DiscoveryResult.Opaque -> return Admission.BLOCKED
+            is DiscoveryResult.Healthy -> Unit
+        }
+        val file = recordFile(storageDirectory, subjectId)
         if (!file.exists()) return Admission.NO_WITNESS
         val record = read(file) ?: return Admission.TERMINAL_FAILURE
         if (activeExecution(record.executionToken)) return Admission.BLOCKED
@@ -522,16 +569,17 @@ internal object TerminalExecutionRecovery {
     ): ReconcileResult {
         YtdlpNativeProcessBarrier.configure(context)
         val storageDirectory = File(context.filesDir, DIRECTORY_NAME)
-        val recordFiles = storageDirectory.listFiles()
-            .orEmpty()
-            .filter { it.isFile && it.name.startsWith(FILE_PREFIX) && it.extension == "json" }
-        val records = readAll(storageDirectory)
+        val discovery = discover(storageDirectory)
+        if (discovery is DiscoveryResult.Unavailable) {
+            return ReconcileResult(discovered = 0, converged = 0, deferred = 1)
+        }
+        val records = discovery.records
         var converged = 0
         // Keep malformed/unreadable records visible as deferred debt.  The
         // subject-specific admission path also fails closed on these files;
         // startup must not report the namespace as clean merely because a
         // parser could not reconstruct a record.
-        var deferred = recordFiles.count { read(it) == null }
+        var deferred = (discovery as? DiscoveryResult.Opaque)?.opaqueFiles?.size ?: 0
         records.forEach { record ->
             if (activeExecution(record.executionToken)) return@forEach
             if (reconcileRecord(context, record)) converged++ else if (!record.terminal) deferred++

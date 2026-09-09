@@ -177,4 +177,26 @@ class TerminalExecutionRecoveryTest {
             root.deleteRecursively()
         }
     }
+
+    @Test
+    fun executionWitnessDiscoveryDoesNotTreatOpaqueNamespaceAsHealthyEmpty() {
+        val notDirectory = Files.createTempFile("terminal-execution-not-directory-", ".json").toFile()
+        val root = Files.createTempDirectory("terminal-execution-opaque-").toFile()
+        try {
+            assertTrue(
+                TerminalExecutionRecovery.discover(notDirectory) is
+                    TerminalExecutionRecovery.DiscoveryResult.Unavailable,
+            )
+            val malformed = File(root, "ytdlnisx-terminal-execution-47.json")
+            malformed.writeText("{\"version\":999}")
+            val discovery = TerminalExecutionRecovery.discover(root)
+            val opaque = discovery as? TerminalExecutionRecovery.DiscoveryResult.Opaque
+            assertNotNull(opaque)
+            assertEquals(1, opaque!!.opaqueFiles.size)
+            assertTrue(opaque.records.isEmpty())
+        } finally {
+            notDirectory.delete()
+            root.deleteRecursively()
+        }
+    }
 }
