@@ -6076,12 +6076,26 @@ class DownloadWorker(
                 // never enough.  Only the old marker and exact-artifact
                 // manifest may remain after recovery, and both are retired
                 // without touching any other child.
-                val recoveredPublication = PublicationRecoveryJournal
-                    .findDownload(
+                val priorPublicationRecords = when (
+                    val discovery = PublicationRecoveryJournal.findDownloadDiscovery(
                         context = context,
                         downloadId = downloadItem.id,
                         operationId = downloadItem.operationId,
                     )
+                ) {
+                    is PublicationRecoveryJournal.DiscoveryResult.Healthy -> discovery.records
+                    is PublicationRecoveryJournal.DiscoveryResult.Unavailable -> {
+                        throw IOException(
+                            "Download publication recovery namespace unavailable: ${discovery.reason}",
+                        )
+                    }
+                    is PublicationRecoveryJournal.DiscoveryResult.Opaque -> {
+                        throw IOException(
+                            "Download publication recovery namespace contains opaque debt",
+                        )
+                    }
+                }
+                val recoveredPublication = priorPublicationRecords
                     .any { record ->
                         record.sourceRoot == staging.absolutePath &&
                             record.phase == PublicationRecoveryJournal.Phase.COMPLETE &&
