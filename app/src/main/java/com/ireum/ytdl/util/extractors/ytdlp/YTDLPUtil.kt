@@ -2626,7 +2626,8 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         cache.mkdirs()
         val conf = File(cache.absolutePath + "/${System.currentTimeMillis()}${UUID.randomUUID()}.txt")
         conf.createNewFile()
-        conf.writeText(YoutubeDLCompat.stripExternalFfmpegLocationOptions(request.toString()))
+        val effectiveProducerConfig = YoutubeDLCompat.stripExternalFfmpegLocationOptions(request.toString())
+        conf.writeText(effectiveProducerConfig)
         val tmp = mutableListOf<String>()
         tmp.addOption("--config-locations", conf.absolutePath)
         ytDlRequest.addCommands(tmp)
@@ -2645,6 +2646,20 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 )
             }
         }
+        YtdlpProducerSemanticSnapshot.register(
+            request = ytDlRequest,
+            configContents = effectiveProducerConfig,
+            runtimePaths = listOfNotNull(
+                ffmpegLocation,
+                context.cacheDir.canonicalPath,
+                cache.canonicalPath,
+                downDir.canonicalPath,
+                resolvedOutputPlan.ytdlpDirectory.canonicalPath,
+                resolvedOutputPlan.directStagingParent?.canonicalPath,
+                resolvedOutputPlan.structuredOutputMarker?.canonicalPath,
+                resolvedOutputPlan.ownershipMarker?.canonicalPath,
+            ),
+        )
         return ytDlRequest
     }
 

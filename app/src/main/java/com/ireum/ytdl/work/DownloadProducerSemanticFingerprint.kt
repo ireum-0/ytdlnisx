@@ -25,6 +25,8 @@ internal object DownloadProducerSemanticFingerprint {
         command: String,
         outputPlan: YtdlpOutputPlan? = null,
         publicationSemantics: Map<String, String> = emptyMap(),
+        effectiveProducerSemantics: String? = null,
+        runtimePaths: Iterable<String> = emptyList(),
     ): String {
         // Reuse the role-aware source-token policy used by Manual/Observe
         // duplicate matching. This canonicalizes supported source spellings
@@ -35,8 +37,18 @@ internal object DownloadProducerSemanticFingerprint {
         val normalized = if (tokens == null) {
             normalizedCommand
         } else {
-            normalizeTokens(tokens, outputPlan)
+            normalizeTokens(tokens, outputPlan, runtimePaths)
         }
+        val normalizedEffective = effectiveProducerSemantics
+            ?.takeIf(String::isNotBlank)
+            ?.let { effective ->
+                val effectiveTokens = YtdlpCommandTokenizer.tokenize(effective)
+                if (effectiveTokens == null) {
+                    effective.trim()
+                } else {
+                    normalizeTokens(effectiveTokens, outputPlan, runtimePaths)
+                }
+            }
         val plan = outputPlan?.let {
             listOf(
                 "final=${it.finalDestination}",
@@ -51,7 +63,12 @@ internal object DownloadProducerSemanticFingerprint {
             .toSortedMap()
             .entries
             .joinToString("\n") { (key, value) -> "${key.trim()}=${value.trim()}" }
-        val payload = listOf(normalized, plan, publication)
+        val payload = listOfNotNull(
+            "outer=$normalized",
+            normalizedEffective?.let { "effective-config=$it" },
+            plan.takeIf(String::isNotBlank)?.let { "output-plan=$it" },
+            publication.takeIf(String::isNotBlank)?.let { "publication=$it" },
+        )
             .filter(String::isNotBlank)
             .joinToString("\n")
         return MessageDigest.getInstance("SHA-256")
@@ -62,6 +79,7 @@ internal object DownloadProducerSemanticFingerprint {
     private fun normalizeTokens(
         tokens: List<String>,
         outputPlan: YtdlpOutputPlan?,
+        runtimePaths: Iterable<String>,
     ): String {
         val generatedPaths = listOfNotNull(
             outputPlan?.ytdlpDirectory?.canonicalPath,
@@ -69,7 +87,9 @@ internal object DownloadProducerSemanticFingerprint {
             outputPlan?.directStagingParent?.canonicalPath,
             outputPlan?.structuredOutputMarker?.canonicalPath,
             outputPlan?.ownershipMarker?.canonicalPath,
-        )
+        ) + runtimePaths.mapNotNull { path ->
+            path.trim().takeIf(String::isNotBlank)
+        }
         val normalized = ArrayList<String>(tokens.size)
         var index = 0
         while (index < tokens.size) {

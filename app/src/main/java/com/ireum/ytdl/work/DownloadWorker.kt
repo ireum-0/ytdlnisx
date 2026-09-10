@@ -96,6 +96,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YoutubeQualityRouteInput
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeQualityRouteOutcome
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpOutputPlan
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpProducerSemanticSnapshot
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRetryLog
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
@@ -1484,9 +1485,17 @@ class DownloadWorker(
         private fun producerSemanticFingerprint(
             command: String,
             outputPlan: YtdlpOutputPlan,
+            request: YoutubeDLRequest? = null,
         ): String = DownloadProducerSemanticFingerprint.fingerprint(
             command = command,
             outputPlan = outputPlan,
+            effectiveProducerSemantics = request
+                ?.let(YtdlpProducerSemanticSnapshot::forRequest)
+                ?.configContents,
+            runtimePaths = request
+                ?.let(YtdlpProducerSemanticSnapshot::forRequest)
+                ?.runtimePaths
+                .orEmpty(),
             publicationSemantics = mapOf(
                 "incognito" to downloadItem.incognito.toString(),
                 "redownload" to (
@@ -1511,6 +1520,7 @@ class DownloadWorker(
             val fingerprint = producerSemanticFingerprint(
                 command = preparation.initialAttempt.command,
                 outputPlan = input.outputPlan,
+                request = preparation.initialAttempt.request,
             )
             val currentRoot = runCatching {
                 (input.outputPlan.directStagingDirectory ?: input.rawTempDirectory).canonicalFile
@@ -2513,6 +2523,7 @@ class DownloadWorker(
                     val currentSemanticFingerprint = producerSemanticFingerprint(
                         command = ytdlpPreparation.initialAttempt.command,
                         outputPlan = outputPlan,
+                        request = ytdlpPreparation.initialAttempt.request,
                     )
                     try {
                         recoveredPublishedPaths = recoverPriorPublication(
