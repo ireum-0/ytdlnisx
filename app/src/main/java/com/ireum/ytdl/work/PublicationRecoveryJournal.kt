@@ -65,6 +65,8 @@ internal object PublicationRecoveryJournal {
         val attemptId: String,
         val sourceRoot: String,
         val artifacts: List<Artifact>,
+        /** Immutable producer/output contract for generation-safe adoption. */
+        val semanticFingerprint: String = "",
         val phase: Phase = Phase.PREPARED,
     ) {
         fun publishedDestinations(): List<String> = artifacts
@@ -384,6 +386,7 @@ internal object PublicationRecoveryJournal {
         attemptId: String,
         sourceRoot: File,
         sourceFiles: Iterable<File>,
+        semanticFingerprint: String = "",
     ): Handle? = begin(
         storageDirectory = File(context.filesDir, DIRECTORY_NAME),
         kind = kind,
@@ -393,6 +396,7 @@ internal object PublicationRecoveryJournal {
         attemptId = attemptId,
         sourceRoot = sourceRoot,
         sourceFiles = sourceFiles,
+        semanticFingerprint = semanticFingerprint,
     )
 
     /** JVM-testable entry point; the directory is app-private in production. */
@@ -405,6 +409,7 @@ internal object PublicationRecoveryJournal {
         attemptId: String,
         sourceRoot: File,
         sourceFiles: Iterable<File>,
+        semanticFingerprint: String = "",
     ): Handle? {
         if (
             subjectId.isBlank() || operationId.isBlank() || executionId.isBlank() ||
@@ -444,7 +449,20 @@ internal object PublicationRecoveryJournal {
                 existing.executionId != executionId || existing.attemptId != attemptId ||
                 existing.sourceRoot != root.absolutePath
             ) return null
-            return Handle(file, existing)
+            if (
+                existing.semanticFingerprint.isNotBlank() &&
+                    semanticFingerprint.isNotBlank() &&
+                    existing.semanticFingerprint != semanticFingerprint
+            ) return null
+            val upgraded = if (
+                existing.semanticFingerprint.isBlank() && semanticFingerprint.isNotBlank()
+            ) {
+                existing.copy(semanticFingerprint = semanticFingerprint)
+            } else {
+                existing
+            }
+            if (upgraded != existing && !persist(file, upgraded)) return null
+            return Handle(file, upgraded)
         }
         val record = Record(
             kind = kind,
@@ -454,6 +472,7 @@ internal object PublicationRecoveryJournal {
             attemptId = attemptId,
             sourceRoot = root.absolutePath,
             artifacts = sources.map(::Artifact),
+            semanticFingerprint = semanticFingerprint,
             phase = Phase.PREPARED,
         )
         return if (persist(file, record)) Handle(file, record) else null
@@ -550,6 +569,48 @@ internal object PublicationRecoveryJournal {
         )
     }
 
+    /**
+     * Discover every Download publication record for one durable subject.
+     * Operation identity is intentionally not used as the discovery boundary:
+     * an operation id may survive a reconfiguration, and filtering a prior
+     * record out would make a later worker cross the provider boundary again.
+     * Consumers must apply their own exact semantic/adoption policy after this
+     * identity-preserving discovery.
+     */
+    internal fun findDownloadSubjectDiscovery(
+        context: Context,
+        downloadId: Long,
+    ): DiscoveryResult = when (val discovery = discover(context)) {
+        is DiscoveryResult.Healthy -> DiscoveryResult.Healthy(
+            discovery.records.filter {
+                it.kind == Kind.DOWNLOAD && it.subjectId == downloadId.toString()
+            },
+        )
+        is DiscoveryResult.Unavailable -> discovery
+        is DiscoveryResult.Opaque -> DiscoveryResult.Opaque(
+            records = discovery.records.filter {
+                it.kind == Kind.DOWNLOAD && it.subjectId == downloadId.toString()
+            },
+            opaqueFiles = discovery.opaqueFiles,
+        )
+    }
+
+    /** Discover all publication records for one exact Download execution. */
+    internal fun findDownloadExecutionDiscovery(
+        context: Context,
+        downloadId: Long,
+        executionId: String,
+    ): DiscoveryResult = when (val discovery = findDownloadSubjectDiscovery(context, downloadId)) {
+        is DiscoveryResult.Healthy -> DiscoveryResult.Healthy(
+            discovery.records.filter { it.executionId == executionId },
+        )
+        is DiscoveryResult.Unavailable -> discovery
+        is DiscoveryResult.Opaque -> DiscoveryResult.Opaque(
+            records = discovery.records.filter { it.executionId == executionId },
+            opaqueFiles = discovery.opaqueFiles,
+        )
+    }
+
     private fun read(file: File): Record? = runCatching {
         if (!file.isFile) return null
         val json = JsonParser.parseString(file.readText()).asJsonObject
@@ -579,8 +640,19 @@ internal object PublicationRecoveryJournal {
                             !value.asJsonObject.getAsJsonPrimitive("reservedDestinationPath").isString))
             }
         ) return null
+        if (!json.has("semanticFingerprint")) {
+            // Schema-v1 journals predate generation fingerprints. Keep them
+            // readable as legacy evidence, but the Download recovery consumer
+            // must not adopt them without a newly proven fingerprint.
+            json.addProperty("semanticFingerprint", "")
+        }
         gson.fromJson(json, Record::class.java)
-    }.getOrNull()?.takeIf { record ->
+    }.getOrNull()?.let { record ->
+        // Gson may materialize absent Kotlin fields as null rather than
+        // applying constructor defaults. Normalize the optional legacy field
+        // before any identity comparison can observe it.
+        record.copy(semanticFingerprint = record.semanticFingerprint.orEmpty())
+    }?.takeIf { record ->
         runCatching {
             record.version == SCHEMA_VERSION &&
                 record.subjectId.isNotBlank() &&

@@ -31,6 +31,7 @@ internal class DownloadOutputProvenance(
     private var directBaseline: BaselineSnapshot = BaselineSnapshot.Complete(emptySet())
     private var attemptStarted = false
     private val currentAttemptPaths = linkedSetOf<String>()
+    private val recoveredProducerPaths = linkedSetOf<String>()
 
     internal sealed interface BaselineSnapshot {
         data class Complete(val files: Set<String>) : BaselineSnapshot
@@ -41,6 +42,7 @@ internal class DownloadOutputProvenance(
     fun beginAttempt() {
         attemptStarted = true
         currentAttemptPaths.clear()
+        recoveredProducerPaths.clear()
         tempBaseline = readBaseline(tempRoot)
         directBaseline = directRoot?.let(::readBaseline) ?: BaselineSnapshot.Complete(emptySet())
         tempRootWasCleanAtAttemptStart = tempBaseline.isCompleteAndEmpty()
@@ -121,6 +123,25 @@ internal class DownloadOutputProvenance(
     }
 
     /**
+     * Re-establishes an exact producer output manifest during generation
+     * adoption. These paths are still in the predecessor-owned staging root,
+     * so they are valid move sources even though the root is intentionally not
+     * empty at this attempt's baseline.
+     */
+    fun recordRecoveredProducerPath(path: String): Boolean {
+        if (!attemptStarted) return false
+        val normalized = normalizeStoredPath(path) ?: return false
+        if (normalized.startsWith("content://")) return false
+        val file = File(normalized)
+        if (!isInside(file, tempRoot) && (directRoot == null || !isInside(file, directRoot))) {
+            return false
+        }
+        currentAttemptPaths.add(normalized)
+        recoveredProducerPaths.add(normalized)
+        return true
+    }
+
+    /**
      * Failed output processing must not erase a file whose ownership was
      * never established. This signal is for cleanup policy only; it never
      * promotes the file into the authoritative output set.
@@ -176,6 +197,12 @@ internal class DownloadOutputProvenance(
     private fun isOwnedSource(path: String): Boolean {
         if (path.startsWith("content://")) return false
         val file = File(path)
+        if (
+            recoveredProducerPaths.any { equivalentStoredPath(it, path) } &&
+            (isInside(file, tempRoot) || (directRoot != null && isInside(file, directRoot)))
+        ) {
+            return true
+        }
         return (tempRootWasCleanAtAttemptStart && isInside(file, tempRoot)) ||
             (directRootReadyAtAttemptStart && directRoot != null && isInside(file, directRoot))
     }

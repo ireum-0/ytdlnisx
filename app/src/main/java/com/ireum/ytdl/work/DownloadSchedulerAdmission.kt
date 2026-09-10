@@ -201,6 +201,13 @@ internal suspend fun claimDownloadThroughProductionAdmission(
         // fresh E2 attempt while the carrier is still present.
         return@withDownloadWorkerExecutionSideEffectLease null
     }
+    if (DownloadProducerRecovery.hasPendingForDownload(context, candidate.id)) {
+        // Producer-finality authority covers the pre-publication interval,
+        // including no-output/archive-hit success.  Recovery must resolve or
+        // supersede that exact generation before a new producer can claim the
+        // Download subject.
+        return@withDownloadWorkerExecutionSideEffectLease null
+    }
     if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {
         // A committed primary result is finalization-only even if a stale
         // queue row was left behind by process death.
@@ -228,6 +235,9 @@ internal suspend fun claimDownloadThroughProductionAdmission(
             !DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id) ||
                 DownloadWorker.hasAnyRegisteredNativeProcess(candidate.id)
         ) {
+            return@withDownloadWorkerExecutionLock null
+        }
+        if (DownloadProducerRecovery.hasPendingForDownload(context, candidate.id)) {
             return@withDownloadWorkerExecutionLock null
         }
         if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {

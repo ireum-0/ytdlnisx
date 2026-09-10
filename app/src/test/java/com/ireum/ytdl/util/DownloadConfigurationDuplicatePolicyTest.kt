@@ -189,6 +189,17 @@ class DownloadConfigurationDuplicatePolicyTest {
         )
     }
 
+    @Test
+    fun incompleteRecognizedOptionDoesNotDonateFollowingUrlToSourceIdentity() {
+        val first = "yt-dlp --replace-in-metadata title https://youtube.com/watch?v=AAA111BBB22"
+        val second = "yt-dlp --replace-in-metadata title https://youtu.be/AAA111BBB22"
+
+        assertFalse(
+            "an option missing its required value must remain conservative",
+            DownloadConfigurationDuplicatePolicy.commandsMatch(first, second),
+        )
+    }
+
     private fun downloadItem() = DownloadItem(
         id = 0L,
         url = "https://example.com/video",

@@ -530,6 +530,30 @@ class DownloadOutputProvenanceTest {
     }
 
     @Test
+    fun adoptedProducerManifestRemainsMovableWhenRootWasNotEmptyAtBaseline() {
+        val staging = Files.createTempDirectory("output-provenance-adopted-").toFile()
+        val destinationDirectory = Files.createTempDirectory("output-provenance-adopted-dest-").toFile()
+        try {
+            val source = write(staging, "prior.mp4")
+            val provenance = DownloadOutputProvenance(staging)
+            provenance.beginAttempt()
+
+            assertTrue(provenance.recordRecoveredProducerPath(source.absolutePath))
+            val moved = write(destinationDirectory, "prior.mp4")
+            assertEquals(
+                listOf(moved.canonicalPath),
+                provenance.recordMoveResults(
+                    paths = listOf(moved.absolutePath),
+                    sourcePaths = listOf(source.absolutePath),
+                ),
+            )
+        } finally {
+            staging.deleteRecursively()
+            destinationDirectory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun exactDirectArtifactCleanupPreservesUnknownDescendants() {
         val destination = Files.createTempDirectory("output-cleanup-exact-").toFile()
         try {

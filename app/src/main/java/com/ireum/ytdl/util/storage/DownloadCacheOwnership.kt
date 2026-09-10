@@ -2,6 +2,10 @@ package com.ireum.ytdl.util.storage
 
 import com.ireum.ytdl.database.models.DownloadItem
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+import java.nio.charset.StandardCharsets
 
 /**
  * Durable ownership proof for the legacy numeric Download cache layout.
@@ -295,26 +299,41 @@ internal object DownloadCacheOwnership {
         item: DownloadItem,
         executionId: String,
     ): Boolean {
-        if (item.id <= 0L || item.operationId.isBlank() || executionId.isBlank()) return false
+        return retireRecoveredExecution(
+            cacheRoot = cacheRoot,
+            downloadId = item.id,
+            operationId = item.operationId,
+            executionId = executionId,
+        )
+    }
+
+    /** Identity-only overload for restart recovery records without a DAO row. */
+    fun retireRecoveredExecution(
+        cacheRoot: File,
+        downloadId: Long,
+        operationId: String,
+        executionId: String,
+    ): Boolean {
+        if (downloadId <= 0L || operationId.isBlank() || executionId.isBlank()) return false
         val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
-        val marker = markerFile(root, item.id).canonicalFile
+        val marker = markerFile(root, downloadId).canonicalFile
         if (!marker.exists()) return true
         val fields = runCatching { if (marker.isFile) parse(marker.readText()) else emptyMap() }
             .getOrDefault(emptyMap())
         if (
             fields["version"] != VERSION ||
-            fields["downloadId"]?.toLongOrNull() != item.id ||
-            fields["operationId"] != item.operationId ||
+            fields["downloadId"]?.toLongOrNull() != downloadId ||
+            fields["operationId"] != operationId ||
             fields["executionId"] != executionId
         ) return false
-        val directory = File(root, item.id.toString()).canonicalFile
+        val directory = File(root, downloadId.toString()).canonicalFile
         if (!directory.exists()) {
             return marker.delete() || !marker.exists()
         }
         if (!directory.isDirectory || directory.parentFile?.canonicalFile != root) return false
-        val manifest = artifactManifestFile(root, item.id).canonicalFile
+        val manifest = artifactManifestFile(root, downloadId).canonicalFile
         if (manifest.exists()) {
-            val entries = readArtifactManifest(root, item.id, item.operationId, executionId)
+            val entries = readArtifactManifest(root, downloadId, operationId, executionId)
                 ?: return false
             // A complete publication journal is exact authority for its
             // listed source artifacts.  A crash can leave a copied source
@@ -334,6 +353,56 @@ internal object DownloadCacheOwnership {
         }
         if (directory.listFiles()?.isNotEmpty() == true) return false
         if (!directory.delete() && directory.exists()) return false
+        return marker.delete() || !marker.exists()
+    }
+
+    /**
+     * Move an exact, marker-owned cache root out of the active numeric
+     * namespace without recursively deleting unproven descendants. This is
+     * the liveness path for an explicitly superseded producer generation:
+     * native quiescence has already been proven, and the whole app-private
+     * root is quarantined as one identity-bound unit before its active marker
+     * is revoked.
+     */
+    fun quarantineRecoveredExecution(
+        cacheRoot: File,
+        downloadId: Long,
+        operationId: String,
+        executionId: String,
+    ): Boolean {
+        if (downloadId <= 0L || operationId.isBlank() || executionId.isBlank()) return false
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
+        val marker = markerFile(root, downloadId).canonicalFile
+        val fields = runCatching { if (marker.isFile) parse(marker.readText()) else emptyMap() }
+            .getOrDefault(emptyMap())
+        if (
+            fields["version"] != VERSION ||
+            fields["downloadId"]?.toLongOrNull() != downloadId ||
+            fields["operationId"] != operationId ||
+            fields["executionId"] != executionId
+        ) return false
+        val directory = File(root, downloadId.toString()).canonicalFile
+        if (!directory.exists()) return marker.delete() || !marker.exists()
+        if (!directory.isDirectory || directory.parentFile?.canonicalFile != root) return false
+
+        val quarantineRoot = File(root, ".ytdlnisx-quarantine").canonicalFile
+        if (!quarantineRoot.exists() && !quarantineRoot.mkdirs()) return false
+        if (!quarantineRoot.isDirectory) return false
+        val suffix = MessageDigest.getInstance("SHA-256")
+            .digest("$downloadId\n$operationId\n$executionId".toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte) }
+        val destination = File(quarantineRoot, "$downloadId-$suffix").canonicalFile
+        if (destination.exists()) {
+            if (!destination.isDirectory || directory.exists()) return false
+        } else {
+            val moved = runCatching {
+                Files.move(directory.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                true
+            }.getOrElse {
+                directory.renameTo(destination)
+            }
+            if (!moved || !destination.isDirectory || directory.exists()) return false
+        }
         return marker.delete() || !marker.exists()
     }
 

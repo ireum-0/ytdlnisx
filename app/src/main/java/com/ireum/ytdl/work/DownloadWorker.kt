@@ -1440,6 +1440,10 @@ class DownloadWorker(
         /** A prior exact publication is retained as recovery debt; producer replay is forbidden. */
         private var priorPublicationFinalizationRequired = false
         private var downloadArchiveGeneration: DownloadArchiveAuthority.Generation? = null
+        /** Durable producer authority established before the native boundary. */
+        private var producerRecoveryRecord: DownloadProducerRecovery.Record? = null
+        private var producerOutputOwnerOperationId: String? = null
+        private var producerOutputOwnerExecutionId: String? = null
 
         /**
          * Archive entries are ancillary to primary media success.  A damaged
@@ -1459,6 +1463,284 @@ class DownloadWorker(
                     )
                 }.getOrDefault("")
             }.orEmpty()
+
+        /**
+         * The producer record is the authoritative archive snapshot for an
+         * adopted/pre-publication generation.  Do not replace its delta with
+         * a freshly seeded archive belonging to the retry execution.
+         */
+        private fun producerArchiveDelta(): String =
+            producerRecoveryRecord?.archiveDelta
+                ?.takeIf(String::isNotBlank)
+                ?: currentDownloadArchiveDelta()
+
+        /**
+         * The producer command/output plan is the primary compatibility
+         * witness. Publication mode is included as well because adopting an
+         * earlier generation into an incognito or redownload execution would
+         * otherwise change the semantic finalization contract without changing
+         * yt-dlp's command.
+         */
+        private fun producerSemanticFingerprint(
+            command: String,
+            outputPlan: YtdlpOutputPlan,
+        ): String = DownloadProducerSemanticFingerprint.fingerprint(
+            command = command,
+            outputPlan = outputPlan,
+            publicationSemantics = mapOf(
+                "incognito" to downloadItem.incognito.toString(),
+                "redownload" to (
+                    HistoryRedownloadMarker.parse(downloadItem.playlistURL)?.let { marker ->
+                        "${if (marker.isQualityReplacement) "quality" else "ordinary"}:${marker.historyId}"
+                    } ?: "none"
+                ),
+            ),
+        )
+
+        /**
+         * Establishes the durable producer owner immediately before the
+         * irreversible yt-dlp boundary.  A completed predecessor is adopted
+         * only when its immutable command/output fingerprint matches; an
+         * incompatible predecessor is retired by an explicit, exact
+         * supersession step.  No filesystem scan is used as provenance.
+         */
+        private fun establishProducerAuthority(
+            input: YtdlpPhaseInput,
+            preparation: YtdlpPhasePreparation,
+        ): ProducerAuthorityDecision {
+            val fingerprint = producerSemanticFingerprint(
+                command = preparation.initialAttempt.command,
+                outputPlan = input.outputPlan,
+            )
+            val currentRoot = runCatching {
+                (input.outputPlan.directStagingDirectory ?: input.rawTempDirectory).canonicalFile
+            }.getOrElse {
+                throw IOException("Could not resolve producer recovery root", it)
+            }
+            fun prepareSuccessor(
+                predecessor: DownloadProducerRecovery.Record? = null,
+                inheritOutputRoot: Boolean = true,
+                outputOwnerOperationId: String =
+                    predecessor?.effectiveOutputOwnerOperationId ?: downloadItem.operationId,
+                outputOwnerExecutionId: String =
+                    predecessor?.effectiveOutputOwnerExecutionId ?: downloadItem.executionId,
+            ): DownloadProducerRecovery.Record {
+                val record = DownloadProducerRecovery.prepare(
+                    context = context,
+                    downloadId = downloadItem.id,
+                    operationId = downloadItem.operationId,
+                    executionId = downloadItem.executionId,
+                    semanticFingerprint = fingerprint,
+                    outputRoot = if (inheritOutputRoot) {
+                        predecessor?.let { File(it.outputRoot) } ?: currentRoot
+                    } else {
+                        currentRoot
+                    },
+                    predecessorGenerationId = predecessor?.generationId,
+                    outputOwnerOperationId = outputOwnerOperationId,
+                    outputOwnerExecutionId = outputOwnerExecutionId,
+                ) ?: throw IOException(
+                    "Producer recovery authority could not be durably prepared for ${downloadItem.id}",
+                )
+                return record
+            }
+
+            var obsoleteRecords: List<DownloadProducerRecovery.Record> = emptyList()
+            var incompatiblePrior: DownloadProducerRecovery.Record? = null
+            val prior = when (val resolution = DownloadProducerRecovery.resolve(
+                context = context,
+                downloadId = downloadItem.id,
+                currentFingerprint = fingerprint,
+                currentExecutionId = downloadItem.executionId,
+            )) {
+                DownloadProducerRecovery.Resolution.NoPrior -> null
+                is DownloadProducerRecovery.Resolution.Compatible -> {
+                    obsoleteRecords = resolution.obsoleteRecords
+                    resolution.record
+                }
+                is DownloadProducerRecovery.Resolution.Incompatible -> {
+                    obsoleteRecords = resolution.obsoleteRecords
+                    incompatiblePrior = resolution.record
+                    resolution.record
+                }
+                is DownloadProducerRecovery.Resolution.Ambiguous -> {
+                    throw IOException(
+                        "Multiple producer generations are not deterministically compatible for ${downloadItem.id}",
+                    )
+                }
+                is DownloadProducerRecovery.Resolution.Unavailable -> {
+                    throw IOException(
+                        "Producer recovery namespace unavailable: ${resolution.reason}",
+                    )
+                }
+                is DownloadProducerRecovery.Resolution.Opaque -> {
+                    throw IOException(
+                        "Producer recovery namespace contains opaque debt: ${resolution.files}",
+                    )
+                }
+            }
+
+            if (incompatiblePrior != null) {
+                // Establish the new generation's durable owner before any
+                // older generation is retired.  The incompatible predecessor
+                // is never adopted and its paths cannot enter the successor
+                // provenance.
+                val successor = prepareSuccessor(
+                    predecessor = incompatiblePrior,
+                    inheritOutputRoot = false,
+                )
+                retireSupersededProducer(incompatiblePrior)
+                retireObsoleteProducerRecords(
+                    records = obsoleteRecords,
+                    protectedRoot = currentRoot,
+                )
+                check(DownloadProducerRecovery.markRunning(context, successor)) {
+                    "Producer recovery successor could not be activated for ${downloadItem.id}"
+                }
+                return ProducerAuthorityDecision(
+                    record = successor,
+                    adopted = false,
+                    outputPlan = input.outputPlan,
+                )
+            }
+
+            if (prior == null) {
+                return ProducerAuthorityDecision(
+                    record = prepareSuccessor(),
+                    adopted = false,
+                    outputPlan = input.outputPlan,
+                )
+            }
+
+            validateAdoptableProducer(prior)
+            val successor = prepareSuccessor(prior)
+            check(DownloadProducerRecovery.markRunning(context, successor)) {
+                "Producer recovery successor could not be activated for ${downloadItem.id}"
+            }
+            check(
+                DownloadProducerRecovery.markComplete(
+                    context = context,
+                    record = successor,
+                    outputPaths = prior.outputPaths,
+                    archiveDelta = prior.archiveDelta,
+                ) != null,
+            ) {
+                "Producer recovery successor could not preserve predecessor output for ${downloadItem.id}"
+            }
+            // The successor is durable before the predecessor is retired.
+            check(DownloadProducerRecovery.retire(context, prior)) {
+                "Producer predecessor could not be retired after successor establishment"
+            }
+            retireObsoleteProducerRecords(
+                records = obsoleteRecords,
+                protectedRoot = File(prior.outputRoot).canonicalFile,
+            )
+            val adoptedPlan = if (input.outputPlan.directNoCache) {
+                val root = File(prior.outputRoot).canonicalFile
+                input.outputPlan.copy(
+                    ytdlpDirectory = root,
+                    ownershipMarker = File(root, ".ytdlnisx-owner").canonicalFile,
+                    structuredOutputMarker = File(root, ".ytdlnisx-output-artifacts.txt").canonicalFile,
+                    directStagingParent = root.parentFile?.parentFile?.canonicalFile,
+                )
+            } else {
+                input.outputPlan.copy(ytdlpDirectory = File(prior.outputRoot).canonicalFile)
+            }
+            return ProducerAuthorityDecision(
+                record = successor,
+                adopted = true,
+                outputPlan = adoptedPlan,
+                outputOwnerOperationId = successor.effectiveOutputOwnerOperationId,
+                outputOwnerExecutionId = successor.effectiveOutputOwnerExecutionId,
+            )
+        }
+
+        /**
+         * Retire older producer records after the selected generation has a
+         * durable successor.  A record that shares the successor's staging
+         * root is retired as metadata only: touching that root would risk
+         * deleting files now owned by the selected generation.  Distinct
+         * roots still receive the normal exact-quiescence cleanup path.
+         */
+        private fun retireObsoleteProducerRecords(
+            records: List<DownloadProducerRecovery.Record>,
+            protectedRoot: File,
+        ) {
+            records.forEach { record ->
+                val sameRoot = runCatching {
+                    File(record.outputRoot).canonicalFile == protectedRoot.canonicalFile
+                }.getOrDefault(false)
+                if (sameRoot) {
+                    if (record.phase == DownloadProducerRecovery.Phase.RUNNING ||
+                        record.phase == DownloadProducerRecovery.Phase.OUTPUT_UNPROVEN ||
+                        record.phase == DownloadProducerRecovery.Phase.PREPARED
+                    ) {
+                        check(
+                            YtdlpNativeProcessBarrier.recoverDownloadExecution(
+                                record.downloadId,
+                                record.executionId,
+                            )
+                        ) {
+                            "Obsolete producer native generation remained unresolved for " +
+                                "${record.downloadId}/${record.executionId}"
+                        }
+                    }
+                    check(DownloadProducerRecovery.markSuperseded(context, record)) {
+                        "Obsolete producer record could not be superseded for ${record.downloadId}"
+                    }
+                    check(DownloadProducerRecovery.retire(context, record)) {
+                        "Obsolete producer record could not be retired for ${record.downloadId}"
+                    }
+                } else {
+                    retireSupersededProducer(record)
+                }
+            }
+        }
+
+        private fun validateAdoptableProducer(record: DownloadProducerRecovery.Record) {
+            if (record.phase != DownloadProducerRecovery.Phase.COMPLETE &&
+                record.phase != DownloadProducerRecovery.Phase.NO_OUTPUT_COMPLETE
+            ) {
+                throw IOException(
+                    "Producer generation ${record.generationId} is not complete and cannot be adopted",
+                )
+            }
+            val root = runCatching { File(record.outputRoot).canonicalFile }.getOrElse {
+                throw IOException("Producer recovery root is invalid", it)
+            }
+            record.outputPaths.forEach { raw ->
+                if (raw.startsWith("content://", ignoreCase = true)) {
+                    throw IOException("Producer output identity is not a local file")
+                }
+                val path = runCatching { File(raw).canonicalFile }.getOrElse {
+                    throw IOException("Producer output path is invalid", it)
+                }
+                if (!path.isFile || !path.toPath().startsWith(root.toPath())) {
+                    throw IOException("Producer output is no longer present in its exact staging root")
+                }
+            }
+        }
+
+        /** Retire only exact, operation-owned staging artifacts after quiescence. */
+        private fun retireSupersededProducer(record: DownloadProducerRecovery.Record) {
+            if (record.phase == DownloadProducerRecovery.Phase.RUNNING ||
+                record.phase == DownloadProducerRecovery.Phase.OUTPUT_UNPROVEN ||
+                record.phase == DownloadProducerRecovery.Phase.PREPARED
+            ) {
+                YtdlpNativeProcessBarrier.configure(context)
+                if (!YtdlpNativeProcessBarrier.recoverDownloadExecution(record.downloadId, record.executionId)) {
+                    throw IOException("Producer native generation is not quiescent for supersession")
+                }
+            }
+            check(
+                DownloadProducerRecovery.retireUnpublishedAfterQuiescence(
+                    context = context,
+                    record = record,
+                )
+            ) {
+                "Producer predecessor could not be retired after native quiescence"
+            }
+        }
 
         private fun establishHistoryReplacementFailure(issue: DownloadIssue) {
                         historyReplacementFailureIssue = issue
@@ -1550,6 +1832,10 @@ class DownloadWorker(
                 attemptId = publicationAttemptId,
                 sourceRoot = tempFileDir,
                 sourceFiles = sourceFiles,
+                semanticFingerprint = producerRecoveryRecord?.semanticFingerprint
+                    ?: DownloadPrimarySuccessAuthorityRepository.fingerprint(
+                        ytdlpPhase.state.initialCommand,
+                    ),
             ) ?: throw IOException(
                 "Could not persist Download publication recovery journal for ${downloadItem.id}"
             )
@@ -1674,12 +1960,12 @@ class DownloadWorker(
          */
         private suspend fun recoverPriorPublication(
             outputPlan: YtdlpOutputPlan,
+            expectedSemanticFingerprint: String,
         ): List<String> {
             if (downloadItem.executionId.isBlank()) return emptyList()
-            val records = when (val discovery = PublicationRecoveryJournal.findDownloadDiscovery(
+            val subjectRecords = when (val discovery = PublicationRecoveryJournal.findDownloadSubjectDiscovery(
                 context = context,
                 downloadId = downloadItem.id,
-                operationId = downloadItem.operationId,
             )) {
                 is PublicationRecoveryJournal.DiscoveryResult.Healthy -> discovery.records
                 is PublicationRecoveryJournal.DiscoveryResult.Unavailable -> {
@@ -1692,7 +1978,55 @@ class DownloadWorker(
                         "Download publication recovery namespace contains opaque debt",
                     )
                 }
-            }.filter { it.executionId != downloadItem.executionId }
+            }
+            // A record for the same subject but a different operation cannot
+            // be dismissed by an operation-id filter: operation ids are not
+            // immutable producer semantics.  Without this fence a changed
+            // retry could cross provider creation while the older publication
+            // authority is still durable.  The exact prior record is handled
+            // below only after this subject-level identity check.
+            val foreignOperationRecords = subjectRecords.filter {
+                it.operationId != downloadItem.operationId
+            }
+            if (foreignOperationRecords.isNotEmpty()) {
+                throw IOException(
+                    "Download publication recovery has a prior operation with unproven " +
+                        "semantic compatibility for ${downloadItem.id}",
+                )
+            }
+            val discoveredRecords = subjectRecords
+                .filter { it.operationId == downloadItem.operationId }
+                .filter { it.executionId != downloadItem.executionId }
+            // A Download may have more than one surviving legacy journal. Do
+            // not let filesystem enumeration order decide which generation
+            // owns the current source/destination map. Identical duplicate
+            // snapshots are harmless; distinct snapshots are ambiguous and
+            // must be resolved explicitly rather than unioned.
+            val records = discoveredRecords
+                .groupBy { record ->
+                    buildString {
+                        append(record.semanticFingerprint).append('\u0000')
+                        append(record.sourceRoot).append('\u0000')
+                        append(record.phase.name).append('\u0000')
+                        record.artifacts
+                            .sortedBy { it.sourcePath }
+                            .forEach { artifact ->
+                                append(artifact.sourcePath).append('=')
+                                append(artifact.destinationPath.orEmpty()).append('=')
+                                append(artifact.reservedDestinationPath.orEmpty()).append('\u0001')
+                            }
+                    }
+                }
+                .values
+                .also { groups ->
+                    if (groups.size > 1) {
+                        throw IOException(
+                            "Download publication generations are ambiguous for ${downloadItem.id}",
+                        )
+                    }
+                }
+                .firstOrNull()
+                .orEmpty()
             if (records.isEmpty()) return emptyList()
 
             val expectedRoot = runCatching {
@@ -1710,6 +2044,15 @@ class DownloadWorker(
             val recovered = linkedSetOf<String>()
             val sourceDestinations = linkedMapOf<String, String>()
             records.forEach { record ->
+                if (
+                    record.semanticFingerprint.isBlank() ||
+                        record.semanticFingerprint != expectedSemanticFingerprint
+                ) {
+                    throw IOException(
+                        "Download publication generation is not semantically compatible " +
+                            "with the current producer for ${downloadItem.id}",
+                    )
+                }
                 val recoveryRoot = runCatching { File(record.sourceRoot).canonicalFile }
                     .getOrElse {
                         throw IOException("Download publication recovery root is invalid", it)
@@ -2125,7 +2468,6 @@ class DownloadWorker(
 
                     val outputPlan = ytdlpUtil.resolveOutputPlan(downloadItem)
                     ytdlpOutputPlan = outputPlan
-                    recoveredPublishedPaths = recoverPriorPublication(outputPlan)
                     if (
                         sharedPreferences.getString("prevent_duplicate_downloads", "") == "download_archive" &&
                             HistoryRedownloadQueuePolicy.shouldUseDownloadArchive(downloadItem.playlistURL)
@@ -2142,7 +2484,7 @@ class DownloadWorker(
         downloadLocation = outputPlan.finalDestination
         keepCache = sharedPreferences.getBoolean("keep_cache", false)
         noKeepSubs = sharedPreferences.getBoolean("no_keep_subs", false)
-                    val ytdlpInput = YtdlpPhaseInput(
+                    var ytdlpInput = YtdlpPhaseInput(
                         downloadItem = downloadItem,
                         rawTempDirectory = rawTempFileDir,
                         outputPlan = outputPlan,
@@ -2153,7 +2495,7 @@ class DownloadWorker(
                             baselineSnapshotReader = DownloadWorkerEffectTestHooks
                                 .outputBaselineReaderForTesting,
                         ),
-                        recoveredPublishedPaths = recoveredPublishedPaths,
+                        recoveredPublishedPaths = emptyList(),
                         downloadArchivePath = downloadArchiveGeneration?.privateArchive?.absolutePath,
                         notificationTitle = notificationTitle,
                         loggingEnabled = sharedPreferences.getBoolean("log_downloads", false) &&
@@ -2168,6 +2510,57 @@ class DownloadWorker(
                     )
                     ytdlpOutputProvenance = ytdlpInput.outputProvenance
                     val ytdlpPreparation = prepareYtdlpPhase(ytdlpInput, ytdlpServices)
+                    val currentSemanticFingerprint = producerSemanticFingerprint(
+                        command = ytdlpPreparation.initialAttempt.command,
+                        outputPlan = outputPlan,
+                    )
+                    try {
+                        recoveredPublishedPaths = recoverPriorPublication(
+                            outputPlan = outputPlan,
+                            expectedSemanticFingerprint = currentSemanticFingerprint,
+                        )
+                    } catch (failure: Throwable) {
+                        // The preparation owns app-generated config files. If
+                        // semantic publication compatibility rejects a prior
+                        // journal, clean those files before handing the
+                        // failure to the normal durable recovery path.
+                        ytdlpPreparation.registeredRequests.forEach { request ->
+                            runCatching { FileUtil.deleteConfigFiles(request) }
+                        }
+                        throw failure
+                    }
+                    ytdlpInput = ytdlpInput.copy(
+                        recoveredPublishedPaths = recoveredPublishedPaths,
+                    )
+                    val producerDecision = establishProducerAuthority(
+                        input = ytdlpInput,
+                        preparation = ytdlpPreparation,
+                    )
+                    producerRecoveryRecord = producerDecision.record
+                    producerOutputOwnerOperationId = producerDecision.outputOwnerOperationId
+                    producerOutputOwnerExecutionId = producerDecision.outputOwnerExecutionId
+                    if (producerDecision.adopted) {
+                        // Rebuild provenance against the exact predecessor
+                        // staging root. This permits finalization-only
+                        // recovery without rerunning yt-dlp or conflating the
+                        // predecessor with the new execution's output plan.
+                        ytdlpInput = ytdlpInput.copy(
+                            outputPlan = producerDecision.outputPlan,
+                            outputProvenance = DownloadOutputProvenance(
+                                tempDirectory = producerDecision.outputPlan.ytdlpDirectory,
+                                directDirectory = producerDecision.outputPlan.directStagingDirectory,
+                                directOwnershipMarker = producerDecision.outputPlan.ownershipMarker,
+                                baselineSnapshotReader = DownloadWorkerEffectTestHooks
+                                    .outputBaselineReaderForTesting,
+                            ),
+                        )
+                        ytdlpOutputPlan = producerDecision.outputPlan
+                        ytdlpOutputProvenance = ytdlpInput.outputProvenance
+                    } else {
+                        check(DownloadProducerRecovery.markRunning(context, producerDecision.record)) {
+                            "Producer recovery authority could not be activated for ${downloadItem.id}"
+                        }
+                    }
         eventBus = EventBus.getDefault()
                     val downloadStartedAt = System.currentTimeMillis()
 
@@ -2178,16 +2571,45 @@ class DownloadWorker(
                         eventBus = eventBus,
                         preparation = ytdlpPreparation,
                         startedAt = downloadStartedAt,
+                        adoptedProducerRecord = producerDecision.record.takeIf { producerDecision.adopted },
                     )
                     ytdlpExecutionState = ytdlpOutcome.state
                     currentIssueStage = ytdlpOutcome.state.issueStage
+                    if (ytdlpOutcome !is YtdlpPhaseOutcome.Completed) {
+                        check(DownloadProducerRecovery.markOutputUnproven(context, producerDecision.record)) {
+                            "Producer recovery authority could not retain failed execution ${downloadItem.id}"
+                        }
+                    }
                     val phase = when (ytdlpOutcome) {
                         is YtdlpPhaseOutcome.Completed -> ytdlpOutcome
                         is YtdlpPhaseOutcome.Failed -> throw ytdlpOutcome.error
                         is YtdlpPhaseOutcome.Cancelled -> throw ytdlpOutcome.error
                     }
+                    if (!producerDecision.adopted) {
+                        check(
+                            DownloadProducerRecovery.markComplete(
+                                context = context,
+                                record = producerDecision.record,
+                                outputPaths = phase.state.authoritativeOutputPaths,
+                                archiveDelta = currentDownloadArchiveDelta(),
+                            ) != null,
+                        ) {
+                            "Producer completion authority could not be persisted for ${downloadItem.id}"
+                        }
+                    }
                     tempFileDir = phase.state.validatedTempDirectory ?: rawTempFileDir
                     if (runSuccessfulDownload(phase) == AttemptControl.STOP) return
+                    if (!ordinaryPrimarySuccessCommitted && !historyReplacementCommitted) {
+                        // Archive-hit/no-output generations have no History
+                        // row to carry primary authority. Their durable
+                        // producer record is retired only after the row's
+                        // semantic completion has been acknowledged.
+                        producerRecoveryRecord?.let { record ->
+                            check(DownloadProducerRecovery.retire(context, record)) {
+                                "Producer completion authority could not be retired for ${downloadItem.id}"
+                            }
+                        }
+                    }
                 } catch (it: Exception) {
                     if (handleYtdlpFailure(it) == AttemptControl.STOP) return
                 }
@@ -2213,28 +2635,49 @@ class DownloadWorker(
             if (runHistoryPersistence() == AttemptControl.STOP) {
                 return AttemptControl.STOP
             }
-            if (downloadItem.incognito) {
+            if (downloadItem.incognito || finalPaths.isEmpty()) {
                 // Incognito has no History row to carry primary-success
-                // authority.  The exact execution witness is therefore
-                // recorded for every successful command, including commands
-                // that intentionally produce no files.
-                check(
-                    DownloadPrimarySuccessAuthorityRepository.recordNoHistory(
-                        dbManager = dbManager,
-                        downloadId = downloadItem.id,
-                        operationId = downloadItem.operationId,
-                        executionId = downloadItem.executionId,
-                        semanticFingerprint = DownloadPrimarySuccessAuthorityRepository
-                            .fingerprint(ytdlpPhase.state.initialCommand),
-                        archiveDelta = currentDownloadArchiveDelta(),
-                    )
-                ) { "No-History primary success authority could not be persisted" }
+                // authority.  A successful producer that intentionally
+                // yields no new files has the same property (for example an
+                // app-managed archive hit), even when History is enabled.
+                // Record the exact execution witness for both cases so a
+                // process death cannot retire producer authority and replay.
+                val committed = withOwnedExecutionSideEffect(downloadItem) {
+                    // This is the final semantic boundary for an execution
+                    // with no History row.  A stop that wins before it must
+                    // prevent success; a stop observed after this write is
+                    // handled by the committed-primary-success authority.
+                    if (shouldStopForUserRequest()) {
+                        false
+                    } else {
+                        check(
+                            DownloadPrimarySuccessAuthorityRepository.recordNoHistory(
+                                dbManager = dbManager,
+                                downloadId = downloadItem.id,
+                                operationId = downloadItem.operationId,
+                                executionId = downloadItem.executionId,
+                                semanticFingerprint = producerRecoveryRecord?.semanticFingerprint
+                                    ?: DownloadPrimarySuccessAuthorityRepository
+                                        .fingerprint(ytdlpPhase.state.initialCommand),
+                                archiveDelta = producerArchiveDelta(),
+                            )
+                        ) { "No-History primary success authority could not be persisted" }
+                        true
+                    }
+                }
+                if (!committed) return AttemptControl.STOP
                 ordinaryPrimarySuccessCommitted = true
             }
             if (downloadArchiveGeneration != null) {
                 if (ordinaryPrimarySuccessCommitted) {
                     val promoted = runCatching {
-                        DownloadArchiveAuthority.promote(downloadArchiveGeneration!!)
+                        DownloadArchiveAuthority.promote(
+                            generation = downloadArchiveGeneration!!,
+                            fallbackDelta = producerArchiveDelta()
+                                .split('\n')
+                                .map(String::trimEnd)
+                                .filter(String::isNotBlank),
+                        )
                     }.getOrElse { failure ->
                         Log.w(
                             TAG,
@@ -2795,9 +3238,20 @@ class DownloadWorker(
                         }
 
                         if (!noCache && !keepCache) {
+                            val manifestOwner = if (
+                                producerOutputOwnerOperationId != null &&
+                                producerOutputOwnerExecutionId != null
+                            ) {
+                                downloadItem.copy(
+                                    operationId = producerOutputOwnerOperationId!!,
+                                    executionId = producerOutputOwnerExecutionId!!,
+                                )
+                            } else {
+                                downloadItem
+                            }
                             if (!DownloadCacheOwnership.removeArtifactManifest(
                                     cacheRoot = File(FileUtil.getCachePath(context)),
-                                    item = downloadItem,
+                                    item = manifestOwner,
                                 )
                             ) {
                                 Log.w(
@@ -3071,9 +3525,10 @@ class DownloadWorker(
                                                     downloadId = downloadItem.id,
                                                     operationId = downloadItem.operationId,
                                                     executionId = downloadItem.executionId,
-                                                    semanticFingerprint = DownloadPrimarySuccessAuthorityRepository
-                                                        .fingerprint(ytdlpPhase.state.initialCommand),
-                                                    archiveDelta = currentDownloadArchiveDelta(),
+                                                    semanticFingerprint = producerRecoveryRecord?.semanticFingerprint
+                                                        ?: DownloadPrimarySuccessAuthorityRepository
+                                                            .fingerprint(ytdlpPhase.state.initialCommand),
+                                                    archiveDelta = producerArchiveDelta(),
                                                 ).also {
                                                     ordinaryPrimarySuccessCommitted = true
                                                 }
@@ -4855,9 +5310,15 @@ class DownloadWorker(
             if (!outputPlan.directNoCache) return
             try {
                 withOwnedExecutionSideEffect(downloadItem) {
+                    val expectedExecutionId = producerOutputOwnerExecutionId
+                        ?: producerRecoveryRecord?.executionId
+                        ?: downloadItem.executionId
                     val result = DirectOutputStagingCleanup.removeOwnedMarkerAndEmptyParents(
                         outputPlan = outputPlan,
-                        expectedMarkerText = directOwnershipMarkerText(downloadItem),
+                        expectedMarkerText = directOwnershipMarkerText(
+                            downloadItem,
+                            expectedExecutionId,
+                        ),
                         publicationState = DirectOutputPublicationState.SUCCESS,
                     )
                     if (result == null) {
@@ -4963,6 +5424,14 @@ class DownloadWorker(
         val downloadArchivePath: String? = null,
         val notificationTitle: String,
         val loggingEnabled: Boolean,
+    )
+
+    private data class ProducerAuthorityDecision(
+        val record: DownloadProducerRecovery.Record,
+        val adopted: Boolean,
+        val outputPlan: YtdlpOutputPlan,
+        val outputOwnerOperationId: String = record.effectiveOutputOwnerOperationId,
+        val outputOwnerExecutionId: String = record.effectiveOutputOwnerExecutionId,
     )
 
     private data class YtdlpPhaseServices(
@@ -5131,6 +5600,15 @@ class DownloadWorker(
             authoritativeOutputPaths = outputProvenance.currentAttemptPaths()
         }
 
+        fun recordRecoveredProducerPaths(paths: Iterable<String>) {
+            paths.forEach { path ->
+                check(outputProvenance.recordRecoveredProducerPath(path)) {
+                    "Recovered producer path could not be re-established"
+                }
+            }
+            authoritativeOutputPaths = outputProvenance.currentAttemptPaths()
+        }
+
         /**
          * A selection probe is an observation-only yt-dlp invocation. It
          * must not revoke output authority established by the completed
@@ -5194,6 +5672,7 @@ class DownloadWorker(
         eventBus: EventBus,
         preparation: YtdlpPhasePreparation,
         startedAt: Long,
+        adoptedProducerRecord: DownloadProducerRecovery.Record? = null,
     ): YtdlpPhaseOutcome {
         val runtime = YtdlpPhaseRuntimeState(
             preparation = preparation,
@@ -5201,6 +5680,21 @@ class DownloadWorker(
             outputProvenance = input.outputProvenance,
         )
         return try {
+            if (adoptedProducerRecord != null) {
+                // The predecessor's exact output manifest is the producer
+                // result. Re-enter only the publication/finalization path;
+                // resetYtdlpOutputDirectory and every native invocation are
+                // deliberately skipped.
+                runtime.validatedTempDirectory = File(adoptedProducerRecord.outputRoot).canonicalFile
+                runtime.beginAttempt()
+                runtime.recordRecoveredProducerPaths(adoptedProducerRecord.outputPaths)
+                return YtdlpPhaseOutcome.Completed(
+                    YtdlpExecutionResult(
+                        response = YoutubeDLResponse(emptyList(), 0, 0L, "", ""),
+                    ),
+                    runtime.snapshot(),
+                )
+            }
             runtime.validatedTempDirectory = resetYtdlpOutputDirectory(
                 downloadItem = input.downloadItem,
                 rawTempDirectory = input.rawTempDirectory,
@@ -6395,10 +6889,9 @@ class DownloadWorker(
                 // manifest may remain after recovery, and both are retired
                 // without touching any other child.
                 val priorPublicationRecords = when (
-                    val discovery = PublicationRecoveryJournal.findDownloadDiscovery(
+                    val discovery = PublicationRecoveryJournal.findDownloadSubjectDiscovery(
                         context = context,
                         downloadId = downloadItem.id,
-                        operationId = downloadItem.operationId,
                     )
                 ) {
                     is PublicationRecoveryJournal.DiscoveryResult.Healthy -> discovery.records
@@ -6410,6 +6903,13 @@ class DownloadWorker(
                     is PublicationRecoveryJournal.DiscoveryResult.Opaque -> {
                         throw IOException(
                             "Download publication recovery namespace contains opaque debt",
+                        )
+                    }
+                }.also { records ->
+                    if (records.any { it.operationId != downloadItem.operationId }) {
+                        throw IOException(
+                            "Refusing to rotate direct staging while prior publication semantics " +
+                                "are unresolved for ${downloadItem.id}",
                         )
                     }
                 }

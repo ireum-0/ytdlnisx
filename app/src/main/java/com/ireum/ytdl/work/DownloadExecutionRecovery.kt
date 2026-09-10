@@ -971,7 +971,16 @@ internal object DownloadExecutionRecovery {
                 "Primary-success authority could not be retired after finalization"
             }
         }
-        return promoted
+        if (!promoted) return false
+        // The producer-finality record is a pre-publication owner. Retire it
+        // only after the stronger primary-success authority has been
+        // acknowledged; a failed retirement remains discoverable and cannot
+        // reopen producer execution.
+        return DownloadProducerRecovery.retireForExecution(
+            context = context,
+            downloadId = downloadId,
+            executionId = executionId,
+        )
     }
 
     /**
@@ -1457,6 +1466,7 @@ internal object DownloadExecutionRecovery {
                 .getPendingFinalizationBlocking()
                 .isNotEmpty()
         ) return true
+        if (DownloadProducerRecovery.hasPending(context)) return true
 
         return dbManager.downloadDao
             .getActiveAndPostProcessingDownloadsList()
@@ -1516,6 +1526,21 @@ internal object DownloadExecutionRecovery {
         val markerCandidates = discoveredRecovery.markerCandidates
         val failuresByDownload = linkedMapOf<Long, Exception>()
 
+        val producerRecords = when (val discovery = DownloadProducerRecovery.discover(context)) {
+            is DownloadProducerRecovery.DiscoveryResult.Healthy -> discovery.records
+            is DownloadProducerRecovery.DiscoveryResult.Unavailable -> {
+                throw IllegalStateException(
+                    "Download producer recovery namespace unavailable: ${discovery.reason}",
+                )
+            }
+            is DownloadProducerRecovery.DiscoveryResult.Opaque -> {
+                throw IllegalStateException(
+                    "Download producer recovery namespace contains opaque debt: " +
+                        discovery.opaqueFiles,
+                )
+            }
+        }
+
         fun deferRecovery(downloadId: Long, failure: Exception) {
             try {
                 scheduleRecovery(context, downloadId, dbManager)
@@ -1538,6 +1563,199 @@ internal object DownloadExecutionRecovery {
                 failure,
             )
         }
+
+        /**
+         * Consume producer-finality records that no longer have a live worker
+         * or a publication journal. A producer record owns only exact
+         * app-private staging; it is not proof that public output is
+         * committed and must be superseded after native quiescence.
+         */
+        suspend fun reconcileProducerRecords() {
+            producerRecords
+                .filter { it.phase != DownloadProducerRecovery.Phase.FINALIZED }
+                .forEach { record ->
+                    try {
+                        val primarySuccess = DownloadPrimarySuccessAuthorityRepository
+                            .isCommittedBlocking(
+                                dbManager = dbManager,
+                                downloadId = record.downloadId,
+                                executionId = record.executionId,
+                            )
+                        if (primarySuccess) {
+                            withDownloadWorkerExecutionSideEffectLease(
+                                downloadId = record.downloadId,
+                                executionId = record.executionId,
+                            ) {
+                                check(
+                                    finalizePrimarySuccessUnderLease(
+                                        context = context,
+                                        dbManager = dbManager,
+                                        downloadId = record.downloadId,
+                                        executionId = record.executionId,
+                                    )
+                                ) {
+                                    "Producer finality could not converge primary success for " +
+                                        "${record.downloadId}"
+                                }
+                            }
+                            return@forEach
+                        }
+
+                        if (record.phase == DownloadProducerRecovery.Phase.NO_OUTPUT_COMPLETE) {
+                            // A successful producer may intentionally have no
+                            // media paths (for example an app-managed archive
+                            // hit).  That is still a semantic completion, not
+                            // an unpublished staging failure.  Establish the
+                            // same exact no-History primary-success witness
+                            // used by the worker before retiring the producer
+                            // record; otherwise a process death in this
+                            // interval would erase the only proof and permit
+                            // a blind producer replay.
+                            if (hasPendingUserStopForExecution(
+                                    context,
+                                    record.downloadId,
+                                    record.executionId,
+                                )
+                            ) return@forEach
+                            val current = withDownloadWorkerExecutionLock {
+                                dbManager.downloadDao.getNullableDownloadById(record.downloadId)
+                            }
+                            if (
+                                current?.executionId?.isNotBlank() == true &&
+                                    current.executionId != record.executionId
+                            ) return@forEach
+                            val exactOwnerLive = DownloadWorkerExecutionOwners.isOwnedBy(
+                                record.downloadId,
+                                record.executionId,
+                            ) || DownloadWorker.hasRegisteredNativeProcess(
+                                record.downloadId,
+                                record.executionId,
+                            )
+                            if (exactOwnerLive) return@forEach
+                            withDownloadWorkerExecutionSideEffectLease(
+                                downloadId = record.downloadId,
+                                executionId = record.executionId,
+                            ) {
+                                check(
+                                    DownloadPrimarySuccessAuthorityRepository.recordNoHistory(
+                                        dbManager = dbManager,
+                                        downloadId = record.downloadId,
+                                        operationId = record.operationId,
+                                        executionId = record.executionId,
+                                        semanticFingerprint = record.semanticFingerprint,
+                                        archiveDelta = record.archiveDelta,
+                                    )
+                                ) {
+                                    "No-output producer primary authority could not be persisted for " +
+                                        record.downloadId
+                                }
+                                val latest = withDownloadWorkerExecutionLock {
+                                    dbManager.downloadDao.getNullableDownloadById(record.downloadId)
+                                }
+                                if (latest == null || latest.executionId == record.executionId) {
+                                    check(
+                                        finalizePrimarySuccessUnderLease(
+                                            context = context,
+                                            dbManager = dbManager,
+                                            downloadId = record.downloadId,
+                                            executionId = record.executionId,
+                                        )
+                                    ) {
+                                        "No-output producer primary authority could not converge for " +
+                                            record.downloadId
+                                    }
+                                }
+                            }
+                            return@forEach
+                        }
+
+                        val publication = when (
+                            val discovery = PublicationRecoveryJournal.findDownloadExecutionDiscovery(
+                                context = context,
+                                downloadId = record.downloadId,
+                                executionId = record.executionId,
+                            )
+                        ) {
+                            is PublicationRecoveryJournal.DiscoveryResult.Healthy -> discovery.records
+                            is PublicationRecoveryJournal.DiscoveryResult.Unavailable -> {
+                                throw IllegalStateException(
+                                    "Publication recovery namespace unavailable: ${discovery.reason}",
+                                )
+                            }
+                            is PublicationRecoveryJournal.DiscoveryResult.Opaque -> {
+                                throw IllegalStateException(
+                                    "Publication recovery namespace contains opaque debt",
+                                )
+                            }
+                        }
+                        // Publication owns exact source/destination lineage.
+                        // Never delete producer sources while it has work.
+                        if (publication.isNotEmpty()) return@forEach
+
+                        val current = withDownloadWorkerExecutionLock {
+                            dbManager.downloadDao.getNullableDownloadById(record.downloadId)
+                        }
+                        val currentIsActive = current?.executionId == record.executionId &&
+                            current.status in setOf(
+                                DownloadRepository.Status.Active.name,
+                                DownloadRepository.Status.PostProcessing.name,
+                            )
+                        val exactOwnerLive = DownloadWorkerExecutionOwners.isOwnedBy(
+                            record.downloadId,
+                            record.executionId,
+                        ) || DownloadWorker.hasRegisteredNativeProcess(
+                            record.downloadId,
+                            record.executionId,
+                        )
+                        if (currentIsActive || exactOwnerLive) return@forEach
+
+                        val otherActive = current?.executionId?.let { executionId ->
+                            executionId != record.executionId &&
+                                current.status in setOf(
+                                    DownloadRepository.Status.Active.name,
+                                    DownloadRepository.Status.PostProcessing.name,
+                                )
+                        } == true
+                        if (
+                            otherActive &&
+                                (
+                                    DownloadWorkerExecutionOwners.ownerOf(record.downloadId) != null ||
+                                        DownloadWorker.hasConflictingNativeProcess(
+                                            record.downloadId,
+                                            current.executionId,
+                                        )
+                                    )
+                        ) return@forEach
+
+                        withDownloadWorkerExecutionSideEffectLease(
+                            downloadId = record.downloadId,
+                            executionId = record.executionId,
+                        ) {
+                            check(
+                                YtdlpNativeProcessBarrier.recoverDownloadExecution(
+                                    record.downloadId,
+                                    record.executionId,
+                                )
+                            ) {
+                                "Producer native generation remained unresolved for " +
+                                    "${record.downloadId}/${record.executionId}"
+                            }
+                            check(
+                                DownloadProducerRecovery.retireUnpublishedAfterQuiescence(
+                                    context = context,
+                                    record = record,
+                                )
+                            ) {
+                                "Producer recovery record could not be retired for ${record.downloadId}"
+                            }
+                        }
+                    } catch (failure: Exception) {
+                        deferRecovery(record.downloadId, failure)
+                    }
+                }
+        }
+
+        reconcileProducerRecords()
 
         suspend fun convergeOrphanExecution(
             downloadId: Long,
@@ -2626,6 +2844,9 @@ internal object DownloadExecutionRecovery {
             addAll(orphanNativeProcesses.map { it.downloadId })
             addAll(markerCandidates.map { it.first })
             addAll(orphanJournalIds)
+            producerRecords
+                .filter { it.phase != DownloadProducerRecovery.Phase.FINALIZED }
+                .mapTo(this) { it.downloadId }
         }
         durableDebtIds.forEach { downloadId ->
             val row = withDownloadWorkerExecutionLock {
@@ -2633,6 +2854,7 @@ internal object DownloadExecutionRecovery {
             }
             val debtRemains = pendingDownloadIds(context).contains(downloadId) ||
                 YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId) ||
+                DownloadProducerRecovery.hasPendingForDownload(context, downloadId) ||
                 row?.status in setOf(
                     DownloadRepository.Status.Active.name,
                     DownloadRepository.Status.PostProcessing.name,
@@ -2684,6 +2906,8 @@ internal object DownloadExecutionRecovery {
                             val journalRemains = pendingDownloadIds(appContext).contains(downloadId)
                             val nativeMarkerRemains =
                                 YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId)
+                            val producerRecordRemains =
+                                DownloadProducerRecovery.hasPendingForDownload(appContext, downloadId)
                             if (
                                 current != null &&
                                 current.executionId.isNotBlank() &&
@@ -2692,7 +2916,8 @@ internal object DownloadExecutionRecovery {
                                         current.executionId,
                                     ) &&
                                     !journalRemains &&
-                                    !nativeMarkerRemains
+                                    !nativeMarkerRemains &&
+                                    !producerRecordRemains
                             ) {
                                 // A live worker owns the exact row; its cleanup or
                                 // retry protocol remains authoritative.
@@ -2710,6 +2935,8 @@ internal object DownloadExecutionRecovery {
                                 pendingDownloadIds(appContext).contains(downloadId)
                             val latestNativeMarkerRemains =
                                 YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId)
+                            val latestProducerRecordRemains =
+                                DownloadProducerRecovery.hasPendingForDownload(appContext, downloadId)
                             val stillRunning = latest?.status in setOf(
                                 DownloadRepository.Status.Active.name,
                                 DownloadRepository.Status.PostProcessing.name,
@@ -2717,6 +2944,7 @@ internal object DownloadExecutionRecovery {
                             if (
                                 !latestJournalRemains &&
                                     !latestNativeMarkerRemains &&
+                                    !latestProducerRecordRemains &&
                                     !stillRunning
                             ) {
                                 return@launch

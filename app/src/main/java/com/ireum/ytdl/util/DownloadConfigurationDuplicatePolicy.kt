@@ -49,6 +49,15 @@ internal object DownloadConfigurationDuplicatePolicy {
                     repeat(ownedCount) { offset ->
                         normalized += tokens[index + 1 + offset]
                     }
+                    if (ownership.missingValueCount > 0) {
+                        // The native parser will reject this incomplete
+                        // option.  Its remaining tokens therefore have no
+                        // positively proven positional role; preserve them
+                        // verbatim instead of allowing a URL-looking token
+                        // to become a fabricated source identity.
+                        normalized += tokens.drop(index + 1 + ownedCount)
+                        break
+                    }
                     index += ownership.nextIndexDelta
                 } else {
                     // An unknown option has ambiguous arity. Preserve every
