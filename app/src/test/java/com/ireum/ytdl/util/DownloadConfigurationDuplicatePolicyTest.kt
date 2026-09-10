@@ -132,6 +132,52 @@ class DownloadConfigurationDuplicatePolicyTest {
         )
     }
 
+    @Test
+    fun youtubeUrlOptionValuesRemainConfigurationIdentity() {
+        val first = "yt-dlp https://www.youtube.com/watch?v=dQw4w9WgXcQ --referer https://youtube.com/watch?v=AAA"
+        val second = "yt-dlp https://youtu.be/dQw4w9WgXcQ --referer https://youtu.be/AAA"
+
+        assertFalse(
+            "explicit option values must not be rewritten as source identity",
+            DownloadConfigurationDuplicatePolicy.commandsMatch(first, second),
+        )
+    }
+
+    @Test
+    fun inlineAndQuotedOptionValuesRemainConfigurationIdentity() {
+        val inlineFirst = "yt-dlp https://www.youtube.com/watch?v=dQw4w9WgXcQ --referer=https://youtube.com/watch?v=AAA"
+        val inlineSecond = "yt-dlp https://youtu.be/dQw4w9WgXcQ --referer=https://youtu.be/AAA"
+        val quotedFirst = "yt-dlp https://www.youtube.com/watch?v=dQw4w9WgXcQ --referer \"https://youtube.com/watch?v=AAA\""
+        val quotedSecond = "yt-dlp https://youtu.be/dQw4w9WgXcQ --referer \"https://youtu.be/AAA\""
+
+        assertFalse(DownloadConfigurationDuplicatePolicy.commandsMatch(inlineFirst, inlineSecond))
+        assertFalse(DownloadConfigurationDuplicatePolicy.commandsMatch(quotedFirst, quotedSecond))
+    }
+
+    @Test
+    fun positionalSourceAfterOptionsAndTerminatorIsCanonicalized() {
+        val first = "yt-dlp --referer https://example.com https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        val second = "yt-dlp --referer https://example.com https://youtu.be/dQw4w9WgXcQ"
+        val afterTerminatorFirst = "yt-dlp -- https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        val afterTerminatorSecond = "yt-dlp -- https://youtu.be/dQw4w9WgXcQ"
+
+        assertTrue(DownloadConfigurationDuplicatePolicy.commandsMatch(first, second))
+        assertTrue(
+            DownloadConfigurationDuplicatePolicy.commandsMatch(
+                afterTerminatorFirst,
+                afterTerminatorSecond,
+            ),
+        )
+    }
+
+    @Test
+    fun unknownOptionValueIsNotReinterpretedAsSourceIdentity() {
+        val first = "yt-dlp --unknown-option https://youtube.com/watch?v=AAA https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        val second = "yt-dlp --unknown-option https://youtu.be/AAA https://youtu.be/dQw4w9WgXcQ"
+
+        assertFalse(DownloadConfigurationDuplicatePolicy.commandsMatch(first, second))
+    }
+
     private fun downloadItem() = DownloadItem(
         id = 0L,
         url = "https://example.com/video",

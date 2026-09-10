@@ -6,6 +6,7 @@ import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpCommandTokenizer
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpOptionOwnership
 
 internal object DownloadConfigurationDuplicatePolicy {
     fun matches(first: DownloadItem, second: DownloadItem): Boolean =
@@ -24,15 +25,55 @@ internal object DownloadConfigurationDuplicatePolicy {
      */
     fun normalizeCommandForComparison(command: String): String {
         val tokens = YtdlpCommandTokenizer.tokenize(command) ?: return command
-        return YtdlpCommandTokenizer.render(
-            tokens.map { token ->
-                if (MediaPublishedDateSource.youtubeVideoId(token) != null) {
-                    canonicalMediaIdentity(token)
+        val normalized = ArrayList<String>(tokens.size)
+        var index = 0
+        var afterOptionTerminator = false
+        while (index < tokens.size) {
+            val token = tokens[index]
+            if (!afterOptionTerminator && token == "--") {
+                normalized += token
+                afterOptionTerminator = true
+                index += 1
+                continue
+            }
+
+            // An option owns its declared value tokens.  Those values remain
+            // configuration identity, even when they happen to be YouTube
+            // URLs (for example --referer or --proxy).  Only a positively
+            // identified positional source token is canonicalized.
+            if (!afterOptionTerminator && YtdlpOptionOwnership.isOptionToken(token)) {
+                val ownership = YtdlpOptionOwnership.inspect(tokens, index)
+                normalized += token
+                val ownedCount = ownership.consumedFollowingTokenCount
+                if (ownership.recognizedOption || ownership.ambiguousOption) {
+                    repeat(ownedCount) { offset ->
+                        normalized += tokens[index + 1 + offset]
+                    }
+                    index += ownership.nextIndexDelta
                 } else {
-                    token
+                    // An unknown option has ambiguous arity. Preserve one
+                    // following non-option token rather than accidentally
+                    // treating an option value as the source media identity.
+                    if (index + 1 < tokens.size &&
+                        !YtdlpOptionOwnership.isOptionToken(tokens[index + 1])
+                    ) {
+                        normalized += tokens[index + 1]
+                        index += 2
+                    } else {
+                        index += 1
+                    }
                 }
-            },
-        )
+                continue
+            }
+
+            normalized += if (MediaPublishedDateSource.youtubeVideoId(token) != null) {
+                canonicalMediaIdentity(token)
+            } else {
+                token
+            }
+            index += 1
+        }
+        return YtdlpCommandTokenizer.render(normalized)
     }
 
     fun commandsMatch(first: String, second: String): Boolean {
