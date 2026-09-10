@@ -331,6 +331,34 @@ internal object DownloadProducerRecovery {
         is DiscoveryResult.Opaque -> true
     }
 
+    /**
+     * A COMPLETE generation is an adoptable predecessor, not a reason to
+     * refuse a queued successor forever.  All weaker or terminalization-
+     * pending phases remain an admission fence until their exact recovery
+     * owner converges them.
+     */
+    internal fun hasBlockingForAdmission(context: Context, downloadId: Long): Boolean =
+        hasBlockingForAdmission(discover(context), downloadId)
+
+    /** Package-private overload used by deterministic JVM admission tests. */
+    internal fun hasBlockingForAdmissionForTests(
+        storageDirectory: File,
+        downloadId: Long,
+    ): Boolean = hasBlockingForAdmission(discover(storageDirectory), downloadId)
+
+    private fun hasBlockingForAdmission(
+        discovery: DiscoveryResult,
+        downloadId: Long,
+    ): Boolean = when (discovery) {
+        is DiscoveryResult.Healthy -> discovery.records.any {
+            it.downloadId == downloadId &&
+                it.phase != Phase.FINALIZED &&
+                it.phase != Phase.COMPLETE
+        }
+        is DiscoveryResult.Unavailable,
+        is DiscoveryResult.Opaque -> true
+    }
+
     /** Package-private storage overload used by deterministic JVM recovery tests. */
     internal fun hasPendingForTests(storageDirectory: File): Boolean = when (val result = discover(storageDirectory)) {
         is DiscoveryResult.Healthy -> result.records.any { it.phase != Phase.FINALIZED }
@@ -349,9 +377,21 @@ internal object DownloadProducerRecovery {
     internal fun retireUnpublishedAfterQuiescence(
         context: Context,
         record: Record,
+        /**
+         * Completed producer output is semantic finality, not disposable
+         * staging.  Only an explicit successor/stronger-owner path may
+         * authorize its retirement after that successor is durable.
+         */
+        allowCompletedFinality: Boolean = false,
     ): Boolean = synchronized(lock) {
         val current = readExact(storageDirectory(context), record) ?: return@synchronized false
         if (current.phase == Phase.FINALIZED) return@synchronized true
+        if (
+            !allowCompletedFinality &&
+                current.phase in setOf(Phase.COMPLETE, Phase.NO_OUTPUT_COMPLETE)
+        ) {
+            return@synchronized false
+        }
         if (current.phase == Phase.SUPERSEDED) {
             return@synchronized retireSupersededRecord(storageDirectory(context), current)
         }

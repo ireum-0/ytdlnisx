@@ -26,6 +26,19 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
+ * COMPLETE producer output is an adoptable semantic result. It may only be
+ * retired by a stronger owner (publication/primary success) or by the
+ * explicit successor path, never by generic abandoned-row cleanup.
+ */
+internal fun shouldRetainCompleteProducerFinality(
+    phase: DownloadProducerRecovery.Phase,
+    publicationExists: Boolean,
+    primarySuccess: Boolean,
+): Boolean = phase == DownloadProducerRecovery.Phase.COMPLETE &&
+    !publicationExists &&
+    !primarySuccess
+
+/**
  * Application-lifecycle recovery for rows whose worker carrier disappeared.
  * The Download row is the durable source of truth; the small synchronous
  * journal makes the exceptional cleanup handoff explicit and observable.  A
@@ -1566,9 +1579,11 @@ internal object DownloadExecutionRecovery {
 
         /**
          * Consume producer-finality records that no longer have a live worker
-         * or a publication journal. A producer record owns only exact
-         * app-private staging; it is not proof that public output is
-         * committed and must be superseded after native quiescence.
+         * or a publication journal. PREPARED/RUNNING/OUTPUT_UNPROVEN records
+         * own disposable unpublished staging after exact quiescence. COMPLETE
+         * records are different: they are successful producer results and
+         * remain durable adoption authority until a compatible successor or a
+         * stronger publication/primary-success owner takes over.
          */
         suspend fun reconcileProducerRecords() {
             producerRecords
@@ -1691,6 +1706,26 @@ internal object DownloadExecutionRecovery {
                         // Publication owns exact source/destination lineage.
                         // Never delete producer sources while it has work.
                         if (publication.isNotEmpty()) return@forEach
+
+                        if (
+                            shouldRetainCompleteProducerFinality(
+                                phase = record.phase,
+                                publicationExists = publication.isNotEmpty(),
+                                primarySuccess = primarySuccess,
+                            )
+                        ) {
+                            // COMPLETE is producer finality, not disposable
+                            // unpublished staging.  The mutable Download row
+                            // may be requeued by the generic abandoned-worker
+                            // path below, but that status transition cannot
+                            // revoke E1's exact output authority.  Leave the
+                            // record and files available for a compatible
+                            // successor to adopt, or for an incompatible
+                            // successor to supersede explicitly.  Only the
+                            // stronger primary-success/publication branches
+                            // above may retire it without successor adoption.
+                            return@forEach
+                        }
 
                         val current = withDownloadWorkerExecutionLock {
                             dbManager.downloadDao.getNullableDownloadById(record.downloadId)
@@ -2907,7 +2942,7 @@ internal object DownloadExecutionRecovery {
                             val nativeMarkerRemains =
                                 YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId)
                             val producerRecordRemains =
-                                DownloadProducerRecovery.hasPendingForDownload(appContext, downloadId)
+                                DownloadProducerRecovery.hasBlockingForAdmission(appContext, downloadId)
                             if (
                                 current != null &&
                                 current.executionId.isNotBlank() &&
@@ -2936,7 +2971,7 @@ internal object DownloadExecutionRecovery {
                             val latestNativeMarkerRemains =
                                 YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId)
                             val latestProducerRecordRemains =
-                                DownloadProducerRecovery.hasPendingForDownload(appContext, downloadId)
+                                DownloadProducerRecovery.hasBlockingForAdmission(appContext, downloadId)
                             val stillRunning = latest?.status in setOf(
                                 DownloadRepository.Status.Active.name,
                                 DownloadRepository.Status.PostProcessing.name,

@@ -201,11 +201,12 @@ internal suspend fun claimDownloadThroughProductionAdmission(
         // fresh E2 attempt while the carrier is still present.
         return@withDownloadWorkerExecutionSideEffectLease null
     }
-    if (DownloadProducerRecovery.hasPendingForDownload(context, candidate.id)) {
+    if (DownloadProducerRecovery.hasBlockingForAdmission(context, candidate.id)) {
         // Producer-finality authority covers the pre-publication interval,
-        // including no-output/archive-hit success.  Recovery must resolve or
-        // supersede that exact generation before a new producer can claim the
-        // Download subject.
+        // including no-output/archive-hit success.  A COMPLETE predecessor
+        // is intentionally excluded from this fence: the worker may claim a
+        // successor solely to adopt/finalize it, while every weaker phase
+        // must converge before a new execution can claim the subject.
         return@withDownloadWorkerExecutionSideEffectLease null
     }
     if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {
@@ -237,7 +238,7 @@ internal suspend fun claimDownloadThroughProductionAdmission(
         ) {
             return@withDownloadWorkerExecutionLock null
         }
-        if (DownloadProducerRecovery.hasPendingForDownload(context, candidate.id)) {
+        if (DownloadProducerRecovery.hasBlockingForAdmission(context, candidate.id)) {
             return@withDownloadWorkerExecutionLock null
         }
         if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {

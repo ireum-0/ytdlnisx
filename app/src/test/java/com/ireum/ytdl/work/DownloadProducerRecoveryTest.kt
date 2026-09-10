@@ -198,4 +198,104 @@ class DownloadProducerRecoveryTest {
             root.deleteRecursively()
         }
     }
+
+    @Test
+    fun completeGenerationRemainsAdoptableAfterAbandonedRowRequeue() {
+        val root = Files.createTempDirectory("producer-complete-retention").toFile()
+        try {
+            val journal = File(root, "journal")
+            val staging = File(root, "staging").apply { mkdirs() }
+            val output = File(staging, "video.mp4").apply { writeText("video") }
+            val prepared = DownloadProducerRecovery.prepare(
+                storageDirectory = journal,
+                downloadId = 12L,
+                operationId = "op-e1",
+                executionId = "e-1",
+                semanticFingerprint = "fp-compatible",
+                outputRoot = staging,
+            )!!
+            assertTrue(DownloadProducerRecovery.markRunning(journal, prepared))
+            val complete = DownloadProducerRecovery.markComplete(
+                storageDirectory = journal,
+                record = prepared,
+                outputPaths = listOf(output.absolutePath),
+            )!!
+
+            // Model repeated startup passes after the mutable E1 row was
+            // requeued.  COMPLETE is still an adoption predecessor and must
+            // not become an admission fence or disposable staging debt.
+            repeat(3) {
+                assertEquals(
+                    DownloadProducerRecovery.Resolution.Compatible(complete),
+                    DownloadProducerRecovery.resolve(
+                        storageDirectory = journal,
+                        downloadId = 12L,
+                        currentFingerprint = "fp-compatible",
+                        currentExecutionId = "e-2",
+                    ),
+                )
+                assertFalse(
+                    DownloadProducerRecovery.hasBlockingForAdmissionForTests(journal, 12L),
+                )
+                assertTrue(output.isFile)
+            }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun weakerProducerPhasesRemainAdmissionBlocking() {
+        val root = Files.createTempDirectory("producer-admission-block").toFile()
+        try {
+            val journal = File(root, "journal")
+            val prepared = DownloadProducerRecovery.prepare(
+                storageDirectory = journal,
+                downloadId = 13L,
+                operationId = "op-e1",
+                executionId = "e-1",
+                semanticFingerprint = "fp",
+                outputRoot = File(root, "staging"),
+            )!!
+            assertTrue(DownloadProducerRecovery.hasBlockingForAdmissionForTests(journal, 13L))
+            assertTrue(DownloadProducerRecovery.markRunning(journal, prepared))
+            assertTrue(DownloadProducerRecovery.hasBlockingForAdmissionForTests(journal, 13L))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun completeFinalityIsRetainedUntilStrongerAuthorityExists() {
+        repeat(3) {
+            assertTrue(
+                shouldRetainCompleteProducerFinality(
+                    phase = DownloadProducerRecovery.Phase.COMPLETE,
+                    publicationExists = false,
+                    primarySuccess = false,
+                ),
+            )
+        }
+        assertFalse(
+            shouldRetainCompleteProducerFinality(
+                phase = DownloadProducerRecovery.Phase.COMPLETE,
+                publicationExists = true,
+                primarySuccess = false,
+            ),
+        )
+        assertFalse(
+            shouldRetainCompleteProducerFinality(
+                phase = DownloadProducerRecovery.Phase.COMPLETE,
+                publicationExists = false,
+                primarySuccess = true,
+            ),
+        )
+        assertFalse(
+            shouldRetainCompleteProducerFinality(
+                phase = DownloadProducerRecovery.Phase.RUNNING,
+                publicationExists = false,
+                primarySuccess = false,
+            ),
+        )
+    }
 }

@@ -1746,6 +1746,7 @@ class DownloadWorker(
                 DownloadProducerRecovery.retireUnpublishedAfterQuiescence(
                     context = context,
                     record = record,
+                    allowCompletedFinality = true,
                 )
             ) {
                 "Producer predecessor could not be retired after native quiescence"
