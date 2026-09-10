@@ -51,15 +51,18 @@ internal object DownloadConfigurationDuplicatePolicy {
                     }
                     index += ownership.nextIndexDelta
                 } else {
-                    // An unknown option has ambiguous arity. Preserve one
-                    // following non-option token rather than accidentally
-                    // treating an option value as the source media identity.
-                    if (index + 1 < tokens.size &&
-                        !YtdlpOptionOwnership.isOptionToken(tokens[index + 1])
+                    // An unknown option has ambiguous arity. Preserve every
+                    // contiguous non-option token as an owned value rather
+                    // than accidentally treating one of them as the source
+                    // media identity.  Conservative preservation is safer
+                    // than canonicalizing a token whose role is unproven.
+                    index += 1
+                    while (
+                        index < tokens.size &&
+                            !YtdlpOptionOwnership.isOptionToken(tokens[index]) &&
+                            tokens[index] != "--"
                     ) {
-                        normalized += tokens[index + 1]
-                        index += 2
-                    } else {
+                        normalized += tokens[index]
                         index += 1
                     }
                 }

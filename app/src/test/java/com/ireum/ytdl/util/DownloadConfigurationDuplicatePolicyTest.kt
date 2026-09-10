@@ -178,6 +178,17 @@ class DownloadConfigurationDuplicatePolicyTest {
         assertFalse(DownloadConfigurationDuplicatePolicy.commandsMatch(first, second))
     }
 
+    @Test
+    fun unknownOptionWithMultipleValuesRemainsConservative() {
+        val first = "yt-dlp --unknown-option value https://youtube.com/watch?v=AAA https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        val second = "yt-dlp --unknown-option value https://youtu.be/AAA https://youtu.be/dQw4w9WgXcQ"
+
+        assertFalse(
+            "an ambiguous option must not donate a later URL-valued token to source identity",
+            DownloadConfigurationDuplicatePolicy.commandsMatch(first, second),
+        )
+    }
+
     private fun downloadItem() = DownloadItem(
         id = 0L,
         url = "https://example.com/video",
