@@ -26,6 +26,9 @@ internal object DownloadArchiveAuthority {
      */
     internal var syncForTesting: ((FileOutputStream) -> Unit)? = null
 
+    /** Observes the production sync boundary without replacing the sync. */
+    internal var beforeSyncForTesting: ((FileOutputStream) -> Unit)? = null
+
     data class Generation(
         val downloadId: Long,
         val executionId: String,
@@ -112,9 +115,15 @@ internal object DownloadArchiveAuthority {
         val temporary = File(parent, ".${file.name}.tmp-${System.nanoTime()}")
         try {
             FileOutputStream(temporary).use { output ->
-                output.writer(StandardCharsets.UTF_8).use { writer ->
-                    if (lines.isNotEmpty()) writer.write(lines.joinToString("\n") + "\n")
+                // Keep the descriptor open through the complete durability
+                // boundary. Closing a Writer backed by this stream would
+                // close the stream before sync() on production runtimes.
+                if (lines.isNotEmpty()) {
+                    output.write((lines.joinToString("\n") + "\n")
+                        .toByteArray(StandardCharsets.UTF_8))
                 }
+                output.flush()
+                beforeSyncForTesting?.invoke(output)
                 (syncForTesting ?: { stream -> stream.fd.sync() })(output)
             }
             try {

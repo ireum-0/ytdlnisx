@@ -43,6 +43,7 @@ import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.DownloadArchiveIdentity
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
 import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
 import com.ireum.ytdl.util.storage.HistoryFileDeletionGateway
@@ -764,11 +765,12 @@ class ObserveSourceWorker(
             val activeAndQueuedDownloads = downloadRepo.getActiveAndQueuedDownloads().toMutableList()
             val queuedItems = mutableListOf<DownloadItem>()
             val checkDuplicate = sharedPreferences.getString("prevent_duplicate_downloads", "") ?: ""
-            val downloadArchive: List<String> = runCatching {
+            val downloadArchive = runCatching {
                 File(FileUtil.getDownloadArchivePath(context)).useLines { lines ->
-                    lines.mapNotNull { line -> line.split(" ").getOrNull(1) }.toList()
+                    lines.toList()
                 }
             }.getOrElse { emptyList() }
+                .let(DownloadArchiveIdentity::parseLines)
 
             //if scheduler is on
             val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
@@ -793,7 +795,7 @@ class ObserveSourceWorker(
                 if (checkDuplicate.isNotEmpty()) {
                     when (checkDuplicate) {
                         "download_archive" -> {
-                            if (downloadArchive.any { archiveId -> it.url.contains(archiveId) }) {
+                            if (DownloadArchiveIdentity.matchesSource(it.url, downloadArchive)) {
                                 isDuplicate = true
                                 Log.d(
                                     OBS_DUP_LOG_TAG,

@@ -76,6 +76,7 @@ import com.ireum.ytdl.work.UpdateMultipleDownloadsDataWorker
 import com.ireum.ytdl.work.UpdateMultipleDownloadsFormatsWorker
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
+import com.ireum.ytdl.util.storage.DownloadArchiveIdentity
 import com.google.gson.Gson
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -2356,7 +2357,7 @@ class DownloadViewModel private constructor(
             File(FileUtil.getDownloadArchivePath(context)).useLines { it.toList() }
         }
             .getOrElse { listOf() }
-            .mapNotNull { it.split(" ").getOrNull(1) }
+            .let(DownloadArchiveIdentity::parseLines)
         val checkDuplicate = sharedPreferences.getString("prevent_duplicate_downloads", "")!!
         val activeAndQueuedDownloads = withContext(Dispatchers.IO) {
             repository.getActiveAndQueuedDownloads()
@@ -2427,7 +2428,7 @@ class DownloadViewModel private constructor(
                 }
                 when (checkDuplicate) {
                     "download_archive" -> {
-                        if (downloadArchive.any { d -> it.url.contains(d) }) {
+                        if (DownloadArchiveIdentity.matchesSource(it.url, downloadArchive)) {
                             isDuplicate = true
                             markDuplicate(it)
                         }
