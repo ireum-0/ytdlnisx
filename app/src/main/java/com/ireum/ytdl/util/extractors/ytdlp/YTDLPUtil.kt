@@ -1766,6 +1766,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         applyQualityGuard: Boolean = true,
         selectionOnly: Boolean = false,
         outputPlan: YtdlpOutputPlan? = null,
+        downloadArchivePath: String? = null,
     ) : YoutubeDLRequest {
         val resolvedOutputPlan = outputPlan ?: resolveOutputPlan(downloadItem)
         var useItemURL = sharedPreferences.getBoolean("use_itemurl_instead_playlisturl", false)
@@ -2034,7 +2035,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             sharedPreferences.getString("prevent_duplicate_downloads", "")!! == "download_archive" &&
             HistoryRedownloadQueuePolicy.shouldUseDownloadArchive(downloadItem.playlistURL)
         ) {
-            request.addOption("--download-archive", FileUtil.getDownloadArchivePath(context))
+            request.addOption(
+                "--download-archive",
+                downloadArchivePath ?: FileUtil.getDownloadArchivePath(context),
+            )
         }
 
         val preferredAudioCodec = sharedPreferences.getString("audio_codec", "")!!
@@ -2602,6 +2606,15 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
         if (downloadItem.extraCommands.isNotBlank() && downloadItem.type != DownloadType.command){
             request.addOption(downloadItem.extraCommands)
+        }
+
+        // Extra commands are user-authored and may contain their own archive
+        // option.  When the worker supplied a generation-private archive,
+        // repeat that trusted option after authored arguments so an explicit
+        // global path (or --no-download-archive) cannot restore pre-commit
+        // mutation of the app-global duplicate authority.
+        downloadArchivePath?.takeIf(String::isNotBlank)?.let { privateArchive ->
+            request.addOption("--download-archive", privateArchive)
         }
 
         if (request.toString().contains("sponsorblock")) {

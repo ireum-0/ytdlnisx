@@ -46,6 +46,7 @@ import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.LogRepository
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.database.repository.DownloadExecutionOwnershipLostException
+import com.ireum.ytdl.database.repository.DownloadPrimarySuccessAuthorityRepository
 import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
 import com.ireum.ytdl.util.Extensions.getMediaDuration
 import com.ireum.ytdl.util.Extensions.isYoutubeURL
@@ -55,6 +56,7 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.DownloadQualityDecision
 import com.ireum.ytdl.util.DownloadQualityFallbackPolicy
 import com.ireum.ytdl.util.HistoryRedownloadMarker
+import com.ireum.ytdl.util.HistoryRedownloadQueuePolicy
 import com.ireum.ytdl.util.HistoryReplacementFilePolicy
 import com.ireum.ytdl.util.HistoryVideoQualityProbe
 import com.ireum.ytdl.util.MediaPublishedDate
@@ -98,6 +100,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRetryLog
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.DownloadCacheOwnership
+import com.ireum.ytdl.util.storage.DownloadArchiveAuthority
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionSummary
 import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
@@ -565,6 +568,7 @@ class DownloadWorker(
         val authoritativeIssues: Map<Long, DownloadIssue>,
         val workerExecutionIds: Map<Long, String>,
         val committedHistoryReplacementIds: Set<Long>,
+        val committedPrimarySuccessIds: Set<Long>,
     )
 
     override suspend fun getForegroundInfo(): ForegroundInfo {
@@ -587,6 +591,30 @@ class DownloadWorker(
     ): Unit = withContext(Dispatchers.IO + NonCancellable) {
         val dbManager = DownloadWorkerEffectTestHooks.dbManagerForTesting
             ?: DBManager.getInstance(context)
+        dbManager.downloadPrimarySuccessAuthorityDao.getPendingFinalization().forEach { authority ->
+            runCatching {
+                withDownloadWorkerExecutionSideEffectLease(
+                    downloadId = authority.downloadId,
+                    executionId = authority.executionId,
+                ) {
+                    check(
+                        DownloadExecutionRecovery.finalizePrimarySuccessUnderLease(
+                            context = context,
+                            dbManager = dbManager,
+                            downloadId = authority.downloadId,
+                            executionId = authority.executionId,
+                        )
+                    ) { "Download primary-success finalization remained unresolved" }
+                }
+            }.onFailure { error ->
+                Log.w(
+                    TAG,
+                    "Committed Download primary-success finalization deferred " +
+                        "id=${authority.downloadId}",
+                    error,
+                )
+            }
+        }
         val dao = dbManager.downloadDao
         val snapshot = withDownloadWorkerExecutionLock {
             val workerOwnedIds = (workerCleanupDownloadIds + workerDownloadIds).distinct()
@@ -610,6 +638,7 @@ class DownloadWorker(
                     authoritativeIssues = emptyMap(),
                     workerExecutionIds = emptyMap(),
                     committedHistoryReplacementIds = emptySet(),
+                    committedPrimarySuccessIds = emptySet(),
                 )
             }
 
@@ -618,6 +647,16 @@ class DownloadWorker(
                     val marker = HistoryRedownloadMarker.parse(item.playlistURL)
                     marker != null &&
                         dbManager.historyDao.getNullableItem(marker.historyId)?.downloadId == item.id
+                }
+                .mapTo(linkedSetOf()) { it.id }
+            val committedPrimarySuccessIds = dao.getDownloadsByIds(activeIds)
+                .filter { item ->
+                    item.executionId.isNotBlank() &&
+                        DownloadPrimarySuccessAuthorityRepository.isCommittedBlocking(
+                            dbManager = dbManager,
+                            downloadId = item.id,
+                            executionId = item.executionId,
+                        )
                 }
                 .mapTo(linkedSetOf()) { it.id }
 
@@ -643,6 +682,7 @@ class DownloadWorker(
                 authoritativeIssues = authoritativeIssues,
                 workerExecutionIds = workerExecutionIds.toMap(),
                 committedHistoryReplacementIds = committedHistoryReplacementIds,
+                committedPrimarySuccessIds = committedPrimarySuccessIds,
             )
         }
         if (snapshot.activeIds.isEmpty()) return@withContext
@@ -736,6 +776,22 @@ class DownloadWorker(
                         ?: error(
                             "Download execution changed before recovery publication for $downloadId"
                         )
+                    val primarySuccessCommitted = DownloadPrimarySuccessAuthorityRepository
+                        .isCommittedBlocking(
+                            dbManager = dbManager,
+                            downloadId = downloadId,
+                            executionId = expectedExecutionId,
+                        )
+                    if (primarySuccessCommitted) {
+                        DownloadExecutionRecovery.finalizePrimarySuccessUnderLease(
+                            context = context,
+                            dbManager = dbManager,
+                            downloadId = downloadId,
+                            executionId = expectedExecutionId,
+                        )
+                        userStopConvergedIds += downloadId
+                        return@withCleanupOwnership
+                    }
                     val recoveryRecorded = DownloadExecutionRecovery.recordPending(
                         context = context,
                         item = current,
@@ -1100,6 +1156,34 @@ class DownloadWorker(
         val logRepo = LogRepository(dbManager.logDao)
         val resultRepo = ResultRepository(dbManager.resultDao, commandTemplateDao, context)
         val ytdlpUtil = YTDLPUtil(context, commandTemplateDao)
+
+        // A committed primary result is finalization-only.  Reconcile its
+        // exact authority before queue observation so a stale row cannot be
+        // claimed as a fresh producer execution after process death.
+        dbManager.downloadPrimarySuccessAuthorityDao
+            .getPendingFinalization()
+            .forEach { authority ->
+                try {
+                    withDownloadWorkerExecutionSideEffectLease(
+                        downloadId = authority.downloadId,
+                        executionId = authority.executionId,
+                    ) {
+                        DownloadExecutionRecovery.finalizePrimarySuccessUnderLease(
+                            context = context,
+                            dbManager = dbManager,
+                            downloadId = authority.downloadId,
+                            executionId = authority.executionId,
+                        )
+                    }
+                } catch (failure: Exception) {
+                    Log.w(
+                        TAG,
+                        "Committed Download primary-success finalization deferred " +
+                            "id=${authority.downloadId}",
+                        failure,
+                    )
+                }
+            }
         val handler = Handler(Looper.getMainLooper())
         val alarmScheduler = AlarmScheduler(context)
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
@@ -1306,6 +1390,7 @@ class DownloadWorker(
         private var historyReplacementTerminalAction: HistoryReplacementTerminalAction? = null
         private var downloadOutcome: DownloadOutcome? = null
         private var historyReplacementCommitted = false
+        private var ordinaryPrimarySuccessCommitted = false
 
         private lateinit var notificationTitle: String
         private lateinit var eventBus: EventBus
@@ -1329,6 +1414,7 @@ class DownloadWorker(
         private var recoveredSourceDestinations: Map<String, String> = emptyMap()
         /** A prior exact publication is retained as recovery debt; producer replay is forbidden. */
         private var priorPublicationFinalizationRequired = false
+        private var downloadArchiveGeneration: DownloadArchiveAuthority.Generation? = null
 
         private fun establishHistoryReplacementFailure(issue: DownloadIssue) {
                         historyReplacementFailureIssue = issue
@@ -1678,57 +1764,14 @@ class DownloadWorker(
                     }.getOrNull()
                 }
                 if (remaining.isNotEmpty()) {
-                    var journalWriteFailed = false
-                    FileUtil.moveFile(
-                        originDir = recoveryRoot,
-                        context = context,
-                        destDir = outputPlan.finalDestination,
-                        keepCache = false,
-                        progress = {},
-                        onOutput = {},
-                        onOutputReservationIntent = { source ->
-                            val reserved = handle.reserveIntent(source.absolutePath)
-                            if (!reserved) {
-                                journalWriteFailed = true
-                                throw IOException(
-                                    "Download publication recovery reservation intent could not be persisted"
-                                )
-                            }
-                            reserved
-                        },
-                        onOutputReservationUnknown = { source ->
-                            val marked = handle.markReservationUnknown(source.absolutePath)
-                            if (!marked) journalWriteFailed = true
-                            marked
-                        },
-                        onOutputReservationRolledBack = { source ->
-                            val cleared = handle.clearReservation(source.absolutePath)
-                            if (!cleared) journalWriteFailed = true
-                            cleared
-                        },
-                        onOutputReserved = { source, destination ->
-                            if (!handle.reserve(source.absolutePath, destination)) {
-                                journalWriteFailed = true
-                                throw IOException(
-                                    "Download publication recovery destination could not be reserved"
-                                )
-                            }
-                        },
-                        sourceFiles = remaining,
-                        onOutputWithSource = { source, destination ->
-                            if (!handle.markPublished(source.absolutePath, destination)) {
-                                journalWriteFailed = true
-                            }
-                        },
-                        onOutputCommitted = { source, destination ->
-                            val committed = handle.markPublished(source.absolutePath, destination)
-                            if (!committed) journalWriteFailed = true
-                            committed
-                        },
+                    // No exact destination is known for these sources.  Do
+                    // not misclassify this as source-retirement-only debt;
+                    // it remains an unresolved publication failure and the
+                    // existing non-replay fence owns the next pass.
+                    throw IOException(
+                        "Download publication recovery has an unassigned source without " +
+                            "an exact destination",
                     )
-                    if (journalWriteFailed) {
-                        throw IOException("Download publication recovery journal could not be advanced")
-                    }
                 }
                 val after = handle.snapshot()
                 if (after.artifacts.any { it.destinationPath.isNullOrBlank() }) {
@@ -1746,7 +1789,29 @@ class DownloadWorker(
                     }
                     recovered += destination
                     sourceDestinations[artifact.sourcePath] = destination
-                }
+                    val source = runCatching { File(artifact.sourcePath).canonicalFile }
+                        .getOrElse {
+                            throw IOException(
+                                "Download publication recovery source is invalid: ${artifact.sourcePath}",
+                                it,
+                            )
+                        }
+                    if (source.exists()) {
+                        if (!source.isFile || !isPathInsideDirectory(source.absolutePath, recoveryRoot)) {
+                            throw IOException(
+                                "Download publication recovery source is outside its exact staging root: " +
+                                    source.absolutePath,
+                            )
+                        }
+                        FileUtil.deleteFile(source.absolutePath)
+                        if (FileUtil.exists(source.absolutePath, context)) {
+                            priorPublicationFinalizationRequired = true
+                            throw PriorPublicationFinalizationRequiredException(
+                                sourceRetirementPending = true,
+                            )
+                        }
+                    }
+                    }
                 check(handle.markPhase(PublicationRecoveryJournal.Phase.COMPLETE)) {
                     "Download publication recovery could not be completed"
                 }
@@ -1774,7 +1839,10 @@ class DownloadWorker(
                 // witness to adopt here, so fail closed instead of feeding
                 // recovered paths into a fresh producer generation.
                 priorPublicationFinalizationRequired = true
-                throw PriorPublicationFinalizationRequiredException()
+                recoveredPublishedPaths = recovered.toList()
+                throw PriorPublicationFinalizationRequiredException(
+                    sourceRetirementPending = false,
+                )
             }
             return emptyList()
         }
@@ -1831,6 +1899,12 @@ class DownloadWorker(
                         val latest = runCatching { dao.getNullableDownloadById(downloadItem.id) }.getOrNull()
                         val lostExecutionOwnership = downloadItem.executionId.isNotBlank() &&
                             (latest == null || latest.executionId != downloadItem.executionId)
+                        val primarySuccessCommitted = DownloadPrimarySuccessAuthorityRepository
+                            .isCommittedBlocking(
+                                dbManager = dbManager,
+                                downloadId = downloadItem.id,
+                                executionId = downloadItem.executionId,
+                            )
                         val durableUserStop = latest?.let {
                             hasDurableUserStopRevokedAuthority(
                                 context = context,
@@ -1844,12 +1918,12 @@ class DownloadWorker(
                         }.getOrDefault(false)
                         return this@DownloadWorker.isStopped ||
                             lostExecutionOwnership ||
-                            durableUserStop ||
+                            (!primarySuccessCommitted && durableUserStop) ||
                             lowQualityCancellationRequested ||
-                            latest?.status in setOf(
+                            (!primarySuccessCommitted && latest?.status in setOf(
                                 DownloadRepository.Status.Paused.name,
                                 DownloadRepository.Status.Cancelled.name,
-                            )
+                            ))
                     }
 
         suspend fun run(): Unit {
@@ -1883,6 +1957,29 @@ class DownloadWorker(
                     )
             historyReplacementCommitted = withContext(Dispatchers.IO + NonCancellable) {
                         isDurablyCommittedHistoryReplacement(dbManager, downloadItem)
+                    }
+                    ordinaryPrimarySuccessCommitted = withContext(Dispatchers.IO + NonCancellable) {
+                        DownloadPrimarySuccessAuthorityRepository.isCommittedBlocking(
+                            dbManager = dbManager,
+                            downloadId = downloadItem.id,
+                            executionId = downloadItem.executionId,
+                        )
+                    }
+
+                    if (ordinaryPrimarySuccessCommitted && !historyReplacementCommitted) {
+                        withDownloadWorkerExecutionSideEffectLease(
+                            downloadId = downloadItem.id,
+                            executionId = downloadItem.executionId,
+                        ) {
+                            DownloadExecutionRecovery.finalizePrimarySuccessUnderLease(
+                                context = context,
+                                dbManager = dbManager,
+                                downloadId = downloadItem.id,
+                                executionId = downloadItem.executionId,
+                            )
+                        }
+                        downloadOutcome = DownloadOutcome.completed(createdFileCount = 0)
+                        return
                     }
 
                     try {
@@ -1985,6 +2082,16 @@ class DownloadWorker(
                     val outputPlan = ytdlpUtil.resolveOutputPlan(downloadItem)
                     ytdlpOutputPlan = outputPlan
                     recoveredPublishedPaths = recoverPriorPublication(outputPlan)
+                    if (
+                        sharedPreferences.getString("prevent_duplicate_downloads", "") == "download_archive" &&
+                            HistoryRedownloadQueuePolicy.shouldUseDownloadArchive(downloadItem.playlistURL)
+                    ) {
+                        downloadArchiveGeneration = DownloadArchiveAuthority.prepare(
+                            context = context,
+                            downloadId = downloadItem.id,
+                            executionId = downloadItem.executionId,
+                        )
+                    }
         shouldBurnHardSub = downloadItem.type == DownloadType.video && downloadItem.videoPreferences.embedSubs
         noCache = outputPlan.directNoCache
 
@@ -2003,6 +2110,7 @@ class DownloadWorker(
                                 .outputBaselineReaderForTesting,
                         ),
                         recoveredPublishedPaths = recoveredPublishedPaths,
+                        downloadArchivePath = downloadArchiveGeneration?.privateArchive?.absolutePath,
                         notificationTitle = notificationTitle,
                         loggingEnabled = sharedPreferences.getBoolean("log_downloads", false) &&
                             !downloadItem.incognito,
@@ -2060,6 +2168,48 @@ class DownloadWorker(
             }
             if (runHistoryPersistence() == AttemptControl.STOP) {
                 return AttemptControl.STOP
+            }
+            if (downloadItem.incognito) {
+                // Incognito has no History row to carry primary-success
+                // authority.  The exact execution witness is therefore
+                // recorded for every successful command, including commands
+                // that intentionally produce no files.
+                check(
+                    DownloadPrimarySuccessAuthorityRepository.recordNoHistory(
+                        dbManager = dbManager,
+                        downloadId = downloadItem.id,
+                        operationId = downloadItem.operationId,
+                        executionId = downloadItem.executionId,
+                        semanticFingerprint = DownloadPrimarySuccessAuthorityRepository
+                            .fingerprint(ytdlpPhase.state.initialCommand),
+                        archiveDelta = downloadArchiveGeneration
+                            ?.let(DownloadArchiveAuthority::delta)
+                            ?.joinToString("\n")
+                            .orEmpty(),
+                    )
+                ) { "No-History primary success authority could not be persisted" }
+                ordinaryPrimarySuccessCommitted = true
+            }
+            if (downloadArchiveGeneration != null) {
+                if (ordinaryPrimarySuccessCommitted) {
+                    val promoted = runCatching {
+                        DownloadArchiveAuthority.promote(downloadArchiveGeneration!!)
+                    }.getOrElse { failure ->
+                        Log.w(
+                            TAG,
+                            "Download archive promotion deferred id=${downloadItem.id}",
+                            failure,
+                        )
+                        false
+                    }
+                    if (!promoted) {
+                        DownloadPrimarySuccessAuthorityRepository.markFinalizationPending(
+                            dbManager = dbManager,
+                            downloadId = downloadItem.id,
+                            executionId = downloadItem.executionId,
+                        )
+                    }
+                }
             }
             return publishCompletion()
         }
@@ -2873,11 +3023,24 @@ class DownloadWorker(
                                                 )
                                             }
                                         }
-                                    } else {
-                                        withOwnedExecutionSideEffect(downloadItem) {
-                                            historyKeywordAssignments.insertHistory(historyItem)
+                                        } else {
+                                            withOwnedExecutionSideEffect(downloadItem) {
+                                                historyKeywordAssignments.insertHistoryWithPrimarySuccess(
+                                                    item = historyItem,
+                                                    downloadId = downloadItem.id,
+                                                    operationId = downloadItem.operationId,
+                                                    executionId = downloadItem.executionId,
+                                                    semanticFingerprint = DownloadPrimarySuccessAuthorityRepository
+                                                        .fingerprint(ytdlpPhase.state.initialCommand),
+                                                    archiveDelta = downloadArchiveGeneration
+                                                        ?.let(DownloadArchiveAuthority::delta)
+                                                        ?.joinToString("\n")
+                                                        .orEmpty(),
+                                                ).also {
+                                                    ordinaryPrimarySuccessCommitted = true
+                                                }
+                                            }
                                         }
-                                    }
                                     persistedHistoryId?.let { historyId ->
                                         if (historyReplacementCommitted) {
                                             // A committed replacement History
@@ -2942,6 +3105,14 @@ class DownloadWorker(
                                 withContext(Dispatchers.IO + NonCancellable) {
                                     isDurablyCommittedHistoryReplacement(dbManager, downloadItem)
                                 }
+                            val committedPrimarySuccess = ordinaryPrimarySuccessCommitted ||
+                                withContext(Dispatchers.IO + NonCancellable) {
+                                    DownloadPrimarySuccessAuthorityRepository.isCommittedBlocking(
+                                        dbManager = dbManager,
+                                        downloadId = downloadItem.id,
+                                        executionId = downloadItem.executionId,
+                                    )
+                                }
                             if (committedHistoryReplacement) {
                                 historyReplacementCommitted = true
                                 completionIssues += DownloadIssue.create(
@@ -2955,6 +3126,28 @@ class DownloadWorker(
                                 Log.w(
                                     TAG,
                                     "History ancillary work failed after replacement commit id=${downloadItem.id}",
+                                    historyError,
+                                )
+                            } else if (committedPrimarySuccess) {
+                                ordinaryPrimarySuccessCommitted = true
+                                withContext(Dispatchers.IO + NonCancellable) {
+                                    DownloadPrimarySuccessAuthorityRepository.markFinalizationPending(
+                                        dbManager = dbManager,
+                                        downloadId = downloadItem.id,
+                                        executionId = downloadItem.executionId,
+                                    )
+                                }
+                                completionIssues += DownloadIssue.create(
+                                    stage = DownloadIssueStage.HISTORY,
+                                    code = DownloadIssueCode.HISTORY_POST_COMMIT_WARNING,
+                                    severity = DownloadIssueSeverity.WARNING,
+                                    suggestedActions = setOf(DownloadSuggestedAction.VIEW_LOG),
+                                    details = historyError.message.orEmpty(),
+                                    source = DownloadIssueSource.TYPED_EXCEPTION,
+                                )
+                                Log.w(
+                                    TAG,
+                                    "History ancillary work failed after ordinary primary commit id=${downloadItem.id}",
                                     historyError,
                                 )
                             } else {
@@ -3220,6 +3413,18 @@ class DownloadWorker(
                                             id = downloadItem.id,
                                             expectedExecutionId = downloadItem.executionId,
                                         )
+                                    }
+                                    if (ordinaryPrimarySuccessCommitted) {
+                                        // Keep the exact ordinary-success
+                                        // authority until archive/ancillary
+                                        // finalization has been acknowledged.
+                                        DownloadExecutionRecovery
+                                            .finalizePrimarySuccessUnderLease(
+                                                context = context,
+                                                dbManager = dbManager,
+                                                downloadId = downloadItem.id,
+                                                executionId = downloadItem.executionId,
+                                            )
                                     }
                                     if (historyReplacementCommitted) {
                                         check(
@@ -3952,7 +4157,73 @@ class DownloadWorker(
                                 "Ancillary Download work failed after committed History replacement id=${downloadItem.id}",
                                 unexpected,
                             )
-            return AttemptControl.STOP
+                            return AttemptControl.STOP
+                        }
+                        val committedPrimarySuccess = ordinaryPrimarySuccessCommitted ||
+                            withContext(Dispatchers.IO + NonCancellable) {
+                                DownloadPrimarySuccessAuthorityRepository.isCommittedBlocking(
+                                    dbManager = dbManager,
+                                    downloadId = downloadItem.id,
+                                    executionId = downloadItem.executionId,
+                                )
+                            }
+                        if (committedPrimarySuccess) {
+                            ordinaryPrimarySuccessCommitted = true
+                            val finalized = withDownloadWorkerExecutionSideEffectLease(
+                                downloadId = downloadItem.id,
+                                executionId = downloadItem.executionId,
+                            ) {
+                                DownloadExecutionRecovery.finalizePrimarySuccessUnderLease(
+                                    context = context,
+                                    dbManager = dbManager,
+                                    downloadId = downloadItem.id,
+                                    executionId = downloadItem.executionId,
+                                )
+                            }
+                            downloadOutcome = DownloadOutcome.completed(
+                                createdFileCount = 0,
+                                issues = if (finalized) emptyList() else listOf(
+                                    DownloadIssue.create(
+                                        stage = currentIssueStage,
+                                        code = DownloadIssueCode.PUBLICATION_FINALIZATION_PENDING,
+                                        severity = DownloadIssueSeverity.WARNING,
+                                        suggestedActions = setOf(DownloadSuggestedAction.VIEW_LOG),
+                                        details = unexpected.message.orEmpty(),
+                                        source = DownloadIssueSource.TYPED_EXCEPTION,
+                                    )
+                                ),
+                            )
+                            Log.w(
+                                TAG,
+                                "Download primary success retained while finalization is pending id=${downloadItem.id}",
+                                unexpected,
+                            )
+                            return AttemptControl.STOP
+                        }
+                        if (
+                            unexpected is PriorPublicationFinalizationRequiredException &&
+                                !unexpected.sourceRetirementPending
+                        ) {
+                            withDownloadWorkerExecutionSideEffectLease(
+                                downloadId = downloadItem.id,
+                                executionId = downloadItem.executionId,
+                            ) {
+                                DownloadRepository(dbManager).completeAndDelete(
+                                    id = downloadItem.id,
+                                    expectedExecutionId = downloadItem.executionId,
+                                )
+                            }
+                            recoveredPublicationJournals.removeAll { handle ->
+                                handle.clear()
+                            }
+                            downloadOutcome = DownloadOutcome.completed(
+                                createdFileCount = recoveredPublishedPaths.size,
+                            )
+                            Log.i(
+                                TAG,
+                                "Finalized exact prior Download publication without producer replay id=${downloadItem.id}",
+                            )
+                            return AttemptControl.STOP
                         }
                         when (unexpected) {
                             is HistoryReplacementAuthorizationRefusalException ->
@@ -3975,12 +4246,15 @@ class DownloadWorker(
                         val targetDeleted = historyReplacementTerminalAction ==
                             HistoryReplacementTerminalAction.TARGET_DELETED
                         val providerOutcomeUnknown = unexpected is UnknownProviderPublicationException ||
-                            unexpected is PriorPublicationFinalizationRequiredException ||
                             terminalizeUnknownPublicationReservation() ||
                             hasUnknownPublicationReservation()
+                        val exactPublicationFinalizationPending =
+                            unexpected is PriorPublicationFinalizationRequiredException
                         val fallbackIssue = DownloadIssue.create(
                             stage = currentIssueStage,
-                            code = if (providerOutcomeUnknown) {
+                            code = if (exactPublicationFinalizationPending) {
+                                DownloadIssueCode.PUBLICATION_FINALIZATION_PENDING
+                            } else if (providerOutcomeUnknown) {
                                 DownloadIssueCode.PUBLICATION_OUTCOME_UNKNOWN
                             } else {
                                 DownloadIssueCode.UNKNOWN
@@ -4648,6 +4922,7 @@ class DownloadWorker(
         val outputPlan: YtdlpOutputPlan,
         val outputProvenance: DownloadOutputProvenance,
         val recoveredPublishedPaths: List<String> = emptyList(),
+        val downloadArchivePath: String? = null,
         val notificationTitle: String,
         val loggingEnabled: Boolean,
     )
@@ -4984,6 +5259,7 @@ class DownloadWorker(
                     downloadItem = downloadItem,
                     mediaAccessProfile = profile,
                     outputPlan = input.outputPlan,
+                    downloadArchivePath = input.downloadArchivePath,
                 )
                 requestOwner.register(builtRequest)
                 profile to builtRequest
@@ -5071,6 +5347,7 @@ class DownloadWorker(
         outputPlan: YtdlpOutputPlan,
         ytdlpUtil: YTDLPUtil,
         retryPlan: YtdlpRetryPlan.Attempt,
+        downloadArchivePath: String? = null,
         onRequestBuilt: (YoutubeDLRequest) -> Unit,
         onCommandBuilt: (String) -> Unit,
     ): YtdlpAttempt {
@@ -5080,6 +5357,7 @@ class DownloadWorker(
             useCachedInfoJson = retryPlan.useCachedInfoJson,
             applyQualityGuard = retryPlan.applyQualityGuard,
             outputPlan = outputPlan,
+            downloadArchivePath = downloadArchivePath,
         )
         onRequestBuilt(request)
         val command = ytdlpUtil.parseYTDLRequestString(request)
@@ -5702,6 +5980,7 @@ class DownloadWorker(
                 outputPlan = input.outputPlan,
                 ytdlpUtil = services.ytdlpUtil,
                 retryPlan = plan,
+                downloadArchivePath = input.downloadArchivePath,
                 onRequestBuilt = runtime::registerRequest,
                 onCommandBuilt = { command -> runtime.effectiveCommand = command },
             )
@@ -5825,6 +6104,7 @@ class DownloadWorker(
                 applyQualityGuard = false,
                 selectionOnly = true,
                 outputPlan = input.outputPlan,
+                downloadArchivePath = input.downloadArchivePath,
             ).apply {
                 addOption("--simulate")
                 addOption("--skip-download")

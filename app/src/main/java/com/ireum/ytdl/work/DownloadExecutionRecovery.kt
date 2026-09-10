@@ -5,12 +5,14 @@ import android.content.SharedPreferences
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.DownloadPrimarySuccessAuthorityRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryReplacementRefusal
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
+import com.ireum.ytdl.util.storage.DownloadArchiveAuthority
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -902,6 +904,77 @@ internal object DownloadExecutionRecovery {
     }
 
     /**
+     * Finalizes an exact ordinary Download primary-success authority without
+     * invoking the producer again.  The caller must already hold the exact
+     * per-Download side-effect lease.  Archive promotion is ancillary: a
+     * failure retains the authority and still permits the Download row to be
+     * retired, so restart recovery can retry promotion without reopening the
+     * producer boundary.
+     */
+    internal suspend fun finalizePrimarySuccessUnderLease(
+        context: Context,
+        dbManager: DBManager,
+        downloadId: Long,
+        executionId: String,
+    ): Boolean {
+        val authority = DownloadPrimarySuccessAuthorityRepository.forExecution(
+            dbManager = dbManager,
+            downloadId = downloadId,
+            executionId = executionId,
+        ) ?: return true
+        val fallbackDelta = authority.archiveDelta
+            .split('\n')
+            .map(String::trimEnd)
+            .filter(String::isNotBlank)
+        val promoted = try {
+            DownloadArchiveAuthority.promote(
+                context = context,
+                downloadId = downloadId,
+                executionId = executionId,
+                fallbackDelta = fallbackDelta,
+            )
+        } catch (failure: Exception) {
+            android.util.Log.w(
+                "DownloadExecutionRecovery",
+                "Primary-success archive promotion failed id=$downloadId",
+                failure,
+            )
+            false
+        }
+        if (!promoted) {
+            DownloadPrimarySuccessAuthorityRepository.markFinalizationPending(
+                dbManager = dbManager,
+                downloadId = downloadId,
+                executionId = executionId,
+            )
+        }
+        val current = withDownloadWorkerExecutionLock {
+            dbManager.downloadDao.getNullableDownloadById(downloadId)
+        }
+        if (current != null) {
+            check(current.executionId == executionId) {
+                "Primary-success authority was paired with a different Download execution"
+            }
+            DownloadRepository(dbManager).completeAndDelete(
+                id = downloadId,
+                expectedExecutionId = executionId,
+            )
+        }
+        if (promoted) {
+            check(
+                DownloadPrimarySuccessAuthorityRepository.retire(
+                    dbManager = dbManager,
+                    downloadId = downloadId,
+                    executionId = executionId,
+                )
+            ) {
+                "Primary-success authority could not be retired after finalization"
+            }
+        }
+        return promoted
+    }
+
+    /**
      * Completes a user-stop carrier for callers that previously performed a
      * generic native cleanup attempt.  A durable native-quiescent phase may
      * be cleared directly; otherwise the strengthened helper is consumed here
@@ -1380,6 +1453,10 @@ internal object DownloadExecutionRecovery {
     ): Boolean {
         YtdlpNativeProcessBarrier.configure(context)
         if (pendingDownloadIds(context).isNotEmpty()) return true
+        if (dbManager.downloadPrimarySuccessAuthorityDao
+                .getPendingFinalizationBlocking()
+                .isNotEmpty()
+        ) return true
 
         return dbManager.downloadDao
             .getActiveAndPostProcessingDownloadsList()
@@ -1405,6 +1482,7 @@ internal object DownloadExecutionRecovery {
             val orphanNativeProcesses: List<YtdlpNativeProcessBarrier.DurableDownloadProcess>,
             val orphanJournalIds: List<Long>,
             val markerCandidates: List<Pair<Long, String>>,
+            val primarySuccessAuthorities: List<com.ireum.ytdl.database.models.DownloadPrimarySuccessAuthority>,
         )
         val discoveredRecovery = withDownloadWorkerExecutionLock {
             val running = dbManager.downloadDao.getActiveAndPostProcessingDownloadsList()
@@ -1429,6 +1507,7 @@ internal object DownloadExecutionRecovery {
                     dbManager.downloadDao.getNullableDownloadById(id) == null
                 },
                 YtdlpNativeProcessBarrier.downloadMarkerCandidates(context),
+                dbManager.downloadPrimarySuccessAuthorityDao.getPendingFinalizationBlocking(),
             )
         }
         val candidates = discoveredRecovery.candidates
@@ -2480,6 +2559,29 @@ internal object DownloadExecutionRecovery {
                 }
             } catch (failure: Exception) {
                 deferRecovery(snapshot.id, failure)
+            }
+        }
+
+        discoveredRecovery.primarySuccessAuthorities.forEach { authority ->
+            try {
+                withDownloadWorkerExecutionSideEffectLease(
+                    downloadId = authority.downloadId,
+                    executionId = authority.executionId,
+                ) {
+                    check(
+                        finalizePrimarySuccessUnderLease(
+                            context = context,
+                            dbManager = dbManager,
+                            downloadId = authority.downloadId,
+                            executionId = authority.executionId,
+                        )
+                    ) {
+                        "Primary-success finalization remained unresolved for " +
+                            "${authority.downloadId}/${authority.executionId}"
+                    }
+                }
+            } catch (failure: Exception) {
+                deferRecovery(authority.downloadId, failure)
             }
         }
 

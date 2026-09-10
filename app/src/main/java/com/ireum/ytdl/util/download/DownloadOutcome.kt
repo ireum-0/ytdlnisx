@@ -41,6 +41,8 @@ enum class DownloadIssueCode {
     NOTIFICATION_FAILED,
     /** An opaque provider create/insert completed without an exact URI. */
     PUBLICATION_OUTCOME_UNKNOWN,
+    /** An exact prior destination exists; only source retirement/finalization remains. */
+    PUBLICATION_FINALIZATION_PENDING,
     UNKNOWN
 }
 

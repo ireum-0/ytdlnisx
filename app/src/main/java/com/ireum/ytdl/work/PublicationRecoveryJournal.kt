@@ -694,5 +694,6 @@ internal class UnknownProviderPublicationException(
  * durable journal remains authoritative and producer replay is forbidden.
  */
 internal class PriorPublicationFinalizationRequiredException(
+    val sourceRetirementPending: Boolean = true,
     message: String = "Prior Download publication requires durable finalization",
 ) : java.io.IOException(message)

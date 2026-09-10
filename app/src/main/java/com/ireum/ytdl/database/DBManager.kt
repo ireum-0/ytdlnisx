@@ -11,6 +11,7 @@ import com.ireum.ytdl.database.dao.CommandTemplateDao
 import com.ireum.ytdl.database.dao.AutomaticKeywordRuleDao
 import com.ireum.ytdl.database.dao.CookieDao
 import com.ireum.ytdl.database.dao.DownloadDao
+import com.ireum.ytdl.database.dao.DownloadPrimarySuccessAuthorityDao
 import com.ireum.ytdl.database.dao.HistoryDao
 import com.ireum.ytdl.database.dao.HistoryDateFetchDao
 import com.ireum.ytdl.database.dao.HistoryReplacementBarrierDao
@@ -34,6 +35,7 @@ import com.ireum.ytdl.database.models.AutomaticKeywordRuleVideoMatch
 import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.database.models.DownloadPrimarySuccessAuthority
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryDateFetchItem
 import com.ireum.ytdl.database.models.HistoryDateFetchOperation
@@ -65,6 +67,7 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         ResultItem::class,
         HistoryItem::class,
         DownloadItem::class,
+        DownloadPrimarySuccessAuthority::class,
         CommandTemplate::class,
         SearchHistoryItem::class,
         TemplateShortcut::class,
@@ -94,7 +97,7 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         PendingUndoCarrier::class,
         WorkManagerHandoffCarrier::class
     ],
-    version = 61,
+    version = 62,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),
@@ -130,6 +133,7 @@ abstract class DBManager : RoomDatabase(){
     abstract val resultDao : ResultDao
     abstract val historyDao : HistoryDao
     abstract val downloadDao : DownloadDao
+    abstract val downloadPrimarySuccessAuthorityDao: DownloadPrimarySuccessAuthorityDao
     abstract val commandTemplateDao : CommandTemplateDao
     abstract val searchHistoryDao: SearchHistoryDao
     abstract val cookieDao: CookieDao

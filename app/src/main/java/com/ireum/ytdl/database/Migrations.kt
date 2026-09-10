@@ -491,6 +491,30 @@ object Migrations {
                 "CREATE INDEX IF NOT EXISTS `index_work_manager_handoff_carriers_sourceId_confirmedUrl_configFingerprint_decision_kind` " +
                     "ON `work_manager_handoff_carriers` (`sourceId`, `confirmedUrl`, `configFingerprint`, `decision`, `kind`)"
             )
+        },
+        Migration(61, 62) { database ->
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `download_primary_success_authorities` (" +
+                    "`authorityKey` TEXT NOT NULL, " +
+                    "`downloadId` INTEGER NOT NULL, " +
+                    "`operationId` TEXT NOT NULL, " +
+                    "`executionId` TEXT NOT NULL, " +
+                    "`historyId` INTEGER NOT NULL, " +
+                    "`noHistory` INTEGER NOT NULL, " +
+                    "`semanticFingerprint` TEXT NOT NULL, " +
+                    "`archiveDelta` TEXT NOT NULL, " +
+                    "`phase` TEXT NOT NULL, " +
+                    "`createdAt` INTEGER NOT NULL, " +
+                    "PRIMARY KEY(`authorityKey`))"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_download_primary_success_authorities_downloadId` " +
+                    "ON `download_primary_success_authorities` (`downloadId`)"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_download_primary_success_authorities_historyId` " +
+                    "ON `download_primary_success_authorities` (`historyId`)"
+            )
         }
     )
 

@@ -6,6 +6,7 @@ import com.ireum.ytdl.database.dao.DownloadClaimTestHooks
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.DownloadPrimarySuccessAuthorityRepository
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import java.util.UUID
@@ -153,7 +154,11 @@ internal suspend fun admitQueuedDownloadsThroughProductionPath(
         }
         Selection(
             candidates = hardSubEligible.filterNot { candidate ->
-                isDurablyCommittedHistoryReplacementForScheduler(dbManager, candidate)
+                isDurablyCommittedHistoryReplacementForScheduler(dbManager, candidate) ||
+                    DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(
+                        dbManager,
+                        candidate.id,
+                    )
             },
             ownership = ownership,
             prioritySnapshot = prioritySnapshot,
@@ -196,6 +201,11 @@ internal suspend fun claimDownloadThroughProductionAdmission(
         // fresh E2 attempt while the carrier is still present.
         return@withDownloadWorkerExecutionSideEffectLease null
     }
+    if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {
+        // A committed primary result is finalization-only even if a stale
+        // queue row was left behind by process death.
+        return@withDownloadWorkerExecutionSideEffectLease null
+    }
     if (
         !DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id) ||
             DownloadWorker.hasAnyRegisteredNativeProcess(candidate.id)
@@ -218,6 +228,9 @@ internal suspend fun claimDownloadThroughProductionAdmission(
             !DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id) ||
                 DownloadWorker.hasAnyRegisteredNativeProcess(candidate.id)
         ) {
+            return@withDownloadWorkerExecutionLock null
+        }
+        if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {
             return@withDownloadWorkerExecutionLock null
         }
         val currentOwnership = classifyDownloadSchedulerOwnership(

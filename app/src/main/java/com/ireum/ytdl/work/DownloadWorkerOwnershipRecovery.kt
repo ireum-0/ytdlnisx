@@ -8,6 +8,7 @@ import com.ireum.ytdl.util.download.DownloadIssue
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.repository.DownloadPrimarySuccessAuthorityRepository
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementRefusal
 import kotlinx.coroutines.CancellationException
@@ -243,6 +244,27 @@ internal suspend fun cleanupStoppedDownloadExecution(
     recoveryContext: Context? = null,
     dbManager: DBManager? = null,
 ): DownloadRepository.RunningDownloadRequeueResult {
+    if (recoveryContext != null && dbManager != null) {
+        val primarySuccess = DownloadPrimarySuccessAuthorityRepository
+            .isCommittedBlocking(
+                dbManager = dbManager,
+                downloadId = downloadId,
+                executionId = executionId,
+            )
+        if (primarySuccess) {
+            // An exact primary-success authority is finalization-only.  A
+            // stopped worker must never turn it back into queue work or let a
+            // later attempt invoke the producer again.
+            DownloadExecutionRecovery.finalizePrimarySuccessUnderLease(
+                context = recoveryContext,
+                dbManager = dbManager,
+                downloadId = downloadId,
+                executionId = executionId,
+            )
+            return DownloadRepository.RunningDownloadRequeueResult
+                .COMMITTED_HISTORY_FINALIZATION_DEBT
+        }
+    }
     if (recoveryContext != null) {
         when (
             DownloadExecutionRecovery.pendingDispositionForExecution(

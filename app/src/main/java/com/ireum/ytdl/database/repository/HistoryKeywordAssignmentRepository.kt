@@ -7,6 +7,7 @@ import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.database.models.HistoryReplacementBarrier
+import com.ireum.ytdl.database.models.DownloadPrimarySuccessAuthority
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
@@ -326,6 +327,74 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 }
             }
             id
+            }
+        }
+    }
+
+    /**
+     * Inserts an ordinary History row and its exact Download-generation
+     * primary-success authority in one Room transaction.  A process death
+     * cannot expose the History row without the corresponding authority.
+     */
+    suspend fun insertHistoryWithPrimarySuccess(
+        item: HistoryItem,
+        downloadId: Long,
+        operationId: String,
+        executionId: String,
+        semanticFingerprint: String,
+        archiveDelta: String,
+    ): Long {
+        require(downloadId == item.downloadId)
+        require(executionId.isNotBlank())
+        val authorityKey = DownloadPrimarySuccessAuthorityRepository.key(downloadId, executionId)
+        val manualKeywords = AutomaticKeywordNormalizer.parseKeywords(item.keywords)
+        val videoKey = AutomaticKeywordNormalizer.videoKey(item.url)
+        return HistoryReferenceMutationCoordinator.withLock {
+            db.withTransaction {
+                val existing = db.downloadPrimarySuccessAuthorityDao
+                    .getByExecution(downloadId, executionId)
+                if (existing != null) {
+                    check(existing.historyId > 0L) {
+                        "Ordinary primary-success authority has no History identity"
+                    }
+                    return@withTransaction existing.historyId
+                }
+                val id = db.historyDao.insertAndGetIdRaw(item.copy(keywords = ""))
+                replaceSourceKeywordsInTransaction(
+                    id,
+                    HistoryKeywordAssignmentSources.MANUAL,
+                    HistoryKeywordAssignmentSources.MANUAL_SOURCE_ID,
+                    manualKeywords,
+                )
+                if (videoKey.isNotBlank()) {
+                    db.automaticKeywordRuleDao.getEnabledRulesForVideoKey(videoKey).forEach { rule ->
+                        replaceSourceKeywordsInTransaction(
+                            id,
+                            HistoryKeywordAssignmentSources.RULE,
+                            rule.id,
+                            db.automaticKeywordRuleDao.getRuleKeywords(rule.id).map { it.keyword },
+                        )
+                    }
+                }
+                check(
+                    db.downloadPrimarySuccessAuthorityDao.insertIfAbsent(
+                        DownloadPrimarySuccessAuthority(
+                            authorityKey = authorityKey,
+                            downloadId = downloadId,
+                            operationId = operationId,
+                            executionId = executionId,
+                            historyId = id,
+                            noHistory = false,
+                            semanticFingerprint = semanticFingerprint,
+                            archiveDelta = archiveDelta,
+                            phase = DownloadPrimarySuccessAuthorityRepository.PRIMARY_COMMITTED,
+                            createdAt = System.currentTimeMillis(),
+                        ),
+                    ) > 0L,
+                ) {
+                    "Ordinary primary-success authority could not be persisted"
+                }
+                id
             }
         }
     }
