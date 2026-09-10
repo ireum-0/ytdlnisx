@@ -223,6 +223,31 @@ internal suspend fun convergeUnknownProviderPublicationDebt(
 }
 
 /**
+ * A user stop can win only before exact primary success is durable. Once that
+ * authority exists, a late WorkManager cancellation or user-state row must
+ * not reopen or replace the successful generation. Lost execution ownership
+ * remains a safety stop in either phase.
+ */
+internal fun shouldStopForDownloadExecution(
+    workerStopped: Boolean,
+    lostExecutionOwnership: Boolean,
+    primarySuccessCommitted: Boolean,
+    durableUserStop: Boolean,
+    lowQualityCancellationRequested: Boolean,
+    latestStatus: String?,
+): Boolean {
+    if (lostExecutionOwnership) return true
+    if (primarySuccessCommitted) return false
+    return workerStopped ||
+        durableUserStop ||
+        lowQualityCancellationRequested ||
+        latestStatus in setOf(
+            DownloadRepository.Status.Paused.name,
+            DownloadRepository.Status.Cancelled.name,
+        )
+}
+
+/**
  * Production startup boundary: per-Download recovery debt is retained by
  * DownloadExecutionRecovery, while a healthy queue may still be observed.
  * Only a genuinely global reconciliation failure escapes before admission.
@@ -1416,6 +1441,25 @@ class DownloadWorker(
         private var priorPublicationFinalizationRequired = false
         private var downloadArchiveGeneration: DownloadArchiveAuthority.Generation? = null
 
+        /**
+         * Archive entries are ancillary to primary media success.  A damaged
+         * or temporarily unreadable generation archive must not prevent the
+         * exact primary-success authority from being recorded; finalization
+         * recovery can retry promotion from the durable generation file.
+         */
+        private fun currentDownloadArchiveDelta(): String =
+            downloadArchiveGeneration?.let { generation ->
+                runCatching {
+                    DownloadArchiveAuthority.delta(generation).joinToString("\n")
+                }.onFailure { failure ->
+                    Log.w(
+                        TAG,
+                        "Download archive delta unavailable; deferring promotion id=${downloadItem.id}",
+                        failure,
+                    )
+                }.getOrDefault("")
+            }.orEmpty()
+
         private fun establishHistoryReplacementFailure(issue: DownloadIssue) {
                         historyReplacementFailureIssue = issue
                         historyReplacementAuthoritativeIssue = issue
@@ -1916,14 +1960,14 @@ class DownloadWorker(
                             dbManager.lowQualityRedownloadDao
                                 .hasCancellationRequestedByDownload(downloadItem.id)
                         }.getOrDefault(false)
-                        return this@DownloadWorker.isStopped ||
-                            lostExecutionOwnership ||
-                            (!primarySuccessCommitted && durableUserStop) ||
-                            lowQualityCancellationRequested ||
-                            (!primarySuccessCommitted && latest?.status in setOf(
-                                DownloadRepository.Status.Paused.name,
-                                DownloadRepository.Status.Cancelled.name,
-                            ))
+                        return shouldStopForDownloadExecution(
+                            workerStopped = this@DownloadWorker.isStopped,
+                            lostExecutionOwnership = lostExecutionOwnership,
+                            primarySuccessCommitted = primarySuccessCommitted,
+                            durableUserStop = durableUserStop,
+                            lowQualityCancellationRequested = lowQualityCancellationRequested,
+                            latestStatus = latest?.status,
+                        )
                     }
 
         suspend fun run(): Unit {
@@ -2182,10 +2226,7 @@ class DownloadWorker(
                         executionId = downloadItem.executionId,
                         semanticFingerprint = DownloadPrimarySuccessAuthorityRepository
                             .fingerprint(ytdlpPhase.state.initialCommand),
-                        archiveDelta = downloadArchiveGeneration
-                            ?.let(DownloadArchiveAuthority::delta)
-                            ?.joinToString("\n")
-                            .orEmpty(),
+                        archiveDelta = currentDownloadArchiveDelta(),
                     )
                 ) { "No-History primary success authority could not be persisted" }
                 ordinaryPrimarySuccessCommitted = true
@@ -3032,10 +3073,7 @@ class DownloadWorker(
                                                     executionId = downloadItem.executionId,
                                                     semanticFingerprint = DownloadPrimarySuccessAuthorityRepository
                                                         .fingerprint(ytdlpPhase.state.initialCommand),
-                                                    archiveDelta = downloadArchiveGeneration
-                                                        ?.let(DownloadArchiveAuthority::delta)
-                                                        ?.joinToString("\n")
-                                                        .orEmpty(),
+                                                    archiveDelta = currentDownloadArchiveDelta(),
                                                 ).also {
                                                     ordinaryPrimarySuccessCommitted = true
                                                 }
