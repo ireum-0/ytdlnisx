@@ -21,6 +21,7 @@ import com.ireum.ytdl.work.TerminalExecutionRegistry
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.storage.CacheImportPlanner
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
+import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.yausername.aria2c.Aria2c
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
@@ -85,6 +86,12 @@ class App : Application() {
             } catch (failure: Exception) {
                 Log.w(TAG, "Download execution/finalization recovery failed", failure)
             }
+        }
+        applicationScope.launch(Dispatchers.IO) {
+            runCatching { CleanupScheduleCoordinator.reconcile(this@App) }
+                .onFailure { failure ->
+                    Log.w(TAG, "Cleanup schedule reconciliation failed", failure)
+                }
         }
         applicationScope.launch(Dispatchers.IO) {
             try {

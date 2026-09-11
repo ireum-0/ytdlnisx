@@ -41,6 +41,16 @@ class CleanUpLeftoverDownloads(
             AppCacheManager(context).delete(setOf(AppCacheCategory.DOWNLOAD_TEMP))
         }
 
+        CleanupScheduleCoordinator.scheduleSuccessor(
+            context = applicationContext,
+            generation = inputData.getString(CleanupScheduleCoordinator.INPUT_GENERATION),
+            cadence = inputData.getString(CleanupScheduleCoordinator.INPUT_CADENCE),
+            monthlyAnchorDay = inputData.getInt(
+                CleanupScheduleCoordinator.INPUT_MONTHLY_ANCHOR_DAY,
+                java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH),
+            ),
+        )
+
         return Result.success()
     }
 
