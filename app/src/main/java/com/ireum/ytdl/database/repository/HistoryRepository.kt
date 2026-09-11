@@ -7,6 +7,7 @@ import com.ireum.ytdl.database.models.KeywordInfo
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.util.WebsiteUtil
 import com.ireum.ytdl.util.HistoryMediaPublishedDateCandidatePolicy
+import com.ireum.ytdl.util.HistoryDuplicateIdentity
 import com.ireum.ytdl.util.MediaPublishedDateOrder
 import com.ireum.ytdl.util.MissingSourceDatePolicy
 import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
@@ -375,8 +376,15 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
 
     fun getDuplicateGroups(): List<List<HistoryItem>> =
         historyDao.getAllDownloaded()
-            .filter { it.title.isNotBlank() }
-            .groupBy { it.title.trim() }
+            .mapNotNull { item ->
+                HistoryDuplicateIdentity.key(item.type, item.url)?.let { key ->
+                    key to item
+                }
+            }
+            .groupBy(
+                keySelector = { (key, _) -> key },
+                valueTransform = { (_, item) -> item },
+            )
             .values
             .filter { it.size > 1 }
             .map { group ->
