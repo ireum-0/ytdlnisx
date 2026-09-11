@@ -96,4 +96,12 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
         repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
         AutomaticKeywordObservationCoverage(application).reconcile()
     }
+
+    suspend fun updateConfiguration(
+        item: ObserveSourcesItem,
+        resetProcessedLinks: Boolean,
+    ) {
+        repository.updateConfiguration(item, resetProcessedLinks)
+        AutomaticKeywordObservationCoverage(application).reconcile()
+    }
 }

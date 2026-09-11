@@ -79,6 +79,18 @@ class ObserveSourcesRepository(private val observeSourcesDao: ObserveSourcesDao,
         }
     }
 
+    /**
+     * Saves an ordinary edit without allowing the form's reconstructed row to
+     * own worker lifecycle/progress state. Explicit Start/Stop callers keep
+     * using [update], which is the intentional lifecycle boundary.
+     */
+    suspend fun updateConfiguration(
+        item: ObserveSourcesItem,
+        resetProcessedLinks: Boolean,
+    ) {
+        observeSourcesDao.updateConfiguration(item, resetProcessedLinks)
+    }
+
     fun cancelObservationTaskByID(id: Long){
         workManager.cancelUniqueWork("OBSERVE$id")
         workManager.cancelAllWorkByTag("observation_$id")

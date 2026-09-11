@@ -557,7 +557,14 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
                 )
 
                 withContext(Dispatchers.IO){
-                    observeSourcesViewModel.insertUpdate(observeItem)
+                    if (observeItem.id > 0L) {
+                        observeSourcesViewModel.updateConfiguration(
+                            observeItem,
+                            resetProcessedLinks = resetProcessedLinks.isChecked,
+                        )
+                    } else {
+                        observeSourcesViewModel.insertUpdate(observeItem)
+                    }
                 }
                 dismiss()
             }

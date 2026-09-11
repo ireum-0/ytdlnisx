@@ -456,4 +456,49 @@ interface ObserveSourcesDao {
 
     @Update(onConflict = OnConflictStrategy.REPLACE)
     suspend fun update(item: ObserveSourcesItem)
+
+    /**
+     * Persists only configuration supplied by the edit form. Worker-owned
+     * lifecycle/progress and membership state is read from the current row in
+     * the same Room transaction, so a form snapshot cannot reset an active
+     * observation or erase its durable run evidence.
+     */
+    @Transaction
+    suspend fun updateConfiguration(
+        item: ObserveSourcesItem,
+        resetProcessedLinks: Boolean,
+    ) {
+        val current = getByIDOrNull(item.id) ?: return
+        update(
+            item.copy(
+                status = current.status,
+                runCount = current.runCount,
+                runHistory = current.runHistory,
+                runInProgress = current.runInProgress,
+                currentRunStatus = current.currentRunStatus,
+                alreadyProcessedLinks = if (resetProcessedLinks) {
+                    mutableListOf()
+                } else {
+                    current.alreadyProcessedLinks
+                },
+                ignoredLinks = if (resetProcessedLinks) {
+                    mutableListOf()
+                } else {
+                    current.ignoredLinks
+                },
+                retryPromptedLinks = if (resetProcessedLinks) {
+                    mutableListOf()
+                } else {
+                    current.retryPromptedLinks
+                },
+                observedLinks = if (resetProcessedLinks) {
+                    mutableListOf()
+                } else {
+                    current.observedLinks
+                },
+                observationPurpose = current.observationPurpose,
+                managedConditionKey = current.managedConditionKey,
+            )
+        )
+    }
 }
