@@ -3,6 +3,7 @@ package com.ireum.ytdl.work
 import android.content.Context
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
+import com.ireum.ytdl.util.storage.CacheMaintenanceAuthority
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -33,7 +34,8 @@ internal object TerminalExecutionRegistry {
         subjectId: Long,
         executionToken: String,
         processId: String = YtdlpProcessIdentity.terminal(subjectId),
-    ): Admission = mutex.withLock {
+    ): Admission = CacheMaintenanceAuthority.withExecutionAdmission {
+        mutex.withLock {
         synchronized(activeLock) {
             val existing = activeTokens[subjectId]
             if (existing != null) {
@@ -153,6 +155,7 @@ internal object TerminalExecutionRegistry {
             clearProvisional()
         }
         decision
+        }
     }
 
     suspend fun release(

@@ -9,6 +9,7 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.DownloadPrimarySuccessAuthorityRepository
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
+import com.ireum.ytdl.util.storage.CacheMaintenanceAuthority
 import java.util.UUID
 
 /**
@@ -187,10 +188,11 @@ internal suspend fun claimDownloadThroughProductionAdmission(
     candidate: DownloadItem,
     concurrentDownloadLimit: Int,
     onClaimed: (DownloadItem) -> Unit = {},
-): DownloadItem? = withDownloadWorkerExecutionSideEffectLease(
-    downloadId = candidate.id,
-    executionId = "",
-) {
+): DownloadItem? = CacheMaintenanceAuthority.withExecutionAdmission {
+    withDownloadWorkerExecutionSideEffectLease(
+        downloadId = candidate.id,
+        executionId = "",
+    ) {
     // The claim boundary is also used by production-wiring callers that do
     // not first enter DownloadWorker.doWork(). Ensure the durable marker
     // namespace is configured before the fail-closed native check.
@@ -288,6 +290,7 @@ internal suspend fun claimDownloadThroughProductionAdmission(
                 ?.invoke(claimedItem)
             claimedItem.also(onClaimed)
         }
+    }
     }
 }
 

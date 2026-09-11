@@ -43,6 +43,13 @@ internal object CacheImportPlanner {
         }
 
         return ownedRoots
+            .filterNot { (directory, marker, cache) ->
+                if (marker.name.startsWith(".ytdlnisx-download-owner-")) {
+                    DownloadCacheOwnership.isLiveOwnedRoot(cache, directory)
+                } else {
+                    TerminalCacheOwnership.isLiveOwnedRoot(directory)
+                }
+            }
             .flatMap { (directory, marker, cache) ->
                 val explicitFiles = if (marker.name.startsWith(".ytdlnisx-download-owner-")) {
                     DownloadCacheOwnership.listArtifactFiles(

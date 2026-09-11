@@ -1,6 +1,7 @@
 package com.ireum.ytdl.util.storage
 
 import com.google.gson.Gson
+import com.ireum.ytdl.work.TerminalExecutionRegistry
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.Files
@@ -125,6 +126,19 @@ internal object TerminalCacheOwnership {
         return fields["version"] == VERSION &&
             fields["taskToken"].orEmpty().isNotBlank() &&
             (taskToken == null || fields["taskToken"] == taskToken)
+    }
+
+    /** True only for a marker bound to an execution that is live in-process. */
+    fun isLiveOwnedRoot(directory: File): Boolean {
+        val root = runCatching { directory.canonicalFile }.getOrNull() ?: return false
+        val marker = markerFile(root)
+        val fields = runCatching {
+            if (marker.isFile) parse(marker.readText()) else emptyMap()
+        }.getOrNull() ?: return false
+        val token = fields["taskToken"].orEmpty()
+        return fields["version"] == VERSION &&
+            token.isNotBlank() &&
+            TerminalExecutionRegistry.isActiveNow(token)
     }
 
     /**

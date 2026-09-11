@@ -81,42 +81,60 @@ class AppCacheManager(private val context: Context) {
         )
     }
 
-    fun delete(categories: Set<AppCacheCategory>): AppCacheDeletionResult {
-        val targets = targets()
-        var deletedBytes = 0L
-        var deletedFiles = 0
-        var failedEntries = 0
-        val skipped = linkedSetOf<AppCacheCategory>()
+    suspend fun delete(categories: Set<AppCacheCategory>): AppCacheDeletionResult =
+        CacheMaintenanceAuthority.withMaintenanceWindow {
+            val targets = targets()
+            var deletedBytes = 0L
+            var deletedFiles = 0
+            var failedEntries = 0
+            val skipped = linkedSetOf<AppCacheCategory>()
 
-        categories.forEach { category ->
-            val target = targets[category]
-            if (target == null || !target.available) {
-                skipped += category
-                return@forEach
-            }
-            val entries = collectEntries(target)
-                .sortedByDescending { it.toPath().nameCount }
-            entries.forEach { entry ->
-                val wasFile = entry.isFile
-                val size = if (wasFile) entry.length().coerceAtLeast(0L) else 0L
-                if (entry.delete() || !entry.exists()) {
-                    if (wasFile) {
-                        deletedBytes += size
-                        deletedFiles++
+            categories.forEach { category ->
+                val target = targets[category]
+                if (target == null || !target.available) {
+                    skipped += category
+                    return@forEach
+                }
+                val entries = collectEntries(target)
+                    .sortedByDescending { it.toPath().nameCount }
+                entries.forEach { entry ->
+                    if (isLiveOwnedEntry(target.root, entry)) {
+                        failedEntries++
+                        return@forEach
                     }
-                } else {
-                    failedEntries++
+                    val wasFile = entry.isFile
+                    val size = if (wasFile) entry.length().coerceAtLeast(0L) else 0L
+                    if (entry.delete() || !entry.exists()) {
+                        if (wasFile) {
+                            deletedBytes += size
+                            deletedFiles++
+                        }
+                    } else {
+                        failedEntries++
+                    }
                 }
             }
+
+            AppCacheDeletionResult(
+                requestedCategories = categories,
+                deletedBytes = deletedBytes,
+                deletedFiles = deletedFiles,
+                failedEntries = failedEntries,
+                skippedCategories = skipped
+            )
         }
 
-        return AppCacheDeletionResult(
-            requestedCategories = categories,
-            deletedBytes = deletedBytes,
-            deletedFiles = deletedFiles,
-            failedEntries = failedEntries,
-            skippedCategories = skipped
-        )
+    private fun isLiveOwnedEntry(targetRoot: File, entry: File): Boolean {
+        val root = runCatching { targetRoot.canonicalFile }.getOrNull() ?: return true
+        val canonical = runCatching { entry.canonicalFile }.getOrNull() ?: return true
+        var current: File? = canonical
+        while (current != null && current != root) {
+            if (DownloadCacheOwnership.isLiveOwnedMarker(root, current)) return true
+            if (DownloadCacheOwnership.isLiveOwnedRoot(root, current)) return true
+            if (TerminalCacheOwnership.isLiveOwnedRoot(current)) return true
+            current = current.parentFile
+        }
+        return false
     }
 
     private fun targets(): Map<AppCacheCategory, Target> {

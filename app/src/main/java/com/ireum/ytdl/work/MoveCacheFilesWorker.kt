@@ -18,9 +18,12 @@ import com.ireum.ytdl.R
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.storage.CacheImportArtifact
+import com.ireum.ytdl.util.storage.CacheMaintenanceAuthority
 import com.ireum.ytdl.util.storage.CacheImportPlanner
 import java.io.File
 import java.nio.file.Files
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 
 class MoveCacheFilesWorker(
@@ -32,8 +35,6 @@ class MoveCacheFilesWorker(
         val id = System.currentTimeMillis().toInt()
 
         val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
-        val manifest = CacheImportPlanner.collect(cacheRoot)
-        val totalFiles = manifest.size
         val destination = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath +
                 File.separator +
@@ -50,17 +51,22 @@ class MoveCacheFilesWorker(
             setForegroundAsync(ForegroundInfo(id, notification))
         }
 
-        if (manifest.isEmpty()) {
-            notificationUtil.updateCacheMovingNotification(id, 0, 0)
-        }
-
         return runCatching {
-            if (!destination.exists() && !destination.mkdirs() && !destination.isDirectory) {
-                throw IllegalStateException("Could not create cache import destination")
-            }
-            manifest.forEachIndexed { index, artifact ->
-                notificationUtil.updateCacheMovingNotification(id, index + 1, totalFiles)
-                moveExact(artifact, destination)
+            runBlocking(Dispatchers.IO) {
+                CacheMaintenanceAuthority.withMaintenanceWindow {
+                    val manifest = CacheImportPlanner.collect(cacheRoot)
+                    val totalFiles = manifest.size
+                    if (manifest.isEmpty()) {
+                        notificationUtil.updateCacheMovingNotification(id, 0, 0)
+                    }
+                    if (!destination.exists() && !destination.mkdirs() && !destination.isDirectory) {
+                        throw IllegalStateException("Could not create cache import destination")
+                    }
+                    manifest.forEachIndexed { index, artifact ->
+                        notificationUtil.updateCacheMovingNotification(id, index + 1, totalFiles)
+                        moveExact(artifact, destination)
+                    }
+                }
             }
         }.fold(
             onSuccess = {
