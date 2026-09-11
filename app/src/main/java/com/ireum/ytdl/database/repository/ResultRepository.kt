@@ -625,7 +625,7 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
         }
         return MetadataEnrichmentResolver.resolveFreshFirst(
             loadFresh = { fetchSingleMetadataFromSource(inputQuery) },
-            loadCached = { ytdlpUtil.getCachedInfoJsonResultOrThrow(inputQuery) },
+            loadCached = { loadCachedMetadata(inputQuery) },
             isUsable = ResultMetadataMergePolicy::isUsable,
             needsFallback = ResultMetadataMergePolicy::needsFallback,
             merge = ResultMetadataMergePolicy::merge,
@@ -633,12 +633,47 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
     }
 
     private suspend fun fetchSingleMetadataFromSource(inputQuery: String): ResultItem? {
-        return getResultsFromSource(
-            inputQuery,
-            resetResults = false,
-            addToResults = false,
-            singleItem = true
-        ).firstOrNull()
+        val testLoader = ResultRepositoryMetadataTestHooks.freshMetadataForTesting
+        val fetched = if (testLoader != null) {
+            testLoader(inputQuery)
+        } else {
+            getResultsFromSource(
+                inputQuery,
+                resetResults = false,
+                addToResults = false,
+                singleItem = true
+            ).firstOrNull()
+        }
+        if (fetched != null && !matchesRequestedMetadataSource(inputQuery, fetched)) {
+            android.util.Log.w(
+                "ResultRepository",
+                "Ignoring fresh metadata whose source does not match the requested URL"
+            )
+            return null
+        }
+        return fetched
+    }
+
+    private suspend fun loadCachedMetadata(inputQuery: String): ResultItem? {
+        val testLoader = ResultRepositoryMetadataTestHooks.cachedMetadataForTesting
+        return if (testLoader != null) {
+            testLoader(inputQuery)
+        } else {
+            ytdlpUtil.getCachedInfoJsonResultOrThrow(inputQuery)
+        }
+    }
+
+    private fun matchesRequestedMetadataSource(
+        requestedSource: String,
+        candidate: ResultItem,
+    ): Boolean {
+        val sourceIdentity = candidate.sourceIdentity ?: ExtractorSourceIdentity(
+            canonicalUrl = candidate.url.trim(),
+        )
+        return ExtractorSourceIdentityPolicy.matchesRequestedSource(
+            requestedSource = requestedSource.trim(),
+            identity = sourceIdentity,
+        )
     }
 
     suspend fun getSingleMetadataFromUrl(inputUrl: String): ResultItem? {
@@ -646,15 +681,7 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
         if (!LinkUtil.isExtractorInput(normalizedUrl)) return null
 
         val fetched = getSingleMetadataFromSource(normalizedUrl) ?: return null
-        val fetchedUrl = fetched.url.trim()
-        val sourceIdentity = fetched.sourceIdentity ?: ExtractorSourceIdentity(
-            canonicalUrl = fetchedUrl,
-        )
-        val matchesSource = ExtractorSourceIdentityPolicy.matchesRequestedSource(
-            requestedSource = normalizedUrl,
-            identity = sourceIdentity,
-        )
-        if (!matchesSource) {
+        if (!matchesRequestedMetadataSource(normalizedUrl, fetched)) {
             android.util.Log.w(
                 "ResultRepository",
                 "Ignoring metadata whose source does not match the requested URL"
@@ -700,7 +727,7 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
             DownloadMetadataLookupOrder.CACHE_FIRST -> {
                 MetadataEnrichmentResolver.enrichCacheFirst(
                     loadCached = {
-                        ytdlpUtil.getCachedInfoJsonResultOrThrow(downloadItem.url)
+                        loadCachedMetadata(downloadItem.url)
                     },
                     loadFresh = {
                         fetchSingleMetadataFromSource(downloadItem.url)
@@ -754,4 +781,15 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
         return changed
     }
 
+}
+
+/** Null-default seam for deterministic metadata-enrichment production tests. */
+internal object ResultRepositoryMetadataTestHooks {
+    var freshMetadataForTesting: (suspend (String) -> ResultItem?)? = null
+    var cachedMetadataForTesting: (suspend (String) -> ResultItem?)? = null
+
+    fun clearForTesting() {
+        freshMetadataForTesting = null
+        cachedMetadataForTesting = null
+    }
 }
