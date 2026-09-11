@@ -137,6 +137,15 @@ class ObserveSourceWorker(
             .flatMap { historyRepo.getItemsByUrl(it) }
             .distinctBy { it.id }
 
+    private suspend fun startObserveDownloads(
+        downloadRepo: DownloadRepository,
+        queuedItems: List<DownloadItem>,
+    ): kotlin.Result<String> {
+        return ObserveSourceWorkerEffectTestHooks.startDownloadWorkerForTesting
+            ?.invoke(queuedItems, context)
+            ?: downloadRepo.startDownloadWorker(queuedItems, context)
+    }
+
     private suspend fun updateRunStatus(
         repo: ObserveSourcesRepository,
         item: ObserveSourcesItem,
@@ -260,7 +269,8 @@ class ObserveSourceWorker(
         val handoffId = inputData.getString(INPUT_HANDOFF_ID).orEmpty()
         val handoffRequestId = inputData.getString(INPUT_HANDOFF_REQUEST_ID).orEmpty()
         return try {
-            val dbManager = DBManager.getInstance(context)
+            val dbManager = ObserveSourceWorkerEffectTestHooks.dbManagerForTesting
+                ?: DBManager.getInstance(context)
             if (handoffId.isNotBlank() && handoffRequestId.isNotBlank()) {
                 // A confirmed notification action has its own exact durable
                 // carrier.  Do not turn a fetch/queue failure into a normal
@@ -310,7 +320,8 @@ class ObserveSourceWorker(
         val handoffConfigFingerprint = inputData.getString(INPUT_CONFIG_FINGERPRINT).orEmpty()
 
         val notificationUtil = NotificationUtil(App.instance)
-        val dbManager = DBManager.getInstance(context)
+        val dbManager = ObserveSourceWorkerEffectTestHooks.dbManagerForTesting
+            ?: DBManager.getInstance(context)
         val workManager = WorkManager.getInstance(context)
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val repo = ObserveSourcesRepository(dbManager.observeSourcesDao, workManager, sharedPreferences)
@@ -360,7 +371,7 @@ class ObserveSourceWorker(
                         ) {
                             alarmScheduler.schedule()
                         } else {
-                            downloadRepo.startDownloadWorker(requeuedItems, context)
+                            startObserveDownloads(downloadRepo, requeuedItems)
                         }
                     }
                 } catch (error: Exception) {
@@ -394,12 +405,13 @@ class ObserveSourceWorker(
             dbManager.automaticKeywordRuleDao.getEnabledRulesForConditionKey(sourceConditionKey)
         }
         val sourceSnapshot = try {
-            resultRepository.getSourceSnapshotFromSource(
-                AutomaticKeywordNormalizer.canonicalPlaylistUrl(item.url) ?: item.url,
-                resetResults = false,
-                addToResults = false,
-                singleItem = false
-            )
+            ObserveSourceWorkerEffectTestHooks.sourceSnapshotForTesting?.invoke(item)
+                ?: resultRepository.getSourceSnapshotFromSource(
+                    AutomaticKeywordNormalizer.canonicalPlaylistUrl(item.url) ?: item.url,
+                    resetResults = false,
+                    addToResults = false,
+                    singleItem = false
+                )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -802,7 +814,8 @@ class ObserveSourceWorker(
 
         val confirmationCandidate = confirmationCandidates.firstOrNull()
         val canShowRetryConfirmation = confirmationCandidate != null &&
-            notificationUtil.canShowObserveRetryConfirmation()
+            (ObserveSourceWorkerEffectTestHooks.retryConfirmationAvailableForTesting
+                ?: notificationUtil.canShowObserveRetryConfirmation())
         confirmationCandidate?.let { candidate ->
             runMessage = if (canShowRetryConfirmation) {
                 context.getString(
@@ -989,7 +1002,7 @@ class ObserveSourceWorker(
             if (useScheduler && !alarmScheduler.isDuringTheScheduledTime() && alarmScheduler.canSchedule()){
                 alarmScheduler.schedule()
             }else {
-                downloadRepo.startDownloadWorker(queuedItems, context)
+                startObserveDownloads(downloadRepo, queuedItems)
             }
 
             runMessage = if (queuedItems.isEmpty() && confirmationCandidates.isNotEmpty()) {
@@ -1092,4 +1105,37 @@ class ObserveSourceWorker(
         }
     }
 
+}
+
+/**
+ * Test-only observation points for the real ObserveSourceWorker composition.
+ * These seams replace only external inputs/effects; the worker still performs
+ * its production filtering, baseline, absence-gate, persistence, and run
+ * scheduling decisions against the supplied Room database.
+ */
+internal object ObserveSourceWorkerEffectTestHooks {
+    /** Uses an in-memory Room database while exercising the real worker. */
+    @Volatile
+    internal var dbManagerForTesting: DBManager? = null
+
+    /** Supplies a typed source snapshot at the production extraction boundary. */
+    @Volatile
+    internal var sourceSnapshotForTesting:
+        (suspend (ObserveSourcesItem) -> SourceSnapshot)? = null
+
+    /** Captures queued downloads instead of starting a second real worker. */
+    @Volatile
+    internal var startDownloadWorkerForTesting:
+        (suspend (List<DownloadItem>, Context) -> kotlin.Result<String>)? = null
+
+    /** Controls the notification capability at the real retry-confirmation gate. */
+    @Volatile
+    internal var retryConfirmationAvailableForTesting: Boolean? = null
+
+    internal fun clearForTesting() {
+        dbManagerForTesting = null
+        sourceSnapshotForTesting = null
+        startDownloadWorkerForTesting = null
+        retryConfirmationAvailableForTesting = null
+    }
 }
