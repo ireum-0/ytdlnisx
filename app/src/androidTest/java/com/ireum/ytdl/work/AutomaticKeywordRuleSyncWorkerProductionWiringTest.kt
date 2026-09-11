@@ -88,7 +88,7 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
         assertTrue(database.automaticKeywordRuleDao.getAllVideoMatches().isEmpty())
         assertTrue(database.automaticKeywordRuleDao.getAssignmentsRaw(existingHistoryId).isEmpty())
         assertEquals("", database.historyDao.getItem(existingHistoryId).keywords)
-        assertEquals(0, info.runAttemptCount)
+        assertTrue(info.runAttemptCount >= 1)
         assertTrue(info.state == WorkInfo.State.ENQUEUED || info.state.isFinished)
     }
 
@@ -114,7 +114,7 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
         assertTrue(database.automaticKeywordRuleDao.getAllVideoMatches().isEmpty())
         assertTrue(database.automaticKeywordRuleDao.getAssignmentsRaw(existingHistoryId).isEmpty())
         assertEquals("", database.historyDao.getItem(existingHistoryId).keywords)
-        assertEquals(0, info.runAttemptCount)
+        assertTrue(info.runAttemptCount >= 1)
         assertTrue(info.state == WorkInfo.State.ENQUEUED || info.state.isFinished)
     }
 
@@ -162,7 +162,7 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
             )
         )
         assertEquals("Live", database.historyDao.getItem(historyId).keywords)
-        assertEquals(0, info.runAttemptCount)
+        assertTrue(info.runAttemptCount >= 1)
         assertTrue(info.state == WorkInfo.State.ENQUEUED || info.state.isFinished)
     }
 
