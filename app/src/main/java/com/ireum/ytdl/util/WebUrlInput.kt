@@ -101,10 +101,25 @@ object WebUrlInput {
         )
     }
 
+    /**
+     * Produces the destructive-comparison key used when URI fragments may be
+     * extractor-significant.  The existing strict key deliberately remains
+     * fragment-blind for its replacement-source contract.
+     */
+    fun strictSourceIdentityKeyPreservingFragment(value: String): String? {
+        return sourceKey(
+            value,
+            dropNonIdentifyingParameters = false,
+            strictSchemeIdentity = true,
+            preserveFragment = true,
+        )
+    }
+
     private fun sourceKey(
         value: String,
         dropNonIdentifyingParameters: Boolean,
         strictSchemeIdentity: Boolean = false,
+        preserveFragment: Boolean = false,
     ): String? {
         val trimmed = value.trim()
         if (trimmed.isBlank() || trimmed.any(Char::isWhitespace)) return null
@@ -140,6 +155,10 @@ object WebUrlInput {
             port?.let { append(":$it") }
             append(path)
             append(query)
+            if (preserveFragment && parsed.rawFragment != null) {
+                append('#')
+                append(parsed.rawFragment)
+            }
         }
     }
 
@@ -167,6 +186,7 @@ object WebUrlInput {
             port = uri.port,
             rawPath = uri.rawPath,
             rawQuery = uri.rawQuery,
+            rawFragment = uri.rawFragment,
         )
     }
 
@@ -203,6 +223,7 @@ object WebUrlInput {
         val port: Int,
         val rawPath: String?,
         val rawQuery: String?,
+        val rawFragment: String?,
     )
 
     private val NON_IDENTIFYING_QUERY_PARAMETERS = setOf(

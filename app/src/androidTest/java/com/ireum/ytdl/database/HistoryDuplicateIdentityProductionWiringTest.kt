@@ -76,6 +76,15 @@ class HistoryDuplicateIdentityProductionWiringTest {
         assertEquals(setOf(1L, 2L, 3L, 4L), database.historyDao.getAllDownloaded().map { it.id }.toSet())
     }
 
+    @Test
+    fun selectorDoesNotGroupExtractorSignificantFragmentSources() {
+        insert(history(1, "http://video.sina.com.cn/#250576776", "Same title", 20))
+        insert(history(2, "http://video.sina.com.cn/#250576777", "Same title", 10))
+
+        assertTrue(repository.getDuplicateGroups().isEmpty())
+        assertEquals(setOf(1L, 2L), database.historyDao.getAllDownloaded().map { it.id }.toSet())
+    }
+
     private fun insert(item: HistoryItem) {
         database.historyDao.insertAndGetIdRaw(item)
     }

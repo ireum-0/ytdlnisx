@@ -63,6 +63,34 @@ class HistoryDuplicateIdentityTest {
     }
 
     @Test
+    fun genericExtractorSignificantFragmentsRemainIdentifying() {
+        assertFalse(
+            HistoryDuplicateIdentity.matches(
+                DownloadType.video,
+                "http://video.sina.com.cn/#250576776",
+                DownloadType.video,
+                "http://video.sina.com.cn/#250576777",
+            )
+        )
+        assertTrue(
+            HistoryDuplicateIdentity.matches(
+                DownloadType.video,
+                "http://video.sina.com.cn/#250576776",
+                DownloadType.video,
+                "http://video.sina.com.cn/#250576776",
+            )
+        )
+        assertFalse(
+            HistoryDuplicateIdentity.matches(
+                DownloadType.video,
+                "https://example.com/video",
+                DownloadType.video,
+                "https://example.com/video#",
+            )
+        )
+    }
+
+    @Test
     fun genericCanonicalWebIdentityCanGroupWithoutTitle() {
         assertTrue(
             HistoryDuplicateIdentity.matches(

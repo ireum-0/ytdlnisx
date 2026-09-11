@@ -39,9 +39,10 @@ internal object HistoryDuplicateIdentity {
         }
 
         // Piped/other providers and generic web sources remain host-, scheme-,
-        // path-, and query-sensitive.  In particular HTTP and HTTPS are not
-        // collapsed, and meaningful query parameters remain identifying.
-        return WebUrlInput.strictSourceIdentityKey(trimmed)?.let { strictKey ->
+        // path-, query-, and fragment-sensitive.  In particular HTTP and
+        // HTTPS are not collapsed, and meaningful query parameters remain
+        // identifying.
+        return WebUrlInput.strictSourceIdentityKeyPreservingFragment(trimmed)?.let { strictKey ->
             Key(type, SourceKind.WEB_URL, strictKey)
         }
     }
