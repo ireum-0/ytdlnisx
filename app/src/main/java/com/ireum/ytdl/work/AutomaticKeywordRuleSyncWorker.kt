@@ -8,6 +8,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.models.AutomaticKeywordRule
 import com.ireum.ytdl.database.models.AutomaticKeywordSyncError
 import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
 import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
@@ -29,7 +30,8 @@ class AutomaticKeywordRuleSyncWorker(
     override suspend fun doWork(): Result {
         val ruleId = inputData.getLong(INPUT_RULE_ID, 0)
         if (ruleId <= 0) return Result.failure()
-        val db = DBManager.getInstance(applicationContext)
+        val db = AutomaticKeywordRuleSyncWorkerTestHooks.dbManagerForTesting
+            ?: DBManager.getInstance(applicationContext)
         val dao = db.automaticKeywordRuleDao
         val rule = dao.getRule(ruleId) ?: return Result.success()
         if (!rule.enabled) return Result.success()
@@ -75,12 +77,15 @@ class AutomaticKeywordRuleSyncWorker(
                 db.commandTemplateDao,
                 applicationContext
             )
-            val snapshot = resultRepository.getSourceSnapshotFromSource(
-                rule.conditionValue,
-                resetResults = false,
-                addToResults = false,
-                singleItem = false
-            )
+            val snapshot = AutomaticKeywordRuleSyncWorkerTestHooks.sourceSnapshotForTesting
+                ?.invoke(rule)
+                ?: resultRepository.getSourceSnapshotFromSource(
+                    rule.conditionValue,
+                    resetResults = false,
+                    addToResults = false,
+                    singleItem = false
+                )
+            AutomaticKeywordRuleSyncWorkerTestHooks.afterFetchForTesting?.invoke(db, rule)
             when (snapshot.authority) {
                 SourceSnapshot.Authority.FAILED -> {
                     throw snapshot.cause ?: IllegalStateException(
@@ -173,5 +178,31 @@ class AutomaticKeywordRuleSyncWorker(
             "extract" in message || "yt-dlp" in message -> AutomaticKeywordSyncError.EXTRACTION
             else -> AutomaticKeywordSyncError.UNKNOWN
         }
+    }
+}
+
+/**
+ * Test-only seams for the real automatic-keyword sync worker.  Hooks replace
+ * only external persistence/extraction inputs; authority checks, rule
+ * revision validation, engine selection, and status writes remain production
+ * code executed against the supplied Room database.
+ */
+internal object AutomaticKeywordRuleSyncWorkerTestHooks {
+    @Volatile
+    internal var dbManagerForTesting: DBManager? = null
+
+    @Volatile
+    internal var sourceSnapshotForTesting:
+        (suspend (AutomaticKeywordRule) -> SourceSnapshot)? = null
+
+    /** Runs after extraction and before the worker re-reads the rule. */
+    @Volatile
+    internal var afterFetchForTesting:
+        (suspend (DBManager, AutomaticKeywordRule) -> Unit)? = null
+
+    internal fun clearForTesting() {
+        dbManagerForTesting = null
+        sourceSnapshotForTesting = null
+        afterFetchForTesting = null
     }
 }

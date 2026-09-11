@@ -12,6 +12,9 @@ import androidx.work.WorkManager
 import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
+import com.ireum.ytdl.database.models.AutomaticKeywordRule
+import com.ireum.ytdl.database.models.AutomaticKeywordRuleKeyword
+import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
@@ -22,6 +25,7 @@ import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.util.LinkUtil
+import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.SourceSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -31,6 +35,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -219,6 +224,52 @@ class ObserveSourceWorkerProductionWiringTest {
         val persisted = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
         assertEquals(0, persisted.runCount)
         assertTrue(queuedItems.isEmpty())
+    }
+
+    @Test
+    fun managedKeywordDiscoveryUsesSourceAuthorityThroughProductionWorker() = runBlocking {
+        val historyId = database.historyDao.insertAndGetIdRaw(history("https://youtu.be/discovered"))
+        val ruleId = database.automaticKeywordRuleDao.insertRule(
+            AutomaticKeywordRule(
+                conditionValue = "https://www.youtube.com/playlist?list=production",
+                conditionKey = "youtube:playlist:production",
+                playlistName = "Production playlist",
+                baselineComplete = true,
+            )
+        )
+        database.automaticKeywordRuleDao.insertRuleKeywords(
+            listOf(AutomaticKeywordRuleKeyword(ruleId, "live", "Live", 0))
+        )
+        val sourceId = insertSource(
+            alreadyProcessedLinks = mutableListOf("https://youtu.be/discovered"),
+        )
+        val video = result("https://youtu.be/discovered")
+
+        runWorker(sourceId, SourceSnapshot.partial(listOf(video), "partial membership"))
+
+        var rule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        assertEquals(AutomaticKeywordSyncStatus.PARTIAL, rule.discoveryStatus)
+        assertNull(
+            database.automaticKeywordRuleDao.getVideoMatch(
+                ruleId,
+                AutomaticKeywordNormalizer.videoKey(video.url),
+            )
+        )
+        assertEquals("", database.historyDao.getItem(historyId).keywords)
+
+        runWorker(sourceId, SourceSnapshot.authoritative(listOf(video)))
+
+        rule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        assertEquals(AutomaticKeywordSyncStatus.SUCCESS, rule.discoveryStatus)
+        assertTrue(
+            requireNotNull(
+                database.automaticKeywordRuleDao.getVideoMatch(
+                    ruleId,
+                    AutomaticKeywordNormalizer.videoKey(video.url),
+                )
+            ).eligibleForAssignment
+        )
+        assertEquals("Live", database.historyDao.getItem(historyId).keywords)
     }
 
     private suspend fun insertSource(
