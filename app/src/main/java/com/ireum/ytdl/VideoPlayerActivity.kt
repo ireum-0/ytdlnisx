@@ -83,6 +83,7 @@ import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.util.player.PlaybackQueuePreparedData
 import com.ireum.ytdl.util.player.PlaybackQueueState
+import com.ireum.ytdl.util.player.PlaybackPositionPersistence
 import com.squareup.picasso.Picasso
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -4783,9 +4784,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun savePlaybackPositionForHistoryId(historyId: Long, positionMs: Long) {
         playbackQueueState.recordPlaybackPosition(historyId, positionMs)
         cachePlaybackPosition(historyId, positionMs)
-        lifecycleScope.launch(Dispatchers.IO) {
-            DBManager.getInstance(this@VideoPlayerActivity).historyDao.updatePlaybackPosition(historyId, positionMs)
-        }
+        PlaybackPositionPersistence.submit(this, historyId, positionMs)
     }
 
     private fun resetRecentWatch(historyId: Long) {
