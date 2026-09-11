@@ -58,6 +58,7 @@ internal object HistoryDuplicateIdentity {
         val host = runCatching { URI(dispatchValue).host?.lowercase(Locale.ROOT) }.getOrNull()
             ?: return false
         return host == "youtu.be" ||
+            host == "www.youtu.be" ||
             host.endsWith(".youtube.com") ||
             host.endsWith(".youtube-nocookie.com") ||
             host == "youtube.com" ||

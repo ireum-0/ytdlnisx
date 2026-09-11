@@ -20,6 +20,14 @@ class HistoryDuplicateIdentityTest {
                 youtubeShort,
             )
         )
+        assertTrue(
+            HistoryDuplicateIdentity.matches(
+                DownloadType.video,
+                youtubeWatch,
+                DownloadType.video,
+                "https://www.youtu.be/dQw4w9WgXcQ",
+            )
+        )
     }
 
     @Test

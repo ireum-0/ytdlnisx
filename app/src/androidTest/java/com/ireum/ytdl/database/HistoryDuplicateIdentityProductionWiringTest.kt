@@ -20,7 +20,6 @@ import org.junit.runner.RunWith
 class HistoryDuplicateIdentityProductionWiringTest {
     private lateinit var database: DBManager
     private lateinit var repository: HistoryRepository
-    private val insertedIds = mutableListOf<Long>()
 
     @Before
     fun openDatabase() {
@@ -78,7 +77,7 @@ class HistoryDuplicateIdentityProductionWiringTest {
     }
 
     private fun insert(item: HistoryItem) {
-        insertedIds += database.historyDao.insertAndGetIdRaw(item)
+        database.historyDao.insertAndGetIdRaw(item)
     }
 
     private fun history(
