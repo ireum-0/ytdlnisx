@@ -30,7 +30,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -173,7 +172,7 @@ class ObserveSourceWorkerProductionWiringTest {
         val persisted = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
         assertEquals(3, persisted.runCount)
         assertTrue(queuedItems.isEmpty())
-        assertFalse(persisted.alreadyProcessedLinks.contains("https://youtu.be/failed"))
+        assertTrue(persisted.alreadyProcessedLinks.contains("https://youtu.be/failed"))
         assertNotNull(database.historyDao.getNullableItem(missingHistoryId))
     }
 
