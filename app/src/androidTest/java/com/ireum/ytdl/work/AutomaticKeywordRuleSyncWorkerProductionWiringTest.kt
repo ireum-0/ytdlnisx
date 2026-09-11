@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.BackoffPolicy
 import androidx.work.Data
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
@@ -38,6 +39,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Drives AutomaticKeywordRuleSyncWorker through WorkManager and an in-memory
@@ -262,6 +264,84 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
         assertEquals("", database.historyDao.getItem(historyId).keywords)
     }
 
+    @Test
+    fun partialRetriesReachExhaustionWithoutGrantingBaselineOrApplyExistingAuthority() = runBlocking {
+        val existingHistoryId = insertHistory("https://youtu.be/existing")
+        val ruleId = insertRule(
+            baselineComplete = false,
+            pendingApplyToExisting = true,
+        )
+        val attempts = AtomicInteger(0)
+
+        val info = runWorkerToExhaustion(
+            ruleId,
+            SourceSnapshot.partial(emptyList(), "incomplete source"),
+            attempts,
+        )
+
+        val rule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        assertEquals(3, attempts.get())
+        assertEquals(3, info.runAttemptCount)
+        assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+        assertEquals(AutomaticKeywordSyncStatus.PARTIAL, rule.manualSyncStatus)
+        assertFalse(rule.baselineComplete)
+        assertTrue(rule.pendingApplyToExisting)
+        assertTrue(database.automaticKeywordRuleDao.getAllVideoMatches().isEmpty())
+        assertTrue(database.automaticKeywordRuleDao.getAssignmentsRaw(existingHistoryId).isEmpty())
+        assertEquals("", database.historyDao.getItem(existingHistoryId).keywords)
+    }
+
+    @Test
+    fun failedRetriesReachExhaustionWithoutGrantingSemanticAuthority() = runBlocking {
+        val historyId = insertHistory("https://youtu.be/existing")
+        val ruleId = insertRule(baselineComplete = true)
+        database.automaticKeywordRuleDao.insertVideoMatch(
+            AutomaticKeywordRuleVideoMatch(
+                ruleId = ruleId,
+                videoKey = AutomaticKeywordNormalizer.videoKey("https://youtu.be/existing"),
+                videoUrl = "https://youtu.be/existing",
+                eligibleForAssignment = true,
+                firstSeenAt = 1L,
+            )
+        )
+        HistoryKeywordAssignmentRepository(database).replaceSourceKeywords(
+            historyId,
+            HistoryKeywordAssignmentSources.RULE,
+            ruleId,
+            listOf("Live"),
+        )
+        val beforeAssignments = database.automaticKeywordRuleDao.getAssignmentsRaw(historyId)
+        val beforeMatch = requireNotNull(
+            database.automaticKeywordRuleDao.getVideoMatch(
+                ruleId,
+                AutomaticKeywordNormalizer.videoKey("https://youtu.be/existing"),
+            )
+        )
+        val attempts = AtomicInteger(0)
+
+        val info = runWorkerToExhaustion(
+            ruleId,
+            SourceSnapshot.failed(IllegalStateException("network timeout"), "source unavailable"),
+            attempts,
+        )
+
+        val rule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        assertEquals(3, attempts.get())
+        assertEquals(3, info.runAttemptCount)
+        assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+        assertEquals(AutomaticKeywordSyncStatus.FAILED, rule.manualSyncStatus)
+        assertTrue(rule.baselineComplete)
+        assertEquals(beforeAssignments, database.automaticKeywordRuleDao.getAssignmentsRaw(historyId))
+        assertEquals(
+            beforeMatch,
+            database.automaticKeywordRuleDao.getVideoMatch(
+                ruleId,
+                AutomaticKeywordNormalizer.videoKey("https://youtu.be/existing"),
+            )
+        )
+        assertEquals("Live", database.historyDao.getItem(historyId).keywords)
+    }
+
     private suspend fun runWorker(
         ruleId: Long,
         snapshot: SourceSnapshot,
@@ -315,6 +395,55 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
         }
         workManager.cancelWorkById(request.id).result.get(10, TimeUnit.SECONDS)
         return observed
+    }
+
+    private suspend fun runWorkerToExhaustion(
+        ruleId: Long,
+        snapshot: SourceSnapshot,
+        attempts: AtomicInteger,
+    ): WorkInfo {
+        val currentRule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        database.automaticKeywordRuleDao.updateRule(
+            currentRule.copy(
+                manualSyncStatus = AutomaticKeywordSyncStatus.NEVER,
+                manualSyncAt = 0L,
+                manualSyncError = AutomaticKeywordSyncError.NONE,
+            )
+        )
+        AutomaticKeywordRuleSyncWorkerTestHooks.sourceSnapshotForTesting = {
+            attempts.incrementAndGet()
+            snapshot
+        }
+        val request = OneTimeWorkRequestBuilder<AutomaticKeywordRuleSyncWorker>()
+            .addTag("automatic-keyword-production-exhaustion-test")
+            .setInputData(
+                Data.Builder()
+                    .putLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, ruleId)
+                    .putString(
+                        AutomaticKeywordRuleSyncWorker.INPUT_MODE,
+                        "BASELINE_ONLY",
+                    )
+                    .build()
+            )
+            .setBackoffCriteria(
+                BackoffPolicy.LINEAR,
+                10L,
+                TimeUnit.SECONDS,
+            )
+            .build()
+        workManager.enqueue(request).result.get(10, TimeUnit.SECONDS)
+        return withTimeout(90_000L) {
+            while (true) {
+                val info = withContext(Dispatchers.IO) {
+                    workManager.getWorkInfoById(request.id).get(5, TimeUnit.SECONDS)
+                }
+                if (info?.state?.isFinished == true) {
+                    return@withTimeout requireNotNull(info)
+                }
+                delay(100L)
+            }
+            error("unreachable")
+        }
     }
 
     private suspend fun insertRule(
