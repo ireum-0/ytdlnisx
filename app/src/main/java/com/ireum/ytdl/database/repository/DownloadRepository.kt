@@ -191,6 +191,23 @@ class DownloadRepository(private val database: DBManager) {
         val snapshot: DownloadRemovalSnapshot?,
     )
 
+    /**
+     * Typed evidence captured by a status-scoped cleanup query.  The
+     * snapshot is only a candidate until the same Room transaction reloads
+     * the row and proves that the complete generation tuple is unchanged.
+     * This deliberately compares the full persisted item: status,
+     * execution/operation/retry identity, issue state, and output/config
+     * fields must all still describe the generation selected by cleanup.
+     */
+    private data class DownloadDeletionPrecondition(
+        val snapshot: DownloadItem,
+    ) {
+        val downloadId: Long
+            get() = snapshot.id
+
+        fun matches(current: DownloadItem?): Boolean = current == snapshot
+    }
+
     private data class PersistedHistoryRefusal(
         val issueCode: String,
         val issueStage: String,
@@ -305,8 +322,11 @@ class DownloadRepository(private val database: DBManager) {
         return downloadDao.insertAll(items)
     }
 
+    /** Explicit user action: delete every row that is current when the
+     * destructive transaction reaches it, regardless of the status observed
+     * by the preceding list query. */
     suspend fun deleteAll(): Set<String> =
-        deleteKnownUserRemoval(downloadDao.getAllDownloadsList())
+        deleteCurrentRowsById(downloadDao.getAllDownloadsList().map(DownloadItem::id))
 
     suspend fun delete(id: Long): Set<String> = removeDownload(id)
 
@@ -2834,31 +2854,35 @@ class DownloadRepository(private val database: DBManager) {
         deleteKnownUserRemoval(getQueuedDownloads())
 
     suspend fun deleteSaved(){
-        val saved = getSavedDownloads()
-        database.withTransaction {
-            database.historyReplacementBarrierDao.deleteForDownloadIds(
-                saved.map(DownloadItem::id)
-            )
-            downloadDao.deleteSaved()
-        }
+        deleteStatusScopedRows(
+            items = getSavedDownloads(),
+            deleteLinkedChildren = false,
+            deleteBarriers = true,
+            deleteCacheAfter = false,
+        )
     }
 
     suspend fun deleteProcessing(){
-        val processing = getAllProcessingDownloads()
-        database.withTransaction {
-            database.historyReplacementBarrierDao.deleteForDownloadIds(
-                processing.map(DownloadItem::id)
-            )
-            downloadDao.deleteProcessing()
-        }
+        deleteStatusScopedRows(
+            items = getAllProcessingDownloads(),
+            deleteLinkedChildren = false,
+            deleteBarriers = true,
+            deleteCacheAfter = false,
+        )
     }
 
     suspend fun deleteWithDuplicateStatus() {
-        downloadDao.deleteWithDuplicateStatus()
+        deleteStatusScopedRows(
+            items = downloadDao.getAllDownloadsList()
+                .filter { it.status == Status.Duplicate.name },
+            deleteLinkedChildren = false,
+            deleteBarriers = false,
+            deleteCacheAfter = false,
+        )
     }
 
     suspend fun deleteAllWithIDs(ids: List<Long>): Set<String> =
-        deleteKnownUserRemoval(downloadDao.getDownloadsByIdsSuspend(ids.distinct()))
+        deleteCurrentRowsById(ids)
 
     private suspend fun cancelByUserWithPublication(
         id: Long,
@@ -3747,24 +3771,97 @@ class DownloadRepository(private val database: DBManager) {
         return setOf(ledgerItem.operationId)
     }
 
-    private suspend fun deleteKnownUserRemoval(items: List<DownloadItem>): Set<String> {
-        if (items.isEmpty()) return emptySet()
-        val ids = items.map(DownloadItem::id).distinct()
+    /**
+     * Status/snapshot cleanup.  Every candidate is reloaded and compared
+     * inside the transaction before linked children, barriers, or the row are
+     * touched.  A newer retry/reclassification therefore leaves the current
+     * generation entirely intact, including its cache ownership.
+     */
+    private suspend fun deleteKnownUserRemoval(items: List<DownloadItem>): Set<String> =
+        deleteStatusScopedRows(
+            items = items,
+            deleteLinkedChildren = true,
+            deleteBarriers = true,
+            deleteCacheAfter = true,
+        )
+
+    private suspend fun deleteStatusScopedRows(
+        items: List<DownloadItem>,
+        deleteLinkedChildren: Boolean,
+        deleteBarriers: Boolean,
+        deleteCacheAfter: Boolean,
+    ): Set<String> {
+        val candidates = items
+            .map(::DownloadDeletionPrecondition)
+            .distinctBy(DownloadDeletionPrecondition::downloadId)
+        if (candidates.isEmpty()) return emptySet()
+
+        beforeStatusScopedDeletionTransactionForTesting?.invoke(
+            candidates.map(DownloadDeletionPrecondition::snapshot)
+        )
+
         val pendingTokensToRelease = linkedSetOf<String>()
+        val deletedItems = mutableListOf<DownloadItem>()
         val operationIds = database.withTransaction {
+            val affected = linkedSetOf<String>()
             val now = System.currentTimeMillis()
-            val affected = terminalizeLinkedChildren(
-                downloadIds = ids,
-                reason = REASON_USER_REMOVED,
-                now = now,
-                pendingTokensToRelease = pendingTokensToRelease,
-            )
-            database.historyReplacementBarrierDao.deleteForDownloadIds(ids)
-            downloadDao.deleteAllWithIDs(ids)
+            candidates.forEach { candidate ->
+                val current = downloadDao.getNullableDownloadById(candidate.downloadId)
+                if (!candidate.matches(current)) return@forEach
+
+                if (deleteLinkedChildren) {
+                    affected += terminalizeLinkedChildren(
+                        downloadIds = listOf(candidate.downloadId),
+                        reason = REASON_USER_REMOVED,
+                        now = now,
+                        pendingTokensToRelease = pendingTokensToRelease,
+                    )
+                }
+                if (deleteBarriers) {
+                    database.historyReplacementBarrierDao.deleteForDownloadIds(
+                        listOf(candidate.downloadId)
+                    )
+                }
+                downloadDao.delete(candidate.downloadId)
+                deletedItems += candidate.snapshot
+            }
             affected
         }
         pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
-        deleteCache(items)
+        if (deleteCacheAfter) deleteCache(deletedItems)
+        return operationIds
+    }
+
+    /**
+     * Explicit user deletion by current numeric ID.  It intentionally does
+     * not inherit a status snapshot predicate; the current row is read at
+     * the destructive boundary and then removed atomically with its linked
+     * state.  Snapshot/status cleanup uses deleteStatusScopedRows instead.
+     */
+    private suspend fun deleteCurrentRowsById(ids: List<Long>): Set<String> {
+        val distinctIds = ids.distinct()
+        if (distinctIds.isEmpty()) return emptySet()
+        val pendingTokensToRelease = linkedSetOf<String>()
+        val deletedItems = mutableListOf<DownloadItem>()
+        val operationIds = database.withTransaction {
+            val affected = linkedSetOf<String>()
+            val now = System.currentTimeMillis()
+            distinctIds.forEach { id ->
+                val current = downloadDao.getNullableDownloadById(id) ?: return@forEach
+                affected += terminalizeLinkedChildren(
+                    downloadIds = listOf(id),
+                    reason = REASON_USER_REMOVED,
+                    now = now,
+                    pendingTokensToRelease = pendingTokensToRelease,
+                )
+                database.historyReplacementBarrierDao.deleteForDownloadIds(listOf(id))
+                downloadDao.delete(id)
+                deletedItems += current
+            }
+            affected
+        }
+        pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
+        deleteCache(deletedItems)
         return operationIds
     }
 
@@ -4225,6 +4322,16 @@ class DownloadRepository(private val database: DBManager) {
         /** Test seam for a later failure in a rollback-capable child terminalization transaction. */
         @Volatile
         internal var terminalizeLinkedChildrenFailureForTesting: (() -> Exception?)? = null
+
+        /**
+         * Invoked after a status-scoped cleanup query and before its destructive
+         * Room transaction. Production leaves this null; instrumentation uses
+         * it to deterministically advance a row and prove stale cleanup is a
+         * no-op at the real mutation boundary.
+         */
+        @Volatile
+        internal var beforeStatusScopedDeletionTransactionForTesting:
+            (suspend (List<DownloadItem>) -> Unit)? = null
 
         internal fun isLivePendingRemovalToken(token: String): Boolean =
             synchronized(undoAuthorityLock) {
