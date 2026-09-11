@@ -45,6 +45,8 @@ import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import com.ireum.ytdl.util.SubtitleSelection
 import com.ireum.ytdl.util.VideoQualityPolicy
 import com.ireum.ytdl.util.WebUrlInput
+import com.ireum.ytdl.util.SourceSnapshot
+import com.ireum.ytdl.util.SourceSnapshotAuthority
 import com.ireum.ytdl.util.process.ProcessQuiescence
 import com.ireum.ytdl.work.DownloadOutputProvenance
 import com.google.gson.Gson
@@ -169,6 +171,47 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         processId = null,
         resultsGenerated = resultsGenerated,
     )
+
+    /**
+     * Source-list extraction with an explicit completeness contract.  The
+     * underlying source request uses yt-dlp's error-tolerant output mode, so a
+     * usable list (including an empty list) is not proof of authoritative
+     * source membership.  Keep that uncertainty visible to Observe instead of
+     * allowing a legacy List-only API to authorize absence reconciliation.
+     */
+    fun getFromYTDLSnapshot(
+        query: String,
+        singleItem: Boolean = false,
+        resultsGenerated: (results: List<ResultItem>) -> Unit,
+    ): SourceSnapshot {
+        return try {
+            val items = getFromYTDLInternal(
+                query = query,
+                singleItem = singleItem,
+                processId = null,
+                resultsGenerated = resultsGenerated,
+            )
+            SourceSnapshotAuthority.fromYtdlp(
+                items,
+                singleItem = singleItem,
+                // The source request is built with --ignore-errors and its
+                // line callback deliberately tolerates malformed children.
+                // Until a positive completeness signal exists, keep every
+                // typed extraction fail-closed (including one-item routes).
+                ignoredChildErrors = true,
+                diagnostic = "yt-dlp source extraction is error-tolerant",
+            )
+        } catch (cancelled: kotlin.coroutines.cancellation.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            SourceSnapshotAuthority.fromYtdlp(
+                emptyList(),
+                singleItem = singleItem,
+                executionFailure = error,
+                diagnostic = "yt-dlp source extraction failed",
+            )
+        }
+    }
 
     private fun getFromYTDLInternal(
         query: String,

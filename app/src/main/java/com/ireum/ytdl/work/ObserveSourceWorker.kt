@@ -41,6 +41,7 @@ import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SensitiveTextRedactor
+import com.ireum.ytdl.util.SourceSnapshot
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
 import com.ireum.ytdl.util.storage.DownloadArchiveIdentity
@@ -72,6 +73,20 @@ class ObserveSourceWorker(
         const val INPUT_HANDOFF_REQUEST_ID = "handoffRequestId"
         const val INPUT_CONFIG_FINGERPRINT = "configFingerprint"
         private const val OBS_DUP_LOG_TAG = "ObserveDuplicate"
+
+        internal fun permitsDestructiveAbsenceReconciliation(
+            authority: SourceSnapshot.Authority,
+        ): Boolean = authority == SourceSnapshot.Authority.AUTHORITATIVE
+
+        internal fun missingSourceLinksForDestructiveReconciliation(
+            authority: SourceSnapshot.Authority,
+            processedLinks: Collection<String>,
+            incomingCanonicalLinks: Set<String>,
+            canonicalize: (String) -> String,
+        ): List<String> {
+            if (!permitsDestructiveAbsenceReconciliation(authority)) return emptyList()
+            return processedLinks.filter { !incomingCanonicalLinks.contains(canonicalize(it)) }
+        }
     }
 
     private fun canonicalUrl(url: String): String {
@@ -363,19 +378,24 @@ class ObserveSourceWorker(
         } else {
             dbManager.automaticKeywordRuleDao.getEnabledRulesForConditionKey(sourceConditionKey)
         }
-        val sourceResult = kotlin.runCatching {
-            resultRepository.getResultsFromSource(
+        val sourceSnapshot = try {
+            resultRepository.getSourceSnapshotFromSource(
                 AutomaticKeywordNormalizer.canonicalPlaylistUrl(item.url) ?: item.url,
                 resetResults = false,
                 addToResults = false,
                 singleItem = false
             )
-        }.onFailure {
-            if (it is CancellationException) throw it
-            Log.e("observe", "Source fetch failed type=${it.javaClass.simpleName}")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.e("observe", "Source fetch failed type=${error.javaClass.simpleName}")
+            SourceSnapshot.failed(error, "Observe source extraction failed")
         }
-        if (sourceResult.isFailure) {
-            val error = sourceResult.exceptionOrNull()
+        if (sourceSnapshot.authority == SourceSnapshot.Authority.FAILED) {
+            val error = sourceSnapshot.cause
+                ?: IllegalStateException(
+                    sourceSnapshot.diagnostic.ifBlank { "Observe source extraction failed" }
+                )
             if (discoveryRuleSnapshots.isNotEmpty()) {
                 val discoveryAt = System.currentTimeMillis()
                 discoveryRuleSnapshots.forEach { rule ->
@@ -389,7 +409,7 @@ class ObserveSourceWorker(
                 }
             }
             if (handoffId.isNotBlank()) {
-                throw error ?: IllegalStateException("Confirmed Observe Retry fetch failed")
+                throw error
             }
             return finishRunAndSchedule(
                 repo = repo,
@@ -397,11 +417,19 @@ class ObserveSourceWorker(
                 sourceID = sourceID,
                 item = item,
                 message = context.getString(com.ireum.ytdl.R.string.observe_log_source_fetch_failed),
-                detail = SensitiveTextRedactor.redactOutput(error?.message.orEmpty()),
+                detail = SensitiveTextRedactor.redactOutput(error.message.orEmpty()),
                 countRun = false
             )
         }
-        val list = sourceResult.getOrThrow()
+        val list = sourceSnapshot.items
+        val sourceIsAuthoritative = permitsDestructiveAbsenceReconciliation(sourceSnapshot.authority)
+        if (sourceSnapshot.authority == SourceSnapshot.Authority.PARTIAL) {
+            Log.w(
+                "observe",
+                "Source fetch returned PARTIAL snapshot; absence reconciliation is disabled " +
+                    "diagnostic=${sourceSnapshot.diagnostic}",
+            )
+        }
         val sourceDiscoveryKeys = buildSet {
             item.managedConditionKey.takeIf(String::isNotBlank)?.let(::add)
             AutomaticKeywordNormalizer.playlistConditionKey(item.url)?.let(::add)
@@ -415,7 +443,7 @@ class ObserveSourceWorker(
                 discoveriesByKey.getOrPut(key, ::mutableListOf).add(video)
             }
         }
-        if (discoveriesByKey.isNotEmpty()) {
+        if (discoveriesByKey.isNotEmpty() && sourceIsAuthoritative) {
             val discoveryResult =
                 AutomaticKeywordRuleEngine(dbManager).recordDiscovery(discoveriesByKey)
             val discoveryAt = System.currentTimeMillis()
@@ -434,6 +462,17 @@ class ObserveSourceWorker(
                     } else {
                         AutomaticKeywordSyncError.DATABASE_PARTIAL
                     }
+                )
+            }
+        } else if (discoveryRuleSnapshots.isNotEmpty() && !sourceIsAuthoritative) {
+            val discoveryAt = System.currentTimeMillis()
+            discoveryRuleSnapshots.forEach { rule ->
+                dbManager.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
+                    rule.id,
+                    rule.revision,
+                    AutomaticKeywordSyncStatus.PARTIAL,
+                    discoveryAt,
+                    AutomaticKeywordSyncError.EXTRACTION,
                 )
             }
         }
@@ -455,13 +494,22 @@ class ObserveSourceWorker(
                 sharedPreferences = sharedPreferences,
                 sourceID = sourceID,
                 item = item,
-                message = context.getString(com.ireum.ytdl.R.string.automatic_keyword_discovery_complete),
-                countRun = true
+                message = if (sourceIsAuthoritative) {
+                    context.getString(com.ireum.ytdl.R.string.automatic_keyword_discovery_complete)
+                } else {
+                    context.getString(com.ireum.ytdl.R.string.observe_log_source_fetch_failed)
+                },
+                detail = if (sourceIsAuthoritative) "" else "PARTIAL_SOURCE_SNAPSHOT",
+                countRun = sourceIsAuthoritative
             )
         }
 
         //delete downloaded items not present in source if sync is enabled
-        if (item.syncWithSource && item.alreadyProcessedLinks.isNotEmpty()){
+        if (
+            sourceIsAuthoritative &&
+            item.syncWithSource &&
+            item.alreadyProcessedLinks.isNotEmpty()
+        ){
             val processedLinks = item.alreadyProcessedLinks
             val incomingLinks = list.map { canonicalUrl(it.url) }.toSet()
             Log.d(
@@ -469,7 +517,12 @@ class ObserveSourceWorker(
                 "sync check sourceId=$sourceID processed=${processedLinks.size} incoming=${incomingLinks.size}"
             )
 
-            val linksNotPresentAnymore = processedLinks.filter { !incomingLinks.contains(canonicalUrl(it)) }
+            val linksNotPresentAnymore = missingSourceLinksForDestructiveReconciliation(
+                authority = sourceSnapshot.authority,
+                processedLinks = processedLinks,
+                incomingCanonicalLinks = incomingLinks,
+                canonicalize = ::canonicalUrl,
+            )
             val historyItemsToRemove = linksNotPresentAnymore.flatMap { missingLink ->
                 val historyItems = getHistoryByEquivalentUrl(historyRepo, missingLink)
                 Log.d(
@@ -547,14 +600,24 @@ class ObserveSourceWorker(
                 .filter { ignoredCanonicalUrls.add(it) }
                 .forEach { item.ignoredLinks.add(it) }
 
-            val runMessage = if (list.isEmpty()) {
+            val runMessage = if (!sourceIsAuthoritative) {
+                context.getString(com.ireum.ytdl.R.string.observe_log_source_fetch_failed)
+            } else if (list.isEmpty()) {
                 context.getString(com.ireum.ytdl.R.string.observe_log_no_downloadable_videos)
             } else {
                 context.getString(com.ireum.ytdl.R.string.observe_log_all_already_downloaded)
             }
 
             resolveConfirmedRetry(handoffId, handoffRequestId)
-            return finishRunAndSchedule(repo, sharedPreferences, sourceID, item, runMessage)
+            return finishRunAndSchedule(
+                repo,
+                sharedPreferences,
+                sourceID,
+                item,
+                runMessage,
+                detail = if (sourceIsAuthoritative) "" else "PARTIAL_SOURCE_SNAPSHOT",
+                countRun = sourceIsAuthoritative,
+            )
         }
 
         val toProcess = mutableListOf<ResultItem>()
@@ -928,6 +991,17 @@ class ObserveSourceWorker(
         // death/late failure from replaying the notification decision.
         resolveConfirmedRetry(handoffId, handoffRequestId)
 
+        if (!sourceIsAuthoritative && !canShowRetryConfirmation) {
+            runMessage = context.getString(com.ireum.ytdl.R.string.observe_log_source_fetch_failed)
+            runDetail = listOf("PARTIAL_SOURCE_SNAPSHOT", runDetail)
+                .filter(String::isNotBlank)
+                .joinToString(" / ")
+        } else if (!sourceIsAuthoritative) {
+            runDetail = listOf("PARTIAL_SOURCE_SNAPSHOT", runDetail)
+                .filter(String::isNotBlank)
+                .joinToString(" / ")
+        }
+
         val result = finishRunAndSchedule(
             repo = repo,
             sharedPreferences = sharedPreferences,
@@ -935,7 +1009,7 @@ class ObserveSourceWorker(
             item = item,
             message = runMessage,
             detail = runDetail,
-            countRun = !canShowRetryConfirmation
+            countRun = sourceIsAuthoritative && !canShowRetryConfirmation
         )
 
         if (

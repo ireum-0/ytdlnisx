@@ -19,6 +19,8 @@ import com.ireum.ytdl.util.ExtractorSourceIdentityPolicy
 import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.MediaPublishedDate
 import com.ireum.ytdl.util.MetadataEnrichmentResolver
+import com.ireum.ytdl.util.SourceSnapshot
+import com.ireum.ytdl.util.SourceSnapshotAuthority
 import com.ireum.ytdl.util.WebUrlInput
 import com.ireum.ytdl.util.extractors.GoogleApiUtil
 import com.ireum.ytdl.util.extractors.newpipe.NewPipeUtil
@@ -475,6 +477,145 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
             }
         }
 
+    }
+
+    /**
+     * Source extraction with completeness authority preserved for consumers
+     * that make membership/absence decisions.  The existing List-returning
+     * API remains for positive-item callers; Observe must use this typed
+     * boundary so a partial extractor response cannot authorize deletion.
+     */
+    suspend fun getSourceSnapshotFromSource(
+        inputQuery: String,
+        resetResults: Boolean,
+        addToResults: Boolean = true,
+        singleItem: Boolean = false,
+    ): SourceSnapshot {
+        if (resetResults) deleteAll()
+        val snapshot = try {
+            if (WebUrlInput.routeInput(inputQuery) is WebUrlInput.InputRoute.UnsupportedExplicitScheme) {
+                SourceSnapshot.failed(
+                    diagnostic = "Unsupported source scheme",
+                )
+            } else {
+                when (getQueryType(inputQuery)) {
+                    SourceType.YOUTUBE_VIDEO -> getYoutubeVideoSnapshot(inputQuery)
+                    SourceType.YOUTUBE_WATCHVIDEOS -> getYoutubeWatchVideosSnapshot(inputQuery)
+                    SourceType.YOUTUBE_PLAYLIST -> {
+                        if (singleItem) {
+                            getFromYTDLPSnapshot(inputQuery, singleItem = true)
+                        } else {
+                            getYoutubePlaylistSnapshot(inputQuery)
+                        }
+                    }
+                    SourceType.YOUTUBE_CHANNEL -> {
+                        if (singleItem) {
+                            getFromYTDLPSnapshot(inputQuery, singleItem = true)
+                        } else {
+                            getYoutubeChannelSnapshot(inputQuery)
+                        }
+                    }
+                    SourceType.SEARCH_QUERY -> {
+                        SourceSnapshot.partial(
+                            search(inputQuery, resetResults = false, addToResults = false),
+                            diagnostic = "Search extraction has no source-membership completeness proof",
+                        )
+                    }
+                    SourceType.YT_DLP -> getFromYTDLPSnapshot(inputQuery, singleItem)
+                }
+            }
+        } catch (cancelled: kotlin.coroutines.cancellation.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            SourceSnapshot.failed(error, "Source extraction failed")
+        }
+
+        itemCount.value = snapshot.items.size
+        if (addToResults && snapshot.items.isNotEmpty()) {
+            insertAndSetIds(snapshot.items)
+        }
+        return snapshot
+    }
+
+    private fun getFromYTDLPSnapshot(
+        inputQuery: String,
+        singleItem: Boolean,
+    ): SourceSnapshot {
+        var itemCountFromCallback = 0
+        val snapshot = ytdlpUtil.getFromYTDLSnapshot(inputQuery, singleItem) { results ->
+            itemCountFromCallback += results.size
+            itemCount.value = itemCountFromCallback
+        }
+        snapshot.items
+            .filter { it.playlistTitle.isBlank() }
+            .forEach { it.playlistTitle = YTDLNIS_SEARCH }
+        return snapshot
+    }
+
+    private fun getYoutubeVideoSnapshot(inputQuery: String): SourceSnapshot {
+        val theURL = inputQuery.replace("\\?list.*".toRegex(), "")
+        val newpipeExtractorResult = if (isUsingNewPipeExtractorDataFetching()) {
+            newPipeUtil.getVideoData(theURL)
+        } else {
+            Result.failure(Throwable("NewPipe disabled"))
+        }
+        return if (newpipeExtractorResult.isSuccess) {
+            SourceSnapshot.authoritative(newpipeExtractorResult.getOrNull().orEmpty())
+        } else {
+            val youtubeID = inputQuery.getIDFromYoutubeURL()
+            val url = if (youtubeID == null) inputQuery else "https://youtu.be/${youtubeID}"
+            getFromYTDLPSnapshot(url, singleItem = true)
+        }
+    }
+
+    private fun getYoutubeWatchVideosSnapshot(inputQuery: String): SourceSnapshot {
+        var fetchedItems = 0
+        val newpipeExtractorResult = if (isUsingNewPipeExtractorDataFetching()) {
+            newPipeUtil.getPlaylistSnapshotData(inputQuery) { page ->
+                fetchedItems += page.size
+                itemCount.value = fetchedItems
+            }
+        } else {
+            SourceSnapshot.failed(diagnostic = "NewPipe disabled")
+        }
+        return SourceSnapshotAuthority.preserveOrFallback(newpipeExtractorResult) {
+            getFromYTDLPSnapshot(inputQuery, singleItem = false)
+        }
+    }
+
+    private fun getYoutubePlaylistSnapshot(inputQuery: String): SourceSnapshot {
+        val playlistId = inputQuery.substringAfter("list=", "").substringBefore("&")
+        if (playlistId.isBlank()) {
+            return SourceSnapshot.failed(diagnostic = "YouTube playlist has no list identity")
+        }
+        val playlistURL = "https://youtube.com/playlist?list=${playlistId}"
+        var fetchedItems = 0
+        val newpipeExtractorResult = if (isUsingNewPipeExtractorDataFetching()) {
+            newPipeUtil.getPlaylistSnapshotData(playlistURL) { page ->
+                fetchedItems += page.size
+                itemCount.value = fetchedItems
+            }
+        } else {
+            SourceSnapshot.failed(diagnostic = "NewPipe disabled")
+        }
+        return SourceSnapshotAuthority.preserveOrFallback(newpipeExtractorResult) {
+            getFromYTDLPSnapshot(inputQuery, singleItem = false)
+        }
+    }
+
+    private fun getYoutubeChannelSnapshot(inputQuery: String): SourceSnapshot {
+        var fetchedItems = 0
+        val newpipeExtractorResult = if (isUsingNewPipeExtractorDataFetching()) {
+            newPipeUtil.getChannelSnapshotData(inputQuery) { page ->
+                fetchedItems += page.size
+                itemCount.value = fetchedItems
+            }
+        } else {
+            SourceSnapshot.failed(diagnostic = "NewPipe disabled")
+        }
+        return SourceSnapshotAuthority.preserveOrFallback(newpipeExtractorResult) {
+            getFromYTDLPSnapshot(inputQuery, singleItem = false)
+        }
     }
 
     suspend fun getSingleMetadataFromSource(inputQuery: String): ResultItem? {

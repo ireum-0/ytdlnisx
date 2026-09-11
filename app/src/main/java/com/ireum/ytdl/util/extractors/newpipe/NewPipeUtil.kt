@@ -13,6 +13,8 @@ import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.MediaPublishedDate
 import com.ireum.ytdl.util.MediaPublishedDateParser
+import com.ireum.ytdl.util.SourceSnapshot
+import com.ireum.ytdl.util.SourceSnapshotAuthority
 import com.ireum.ytdl.util.extractors.newpipe.potoken.NewPipePoTokenGenerator
 import com.google.gson.Gson
 import okhttp3.OkHttpClient
@@ -187,46 +189,90 @@ class NewPipeUtil(context: Context) {
         }
     }
 
-    fun getChannelData(url: String, progress: (pagedResults: MutableList<ResultItem>) -> Unit) : Result<List<ResultItem>> {
+    /**
+     * Fetches a channel while retaining whether NewPipe proved complete
+     * membership.  The legacy [getChannelData] wrapper intentionally exposes
+     * only the items for non-destructive callers; Observe uses this typed
+     * result directly.
+     */
+    fun getChannelSnapshotData(
+        url: String,
+        progress: (pagedResults: MutableList<ResultItem>) -> Unit,
+    ): SourceSnapshot {
+        val totalItems = mutableListOf<ResultItem>()
+        var partial = false
+        var sawEligibleTab = false
         try {
             ensureLocalization()
-            //return Result.failure(Throwable())
             val req = ChannelInfo.getInfo(ServiceList.YouTube, url)
             println(Gson().toJson(req))
-            val items = mutableListOf<ResultItem>()
             for (tab in req.tabs) {
-                if (listOf("videos", "shorts", "livestreams").contains(tab.contentFilters[0])) {
-                    val tabInfo = ChannelTabInfo.getInfo(ServiceList.YouTube, tab)
-                    val tmp = getChannelTabData(tab, tabInfo, req.name, "${url}/${tabInfo.url.split("/").last()}") {
-                        progress(it)
-                    }
-                    if (tmp.isFailure) {
-                        return Result.failure(
-                            tmp.exceptionOrNull()
-                                ?: IllegalStateException("Failed to load a channel tab")
+                val filter = tab.contentFilters.firstOrNull() ?: continue
+                if (filter !in listOf("videos", "shorts", "livestreams")) continue
+                sawEligibleTab = true
+                val tabInfo = ChannelTabInfo.getInfo(ServiceList.YouTube, tab)
+                val tabSnapshot = getChannelTabSnapshotData(
+                    tab,
+                    tabInfo,
+                    req.name,
+                    "${url}/${tabInfo.url.split("/").last()}",
+                    progress,
+                )
+                totalItems.addAll(tabSnapshot.items)
+                when (tabSnapshot.authority) {
+                    SourceSnapshot.Authority.AUTHORITATIVE -> Unit
+                    SourceSnapshot.Authority.PARTIAL -> partial = true
+                    SourceSnapshot.Authority.FAILED -> {
+                        return SourceSnapshotAuthority.fromNewPipe(
+                            totalItems,
+                            extractionFailure = tabSnapshot.cause
+                                ?: IllegalStateException("NewPipe channel tab extraction failed"),
+                            diagnostic = "NewPipe channel tab extraction failed",
                         )
                     }
-                    items.addAll(tmp.getOrNull().orEmpty())
                 }
             }
-            return Result.success(items)
-        }catch (e: Exception) {
-            return Result.failure(e)
+            return when {
+                partial -> SourceSnapshot.partial(totalItems, "NewPipe channel extraction was incomplete")
+                !sawEligibleTab -> SourceSnapshot.partial(
+                    totalItems,
+                    "NewPipe channel returned no positively enumerable video tab",
+                )
+                else -> SourceSnapshot.authoritative(totalItems)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            return SourceSnapshotAuthority.fromNewPipe(
+                totalItems,
+                extractionFailure = error,
+                diagnostic = "NewPipe channel extraction failed",
+            )
         }
     }
 
-    private fun getChannelTabData(linkHandler: ListLinkHandler, tabInfo: ChannelTabInfo, channelName: String, playlistURL: String, progress: (pagedResults: MutableList<ResultItem>) -> Unit) : Result<List<ResultItem>> {
-        try {
-            val totalItems = mutableListOf<ResultItem>()
-            var nextPage : Page? = null
-            var playlistName = ""
+    fun getChannelData(
+        url: String,
+        progress: (pagedResults: MutableList<ResultItem>) -> Unit,
+    ): Result<List<ResultItem>> = getChannelSnapshotData(url, progress).toLegacyResult()
 
+    private fun getChannelTabSnapshotData(
+        linkHandler: ListLinkHandler,
+        tabInfo: ChannelTabInfo,
+        channelName: String,
+        playlistURL: String,
+        progress: (pagedResults: MutableList<ResultItem>) -> Unit,
+    ): SourceSnapshot {
+        val totalItems = mutableListOf<ResultItem>()
+        var nextPage: Page? = null
+        var playlistName = ""
+        var firstPage = true
+        var conversionDropped = false
+        try {
             while (true) {
                 val items = mutableListOf<ResultItem>()
                 val req = if (nextPage == null) {
-                    if (tabInfo.hasNextPage()) {
-                        nextPage = tabInfo.nextPage
-                    }
+                    if (tabInfo.hasNextPage()) nextPage = tabInfo.nextPage
                     playlistName = "$channelName - ${tabInfo.name}"
                     tabInfo.relatedItems.toList()
                 } else {
@@ -235,44 +281,78 @@ class NewPipeUtil(context: Context) {
                     tmp.items.toList()
                 }
 
-                if (req.isEmpty()) return Result.failure(Throwable())
-
-                for (element in req) {
-                    if (element is StreamInfoItem) {
-                        val v = createVideoFromStreamInfoItem(element, element.url) ?: continue
-                        v.apply {
-                            playlistTitle = playlistName
-                            this.playlistURL = playlistURL
-                            items.add(this)
-                        }
-                    }
+                if (req.isEmpty()) {
+                    return SourceSnapshotAuthority.fromNewPipe(
+                        totalItems,
+                        continuationIncomplete = !(firstPage && nextPage == null && !conversionDropped),
+                        diagnostic = "NewPipe channel page was empty or incomplete",
+                    )
                 }
 
+                for (element in req) {
+                    if (element !is StreamInfoItem) {
+                        conversionDropped = true
+                        continue
+                    }
+                    val video = createVideoFromStreamInfoItem(element, element.url)
+                    if (video == null) {
+                        conversionDropped = true
+                        continue
+                    }
+                    video.apply {
+                        playlistTitle = playlistName
+                        this.playlistURL = playlistURL
+                        items.add(this)
+                    }
+                }
+                if (items.size != req.size) conversionDropped = true
                 totalItems.addAll(items)
                 progress(items)
-                if (nextPage == null || items.isEmpty()) break
+                if (nextPage == null) break
+                if (items.isEmpty()) {
+                    return SourceSnapshotAuthority.fromNewPipe(
+                        totalItems,
+                        continuationIncomplete = true,
+                        diagnostic = "NewPipe channel continuation yielded no converted items",
+                    )
+                }
+                firstPage = false
             }
-
-            return Result.success(totalItems)
-        }catch (e: Exception) {
-            return Result.failure(e)
+            return SourceSnapshotAuthority.fromNewPipe(
+                totalItems,
+                conversionDropped = conversionDropped,
+                diagnostic = "NewPipe channel item conversion was incomplete",
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            return SourceSnapshotAuthority.fromNewPipe(
+                totalItems,
+                conversionDropped = conversionDropped,
+                continuationIncomplete = !firstPage,
+                extractionFailure = error,
+                diagnostic = "NewPipe channel tab extraction failed",
+            )
         }
     }
 
-    fun getPlaylistData(playlistURL: String, progress: (pagedResults: MutableList<ResultItem>) -> Unit) : Result<List<ResultItem>> {
+    /** Fetches a playlist and retains conversion/pagination completeness. */
+    fun getPlaylistSnapshotData(
+        playlistURL: String,
+        progress: (pagedResults: MutableList<ResultItem>) -> Unit,
+    ): SourceSnapshot {
+        val totalItems = mutableListOf<ResultItem>()
+        var nextPage: Page? = null
+        var playlistName = ""
+        var firstPage = true
+        var conversionDropped = false
         try {
             ensureLocalization()
-            val totalItems = mutableListOf<ResultItem>()
-            var nextPage : Page? = null
-            var playlistName = ""
-
             while (true) {
                 val items = mutableListOf<ResultItem>()
                 val req = if (nextPage == null) {
                     val tmp = PlaylistInfo.getInfo(ServiceList.YouTube, playlistURL)
-                    if (tmp.hasNextPage()) {
-                        nextPage = tmp.nextPage
-                    }
+                    if (tmp.hasNextPage()) nextPage = tmp.nextPage
                     playlistName = tmp.name
                     tmp.relatedItems.toList()
                 } else {
@@ -281,26 +361,72 @@ class NewPipeUtil(context: Context) {
                     tmp.items.toList()
                 }
 
-                for (element in req) {
-                    if (element is StreamInfoItem) {
-                        val v = createVideoFromStreamInfoItem(element, element.url) ?: continue
-                        v.apply {
-                            playlistTitle = playlistName
-                            this.playlistURL = playlistURL
-                            items.add(this)
-                        }
-                    }
+                if (req.isEmpty()) {
+                    return SourceSnapshotAuthority.fromNewPipe(
+                        totalItems,
+                        continuationIncomplete = !(firstPage && nextPage == null && !conversionDropped),
+                        diagnostic = "NewPipe playlist page was empty or incomplete",
+                    )
                 }
 
+                for (element in req) {
+                    if (element !is StreamInfoItem) {
+                        conversionDropped = true
+                        continue
+                    }
+                    val video = createVideoFromStreamInfoItem(element, element.url)
+                    if (video == null) {
+                        conversionDropped = true
+                        continue
+                    }
+                    video.apply {
+                        playlistTitle = playlistName
+                        this.playlistURL = playlistURL
+                        items.add(this)
+                    }
+                }
+                if (items.size != req.size) conversionDropped = true
                 totalItems.addAll(items)
                 progress(items)
-                if (nextPage == null || items.isEmpty()) break
+                if (nextPage == null) break
+                if (items.isEmpty()) {
+                    return SourceSnapshotAuthority.fromNewPipe(
+                        totalItems,
+                        continuationIncomplete = true,
+                        diagnostic = "NewPipe playlist continuation yielded no converted items",
+                    )
+                }
+                firstPage = false
             }
-
-            return Result.success(totalItems)
-        }catch (e: Exception) {
-            return Result.failure(e)
+            return SourceSnapshotAuthority.fromNewPipe(
+                totalItems,
+                conversionDropped = conversionDropped,
+                diagnostic = "NewPipe playlist item conversion was incomplete",
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            return SourceSnapshotAuthority.fromNewPipe(
+                totalItems,
+                conversionDropped = conversionDropped,
+                continuationIncomplete = !firstPage,
+                extractionFailure = error,
+                diagnostic = "NewPipe playlist extraction failed",
+            )
         }
+    }
+
+    fun getPlaylistData(
+        playlistURL: String,
+        progress: (pagedResults: MutableList<ResultItem>) -> Unit,
+    ): Result<List<ResultItem>> = getPlaylistSnapshotData(playlistURL, progress).toLegacyResult()
+
+    private fun SourceSnapshot.toLegacyResult(): Result<List<ResultItem>> = when (authority) {
+        SourceSnapshot.Authority.FAILED -> Result.failure(
+            cause ?: IllegalStateException(diagnostic.ifBlank { "NewPipe extraction failed" })
+        )
+        SourceSnapshot.Authority.AUTHORITATIVE,
+        SourceSnapshot.Authority.PARTIAL -> Result.success(items)
     }
 
 

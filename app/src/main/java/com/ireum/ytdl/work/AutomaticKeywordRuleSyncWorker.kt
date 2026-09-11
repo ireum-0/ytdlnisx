@@ -13,6 +13,7 @@ import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
 import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.SourceSnapshot
 import kotlinx.coroutines.CancellationException
 
 class AutomaticKeywordRuleSyncWorker(
@@ -69,16 +70,40 @@ class AutomaticKeywordRuleSyncWorker(
         )
         if (started == 0) return Result.success()
         return try {
-            val videos = ResultRepository(
+            val resultRepository = ResultRepository(
                 db.resultDao,
                 db.commandTemplateDao,
                 applicationContext
-            ).getResultsFromSource(
+            )
+            val snapshot = resultRepository.getSourceSnapshotFromSource(
                 rule.conditionValue,
                 resetResults = false,
                 addToResults = false,
                 singleItem = false
             )
+            when (snapshot.authority) {
+                SourceSnapshot.Authority.FAILED -> {
+                    throw snapshot.cause ?: IllegalStateException(
+                        snapshot.diagnostic.ifBlank { "Source extraction failed" }
+                    )
+                }
+                SourceSnapshot.Authority.PARTIAL -> {
+                    dao.updateManualSyncStatusIfRevision(
+                        ruleId,
+                        rule.revision,
+                        AutomaticKeywordSyncStatus.PARTIAL,
+                        System.currentTimeMillis(),
+                        AutomaticKeywordSyncError.EXTRACTION,
+                    )
+                    return if (runAttemptCount + 1 < MAX_ATTEMPTS) {
+                        Result.retry()
+                    } else {
+                        Result.success()
+                    }
+                }
+                SourceSnapshot.Authority.AUTHORITATIVE -> Unit
+            }
+            val videos = snapshot.items
             val currentRule = dao.getRule(ruleId)
             if (currentRule == null || !currentRule.enabled || currentRule.revision != rule.revision) {
                 return Result.success()
