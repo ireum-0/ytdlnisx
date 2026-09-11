@@ -57,45 +57,49 @@ class ObserveSourceWorkerProductionWiringTest {
     private val queuedItems = mutableListOf<DownloadItem>()
 
     @Before
-    fun setUp() = runBlocking {
-        context = ApplicationProvider.getApplicationContext()
-        workManager = WorkManager.getInstance(context)
-        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
-        database = Room.inMemoryDatabaseBuilder(context, DBManager::class.java)
-            .addTypeConverter(Converters())
-            .allowMainThreadQueries()
-            .build()
-        preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        hadDuplicateMode = preferences.contains("prevent_duplicate_downloads")
-        previousDuplicateMode = preferences.getString("prevent_duplicate_downloads", null)
-        hadSchedulerMode = preferences.contains("use_scheduler")
-        previousSchedulerMode = preferences.getBoolean("use_scheduler", false)
-        preferences.edit()
-            .putString("prevent_duplicate_downloads", "")
-            .putBoolean("use_scheduler", false)
-            .putBoolean("metered_networks", true)
-            .commit()
+    fun setUp() {
+        runBlocking {
+            context = ApplicationProvider.getApplicationContext()
+            workManager = WorkManager.getInstance(context)
+            workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+            database = Room.inMemoryDatabaseBuilder(context, DBManager::class.java)
+                .addTypeConverter(Converters())
+                .allowMainThreadQueries()
+                .build()
+            preferences = PreferenceManager.getDefaultSharedPreferences(context)
+            hadDuplicateMode = preferences.contains("prevent_duplicate_downloads")
+            previousDuplicateMode = preferences.getString("prevent_duplicate_downloads", null)
+            hadSchedulerMode = preferences.contains("use_scheduler")
+            previousSchedulerMode = preferences.getBoolean("use_scheduler", false)
+            preferences.edit()
+                .putString("prevent_duplicate_downloads", "")
+                .putBoolean("use_scheduler", false)
+                .putBoolean("metered_networks", true)
+                .commit()
 
-        queuedItems.clear()
-        ObserveSourceWorkerEffectTestHooks.dbManagerForTesting = database
-        ObserveSourceWorkerEffectTestHooks.startDownloadWorkerForTesting = { items, _ ->
-            queuedItems += items.map { it.copy() }
-            Result.success("captured")
+            queuedItems.clear()
+            ObserveSourceWorkerEffectTestHooks.dbManagerForTesting = database
+            ObserveSourceWorkerEffectTestHooks.startDownloadWorkerForTesting = { items, _ ->
+                queuedItems += items.map { it.copy() }
+                Result.success("captured")
+            }
+            ObserveSourceWorkerEffectTestHooks.retryConfirmationAvailableForTesting = false
         }
-        ObserveSourceWorkerEffectTestHooks.retryConfirmationAvailableForTesting = false
     }
 
     @After
-    fun tearDown() = runBlocking {
-        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
-        ObserveSourceWorkerEffectTestHooks.clearForTesting()
-        if (::database.isInitialized) database.close()
-        val editor = preferences.edit()
-        if (hadDuplicateMode) editor.putString("prevent_duplicate_downloads", previousDuplicateMode)
-        else editor.remove("prevent_duplicate_downloads")
-        if (hadSchedulerMode) editor.putBoolean("use_scheduler", previousSchedulerMode)
-        else editor.remove("use_scheduler")
-        editor.commit()
+    fun tearDown() {
+        runBlocking {
+            workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+            ObserveSourceWorkerEffectTestHooks.clearForTesting()
+            if (::database.isInitialized) database.close()
+            val editor = preferences.edit()
+            if (hadDuplicateMode) editor.putString("prevent_duplicate_downloads", previousDuplicateMode)
+            else editor.remove("prevent_duplicate_downloads")
+            if (hadSchedulerMode) editor.putBoolean("use_scheduler", previousSchedulerMode)
+            else editor.remove("use_scheduler")
+            editor.commit()
+        }
     }
 
     @Test
