@@ -3,6 +3,7 @@ package com.ireum.ytdl.util
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SourceSnapshotTest {
@@ -25,6 +26,32 @@ class SourceSnapshotTest {
         assertEqualsAuthority(SourceSnapshot.Authority.PARTIAL, snapshot)
         assertTrue(snapshot.items.isNotEmpty())
         assertFalse(snapshot.permitsDestructiveAbsenceReconciliation)
+    }
+
+    @Test
+    fun lifecycleProgressIsIndependentFromDestructiveMembershipAuthority() {
+        val partial = SourceSnapshot.partial(
+            items = listOf(resultItem()),
+            diagnostic = "yt-dlp source extraction is error-tolerant",
+        )
+        assertEquals(
+            SourceSnapshot.LifecycleProgress.FORWARD_PROGRESS,
+            partial.lifecycleProgress,
+        )
+        assertFalse(partial.permitsDestructiveAbsenceReconciliation)
+
+        val authoritative = SourceSnapshot.authoritative(emptyList())
+        assertEquals(
+            SourceSnapshot.LifecycleProgress.INITIAL_BASELINE_ELIGIBLE,
+            authoritative.lifecycleProgress,
+        )
+        assertTrue(authoritative.permitsDestructiveAbsenceReconciliation)
+
+        val failed = SourceSnapshot.failed()
+        assertEquals(
+            SourceSnapshot.LifecycleProgress.NONE,
+            failed.lifecycleProgress,
+        )
     }
 
     @Test

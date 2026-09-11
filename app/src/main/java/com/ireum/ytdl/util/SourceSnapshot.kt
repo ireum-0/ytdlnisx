@@ -22,6 +22,19 @@ data class SourceSnapshot(
         FAILED,
     }
 
+    /**
+     * Observe run progress is deliberately independent from membership
+     * completeness.  A partial source cannot establish an initial
+     * get-only-new baseline, but a usable partial extraction is still a
+     * completed run for scheduling/count purposes and may feed positive
+     * (non-destructive) processing.
+     */
+    enum class LifecycleProgress {
+        NONE,
+        FORWARD_PROGRESS,
+        INITIAL_BASELINE_ELIGIBLE,
+    }
+
     init {
         require(authority != Authority.AUTHORITATIVE || cause == null) {
             "An authoritative source snapshot cannot carry a failure cause"
@@ -30,6 +43,13 @@ data class SourceSnapshot(
 
     val permitsDestructiveAbsenceReconciliation: Boolean
         get() = authority == Authority.AUTHORITATIVE
+
+    val lifecycleProgress: LifecycleProgress
+        get() = when (authority) {
+            Authority.AUTHORITATIVE -> LifecycleProgress.INITIAL_BASELINE_ELIGIBLE
+            Authority.PARTIAL -> LifecycleProgress.FORWARD_PROGRESS
+            Authority.FAILED -> LifecycleProgress.NONE
+        }
 
     companion object {
         fun authoritative(items: List<ResultItem>): SourceSnapshot = SourceSnapshot(

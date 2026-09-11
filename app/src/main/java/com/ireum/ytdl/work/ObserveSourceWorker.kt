@@ -78,6 +78,21 @@ class ObserveSourceWorker(
             authority: SourceSnapshot.Authority,
         ): Boolean = authority == SourceSnapshot.Authority.AUTHORITATIVE
 
+        internal fun canAdvanceObserveRun(
+            progress: SourceSnapshot.LifecycleProgress,
+        ): Boolean = progress != SourceSnapshot.LifecycleProgress.NONE
+
+        internal fun canEstablishInitialNewUploadBaseline(
+            progress: SourceSnapshot.LifecycleProgress,
+        ): Boolean = progress == SourceSnapshot.LifecycleProgress.INITIAL_BASELINE_ELIGIBLE
+
+        internal fun shouldUseInitialNewUploadBaseline(
+            getOnlyNewUploads: Boolean,
+            runCount: Int,
+            progress: SourceSnapshot.LifecycleProgress,
+        ): Boolean = getOnlyNewUploads && runCount == 0 &&
+            canEstablishInitialNewUploadBaseline(progress)
+
         internal fun missingSourceLinksForDestructiveReconciliation(
             authority: SourceSnapshot.Authority,
             processedLinks: Collection<String>,
@@ -423,6 +438,11 @@ class ObserveSourceWorker(
         }
         val list = sourceSnapshot.items
         val sourceIsAuthoritative = permitsDestructiveAbsenceReconciliation(sourceSnapshot.authority)
+        // Membership completeness and run lifecycle progress are separate
+        // decisions.  A PARTIAL snapshot cannot authorize destructive
+        // absence, but a usable extraction still completed enough work to
+        // advance recurring scheduling and process positive observations.
+        val canAdvanceRun = canAdvanceObserveRun(sourceSnapshot.lifecycleProgress)
         if (sourceSnapshot.authority == SourceSnapshot.Authority.PARTIAL) {
             Log.w(
                 "observe",
@@ -500,7 +520,7 @@ class ObserveSourceWorker(
                     context.getString(com.ireum.ytdl.R.string.observe_log_source_fetch_failed)
                 },
                 detail = if (sourceIsAuthoritative) "" else "PARTIAL_SOURCE_SNAPSHOT",
-                countRun = sourceIsAuthoritative
+                countRun = canAdvanceRun
             )
         }
 
@@ -592,7 +612,16 @@ class ObserveSourceWorker(
             notificationUtil
         )
 
-        if (item.getOnlyNewUploads && item.runCount == 0) {
+        // The first-run ignore baseline is only safe when membership is
+        // authoritative.  PARTIAL snapshots skip this branch and flow through
+        // the normal positive-item path; they may advance run lifecycle, but
+        // they never claim a complete baseline for omitted source members.
+        if (shouldUseInitialNewUploadBaseline(
+                item.getOnlyNewUploads,
+                item.runCount,
+                sourceSnapshot.lifecycleProgress,
+            )
+        ) {
             val ignoredCanonicalUrls = item.ignoredLinks.map { canonicalUrl(it) }.toMutableSet()
             list.asSequence()
                 .filterNot { item.excludeShorts && isShortsItem(it) }
@@ -600,9 +629,7 @@ class ObserveSourceWorker(
                 .filter { ignoredCanonicalUrls.add(it) }
                 .forEach { item.ignoredLinks.add(it) }
 
-            val runMessage = if (!sourceIsAuthoritative) {
-                context.getString(com.ireum.ytdl.R.string.observe_log_source_fetch_failed)
-            } else if (list.isEmpty()) {
+            val runMessage = if (list.isEmpty()) {
                 context.getString(com.ireum.ytdl.R.string.observe_log_no_downloadable_videos)
             } else {
                 context.getString(com.ireum.ytdl.R.string.observe_log_all_already_downloaded)
@@ -615,8 +642,8 @@ class ObserveSourceWorker(
                 sourceID,
                 item,
                 runMessage,
-                detail = if (sourceIsAuthoritative) "" else "PARTIAL_SOURCE_SNAPSHOT",
-                countRun = sourceIsAuthoritative,
+                detail = "",
+                countRun = canAdvanceRun,
             )
         }
 
@@ -1009,7 +1036,7 @@ class ObserveSourceWorker(
             item = item,
             message = runMessage,
             detail = runDetail,
-            countRun = sourceIsAuthoritative && !canShowRetryConfirmation
+            countRun = canAdvanceRun && !canShowRetryConfirmation
         )
 
         if (

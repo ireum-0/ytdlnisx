@@ -30,6 +30,51 @@ class ObserveSourceSnapshotProductionWiringTest {
     }
 
     @Test
+    fun partialSnapshotsAdvanceRunProgressWithoutEstablishingInitialBaseline() {
+        assertTrue(
+            ObserveSourceWorker.canAdvanceObserveRun(
+                SourceSnapshot.LifecycleProgress.FORWARD_PROGRESS,
+            )
+        )
+        assertFalse(
+            ObserveSourceWorker.canEstablishInitialNewUploadBaseline(
+                SourceSnapshot.LifecycleProgress.FORWARD_PROGRESS,
+            )
+        )
+        assertFalse(
+            ObserveSourceWorker.shouldUseInitialNewUploadBaseline(
+                getOnlyNewUploads = true,
+                runCount = 0,
+                progress = SourceSnapshot.LifecycleProgress.FORWARD_PROGRESS,
+            )
+        )
+        assertTrue(
+            ObserveSourceWorker.canEstablishInitialNewUploadBaseline(
+                SourceSnapshot.LifecycleProgress.INITIAL_BASELINE_ELIGIBLE,
+            )
+        )
+        assertTrue(
+            ObserveSourceWorker.shouldUseInitialNewUploadBaseline(
+                getOnlyNewUploads = true,
+                runCount = 0,
+                progress = SourceSnapshot.LifecycleProgress.INITIAL_BASELINE_ELIGIBLE,
+            )
+        )
+        assertFalse(
+            ObserveSourceWorker.shouldUseInitialNewUploadBaseline(
+                getOnlyNewUploads = true,
+                runCount = 1,
+                progress = SourceSnapshot.LifecycleProgress.INITIAL_BASELINE_ELIGIBLE,
+            )
+        )
+        assertFalse(
+            ObserveSourceWorker.canAdvanceObserveRun(
+                SourceSnapshot.LifecycleProgress.NONE,
+            )
+        )
+    }
+
+    @Test
     fun nonAuthoritativeAbsenceNeverProducesDeletionCandidates() {
         val processed = listOf("https://example.com/previous")
         val incoming = emptySet<String>()
