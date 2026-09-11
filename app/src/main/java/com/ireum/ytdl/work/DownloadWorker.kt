@@ -1095,10 +1095,11 @@ class DownloadWorker(
         dao: DownloadDao,
         downloadItem: DownloadItem
     ) {
-        val updatedItem = try {
-            resultRepo.updateDownloadItem(
-                downloadItem,
-                lookupOrder = ResultRepository.DownloadMetadataLookupOrder.CACHE_FIRST,
+        try {
+            persistDownloadMetadataNarrowly(
+                resultRepo = resultRepo,
+                dao = dao,
+                downloadItem = downloadItem,
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -1107,28 +1108,8 @@ class DownloadWorker(
                 TAG,
                 "Download metadata enrichment failed id=${downloadItem.id} type=${error.javaClass.simpleName}"
             )
-            null
-        }
-        updatedItem?.let { enrichedItem ->
-            val current = dao.getNullableDownloadById(enrichedItem.id)
-            if (
-                current?.let {
-                    it.status == DownloadRepository.Status.Active.name &&
-                        it.executionId == downloadItem.executionId
-                } == true
-            ) {
-                enrichedItem.executionId = current.executionId
-                enrichedItem.lastIssueCode = current.lastIssueCode
-                enrichedItem.lastIssueStage = current.lastIssueStage
-                workerDbManager().historyReplacementBarrierDao
-                    .getByDownloadId(enrichedItem.id)
-                    ?.let { barrier ->
-                        enrichedItem.lastIssueCode = barrier.issueCode
-                        enrichedItem.lastIssueStage = barrier.issueStage
-                    }
-                dao.updateIfExecutionOwned(enrichedItem, current.executionId)
+                null
             }
-        }
     }
 
     override suspend fun doWork(): Result {

@@ -33,7 +33,8 @@ class UpdateMultipleDownloadsDataWorker(private val context: Context,workerParam
 
 
     override suspend fun doWork(): Result {
-        val dbManager = DBManager.getInstance(context)
+        val dbManager = UpdateMultipleDownloadsDataWorkerTestHooks.dbManagerForTesting
+            ?: DBManager.getInstance(context)
         val dao = dbManager.downloadDao
         val resDao = dbManager.resultDao
         val commandTemplateDao = dbManager.commandTemplateDao
@@ -52,24 +53,20 @@ class UpdateMultipleDownloadsDataWorker(private val context: Context,workerParam
                 },
                 shouldProcess = DownloadMetadataEnrichmentPolicy::shouldEnrich,
                 processItem = { id, item ->
-                    resultRepo.updateDownloadItem(item)?.let { updatedItem ->
+                    resultRepo.getDownloadMetadataPatch(item)?.let { patch ->
                         val currentItem = dao.getNullableDownloadById(id)
                         if (currentItem != null) {
-                            updatedItem.status = currentItem.status
-                            updatedItem.executionId = currentItem.executionId
-                            updatedItem.lastIssueCode = currentItem.lastIssueCode
-                            updatedItem.lastIssueStage = currentItem.lastIssueStage
-                            dbManager.historyReplacementBarrierDao
-                                .getByDownloadId(id)
-                                ?.let { barrier ->
-                                    updatedItem.lastIssueCode = barrier.issueCode
-                                    updatedItem.lastIssueStage = barrier.issueStage
-                                }
-                            if (currentItem.executionId.isNotBlank()) {
-                                dao.updateIfExecutionOwned(updatedItem, currentItem.executionId)
-                            } else {
-                                dao.updateWithoutUpsert(updatedItem)
-                            }
+                            dao.updateMetadataIfSourceMatches(
+                                id = patch.downloadId,
+                                expectedSourceUrl = patch.expectedSourceUrl,
+                                title = patch.title,
+                                author = patch.author,
+                                playlistTitle = patch.playlistTitle,
+                                duration = patch.duration,
+                                website = patch.website,
+                                thumb = patch.thumb,
+                                mediaPublishedAt = patch.mediaPublishedAt,
+                            )
                         }
                     }
                 },
@@ -98,5 +95,15 @@ class UpdateMultipleDownloadsDataWorker(private val context: Context,workerParam
 
     companion object {
         private const val TAG = "UpdateDownloadsData"
+    }
+}
+
+/** Null-default Room seam for deterministic production-wiring tests. */
+internal object UpdateMultipleDownloadsDataWorkerTestHooks {
+    @Volatile
+    internal var dbManagerForTesting: DBManager? = null
+
+    fun clearForTesting() {
+        dbManagerForTesting = null
     }
 }

@@ -984,6 +984,60 @@ interface DownloadDao {
         updateWithoutUpsertRaw(item)
     }
 
+    /**
+     * Publishes only metadata fields from an enrichment snapshot.  The exact
+     * source URL is checked in the same UPDATE so a deleted or reconfigured
+     * Download cannot be resurrected or receive stale metadata.
+     */
+    @Query(
+        "UPDATE downloads SET " +
+            "title=CASE WHEN :title IS NULL THEN title ELSE :title END, " +
+            "author=CASE WHEN :author IS NULL THEN author ELSE :author END, " +
+            "playlistTitle=CASE WHEN :playlistTitle IS NULL THEN playlistTitle ELSE :playlistTitle END, " +
+            "duration=CASE WHEN :duration IS NULL THEN duration ELSE :duration END, " +
+            "website=CASE WHEN :website IS NULL THEN website ELSE :website END, " +
+            "thumb=CASE WHEN :thumb IS NULL THEN thumb ELSE :thumb END, " +
+            "mediaPublishedAt=CASE WHEN :mediaPublishedAt IS NULL THEN mediaPublishedAt ELSE :mediaPublishedAt END " +
+            "WHERE id=:id AND url=:expectedSourceUrl"
+    )
+    suspend fun updateMetadataIfSourceMatches(
+        id: Long,
+        expectedSourceUrl: String,
+        title: String?,
+        author: String?,
+        playlistTitle: String?,
+        duration: String?,
+        website: String?,
+        thumb: String?,
+        mediaPublishedAt: Long?,
+    ): Int
+
+    /** Same narrow publication with the DownloadWorker's exact execution fence. */
+    @Query(
+        "UPDATE downloads SET " +
+            "title=CASE WHEN :title IS NULL THEN title ELSE :title END, " +
+            "author=CASE WHEN :author IS NULL THEN author ELSE :author END, " +
+            "playlistTitle=CASE WHEN :playlistTitle IS NULL THEN playlistTitle ELSE :playlistTitle END, " +
+            "duration=CASE WHEN :duration IS NULL THEN duration ELSE :duration END, " +
+            "website=CASE WHEN :website IS NULL THEN website ELSE :website END, " +
+            "thumb=CASE WHEN :thumb IS NULL THEN thumb ELSE :thumb END, " +
+            "mediaPublishedAt=CASE WHEN :mediaPublishedAt IS NULL THEN mediaPublishedAt ELSE :mediaPublishedAt END " +
+            "WHERE id=:id AND url=:expectedSourceUrl " +
+            "AND status='Active' AND executionId=:expectedExecutionId"
+    )
+    suspend fun updateMetadataIfSourceAndExecutionOwned(
+        id: Long,
+        expectedSourceUrl: String,
+        expectedExecutionId: String,
+        title: String?,
+        author: String?,
+        playlistTitle: String?,
+        duration: String?,
+        website: String?,
+        thumb: String?,
+        mediaPublishedAt: Long?,
+    ): Int
+
     @Query("UPDATE downloads SET logID=null")
     fun removeAllLogID()
 

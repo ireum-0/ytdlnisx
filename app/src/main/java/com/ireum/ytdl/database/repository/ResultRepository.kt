@@ -717,12 +717,25 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
         downloadItem: DownloadItem,
         lookupOrder: DownloadMetadataLookupOrder = DownloadMetadataLookupOrder.FRESH_FIRST,
     ) : DownloadItem? {
+        val patch = getDownloadMetadataPatch(downloadItem, lookupOrder) ?: return null
+        return downloadItem.takeIf { patch.applyTo(it) }
+    }
+
+    /**
+     * Resolves metadata without mutating the caller's full Download snapshot.
+     * Workers publish the returned narrow patch through a guarded DAO update.
+     */
+    internal suspend fun getDownloadMetadataPatch(
+        downloadItem: DownloadItem,
+        lookupOrder: DownloadMetadataLookupOrder = DownloadMetadataLookupOrder.FRESH_FIRST,
+    ): DownloadMetadataPatch? {
         if (!DownloadMetadataEnrichmentPolicy.shouldEnrich(downloadItem)) return null
 
-        val changed = when (lookupOrder) {
+        val enriched = downloadItem.copy()
+        when (lookupOrder) {
             DownloadMetadataLookupOrder.FRESH_FIRST -> {
                 val info = getSingleMetadataFromSource(downloadItem.url) ?: return null
-                applyMetadata(downloadItem, info)
+                applyMetadata(enriched, info)
             }
             DownloadMetadataLookupOrder.CACHE_FIRST -> {
                 MetadataEnrichmentResolver.enrichCacheFirst(
@@ -732,12 +745,32 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
                     loadFresh = {
                         fetchSingleMetadataFromSource(downloadItem.url)
                     },
-                    applyMetadata = { info -> applyMetadata(downloadItem, info) },
-                    isComplete = { !DownloadMetadataEnrichmentPolicy.shouldEnrich(downloadItem) },
+                    applyMetadata = { info -> applyMetadata(enriched, info) },
+                    isComplete = { !DownloadMetadataEnrichmentPolicy.shouldEnrich(enriched) },
                 )
             }
         }
-        return downloadItem.takeIf { changed }
+        return DownloadMetadataPatch(
+            downloadId = downloadItem.id,
+            expectedSourceUrl = downloadItem.url,
+            title = enriched.title.takeIf { it != downloadItem.title },
+            author = enriched.author.takeIf { it != downloadItem.author },
+            playlistTitle = enriched.playlistTitle.takeIf { it != downloadItem.playlistTitle },
+            duration = enriched.duration.takeIf { it != downloadItem.duration },
+            website = enriched.website.takeIf { it != downloadItem.website },
+            thumb = enriched.thumb.takeIf { it != downloadItem.thumb },
+            mediaPublishedAt = enriched.mediaPublishedAt.takeIf {
+                it != downloadItem.mediaPublishedAt
+            },
+        ).takeIf { patch ->
+            patch.title != null ||
+                patch.author != null ||
+                patch.playlistTitle != null ||
+                patch.duration != null ||
+                patch.website != null ||
+                patch.thumb != null ||
+                patch.mediaPublishedAt != null
+        }
     }
 
     private fun applyMetadata(downloadItem: DownloadItem, info: ResultItem): Boolean {
