@@ -77,6 +77,7 @@ class ObserveSourcePostInsertClaimProductionWiringTest {
         ObserveSourceWorkerEffectTestHooks.startDownloadWorkerForTesting = { _, _ ->
             Result.success("captured")
         }
+        Unit
     }
 
     @After
@@ -90,6 +91,7 @@ class ObserveSourcePostInsertClaimProductionWiringTest {
         if (hadSchedulerMode) editor.putBoolean("use_scheduler", previousSchedulerMode)
         else editor.remove("use_scheduler")
         editor.commit()
+        Unit
     }
 
     @Test
