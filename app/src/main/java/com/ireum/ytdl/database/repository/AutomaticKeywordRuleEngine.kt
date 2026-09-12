@@ -4,7 +4,6 @@ import androidx.room.withTransaction
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.AutomaticKeywordRule
 import com.ireum.ytdl.database.models.AutomaticKeywordRuleVideoMatch
-import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
@@ -33,7 +32,6 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
         val keys = videosByConditionKey.keys.filter(String::isNotBlank).distinct()
         if (keys.isEmpty()) return ApplyResult(0, 0)
         val rules = dao.getEnabledRulesForConditionKeys(keys)
-        val historyByVideoKey by lazy(::buildHistoryIndex)
         var matched = 0
         var failed = 0
         val ruleResults = mutableListOf<RuleApplyResult>()
@@ -48,13 +46,8 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
                 .distinctBy { AutomaticKeywordNormalizer.videoKey(it.url) }
             for (video in ruleVideos) {
                 try {
-                    // Resolve the point-in-time index before the race seam and
-                    // before the final assignment transaction. The index is
-                    // stale evidence; the transaction below revalidates the
-                    // current History identity.
-                    val indexedHistory = historyByVideoKey
                     AutomaticKeywordRuleEngineTestHooks
-                        .beforeHistoryAssignmentForTesting
+                        .beforeHistoryMatchTransactionForTesting
                         ?.invoke(db, video.url)
                     val processed = db.withTransaction {
                         val currentRule = dao.getRule(ruleSnapshot.id)
@@ -79,8 +72,7 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
                             applyRuleToLocalHistory(
                                 ruleSnapshot.id,
                                 ruleSnapshot.revision,
-                                video.url,
-                                indexedHistory
+                                video.url
                             )
                         }
                         true
@@ -128,11 +120,10 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
         var matched = 0
         var failed = 0
         var syncCanComplete = true
-        val historyByVideoKey = buildHistoryIndex()
         for (video in videos.filter { AutomaticKeywordNormalizer.videoKey(it.url).isNotBlank() }) {
             try {
                 AutomaticKeywordRuleEngineTestHooks
-                    .beforeHistoryAssignmentForTesting
+                    .beforeHistoryMatchTransactionForTesting
                     ?.invoke(db, video.url)
                 val processed = db.withTransaction {
                     if (!dao.getRule(ruleId).matchesSnapshot(rule)) {
@@ -152,8 +143,7 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
                     applyRuleToLocalHistory(
                         rule.id,
                         rule.revision,
-                        video.url,
-                        historyByVideoKey
+                        video.url
                     )
                     true
                 }
@@ -259,11 +249,18 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
     private suspend fun applyRuleToLocalHistory(
         ruleId: Long,
         ruleRevision: Long,
-        videoUrl: String,
-        historyByVideoKey: Map<String, List<HistoryItem>>
+        videoUrl: String
     ) {
         val expectedVideoKey = AutomaticKeywordNormalizer.videoKey(videoUrl)
-        historyByVideoKey[expectedVideoKey].orEmpty().forEach {
+        val currentHistories = db.historyDao.getAll().filter {
+            AutomaticKeywordNormalizer.videoKey(it.url) == expectedVideoKey
+        }
+        if (currentHistories.isNotEmpty()) {
+            AutomaticKeywordRuleEngineTestHooks
+                .beforeHistoryAssignmentForTesting
+                ?.invoke(db, videoUrl)
+        }
+        currentHistories.forEach {
             applyRuleToHistory(
                 ruleId = ruleId,
                 ruleRevision = ruleRevision,
@@ -272,15 +269,6 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
             )
         }
     }
-
-    private fun buildHistoryIndex(): Map<String, List<HistoryItem>> =
-        db.historyDao.getAll()
-            .mapNotNull { item ->
-                AutomaticKeywordNormalizer.videoKey(item.url)
-                    .takeIf(String::isNotBlank)
-                    ?.let { it to item }
-            }
-            .groupBy({ it.first }, { it.second })
 
     private suspend fun applyRuleToHistory(
         ruleId: Long,
@@ -322,16 +310,20 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
 }
 
 /**
- * Deterministic race seam for the final History identity fence. The hook
- * is null in production and is invoked only between the point-in-time
- * History index read and the production assignment transaction.
+ * Deterministic race seams for the History/video-match ordering and final
+ * identity fence. Hooks are null in production.
  */
 internal object AutomaticKeywordRuleEngineTestHooks {
+    @Volatile
+    internal var beforeHistoryMatchTransactionForTesting:
+        (suspend (DBManager, String) -> Unit)? = null
+
     @Volatile
     internal var beforeHistoryAssignmentForTesting:
         (suspend (DBManager, String) -> Unit)? = null
 
     internal fun clearForTesting() {
+        beforeHistoryMatchTransactionForTesting = null
         beforeHistoryAssignmentForTesting = null
     }
 }

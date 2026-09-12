@@ -545,6 +545,54 @@ class AutomaticKeywordRulePersistenceTest {
     }
 
     @Test
+    fun discoverySeesHistoryInsertedBeforeEligibleVideoMatchTransaction() = runBlocking {
+        val ruleId = rule("youtube:playlist:A", listOf("Live"))
+        val savedRule = db.automaticKeywordRuleDao.getRule(ruleId)!!
+        db.automaticKeywordRuleDao.updateRule(savedRule.copy(baselineComplete = true))
+        var historyId = 0L
+        AutomaticKeywordRuleEngineTestHooks.beforeHistoryMatchTransactionForTesting = { database, _ ->
+            historyId = HistoryKeywordAssignmentRepository(database).insertHistory(
+                history(url = "https://youtu.be/source-a")
+            )
+            assertTrue(database.automaticKeywordRuleDao.getAssignmentsRaw(historyId).isEmpty())
+        }
+
+        AutomaticKeywordRuleEngine(db).recordDiscovery(
+            "youtube:playlist:A",
+            listOf(result("https://youtu.be/source-a"))
+        )
+
+        assertEquals("Live", db.historyDao.getItem(historyId).keywords)
+        val assignments = db.automaticKeywordRuleDao.getAssignmentsRaw(historyId)
+        assertEquals(1, assignments.size)
+        assertEquals(HistoryKeywordAssignmentSources.RULE, assignments.single().sourceType)
+        assertEquals(ruleId, assignments.single().sourceId)
+    }
+
+    @Test
+    fun fullSyncSeesHistoryInsertedBeforeEligibleVideoMatchTransaction() = runBlocking {
+        val ruleId = rule("youtube:playlist:A", listOf("Live"))
+        var historyId = 0L
+        AutomaticKeywordRuleEngineTestHooks.beforeHistoryMatchTransactionForTesting = { database, _ ->
+            historyId = HistoryKeywordAssignmentRepository(database).insertHistory(
+                history(url = "https://youtu.be/source-a")
+            )
+            assertTrue(database.automaticKeywordRuleDao.getAssignmentsRaw(historyId).isEmpty())
+        }
+
+        AutomaticKeywordRuleEngine(db).applyFullSync(
+            ruleId,
+            listOf(result("https://youtu.be/source-a"))
+        )
+
+        assertEquals("Live", db.historyDao.getItem(historyId).keywords)
+        val assignments = db.automaticKeywordRuleDao.getAssignmentsRaw(historyId)
+        assertEquals(1, assignments.size)
+        assertEquals(HistoryKeywordAssignmentSources.RULE, assignments.single().sourceType)
+        assertEquals(ruleId, assignments.single().sourceId)
+    }
+
+    @Test
     fun membershipParkingCannotOverwriteAConcurrentCancellation() = runBlocking {
         val sourceId = db.observeSourcesDao.insert(observeSource())
         val downloadId = db.downloadDao.insert(
