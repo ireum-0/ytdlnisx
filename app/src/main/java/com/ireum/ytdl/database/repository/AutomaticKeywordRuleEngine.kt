@@ -48,6 +48,14 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
                 .distinctBy { AutomaticKeywordNormalizer.videoKey(it.url) }
             for (video in ruleVideos) {
                 try {
+                    // Resolve the point-in-time index before the race seam and
+                    // before the final assignment transaction. The index is
+                    // stale evidence; the transaction below revalidates the
+                    // current History identity.
+                    val indexedHistory = historyByVideoKey
+                    AutomaticKeywordRuleEngineTestHooks
+                        .beforeHistoryAssignmentForTesting
+                        ?.invoke(db, video.url)
                     val processed = db.withTransaction {
                         val currentRule = dao.getRule(ruleSnapshot.id)
                         if (!currentRule.matchesSnapshot(ruleSnapshot)) {
@@ -72,7 +80,7 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
                                 ruleSnapshot.id,
                                 ruleSnapshot.revision,
                                 video.url,
-                                historyByVideoKey
+                                indexedHistory
                             )
                         }
                         true
@@ -123,6 +131,9 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
         val historyByVideoKey = buildHistoryIndex()
         for (video in videos.filter { AutomaticKeywordNormalizer.videoKey(it.url).isNotBlank() }) {
             try {
+                AutomaticKeywordRuleEngineTestHooks
+                    .beforeHistoryAssignmentForTesting
+                    ?.invoke(db, video.url)
                 val processed = db.withTransaction {
                     if (!dao.getRule(ruleId).matchesSnapshot(rule)) {
                         return@withTransaction false
@@ -251,8 +262,14 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
         videoUrl: String,
         historyByVideoKey: Map<String, List<HistoryItem>>
     ) {
-        historyByVideoKey[AutomaticKeywordNormalizer.videoKey(videoUrl)].orEmpty().forEach {
-            applyRuleToHistory(ruleId, ruleRevision, it.id)
+        val expectedVideoKey = AutomaticKeywordNormalizer.videoKey(videoUrl)
+        historyByVideoKey[expectedVideoKey].orEmpty().forEach {
+            applyRuleToHistory(
+                ruleId = ruleId,
+                ruleRevision = ruleRevision,
+                historyItemId = it.id,
+                expectedVideoKey = expectedVideoKey,
+            )
         }
     }
 
@@ -268,9 +285,17 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
     private suspend fun applyRuleToHistory(
         ruleId: Long,
         ruleRevision: Long,
-        historyItemId: Long
+        historyItemId: Long,
+        expectedVideoKey: String? = null,
     ) {
         db.withTransaction {
+            if (expectedVideoKey != null) {
+                val currentHistory = db.historyDao.getNullableItem(historyItemId)
+                    ?: return@withTransaction
+                if (AutomaticKeywordNormalizer.videoKey(currentHistory.url) != expectedVideoKey) {
+                    return@withTransaction
+                }
+            }
             val currentRule = dao.getRule(ruleId)
             if (currentRule == null ||
                 !currentRule.enabled ||
@@ -293,4 +318,20 @@ class AutomaticKeywordRuleEngine(private val db: DBManager) {
             enabled &&
             revision == snapshot.revision &&
             conditionKey == snapshot.conditionKey
+
+}
+
+/**
+ * Deterministic race seam for the final History identity fence. The hook
+ * is null in production and is invoked only between the point-in-time
+ * History index read and the production assignment transaction.
+ */
+internal object AutomaticKeywordRuleEngineTestHooks {
+    @Volatile
+    internal var beforeHistoryAssignmentForTesting:
+        (suspend (DBManager, String) -> Unit)? = null
+
+    internal fun clearForTesting() {
+        beforeHistoryAssignmentForTesting = null
+    }
 }

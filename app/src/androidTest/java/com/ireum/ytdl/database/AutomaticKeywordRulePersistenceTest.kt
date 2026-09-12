@@ -17,6 +17,7 @@ import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
+import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngineTestHooks
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementResult
@@ -45,6 +46,7 @@ class AutomaticKeywordRulePersistenceTest {
 
     @After
     fun closeDb() {
+        AutomaticKeywordRuleEngineTestHooks.clearForTesting()
         db.close()
     }
 
@@ -477,6 +479,69 @@ class AutomaticKeywordRulePersistenceTest {
 
         assertTrue(db.automaticKeywordRuleDao.getAllVideoMatches().isEmpty())
         assertEquals("", db.historyDao.getItem(historyId).keywords)
+    }
+
+    @Test
+    fun fullSyncRevalidatesHistoryIdentityBeforeApplyingStaleCandidate() = runBlocking {
+        val historyId = HistoryKeywordAssignmentRepository(db).insertHistory(
+            history(url = "https://youtu.be/source-a")
+        )
+        val ruleId = rule("youtube:playlist:A", listOf("Live"))
+        AutomaticKeywordRuleEngineTestHooks.beforeHistoryAssignmentForTesting = { database, _ ->
+            database.historyDao.updateRaw(
+                database.historyDao.getItem(historyId).copy(url = "https://youtu.be/source-b")
+            )
+        }
+
+        AutomaticKeywordRuleEngine(db).applyFullSync(
+            ruleId,
+            listOf(result("https://youtu.be/source-a"))
+        )
+
+        assertEquals("https://youtu.be/source-b", db.historyDao.getItem(historyId).url)
+        assertTrue(db.automaticKeywordRuleDao.getAssignmentsRaw(historyId).isEmpty())
+        assertEquals("", db.historyDao.getItem(historyId).keywords)
+    }
+
+    @Test
+    fun discoveryRevalidatesHistoryIdentityBeforeApplyingStaleCandidate() = runBlocking {
+        val historyId = HistoryKeywordAssignmentRepository(db).insertHistory(
+            history(url = "https://youtu.be/source-a")
+        )
+        val ruleId = rule("youtube:playlist:A", listOf("Live"))
+        val savedRule = db.automaticKeywordRuleDao.getRule(ruleId)!!
+        db.automaticKeywordRuleDao.updateRule(savedRule.copy(baselineComplete = true))
+        AutomaticKeywordRuleEngineTestHooks.beforeHistoryAssignmentForTesting = { database, _ ->
+            database.historyDao.updateRaw(
+                database.historyDao.getItem(historyId).copy(url = "https://youtu.be/source-b")
+            )
+        }
+
+        AutomaticKeywordRuleEngine(db).recordDiscovery(
+            "youtube:playlist:A",
+            listOf(result("https://youtu.be/source-a"))
+        )
+
+        assertEquals("https://youtu.be/source-b", db.historyDao.getItem(historyId).url)
+        assertTrue(db.automaticKeywordRuleDao.getAssignmentsRaw(historyId).isEmpty())
+        assertEquals("", db.historyDao.getItem(historyId).keywords)
+    }
+
+    @Test
+    fun deletedHistoryCandidateCannotRecreateStaleRuleAssignment() = runBlocking {
+        val historyId = HistoryKeywordAssignmentRepository(db).insertHistory(history())
+        val ruleId = rule("youtube:playlist:A", listOf("Live"))
+        AutomaticKeywordRuleEngineTestHooks.beforeHistoryAssignmentForTesting = { database, _ ->
+            database.historyDao.deleteById(historyId)
+        }
+
+        AutomaticKeywordRuleEngine(db).applyFullSync(
+            ruleId,
+            listOf(result("https://youtu.be/video1"))
+        )
+
+        assertTrue(db.historyDao.getAll().isEmpty())
+        assertTrue(db.automaticKeywordRuleDao.getAssignmentsRaw(historyId).isEmpty())
     }
 
     @Test
