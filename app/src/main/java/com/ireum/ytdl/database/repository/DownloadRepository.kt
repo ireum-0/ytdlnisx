@@ -22,6 +22,7 @@ import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.DownloadItemConfigureMultiple
 import com.ireum.ytdl.database.models.DownloadItemSimple
+import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
@@ -34,6 +35,8 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadLinkedDownloadPolicy
+import com.ireum.ytdl.util.DownloadConfigurationDuplicatePolicy
+import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.work.AlarmScheduler
@@ -67,6 +70,30 @@ class DownloadExecutionOwnershipLostException(
 ) : IllegalStateException(
     "Download execution ownership lost for download $downloadId"
 )
+
+/**
+ * Duplicate modes whose candidate read and runnable-row insert are one
+ * authoritative Room transaction.  Archive/file duplicate authority is
+ * intentionally not represented here: its committed archive is an external
+ * generation authority with a different lifecycle, while these row-based
+ * modes are the check-then-insert race this API closes.
+ */
+enum class DuplicateAdmissionMode {
+    DISABLED,
+    URL_TYPE,
+    CONFIG,
+}
+
+sealed interface DuplicateAdmissionResult {
+    data class Inserted(val id: Long) : DuplicateAdmissionResult
+
+    data class Duplicate(
+        val existingDownloadId: Long? = null,
+        val historyId: Long? = null,
+    ) : DuplicateAdmissionResult
+
+    data class Refused(val reason: String) : DuplicateAdmissionResult
+}
 
 class DownloadRepository(private val database: DBManager) {
     private val downloadDao: DownloadDao = database.downloadDao
@@ -272,6 +299,83 @@ class DownloadRepository(private val database: DBManager) {
     /** Test seam for a first per-Download cancellation persistence failure. */
     @Volatile
     internal var cancelActiveQueuedFailureForTesting: ((Long) -> Exception?)? = null
+
+    /**
+     * Atomically admits a brand-new runnable Download for row-based duplicate
+     * prevention.  The caller's earlier duplicate check is advisory only;
+     * the current active/queued rows and downloaded History are re-read while
+     * the same Room transaction owns the eventual insert.  Consequently two
+     * concurrent producers cannot both publish equivalent runnable rows.
+     *
+     * Existing rows, intentional redownloads, restore/recovery paths, and
+     * archive-based duplicate policy remain explicit direct-insert flows and
+     * must not call this method with a synthetic id.
+     */
+    suspend fun insertNewWithDuplicateAdmission(
+        item: DownloadItem,
+        mode: DuplicateAdmissionMode,
+        currentCommand: String? = null,
+    ): DuplicateAdmissionResult = database.withTransaction {
+        check(item.id <= 0L) {
+            "Duplicate admission is only valid for a new Download row"
+        }
+
+        if (mode == DuplicateAdmissionMode.CONFIG && currentCommand.isNullOrBlank()) {
+            return@withTransaction DuplicateAdmissionResult.Refused(
+                "configuration identity was not available"
+            )
+        }
+
+        val activeMatch = when (mode) {
+            DuplicateAdmissionMode.URL_TYPE -> database.downloadDao
+                .getActiveAndQueuedDownloadsList()
+                .firstOrNull { existing ->
+                    existing.type == item.type &&
+                        LinkUtil.canonicalYoutubeVideoUrlOrSelf(existing.url) ==
+                        LinkUtil.canonicalYoutubeVideoUrlOrSelf(item.url)
+                }
+            DuplicateAdmissionMode.CONFIG -> database.downloadDao
+                .getActiveAndQueuedDownloadsList()
+                .firstOrNull { existing ->
+                    DownloadConfigurationDuplicatePolicy.matches(existing, item)
+                }
+            DuplicateAdmissionMode.DISABLED -> null
+        }
+        if (activeMatch != null) {
+            return@withTransaction DuplicateAdmissionResult.Duplicate(
+                existingDownloadId = activeMatch.id
+            )
+        }
+
+        val historyMatch = when (mode) {
+            DuplicateAdmissionMode.URL_TYPE -> currentDownloadedHistory(item.url)
+                .firstOrNull { history -> history.type == item.type }
+            DuplicateAdmissionMode.CONFIG -> currentDownloadedHistory(item.url)
+                .firstOrNull { history ->
+                    DownloadConfigurationDuplicatePolicy.commandsMatch(
+                        history.command,
+                        currentCommand!!,
+                    )
+                }
+            DuplicateAdmissionMode.DISABLED -> null
+        }
+        if (historyMatch != null) {
+            return@withTransaction DuplicateAdmissionResult.Duplicate(
+                historyId = historyMatch.id
+            )
+        }
+
+        DuplicateAdmissionResult.Inserted(database.downloadDao.insert(item))
+    }
+
+    /** Must only be called while the surrounding Room transaction is active. */
+    private fun currentDownloadedHistory(url: String): List<HistoryItem> =
+        database.historyDao
+            .getItemsByUrls(LinkUtil.equivalentYoutubeVideoUrls(url))
+            .distinctBy { it.id }
+            .filter { history ->
+                history.downloadPath.any { path -> FileUtil.exists(path) }
+            }
 
     suspend fun insert(item: DownloadItem) : Long {
         return downloadDao.insert(item)

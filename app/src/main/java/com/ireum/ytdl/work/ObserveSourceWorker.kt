@@ -30,6 +30,8 @@ import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
 import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.ireum.ytdl.database.repository.AutomaticKeywordCoveragePolicy
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.DuplicateAdmissionMode
+import com.ireum.ytdl.database.repository.DuplicateAdmissionResult
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.ResultRepository
@@ -868,6 +870,14 @@ class ObserveSourceWorker(
             val activeAndQueuedDownloads = downloadRepo.getActiveAndQueuedDownloads().toMutableList()
             val queuedItems = mutableListOf<DownloadItem>()
             val checkDuplicate = sharedPreferences.getString("prevent_duplicate_downloads", "") ?: ""
+            val duplicateAdmissionMode = when (checkDuplicate) {
+                "url_type" -> DuplicateAdmissionMode.URL_TYPE
+                "config" -> DuplicateAdmissionMode.CONFIG
+                // download_archive is an external archive authority rather
+                // than a row-level reservation; retain its existing exact
+                // archive preflight and let the repository publish normally.
+                else -> DuplicateAdmissionMode.DISABLED
+            }
             val downloadArchive = runCatching {
                 File(FileUtil.getDownloadArchivePath(context)).useLines { lines ->
                     lines.toList()
@@ -968,13 +978,50 @@ class ObserveSourceWorker(
                 }
 
                 if (!isDuplicate) {
+                    var admissionDuplicate: DuplicateAdmissionResult.Duplicate? = null
+                    var admissionRefusal: DuplicateAdmissionResult.Refused? = null
+                    if (it.id == 0L) {
+                        when (
+                            val admission = downloadRepo.insertNewWithDuplicateAdmission(
+                                item = it,
+                                mode = duplicateAdmissionMode,
+                                currentCommand = parsedCurrentCommand.takeIf {
+                                    duplicateAdmissionMode == DuplicateAdmissionMode.CONFIG
+                                },
+                            )
+                        ) {
+                            is DuplicateAdmissionResult.Inserted -> it.id = admission.id
+                            is DuplicateAdmissionResult.Duplicate -> admissionDuplicate = admission
+                            is DuplicateAdmissionResult.Refused -> admissionRefusal = admission
+                        }
+                    }
+                    if (admissionDuplicate != null) {
+                        val duplicate = admissionDuplicate
+                        isDuplicate = true
+                        Log.d(
+                            OBS_DUP_LOG_TAG,
+                            "queue skip final admission sourceId=$sourceID url=${it.url} " +
+                                "existingDownloadId=${duplicate.existingDownloadId} " +
+                                "historyId=${duplicate.historyId}"
+                        )
+                    } else if (admissionRefusal != null) {
+                        val refusal = admissionRefusal
+                        isDuplicate = true
+                        runMessage = refusal.reason
+                        Log.w(
+                            OBS_DUP_LOG_TAG,
+                            "queue refused final admission sourceId=$sourceID url=${it.url}: " +
+                                refusal.reason
+                        )
+                    }
+                }
+
+                if (!isDuplicate) {
                     Log.d(
                         OBS_DUP_LOG_TAG,
                         "queue add sourceId=$sourceID url=${it.url} canonical=${canonicalUrl(it.url)}"
                     )
-                    if (it.id == 0L){
-                        it.id = downloadRepo.insert(it)
-                    }else if (it.status == DownloadRepository.Status.Queued.toString()){
+                    if (it.id > 0L && it.status == DownloadRepository.Status.Queued.toString()){
                         downloadRepo.update(it)
                     }
                     queuedItems.add(it)

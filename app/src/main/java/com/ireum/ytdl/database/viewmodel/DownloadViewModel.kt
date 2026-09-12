@@ -38,6 +38,8 @@ import com.ireum.ytdl.database.models.PendingUndoResolutionIntent
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.DuplicateAdmissionMode
+import com.ireum.ytdl.database.repository.DuplicateAdmissionResult
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.HistoryRedownloadItemFactory
@@ -2229,17 +2231,67 @@ class DownloadViewModel private constructor(
         }
 
         val result = QueueDownloadsResult("", listOf())
+        val duplicateAdmissionMode = if (ignoreDuplicates) {
+            DuplicateAdmissionMode.DISABLED
+        } else {
+            when (sharedPreferences.getString("prevent_duplicate_downloads", "").orEmpty()) {
+                "url_type" -> DuplicateAdmissionMode.URL_TYPE
+                "config" -> DuplicateAdmissionMode.CONFIG
+                // The app-global archive has its own generation authority;
+                // retain its existing preflight semantics and do not pretend
+                // it is a row-level Room reservation.
+                else -> DuplicateAdmissionMode.DISABLED
+            }
+        }
 
         suspend fun persistQueuedItems(): List<DownloadItem> {
             val persisted = mutableListOf<DownloadItem>()
             queuedItems.forEach { item ->
                 val snapshot = sourceSnapshots[item.id]
                 val transitioned = if (snapshot == null || item.id <= 0L) {
-                    val persistedId = repository.update(item)
-                    if (item.id <= 0L) {
-                        item.id = persistedId
+                    val currentCommand = if (duplicateAdmissionMode == DuplicateAdmissionMode.CONFIG) {
+                        ytdlpUtil.parseYTDLRequestString(
+                            ytdlpUtil.buildYoutubeDLRequest(
+                                item,
+                                ytdlpUtil.resolveInitialYoutubeMediaAccessProfile(item),
+                            )
+                        )
+                    } else {
+                        null
                     }
-                    true
+                    when (
+                        val admission = repository.insertNewWithDuplicateAdmission(
+                            item = item,
+                            mode = duplicateAdmissionMode,
+                            currentCommand = currentCommand,
+                        )
+                    ) {
+                        is DuplicateAdmissionResult.Inserted -> {
+                            item.id = admission.id
+                            true
+                        }
+                        is DuplicateAdmissionResult.Duplicate -> {
+                            // Preserve the existing UI behavior for a
+                            // candidate that loses the final admission race:
+                            // keep a non-runnable Duplicate row and surface
+                            // its exact existing Download/History identity.
+                            val duplicateItem = item.copy(
+                                id = 0L,
+                                status = DownloadRepository.Status.Duplicate.toString(),
+                            )
+                            val duplicateId = repository.insert(duplicateItem)
+                            existingItemIDs += AlreadyExistsIDs(
+                                duplicateId,
+                                admission.historyId,
+                            )
+                            false
+                        }
+                        is DuplicateAdmissionResult.Refused -> {
+                            result.succeeded = false
+                            result.message = admission.reason
+                            false
+                        }
+                    }
                 } else {
                     // Recheck the barrier at the mutation boundary. The
                     // preflight above is only an early user-facing refusal;
@@ -2268,7 +2320,7 @@ class DownloadViewModel private constructor(
                 }
                 if (transitioned) {
                     persisted += item
-                } else {
+                } else if (snapshot != null && item.id > 0L) {
                     result.succeeded = false
                 }
             }
@@ -2305,7 +2357,8 @@ class DownloadViewModel private constructor(
         val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
         if (useScheduler && !alarmScheduler.isDuringTheScheduledTime()){
             if (alarmScheduler.canSchedule()){
-                persistQueuedItems()
+                val persisted = persistQueuedItems()
+                queuedItems.removeAll { candidate -> persisted.none { it === candidate } }
                 alarmScheduler.schedule()
             }else{
                 sharedPreferences.edit().putBoolean("use_scheduler", false).apply()
@@ -2314,6 +2367,7 @@ class DownloadViewModel private constructor(
             }
         }else{
             val queued = persistQueuedItems()
+            queuedItems.removeAll { candidate -> queued.none { it === candidate } }
             println(queued.size)
 
             result.message = repository.startDownloadWorker(queued, context).fold(
