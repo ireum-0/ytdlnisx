@@ -307,7 +307,9 @@ object TerminalCommandPlanFactory {
         context: Context,
         preferences: SharedPreferences,
         command: String,
-        taskId: String
+        taskId: String,
+        /** Optional execution-bound raw cache authority. */
+        cacheRoot: File? = null,
     ): TerminalCommandPlan {
         val downloadLocation = preferences.getString(
             "command_path",
@@ -325,8 +327,9 @@ object TerminalCommandPlanFactory {
         } else {
             null
         }
+        val effectiveCacheRoot = (cacheRoot ?: File(FileUtil.getCachePath(context))).canonicalFile
         val appCacheOutputPath = File(
-            FileUtil.getCachePath(context),
+            effectiveCacheRoot,
             "TERMINAL/$taskId"
         ).absolutePath
         val appCacheOutputMarkerPath = File(

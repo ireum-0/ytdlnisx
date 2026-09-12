@@ -3,7 +3,6 @@ package com.ireum.ytdl.work
 import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.JsonParser
-import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import java.io.File
 import java.io.FileOutputStream
@@ -410,8 +409,12 @@ internal object DownloadProducerRecovery {
             }
         }
 
-        val cacheRoot = runCatching { File(FileUtil.getCachePath(context)).canonicalFile }.getOrNull()
-        if (cacheRoot != null && root.parentFile?.canonicalFile == cacheRoot &&
+        // Recovery must use the generation's persisted output root, not a
+        // fresh mutable cache_path resolution.  A preference/writability
+        // change after process death must never redirect cleanup to another
+        // cache namespace.
+        val cacheRoot = root.parentFile?.canonicalFile
+        if (cacheRoot != null &&
             root.name == current.downloadId.toString()
         ) {
             val retired = !exactCleanupFailed && DownloadCacheOwnership.retireRecoveredExecution(

@@ -1236,6 +1236,12 @@ class DownloadWorker(
         )
         resetHardSubProgress()
 
+        // Cache authority is bound to the exact claimed execution while the
+        // shared admission window is held.  Keep the canonical root alongside
+        // the execution token so all attempt phases use the same namespace
+        // even if cache_path or writability changes later.
+        val boundCacheRootsByExecution = ConcurrentHashMap<String, File>()
+
         queuedItems.collect { items ->
             if (this@DownloadWorker.isStopped) return@collect
 
@@ -1262,11 +1268,15 @@ class DownloadWorker(
                         concurrentDownloadLimit = sharedPreferences
                             .getInt("concurrent_downloads", 1)
                             .coerceAtLeast(1),
-                    ) { claimedItem ->
-                        workerExecutionIds[claimedItem.id] = claimedItem.executionId
-                        workerDownloadIds.add(claimedItem.id)
-                        workerCleanupDownloadIds.add(claimedItem.id)
-                    }
+                        onClaimed = { claimedItem ->
+                            workerExecutionIds[claimedItem.id] = claimedItem.executionId
+                            workerDownloadIds.add(claimedItem.id)
+                            workerCleanupDownloadIds.add(claimedItem.id)
+                        },
+                        onCacheRootBound = { claimedItem, cacheRoot ->
+                            boundCacheRootsByExecution[claimedItem.executionId] = cacheRoot
+                        },
+                    )
                 },
             )
             priorityItemIDs = admission.prioritySnapshot.outstandingIds
@@ -1335,10 +1345,15 @@ class DownloadWorker(
                         )
                 },
             ) { downloadItem ->
-                    workerDownloadIds.add(downloadItem.id)
+                workerDownloadIds.add(downloadItem.id)
+                val boundCacheRoot = boundCacheRootsByExecution.remove(downloadItem.executionId)
+                    ?: throw IOException(
+                        "Missing cache authority for Download execution ${downloadItem.executionId}"
+                    )
                 DownloadAttemptRunner(
                     downloadItem = downloadItem,
-                    rawTempFileDir = File(FileUtil.getCachePath(context), downloadItem.id.toString()),
+                    cacheRoot = boundCacheRoot,
+                    rawTempFileDir = File(boundCacheRoot, downloadItem.id.toString()),
                     dbManager = dbManager,
                     dao = dao,
                     historyDao = historyDao,
@@ -1353,17 +1368,17 @@ class DownloadWorker(
                     resources = resources,
                     openDownloadQueue = openDownloadQueue,
                 ).run()
-                    }
-                        }
+            }
+        }
 
         return Result.success()
-                    }
+    }
 
 
     private enum class AttemptControl {
         CONTINUE,
         STOP,
-                        }
+    }
 
     /**
      * Owns one claimed Download attempt.  Its mutable fields are deliberately
@@ -1372,6 +1387,8 @@ class DownloadWorker(
      */
     private inner class DownloadAttemptRunner(
         private val downloadItem: DownloadItem,
+        /** Exact raw cache root bound before this execution was admitted. */
+        private val cacheRoot: File,
         private val rawTempFileDir: File,
         private val dbManager: DBManager,
         private val dao: DownloadDao,
@@ -2197,7 +2214,7 @@ class DownloadWorker(
                 if (!outputPlan.directNoCache) {
                     check(
                         DownloadCacheOwnership.retireRecoveredExecution(
-                            cacheRoot = File(FileUtil.getCachePath(context)),
+                            cacheRoot = cacheRoot,
                             item = downloadItem,
                             executionId = record.executionId,
                         )
@@ -2458,7 +2475,10 @@ class DownloadWorker(
                         )
                     }
 
-                    val outputPlan = ytdlpUtil.resolveOutputPlan(downloadItem)
+                    val outputPlan = ytdlpUtil.resolveOutputPlan(
+                        downloadItem = downloadItem,
+                        cacheRoot = cacheRoot,
+                    )
                     ytdlpOutputPlan = outputPlan
                     if (
                         sharedPreferences.getString("prevent_duplicate_downloads", "") == "download_archive" &&
@@ -2478,6 +2498,7 @@ class DownloadWorker(
         noKeepSubs = sharedPreferences.getBoolean("no_keep_subs", false)
                     var ytdlpInput = YtdlpPhaseInput(
                         downloadItem = downloadItem,
+                        cacheRoot = cacheRoot,
                         rawTempDirectory = rawTempFileDir,
                         outputPlan = outputPlan,
                         outputProvenance = DownloadOutputProvenance(
@@ -2757,8 +2778,9 @@ class DownloadWorker(
                         val forceDeferBurn = shouldBurnHardSub &&
                             !noCache &&
                             !isProviderBackedPath(downloadLocation) &&
-                            shouldForceHardSubFailpoint("force_hardsub_defer")
-                        val forceMoveUnresolved = shouldBurnHardSub && shouldForceHardSubFailpoint("force_hardsub_move_unresolved")
+                            shouldForceHardSubFailpoint("force_hardsub_defer", cacheRoot)
+                        val forceMoveUnresolved = shouldBurnHardSub &&
+                            shouldForceHardSubFailpoint("force_hardsub_move_unresolved", cacheRoot)
                         if (shouldBurnHardSub) {
                             Log.i(
                                 TAG,
@@ -2797,6 +2819,7 @@ class DownloadWorker(
                                             downloadItem.logID,
                                             downloadItem.videoPreferences.subsLanguages,
                                             ytdlpOutputProvenance,
+                                            cacheRoot = cacheRoot,
                                         )
                                     }
                                     hardSubBurned = hardSubBurned || burned
@@ -2854,6 +2877,7 @@ class DownloadWorker(
                                         downloadItem.logID,
                                         downloadItem.videoPreferences.subsLanguages,
                                         ytdlpOutputProvenance,
+                                        cacheRoot = cacheRoot,
                                     )
                                 }
                                 hardSubBurned = hardSubBurned || burned
@@ -3243,7 +3267,7 @@ class DownloadWorker(
                                 downloadItem
                             }
                             if (!DownloadCacheOwnership.removeArtifactManifest(
-                                    cacheRoot = File(FileUtil.getCachePath(context)),
+                                    cacheRoot = cacheRoot,
                                     item = manifestOwner,
                                 )
                             ) {
@@ -4134,6 +4158,7 @@ class DownloadWorker(
                                             rawTempDirectory = rawTempFileDir,
                                             downloadItem = downloadItem,
                                             beforeRetry = true,
+                                            cacheRoot = cacheRoot,
                                         ).delete()
                                     }
                                 }
@@ -4310,7 +4335,8 @@ class DownloadWorker(
                             runCatching {
                                 withOwnedExecutionSideEffect(downloadItem) {
                                     deleteLoadedAppInfoJson(
-                                        failedYtdlpState?.effectiveCommand.orEmpty()
+                                        failedYtdlpState?.effectiveCommand.orEmpty(),
+                                        cacheRoot,
                                     )
                                 }
                             }
@@ -5402,7 +5428,7 @@ class DownloadWorker(
                 )
             }
             return DownloadCacheOwnership.deleteIfOwned(
-                cacheRoot = File(FileUtil.getCachePath(context)),
+                cacheRoot = cacheRoot,
                 item = downloadItem,
             )
         }
@@ -5410,6 +5436,7 @@ class DownloadWorker(
 
     private data class YtdlpPhaseInput(
         val downloadItem: DownloadItem,
+        val cacheRoot: File,
         val rawTempDirectory: File,
         val outputPlan: YtdlpOutputPlan,
         val outputProvenance: DownloadOutputProvenance,
@@ -5693,6 +5720,7 @@ class DownloadWorker(
                 rawTempDirectory = input.rawTempDirectory,
                 outputPlan = input.outputPlan,
                 beforeRetry = false,
+                cacheRoot = input.cacheRoot,
             )
             runtime.beginAttempt()
             runtime.recordRecoveredPublishedPaths(input.recoveredPublishedPaths)
@@ -5723,7 +5751,7 @@ class DownloadWorker(
                     } else {
                         check(
                             DownloadCacheOwnership.recordArtifacts(
-                                cacheRoot = File(FileUtil.getCachePath(context)),
+                                cacheRoot = input.cacheRoot,
                                 item = input.downloadItem,
                                 files = authoritative,
                             )
@@ -5785,6 +5813,7 @@ class DownloadWorker(
                     mediaAccessProfile = profile,
                     outputPlan = input.outputPlan,
                     downloadArchivePath = input.downloadArchivePath,
+                    cacheRoot = input.cacheRoot,
                 )
                 requestOwner.register(builtRequest)
                 profile to builtRequest
@@ -5807,6 +5836,7 @@ class DownloadWorker(
                         command,
                         initialProfile,
                         outputPlan = input.outputPlan,
+                        cacheRoot = input.cacheRoot,
                     ),
                     mediaAccessProfile = initialProfile,
                     qualityGuardApplied = !rawFormatOverride && commandQualityTarget(command) != null,
@@ -5873,6 +5903,7 @@ class DownloadWorker(
         ytdlpUtil: YTDLPUtil,
         retryPlan: YtdlpRetryPlan.Attempt,
         downloadArchivePath: String? = null,
+        cacheRoot: File,
         onRequestBuilt: (YoutubeDLRequest) -> Unit,
         onCommandBuilt: (String) -> Unit,
     ): YtdlpAttempt {
@@ -5883,6 +5914,7 @@ class DownloadWorker(
             applyQualityGuard = retryPlan.applyQualityGuard,
             outputPlan = outputPlan,
             downloadArchivePath = downloadArchivePath,
+            cacheRoot = cacheRoot,
         )
         onRequestBuilt(request)
         val command = ytdlpUtil.parseYTDLRequestString(request)
@@ -5899,6 +5931,7 @@ class DownloadWorker(
                 command,
                 retryPlan.mediaAccessProfile,
                 outputPlan = outputPlan,
+                cacheRoot = cacheRoot,
             ),
             mediaAccessProfile = retryPlan.mediaAccessProfile,
             qualityGuardApplied = retryPlan.applyQualityGuard &&
@@ -6269,7 +6302,7 @@ class DownloadWorker(
                     } else {
                         check(
                             DownloadCacheOwnership.recordArtifacts(
-                                cacheRoot = File(FileUtil.getCachePath(context)),
+                                cacheRoot = input.cacheRoot,
                                 item = input.downloadItem,
                                 files = authoritativeOutputPaths,
                             )
@@ -6303,6 +6336,7 @@ class DownloadWorker(
                             rawTempDirectory = input.rawTempDirectory,
                             outputPlan = input.outputPlan,
                             beforeRetry = true,
+                            cacheRoot = input.cacheRoot,
                         )
                         throw YtdlpQualityRejectedException(qualityOutcome.message)
                     }
@@ -6487,7 +6521,7 @@ class DownloadWorker(
         ensureExecutionOwnedBeforeAttempt(input.downloadItem)
         if (plan is YtdlpRetryPlan.CachedInfo) {
             withOwnedExecutionSideEffect(input.downloadItem) {
-                deleteLoadedAppInfoJson(previousAttempt.command)
+                deleteLoadedAppInfoJson(previousAttempt.command, input.cacheRoot)
             }
         }
         withOwnedExecutionSideEffect(input.downloadItem) {
@@ -6498,6 +6532,7 @@ class DownloadWorker(
             rawTempDirectory = input.rawTempDirectory,
             outputPlan = input.outputPlan,
             beforeRetry = true,
+            cacheRoot = input.cacheRoot,
         )
         return withOwnedExecutionSideEffect(input.downloadItem) {
             buildYtdlpAttempt(
@@ -6506,6 +6541,7 @@ class DownloadWorker(
                 ytdlpUtil = services.ytdlpUtil,
                 retryPlan = plan,
                 downloadArchivePath = input.downloadArchivePath,
+                cacheRoot = input.cacheRoot,
                 onRequestBuilt = runtime::registerRequest,
                 onCommandBuilt = { command -> runtime.effectiveCommand = command },
             )
@@ -6630,6 +6666,7 @@ class DownloadWorker(
                 selectionOnly = true,
                 outputPlan = input.outputPlan,
                 downloadArchivePath = input.downloadArchivePath,
+                cacheRoot = input.cacheRoot,
             ).apply {
                 addOption("--simulate")
                 addOption("--skip-download")
@@ -6652,6 +6689,7 @@ class DownloadWorker(
                 command,
                 profile,
                 outputPlan = input.outputPlan,
+                cacheRoot = input.cacheRoot,
             ),
             mediaAccessProfile = profile,
             qualityGuardApplied = false,
@@ -6814,6 +6852,7 @@ class DownloadWorker(
         rawTempDirectory: File,
         outputPlan: YtdlpOutputPlan,
         beforeRetry: Boolean,
+        cacheRoot: File,
     ): File = withOwnedExecutionSideEffect(downloadItem) {
         if (downloadItem.operationId.isBlank()) {
             downloadItem.operationId = "download-${downloadItem.id}"
@@ -6829,6 +6868,7 @@ class DownloadWorker(
                 rawTempDirectory = rawTempDirectory,
                 downloadItem = downloadItem,
                 beforeRetry = beforeRetry,
+                cacheRoot = cacheRoot,
             )
         }
     }
@@ -6971,8 +7011,9 @@ class DownloadWorker(
         rawTempDirectory: File,
         downloadItem: DownloadItem,
         beforeRetry: Boolean,
+        cacheRoot: File,
     ): File {
-        val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
+        val cacheRoot = cacheRoot.canonicalFile
         val tempDirectory = rawTempDirectory.canonicalFile
         if (tempDirectory.parentFile != cacheRoot || tempDirectory.name != downloadItem.id.toString()) {
             throw IOException("Unsafe temporary download directory: ${tempDirectory.absolutePath}")
@@ -7492,9 +7533,12 @@ class DownloadWorker(
             )
     }
 
-    private fun deleteLoadedAppInfoJson(commandString: String) {
+    private fun deleteLoadedAppInfoJson(commandString: String, cacheRoot: File? = null) {
         val infoJsonRoot = runCatching {
-            File(FileUtil.getCachePath(context), "infojsons").canonicalFile
+            File(
+                (cacheRoot ?: File(FileUtil.getCachePath(context))).canonicalFile,
+                "infojsons",
+            ).canonicalFile
         }.getOrNull() ?: return
 
         loadInfoJsonOptionRegex.findAll(commandString)
@@ -7680,6 +7724,7 @@ class DownloadWorker(
         downloadLogId: Long? = null,
         selectedSubtitleLanguages: String = "",
         outputProvenance: DownloadOutputProvenance? = null,
+        cacheRoot: File? = null,
     ): Boolean {
         DownloadWorkerEffectTestHooks.hardSubBurnForTesting?.let { hook ->
             return hook(paths)
@@ -7698,6 +7743,7 @@ class DownloadWorker(
                 downloadLogId = downloadLogId,
                 selectedSubtitleLanguages = selectedSubtitleLanguages,
                 outputProvenance = outputProvenance,
+                cacheRoot = cacheRoot,
             )
         }
     }
@@ -7710,6 +7756,7 @@ class DownloadWorker(
         downloadLogId: Long? = null,
         selectedSubtitleLanguages: String = "",
         outputProvenance: DownloadOutputProvenance? = null,
+        cacheRoot: File? = null,
     ): Boolean {
         val ffmpegRuntime = resolveFfmpegRuntime()
         val supportedFilters = probeSubtitleFilters(ffmpegRuntime)
@@ -7744,6 +7791,7 @@ class DownloadWorker(
             mediaFiles = mediaFiles,
             ffmpegRuntime = ffmpegRuntime,
             outputProvenance = outputProvenance,
+            cacheRoot = cacheRoot,
         )
 
         Log.i(
@@ -8077,6 +8125,7 @@ class DownloadWorker(
         mediaFiles: List<File>,
         ffmpegRuntime: FfmpegRuntime,
         outputProvenance: DownloadOutputProvenance? = null,
+        cacheRoot: File? = null,
     ): List<File> {
         if (mediaFiles.size < 2) {
             val single = mediaFiles.firstOrNull() ?: return mediaFiles
@@ -8134,6 +8183,7 @@ class DownloadWorker(
                 primaryAudio = primaryAudio,
                 ffmpegRuntime = ffmpegRuntime,
                 outputProvenance = outputProvenance,
+                cacheRoot = cacheRoot,
             )
         } ?: throw IOException(
             "HardSub AV merge failed video=${primaryVideo.name} audio=${primaryAudio.name}"
@@ -8224,9 +8274,12 @@ class DownloadWorker(
         primaryAudio: File,
         ffmpegRuntime: FfmpegRuntime,
         outputProvenance: DownloadOutputProvenance? = null,
+        cacheRoot: File? = null,
     ): File? {
         val sourceParent = primaryVideo.parentFile ?: return null
-        val stage = HardSubMuxStageOwnership.create(File(FileUtil.getCachePath(context)))
+        val stage = HardSubMuxStageOwnership.create(
+            cacheRoot ?: File(FileUtil.getCachePath(context)),
+        )
         if (stage == null) {
             Log.w(TAG, "HardSub AV merge staging create failed")
             return null
@@ -9803,8 +9856,11 @@ class DownloadWorker(
         return "${directory.absolutePath}[files=${entries.size}${if (entries.isNotEmpty()) ",sample=${entries.joinToString()}" else ""}]"
     }
 
-    private fun shouldForceHardSubFailpoint(markerName: String): Boolean {
-        val marker = File(FileUtil.getCachePath(context), "debug/$markerName")
+    private fun shouldForceHardSubFailpoint(markerName: String, cacheRoot: File? = null): Boolean {
+        val marker = File(
+            cacheRoot ?: File(FileUtil.getCachePath(context)),
+            "debug/$markerName",
+        )
         val enabled = marker.exists()
         if (enabled) {
             Log.w(TAG, "HardSub failpoint enabled marker=${marker.absolutePath}")

@@ -5,6 +5,7 @@ import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -95,6 +96,41 @@ class DownloadCacheOwnershipTest {
             assertFalse(DownloadCacheOwnership.deleteIfOwned(root, current))
             assertTrue(stale.isFile)
         } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun liveNewExecutionProtectsStaleMarkerUntilOwnerExits() {
+        val root = Files.createTempDirectory("download-cache-live-subject-fence-").toFile()
+        val current = item(operationId = "operation-current", executionId = "execution-current")
+        try {
+            val prior = item(operationId = "operation-prior", executionId = "execution-prior")
+            val directory = File(root, prior.id.toString()).apply { mkdirs() }
+            DownloadCacheOwnership.ensureMarker(root, prior)
+            val output = directory.resolve("stale.bin").apply { writeText("stale") }
+            assertTrue(DownloadCacheOwnership.recordArtifacts(root, prior, listOf(output.absolutePath)))
+
+            DownloadWorkerExecutionOwners.claim(current.id, current.executionId)
+            assertTrue(DownloadCacheOwnership.isLiveOwnedRoot(root, directory))
+            assertTrue(
+                DownloadCacheOwnership.isLiveOwnedMarker(
+                    root,
+                    DownloadCacheOwnership.markerFile(root, prior.id),
+                )
+            )
+
+            DownloadWorkerExecutionOwners.release(current.id, current.executionId)
+            assertFalse(DownloadCacheOwnership.isLiveOwnedRoot(root, directory))
+            assertFalse(
+                DownloadCacheOwnership.isLiveOwnedMarker(
+                    root,
+                    DownloadCacheOwnership.markerFile(root, prior.id),
+                )
+            )
+            assertTrue(output.isFile)
+        } finally {
+            DownloadWorkerExecutionOwners.release(current.id, current.executionId)
             root.deleteRecursively()
         }
     }

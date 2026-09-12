@@ -56,6 +56,10 @@ internal object TerminalDownloadWorkerEffectTestHooks {
     /** Optional full response seam so no-cache/no-output paths can be wired. */
     @Volatile
     internal var ytdlpResponseForTesting: ((Int, File?) -> String?)? = null
+
+    /** Observes the exact cache root bound by admission before plan/staging. */
+    @Volatile
+    internal var afterAdmissionForTesting: ((Int, File) -> Unit)? = null
 }
 
 
@@ -68,6 +72,8 @@ class TerminalDownloadWorker(
     private var terminalOutputDirectory: File? = null
     private var terminalOutputAuthority: TerminalOutputAuthority? = null
     private var terminalTaskToken: String? = null
+    /** The exact effective raw cache root admitted for this execution. */
+    private var terminalCacheRoot: File? = null
     private var terminalPublicationJournal: PublicationRecoveryJournal.Handle? = null
     private val terminalPublishedOutputPaths = mutableListOf<String>()
     /** Set once the Terminal row has been durably deleted after publication. */
@@ -132,15 +138,17 @@ class TerminalDownloadWorker(
         reconcileTerminalPublicationRecovery()
     }
 
-    private fun reconcileTerminalPublicationRecovery() {
+    private fun reconcileTerminalPublicationRecovery(boundCacheRoot: File? = terminalCacheRoot) {
         runCatching {
+            val cacheRoot = boundCacheRoot?.canonicalFile
+                ?: File(FileUtil.getCachePath(context)).canonicalFile
             TerminalExecutionRecovery.reconcile(
                 context = context,
                 activeExecution = { token -> TerminalExecutionRegistry.isActiveNow(token) },
             )
             TerminalPublicationRecovery.reconcile(
                 context = context,
-                cacheRoot = File(FileUtil.getCachePath(context)),
+                cacheRoot = cacheRoot,
                 activeExecution = { token -> TerminalExecutionRegistry.isActiveNow(token) },
             )
         }.onFailure { error ->
@@ -269,10 +277,22 @@ class TerminalDownloadWorker(
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val terminalTaskToken = "$itemId-${UUID.randomUUID()}"
         val processId = YtdlpProcessIdentity.terminal(itemId.toLong())
+        // Resolve the effective raw cache root exactly once before any
+        // cache-scoped Terminal admission.  Every later plan, staging,
+        // marker, and recovery operation for this execution must use this
+        // same bound authority; a mutable preference or writability change
+        // cannot silently switch namespaces after admission.
+        val boundCacheRoot = runCatching {
+            File(FileUtil.getCachePath(context)).canonicalFile
+        }.getOrElse { error ->
+            Log.e(TAG, "Could not resolve Terminal cache authority", error)
+            return Result.failure()
+        }
+        terminalCacheRoot = boundCacheRoot
         when (
             TerminalExecutionRegistry.admit(
                 context = context,
-                cacheRoot = File(FileUtil.getCachePath(context)),
+                cacheRoot = boundCacheRoot,
                 subjectId = itemId.toLong(),
                 executionToken = terminalTaskToken,
                 processId = processId,
@@ -297,6 +317,8 @@ class TerminalDownloadWorker(
             TerminalExecutionRegistry.Admission.ACQUIRED -> Unit
         }
         this.terminalTaskToken = terminalTaskToken
+        TerminalDownloadWorkerEffectTestHooks.afterAdmissionForTesting
+            ?.invoke(itemId, boundCacheRoot)
         // Recovery may have converged the queue row between the initial
         // input check and durable admission.  Re-check the subject before any
         // setup/native boundary; an input snapshot alone is not permission to
@@ -316,6 +338,7 @@ class TerminalDownloadWorker(
             preferences = sharedPreferences,
             command = command,
             taskId = terminalTaskToken,
+            cacheRoot = boundCacheRoot,
         )
         val dbManager = DBManager.getInstance(context)
         val logRepo = LogRepository(dbManager.logDao)
@@ -354,7 +377,7 @@ class TerminalDownloadWorker(
         shouldCleanupTerminalCache = !noCache
         if (!noCache) {
             val outputDirectory = File(
-                FileUtil.getCachePath(context),
+                boundCacheRoot,
                 "TERMINAL/$terminalTaskToken",
             ).canonicalFile
             if (outputDirectory.exists() && outputDirectory.listFiles()?.isNotEmpty() == true) {

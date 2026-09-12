@@ -188,7 +188,18 @@ internal suspend fun claimDownloadThroughProductionAdmission(
     candidate: DownloadItem,
     concurrentDownloadLimit: Int,
     onClaimed: (DownloadItem) -> Unit = {},
+    /** Optional root resolved by the caller before entering this attempt. */
+    cacheRoot: java.io.File? = null,
+    /** Publishes the root bound to the exact claimed execution. */
+    onCacheRootBound: (DownloadItem, java.io.File) -> Unit = { _, _ -> },
 ): DownloadItem? = CacheMaintenanceAuthority.withExecutionAdmission {
+    // Resolve the effective cache authority inside the same admission window
+    // that publishes the execution owner.  The caller receives this exact
+    // canonical root and must carry it through the attempt; no later worker
+    // phase is permitted to re-resolve mutable cache_path state.
+    val boundCacheRoot = runCatching {
+        (cacheRoot ?: java.io.File(com.ireum.ytdl.util.FileUtil.getCachePath(context))).canonicalFile
+    }.getOrNull() ?: return@withExecutionAdmission null
     withDownloadWorkerExecutionSideEffectLease(
         downloadId = candidate.id,
         executionId = "",
@@ -286,6 +297,7 @@ internal suspend fun claimDownloadThroughProductionAdmission(
                 DownloadClaimTestHooks.afterClaimMaterializationBeforeOwnerPublicationForTesting
                     ?.invoke(claimedItem)
                 DownloadWorkerExecutionOwners.claim(claimedItem.id, claimedItem.executionId)
+                onCacheRootBound(claimedItem, boundCacheRoot)
                 DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting
                     ?.invoke(claimedItem)
                 claimedItem.also(onClaimed)

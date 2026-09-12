@@ -814,8 +814,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     }
 
     @OptIn(ExperimentalStdlibApi::class)
-    private fun YoutubeDLRequest.addWriteInfoJson(url: String) {
-        val cachePath = "${FileUtil.getCachePath(context)}infojsons"
+    private fun YoutubeDLRequest.addWriteInfoJson(url: String, cacheRoot: File? = null) {
+        val cachePath = File(
+            (cacheRoot ?: File(FileUtil.getCachePath(context))).canonicalFile,
+            "infojsons",
+        ).absolutePath
         File(cachePath).mkdirs()
 
         val cacheKey = InfoJsonCacheKeyPolicy.resolve(url)
@@ -831,8 +834,12 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     }
 
     @OptIn(ExperimentalStdlibApi::class)
-    private fun getInfoJsonFile(url: String, strictUrlMatch: Boolean = false): File? {
-        return getInfoJsonFiles(url, strictUrlMatch).firstOrNull()
+    private fun getInfoJsonFile(
+        url: String,
+        strictUrlMatch: Boolean = false,
+        cacheRoot: File? = null,
+    ): File? {
+        return getInfoJsonFiles(url, strictUrlMatch, cacheRoot).firstOrNull()
     }
 
     fun getCachedInfoJsonResult(url: String): ResultItem? {
@@ -873,8 +880,15 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             .toList()
     }
 
-    private fun getInfoJsonFiles(url: String, strictUrlMatch: Boolean): List<File> {
-        val cacheRoot = File(FileUtil.getCachePath(context), "infojsons")
+    private fun getInfoJsonFiles(
+        url: String,
+        strictUrlMatch: Boolean,
+        cacheRoot: File? = null,
+    ): List<File> {
+        val cacheRoot = File(
+            (cacheRoot ?: File(FileUtil.getCachePath(context))).canonicalFile,
+            "infojsons",
+        )
         val cacheKey = InfoJsonCacheKeyPolicy.resolve(url)
         val authoritativeFiles = matchingInfoJsonFiles(
             cacheRoot = cacheRoot,
@@ -1132,8 +1146,9 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         commandString: String? = null,
         mediaAccessProfile: YoutubeMediaAccessProfile? = null,
         outputPlan: YtdlpOutputPlan? = null,
+        cacheRoot: File? = null,
     ): String {
-        val resolvedOutputPlan = outputPlan ?: resolveOutputPlan(downloadItem)
+        val resolvedOutputPlan = outputPlan ?: resolveOutputPlan(downloadItem, cacheRoot)
         val normalizedDownloadPath = FileUtil.formatPath(downloadItem.downloadPath)
         val canWriteDirectly = FileUtil.canWriteToDestination(
             resolvedOutputPlan.finalDestination,
@@ -1169,7 +1184,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             ?: expectedMediaQualityTarget(downloadItem)
         val cachedSubtitleDiagnostics = hasLoadInfoJson
             .takeIf { it != "<none>" }
-            ?.let { buildCachedSubtitleDiagnostics(File(it)) }
+            ?.let { buildCachedSubtitleDiagnostics(File(it), cacheRoot) }
             ?: "infoJsonSubtitles=<not-loaded>\ninfoJsonAutomaticCaptions=<not-loaded>"
 
         return buildString {
@@ -1223,8 +1238,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         }
     }
 
-    private fun buildCachedSubtitleDiagnostics(infoJsonFile: File): String {
-        val safeInfoJsonFile = resolveAppInfoJsonFile(infoJsonFile)
+    private fun buildCachedSubtitleDiagnostics(
+        infoJsonFile: File,
+        cacheRoot: File? = null,
+    ): String {
+        val safeInfoJsonFile = resolveAppInfoJsonFile(infoJsonFile, cacheRoot)
             ?: return "infoJsonSubtitles=<skipped-non-app-cache>\ninfoJsonAutomaticCaptions=<skipped-non-app-cache>"
 
         return runCatching {
@@ -1246,9 +1264,12 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         }.getOrDefault("infoJsonSubtitles=<parse-failed>\ninfoJsonAutomaticCaptions=<parse-failed>")
     }
 
-    private fun resolveAppInfoJsonFile(infoJsonFile: File): File? {
+    private fun resolveAppInfoJsonFile(infoJsonFile: File, cacheRoot: File? = null): File? {
         return runCatching {
-            val infoJsonRoot = File(FileUtil.getCachePath(context), "infojsons").canonicalFile
+            val infoJsonRoot = File(
+                (cacheRoot ?: File(FileUtil.getCachePath(context))).canonicalFile,
+                "infojsons",
+            ).canonicalFile
             val canonicalFile = infoJsonFile.canonicalFile
             canonicalFile.takeIf {
                 it.parentFile == infoJsonRoot &&
@@ -1623,7 +1644,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
      * first. The worker then publishes only exact move results from that
      * directory.
      */
-    internal fun resolveOutputPlan(downloadItem: DownloadItem): YtdlpOutputPlan {
+    internal fun resolveOutputPlan(
+        downloadItem: DownloadItem,
+        cacheRoot: File? = null,
+    ): YtdlpOutputPlan {
+        val effectiveCacheRoot = (cacheRoot ?: File(FileUtil.getCachePath(context))).canonicalFile
         val authoredOutputCommand = if (downloadItem.type == DownloadType.command) {
             downloadItem.format.format_note
         } else {
@@ -1728,7 +1753,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
         val directStagingParent = if (directNoCache) {
             (commandPathMap?.temp ?: finalDestinationDirectory)
-                ?: File(FileUtil.getCachePath(context)).canonicalFile
+                ?: effectiveCacheRoot
         } else {
             null
         }
@@ -1753,7 +1778,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 ".ytdlnisx-output/$operationToken",
             ).canonicalFile
         } else {
-            File(FileUtil.getCachePath(context), downloadItem.id.toString()).canonicalFile
+            File(effectiveCacheRoot, downloadItem.id.toString()).canonicalFile
         }
         return YtdlpOutputPlan(
             finalDestination = finalDestination,
@@ -1810,8 +1835,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         selectionOnly: Boolean = false,
         outputPlan: YtdlpOutputPlan? = null,
         downloadArchivePath: String? = null,
+        cacheRoot: File? = null,
     ) : YoutubeDLRequest {
-        val resolvedOutputPlan = outputPlan ?: resolveOutputPlan(downloadItem)
+        val effectiveCacheRoot = (cacheRoot ?: File(FileUtil.getCachePath(context))).canonicalFile
+        val resolvedOutputPlan = outputPlan ?: resolveOutputPlan(downloadItem, effectiveCacheRoot)
         var useItemURL = sharedPreferences.getBoolean("use_itemurl_instead_playlisturl", false)
         if (downloadItem.observeSourceId > 0L && downloadItem.url.isYoutubeURL() && downloadItem.url.getIDFromYoutubeURL() != null) {
             useItemURL = true
@@ -1874,7 +1901,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             request.addOption("--no-simulate")
             request.addOption("--print", "after_move:'__YTDLNISX_OUTPUT__%(filepath)s'")
         }else{
-            val cacheDir = FileUtil.getCachePath(context)
+            val cacheDir = effectiveCacheRoot
             downDir = if (selectionOnly) {
                 File(cacheDir, "${downloadItem.id}/selection")
             } else {
@@ -2051,7 +2078,10 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
             if (canUseWriteInfoJson && downloadItem.playlistURL.isNullOrBlank()) {
                 val infoJsonURL = downloadItem.url
-                val infoJsonFile = getInfoJsonFile(infoJsonURL)
+                val infoJsonFile = getInfoJsonFile(
+                    url = infoJsonURL,
+                    cacheRoot = effectiveCacheRoot,
+                )
                 val needsManualSubtitles = downloadItem.videoPreferences.embedSubs ||
                     downloadItem.videoPreferences.writeSubs
                 val needsAutomaticCaptions = downloadItem.videoPreferences.writeAutoSubs &&
@@ -2069,7 +2099,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 if (useCachedInfoJson && canUseCachedInfoJson) {
                     request.addOption("--load-info-json", infoJsonFile.absolutePath)
                 }else {
-                    ytDlRequest.addWriteInfoJson(infoJsonURL)
+                    ytDlRequest.addWriteInfoJson(infoJsonURL, effectiveCacheRoot)
                 }
             }
         }
@@ -2665,7 +2695,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             if (sponsorBlockURL.isNotBlank()) request.addOption("--sponsorblock-api", sponsorBlockURL)
         }
 
-        val cache = File(FileUtil.getCachePath(context))
+        val cache = effectiveCacheRoot
         cache.mkdirs()
         val conf = File(cache.absolutePath + "/${System.currentTimeMillis()}${UUID.randomUUID()}.txt")
         conf.createNewFile()

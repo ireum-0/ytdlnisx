@@ -193,6 +193,12 @@ internal object DownloadCacheOwnership {
         val candidate = runCatching { directory.canonicalFile }.getOrNull() ?: return false
         if (candidate.parentFile?.canonicalFile != root) return false
         val downloadId = candidate.name.toLongOrNull() ?: return false
+        // Admission publishes the exact process-local subject owner before
+        // this filesystem marker is rotated.  While that owner is live, an
+        // older marker must not provide a stale negative to maintenance or
+        // import.  This is only a protective fence; marker identity remains
+        // the provenance authority for cleanup/adoption.
+        if (DownloadWorkerExecutionOwners.hasLiveOwner(downloadId)) return true
         return isLiveOwnedMarker(root, markerFile(root, downloadId))
     }
 
@@ -204,9 +210,16 @@ internal object DownloadCacheOwnership {
         val fields = runCatching { parse(markerFile.readText()) }.getOrNull() ?: return false
         val downloadId = fields["downloadId"]?.toLongOrNull() ?: return false
         val executionId = fields["executionId"].orEmpty()
-        return fields["version"] == VERSION &&
-            executionId.isNotBlank() &&
-            DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId)
+        if (fields["version"] != VERSION || fields["downloadId"]?.toLongOrNull() != downloadId) {
+            return false
+        }
+        // The process-local subject owner closes the claim-to-marker rotation
+        // interval.  A valid stale marker is therefore protected while the
+        // exact new execution is live, but never becomes authority for that
+        // execution once the owner has exited.
+        return DownloadWorkerExecutionOwners.hasLiveOwner(downloadId) ||
+            (executionId.isNotBlank() &&
+                DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId))
     }
 
     /** Delete one exact numeric staging root only when its marker proves ownership. */

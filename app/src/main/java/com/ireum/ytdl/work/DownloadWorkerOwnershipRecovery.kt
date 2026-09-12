@@ -88,6 +88,15 @@ internal object DownloadWorkerExecutionOwners {
 
     fun ownerOf(downloadId: Long): String? = owners[downloadId]
 
+    /**
+     * A subject-level liveness witness used by cache maintenance while the
+     * shared authority window is held.  The marker may still contain an
+     * older generation during the short claim-to-marker publication interval;
+     * protecting the exact subject until its current owner exits closes that
+     * stale-negative crossover without granting the old marker any authority.
+     */
+    fun hasLiveOwner(downloadId: Long): Boolean = downloadId > 0L && owners[downloadId] != null
+
     fun release(downloadId: Long, executionId: String) {
         if (executionId.isNotBlank()) owners.remove(downloadId, executionId)
     }

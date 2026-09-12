@@ -11,12 +11,16 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.TerminalItem
+import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.storage.TerminalCacheOwnership
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -24,6 +28,7 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Production WorkManager wiring for the durable Terminal execution witness.
@@ -43,6 +48,7 @@ class TerminalExecutionProductionWiringTest {
         TerminalDownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
         TerminalDownloadWorkerEffectTestHooks.ytdlpResponseForTesting = null
         TerminalDownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = null
+        TerminalDownloadWorkerEffectTestHooks.afterAdmissionForTesting = null
     }
 
     @After
@@ -50,6 +56,7 @@ class TerminalExecutionProductionWiringTest {
         TerminalDownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
         TerminalDownloadWorkerEffectTestHooks.ytdlpResponseForTesting = null
         TerminalDownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = null
+        TerminalDownloadWorkerEffectTestHooks.afterAdmissionForTesting = null
     }
 
     @Test
@@ -118,6 +125,99 @@ class TerminalExecutionProductionWiringTest {
                 else remove("cache_downloads")
                 if (hadCommandPath) putString("command_path", previousCommandPath)
                 else remove("command_path")
+            }.commit()
+        }
+    }
+
+    @Test
+    fun admittedTerminalKeepsItsCacheRootWhenPreferenceChangesBeforePlanning() = runBlocking {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val hadCachePath = preferences.contains("cache_path")
+        val previousCachePath = preferences.getString("cache_path", null)
+        val hadCacheDownloads = preferences.contains("cache_downloads")
+        val previousCacheDownloads = preferences.getBoolean("cache_downloads", true)
+        val externalFiles = requireNotNull(context.getExternalFilesDir(null))
+        val admittedRoot = File(externalFiles, "terminal-bound-${System.nanoTime()}").canonicalFile
+        val command = "--simulate https://example.com/terminal-bound-root"
+        val itemId = db.terminalDao.insert(TerminalItem(command = command))
+        val observedStagingRoot = AtomicReference<File?>(null)
+        val observedFallbackRoot = AtomicReference<File?>(null)
+        var request: OneTimeWorkRequest? = null
+        try {
+            assertTrue(
+                preferences.edit()
+                    .putString("cache_path", admittedRoot.absolutePath)
+                    .putBoolean("cache_downloads", true)
+                    .commit(),
+            )
+            TerminalDownloadWorkerEffectTestHooks.afterAdmissionForTesting = { observedId, boundRoot ->
+                assertEquals(itemId.toInt(), observedId)
+                assertEquals(admittedRoot, boundRoot.canonicalFile)
+                assertTrue(
+                    preferences.edit().putString("cache_path", "").commit(),
+                )
+
+                // Model a carrier in the fallback namespace that admission
+                // did not inspect.  A later plan/staging step must still use
+                // the already admitted root rather than silently switching.
+                val fallbackRoot = File(FileUtil.getCachePath(context)).canonicalFile
+                val carrierRoot = File(fallbackRoot, "TERMINAL/stale-$itemId").apply { mkdirs() }
+                val staleToken = "$itemId-stale"
+                TerminalCacheOwnership.ensureMarker(carrierRoot, staleToken)
+                val remainder = File(carrierRoot, "remainder.bin").apply { writeText("stale") }
+                assertTrue(TerminalCacheOwnership.recordArtifacts(carrierRoot, listOf(remainder.absolutePath)))
+                assertTrue(
+                    TerminalCacheOwnership.recordRecoveryCarrier(
+                        directory = carrierRoot,
+                        taskToken = staleToken,
+                        subjectId = itemId.toString(),
+                    ),
+                )
+                assertTrue(TerminalCacheOwnership.revokeOwnershipPreservingArtifacts(carrierRoot, staleToken))
+                observedFallbackRoot.set(fallbackRoot)
+            }
+            TerminalDownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { observedId, output ->
+                assertEquals(itemId.toInt(), observedId)
+                observedStagingRoot.set(output?.canonicalFile)
+            }
+            TerminalDownloadWorkerEffectTestHooks.ytdlpResponseForTesting = { observedId, _ ->
+                assertEquals(itemId.toInt(), observedId)
+                ""
+            }
+            request = OneTimeWorkRequestBuilder<TerminalDownloadWorker>()
+                .setInputData(workDataOf("id" to itemId.toInt(), "command" to command))
+                .addTag("terminal-bound-cache-root")
+                .build()
+            WorkManager.getInstance(context).enqueue(checkNotNull(request))
+            val info = awaitFinished(checkNotNull(request))
+
+            assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+            val staging = checkNotNull(observedStagingRoot.get())
+            assertEquals(
+                File(admittedRoot, "TERMINAL").canonicalFile,
+                staging.parentFile?.canonicalFile,
+            )
+            val fallbackRoot = checkNotNull(observedFallbackRoot.get())
+            assertTrue(File(fallbackRoot, "TERMINAL/stale-$itemId").isDirectory)
+            assertFalse(staging.path.startsWith(fallbackRoot.path))
+            assertNull(db.terminalDao.getTerminalById(itemId))
+        } finally {
+            request?.let {
+                WorkManager.getInstance(context).cancelWorkById(it.id).result.get(10, TimeUnit.SECONDS)
+            }
+            db.terminalDao.delete(itemId)
+            TerminalExecutionRecovery.clearForTesting(
+                File(context.filesDir, "terminal-execution-recovery"),
+                itemId,
+            )
+            observedFallbackRoot.get()?.let { fallbackRoot ->
+                File(fallbackRoot, "TERMINAL/stale-$itemId").deleteRecursively()
+            }
+            admittedRoot.deleteRecursively()
+            preferences.edit().apply {
+                if (hadCachePath) putString("cache_path", previousCachePath) else remove("cache_path")
+                if (hadCacheDownloads) putBoolean("cache_downloads", previousCacheDownloads)
+                else remove("cache_downloads")
             }.commit()
         }
     }
