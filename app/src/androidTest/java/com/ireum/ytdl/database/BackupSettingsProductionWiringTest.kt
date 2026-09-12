@@ -9,6 +9,7 @@ import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.viewmodel.SettingsViewModel
+import com.ireum.ytdl.util.FileUtil
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertFalse
@@ -25,6 +26,7 @@ class BackupSettingsProductionWiringTest {
     private lateinit var database: DBManager
     private lateinit var historyRepository: HistoryRepository
     private var publishedBackup: String? = null
+    private var staleBackup: File? = null
 
     @Before
     fun setUp() {
@@ -44,6 +46,7 @@ class BackupSettingsProductionWiringTest {
     @After
     fun tearDown() = runBlocking {
         publishedBackup?.let { File(it).delete() }
+        staleBackup?.delete()
         historyRepository.deleteAllRecords()
     }
 
@@ -53,6 +56,25 @@ class BackupSettingsProductionWiringTest {
             .backup(listOf("downloads"))
 
         assertTrue(result.isSuccess)
+        publishedBackup = result.getOrNull()
+    }
+
+    @Test
+    fun publicationUsesOnlyTheCurrentBackupArtifact() = runBlocking {
+        val stagingDir = File(FileUtil.getCachePath(context), "Backups")
+            .apply { mkdirs() }
+        staleBackup = File(stagingDir, "stale-backup-${System.nanoTime()}.json")
+            .apply { writeText("{\"stale\":true}") }
+
+        val result = SettingsViewModel(context as android.app.Application)
+            .backup(listOf("downloads"))
+
+        assertTrue(result.isSuccess)
+        val published = result.getOrNull()?.let(::File)
+        assertTrue(published?.exists() == true)
+        assertTrue(published?.readText().orEmpty().contains("YTDLnisX_backup"))
+        assertTrue(staleBackup?.exists() == true)
+        assertFalse(published?.readText().orEmpty().contains("stale"))
         publishedBackup = result.getOrNull()
     }
 

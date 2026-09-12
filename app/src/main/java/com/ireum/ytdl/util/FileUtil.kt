@@ -44,6 +44,16 @@ import kotlin.math.pow
 
 object FileUtil {
 
+    /**
+     * Result of one exact move invocation.  Failures are carried by the
+     * invocation itself so callers do not have to consult the process-wide
+     * legacy diagnostic slot.
+     */
+    data class MoveFileResult(
+        val paths: List<String>,
+        val failures: List<String>,
+    )
+
     @Volatile
     private var lastMoveFailureDetails: String? = null
     private const val SHARED_FILE_PROVIDER_DIR = "shared"
@@ -422,6 +432,7 @@ object FileUtil {
         onOutputCommitted: ((File, String) -> Boolean)? = null,
         sourceFiles: List<File>? = null,
         onOutputReservationRolledBack: ((File) -> Boolean)? = null,
+        onMoveFailure: ((List<String>) -> Unit)? = null,
     ) : List<String> {
         fun notifyOutput(path: String) {
             runCatching { onOutput(path) }
@@ -623,6 +634,7 @@ object FileUtil {
                 if (hasMoveFailure) {
                     lastMoveFailureDetails = moveErrors.joinToString(limit = 8, separator = " | ")
                 }
+                onMoveFailure?.invoke(moveErrors.toList())
                 val scanned = scanMedia(normalized, context)
                 return@withContext scanned.ifEmpty { normalized }
             }
@@ -685,6 +697,7 @@ object FileUtil {
                 val detail = moveErrors.joinToString(limit = 3, separator = " | ")
                 throw IOException("moveFile produced no outputs${if (detail.isNotBlank()) ": $detail" else ""}")
             }
+            onMoveFailure?.invoke(moveErrors.toList())
             val scanned = scanMedia(normalized, context)
             if (scanned.isNotEmpty()) {
                 return@withContext scanned
@@ -693,6 +706,34 @@ object FileUtil {
             // In that case, return the moved paths directly so downstream hard-sub logic can continue.
             return@withContext normalized
         }
+    }
+
+    /**
+     * Move an exact source set and return its own paths and non-fatal move
+     * failures.  This is intentionally additive; existing callers retain the
+     * historical List<String> API and diagnostic behavior.
+     */
+    @Throws(Exception::class)
+    suspend fun moveFileWithResult(
+        originDir: File,
+        context: Context,
+        destDir: String,
+        keepCache: Boolean,
+        progress: (p: Int) -> Unit,
+        sourceFiles: List<File>,
+    ): MoveFileResult {
+        var failures: List<String> = emptyList()
+        val paths = moveFile(
+            originDir = originDir,
+            context = context,
+            destDir = destDir,
+            keepCache = keepCache,
+            progress = progress,
+            onOutput = {},
+            sourceFiles = sourceFiles,
+            onMoveFailure = { failures = it },
+        )
+        return MoveFileResult(paths = paths, failures = failures)
     }
 
     private data class ExactSafMoveResult(

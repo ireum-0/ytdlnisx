@@ -306,13 +306,22 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             saveFile.writeText(GsonBuilder().setPrettyPrinting().create().toJson(json))
         }
 
-        val movedPaths = withContext(Dispatchers.IO) {
-            FileUtil.moveFile(saveFile.parentFile!!, application, FileUtil.getBackupPath(application), false) {}
+        val moveResult = withContext(Dispatchers.IO) {
+            FileUtil.moveFileWithResult(
+                originDir = saveFile.parentFile!!,
+                context = application,
+                destDir = FileUtil.getBackupPath(application),
+                keepCache = false,
+                progress = {},
+                sourceFiles = listOf(saveFile),
+            )
         }
-        FileUtil.consumeLastMoveFailureDetails()?.let { details ->
-            throw IOException("Backup publication was incomplete: $details")
+        if (moveResult.failures.isNotEmpty()) {
+            throw IOException(
+                "Backup publication was incomplete: ${moveResult.failures.joinToString(" | ")}",
+            )
         }
-        return movedPaths.firstOrNull()
+        return moveResult.paths.firstOrNull()
             ?: throw IOException("Backup file publication produced no destination")
     }
 
