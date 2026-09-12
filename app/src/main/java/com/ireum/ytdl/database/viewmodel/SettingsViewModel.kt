@@ -65,8 +65,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.util.Calendar
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 
@@ -98,6 +100,20 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         val automaticRuleVideoMatches: List<AutomaticKeywordRuleVideoMatch>,
         val historyKeywordAssignments: List<HistoryKeywordAssignment>,
     )
+
+    private data class RestoredCustomThumbnail(
+        val stagedFile: File,
+        val extension: String,
+    )
+
+    private class RestoredCustomThumbnailStaging(
+        val root: File,
+        val byOldHistoryId: Map<Long, RestoredCustomThumbnail>,
+    ) {
+        fun cleanup() {
+            runCatching { root.deleteRecursively() }
+        }
+    }
 
     private val prefVisibleChildYoutuberGroupsKey = "history_visible_child_youtuber_groups"
     private val prefVisibleChildYoutubersKey = "history_visible_child_youtubers"
@@ -367,8 +383,10 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     }
 
     suspend fun restoreData(data: RestoreAppDataItem, context: Context, resetData: Boolean = false) : Boolean {
+        var customThumbnailStaging: RestoredCustomThumbnailStaging? = null
         val result = kotlin.runCatching {
-            val restoredCustomThumbByOldHistoryId = restoreCustomThumbnails(data.customThumbnails)
+            customThumbnailStaging = restoreCustomThumbnails(data.customThumbnails)
+            val restoredCustomThumbByOldHistoryId = customThumbnailStaging!!.byOldHistoryId
             val resetAutomaticRules =
                 resetData && (data.downloads != null || data.automaticKeywordRules != null)
             if (resetAutomaticRules) {
@@ -427,14 +445,39 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     if (resetData) historyRepository.deleteAllRecords()
                     data.downloads!!.forEach { historyItem ->
                         val oldHistoryId = historyItem.id
+                        val stagedThumbnail = restoredCustomThumbByOldHistoryId[oldHistoryId]
                         val newHistoryId = historyKeywordAssignments.insertHistory(
                             historyItem.copy(
                                 id = 0L,
-                                customThumb = restoredCustomThumbByOldHistoryId[oldHistoryId]
-                                    ?: historyItem.customThumb
+                                // A backup-local path is never portable.  The
+                                // staged payload is bound only after the new
+                                // destination History identity exists.
+                                customThumb = "",
                             )
                         )
+                        check(newHistoryId > 0L) {
+                            "History restore did not allocate a destination identity"
+                        }
                         importedHistoryIdMap[oldHistoryId] = newHistoryId
+                        stagedThumbnail?.let { thumbnail ->
+                            val finalPath = publishRestoredCustomThumbnail(
+                                thumbnail = thumbnail,
+                                destinationHistoryId = newHistoryId,
+                            )
+                            try {
+                                check(
+                                    dbManager.historyDao.updateCustomThumbById(
+                                        id = newHistoryId,
+                                        customThumb = finalPath,
+                                    ) == 1,
+                                ) {
+                                    "History restore thumbnail binding lost destination $newHistoryId"
+                                }
+                            } catch (error: Exception) {
+                                runCatching { File(finalPath).delete() }
+                                throw error
+                            }
+                        }
                     }
                 }
             }
@@ -945,6 +988,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
         }
 
+        customThumbnailStaging?.cleanup()
         return result.isSuccess
     }
 
@@ -985,34 +1029,103 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
     private suspend fun restoreCustomThumbnails(
         customThumbs: List<BackupCustomThumbItem>?
-    ): Map<Long, String> {
-        if (customThumbs.isNullOrEmpty()) return emptyMap()
+    ): RestoredCustomThumbnailStaging {
+        val stagingRoot = File(
+            application.filesDir,
+            "restore-thumbnail-staging/${UUID.randomUUID()}",
+        )
+        if (customThumbs.isNullOrEmpty()) {
+            return RestoredCustomThumbnailStaging(stagingRoot, emptyMap())
+        }
 
         return withContext(Dispatchers.IO) {
-            val baseDir = application.getExternalFilesDir(null) ?: application.filesDir
-            val thumbDir = File(baseDir, "custom_thumbs")
-            if (!thumbDir.exists()) {
-                thumbDir.mkdirs()
+            try {
+                if (!stagingRoot.mkdirs() && !stagingRoot.isDirectory) {
+                    throw IOException("Could not create thumbnail restore staging directory")
+                }
+                val restored = linkedMapOf<Long, RestoredCustomThumbnail>()
+                customThumbs.forEachIndexed { index, item ->
+                    if (item.historyId <= 0L) {
+                        throw IOException("Invalid backup History identity for custom thumbnail")
+                    }
+                    if (restored.containsKey(item.historyId)) {
+                        throw IOException(
+                            "Duplicate custom thumbnail payload for backup History ${item.historyId}",
+                        )
+                    }
+                    val extension = item.extension
+                        .lowercase()
+                        .ifBlank { "jpg" }
+                        .takeIf { it.matches(Regex("[a-z0-9]{1,10}")) }
+                        ?: throw IOException("Invalid custom thumbnail extension")
+                    val decoded = try {
+                        Base64.decode(item.base64, Base64.DEFAULT)
+                    } catch (error: Exception) {
+                        throw IOException(
+                            "Could not decode custom thumbnail for backup History ${item.historyId}",
+                            error,
+                        )
+                    }
+                    val stagedFile = File(stagingRoot, "payload_$index.$extension")
+                    if (!stagedFile.createNewFile()) {
+                        throw IOException("Could not create staged custom thumbnail")
+                    }
+                    try {
+                        FileOutputStream(stagedFile).use { output ->
+                            output.write(decoded)
+                            output.flush()
+                            output.fd.sync()
+                        }
+                    } catch (error: Exception) {
+                        runCatching { stagedFile.delete() }
+                        throw IOException(
+                            "Could not stage custom thumbnail for backup History ${item.historyId}",
+                            error,
+                        )
+                    }
+                    restored[item.historyId] = RestoredCustomThumbnail(
+                        stagedFile = stagedFile,
+                        extension = extension,
+                    )
+                }
+                RestoredCustomThumbnailStaging(stagingRoot, restored)
+            } catch (error: Exception) {
+                runCatching { stagingRoot.deleteRecursively() }
+                throw error
             }
+        }
+    }
 
-            val restored = linkedMapOf<Long, String>()
-            customThumbs.forEach { item ->
-                val decoded = runCatching { Base64.decode(item.base64, Base64.DEFAULT) }.getOrNull()
-                    ?: return@forEach
-                val extension = item.extension
-                    .lowercase()
-                    .replace(Regex("[^a-z0-9]"), "")
-                    .ifBlank { "jpg" }
-                val outFile = File(thumbDir, "restored_${item.historyId}.$extension")
-                val written = runCatching {
-                    outFile.writeBytes(decoded)
-                    outFile.absolutePath
-                }.getOrNull()
-                if (!written.isNullOrBlank()) {
-                    restored[item.historyId] = written
+    private fun publishRestoredCustomThumbnail(
+        thumbnail: RestoredCustomThumbnail,
+        destinationHistoryId: Long,
+    ): String {
+        val finalDir = File(application.filesDir, "restored_custom_thumbnails")
+        if (!finalDir.exists() && !finalDir.mkdirs()) {
+            throw IOException("Could not create restored thumbnail directory")
+        }
+        if (!finalDir.isDirectory || !finalDir.canWrite()) {
+            throw IOException("Restored thumbnail directory is not writable")
+        }
+        val finalFile = File(
+            finalDir,
+            "history_${destinationHistoryId}_${UUID.randomUUID()}.${thumbnail.extension}",
+        )
+        if (!finalFile.createNewFile()) {
+            throw IOException("Could not reserve restored thumbnail destination")
+        }
+        try {
+            thumbnail.stagedFile.inputStream().use { input ->
+                FileOutputStream(finalFile).use { output ->
+                    input.copyTo(output)
+                    output.flush()
+                    output.fd.sync()
                 }
             }
-            restored
+            return finalFile.absolutePath
+        } catch (error: Exception) {
+            runCatching { finalFile.delete() }
+            throw IOException("Could not publish restored thumbnail", error)
         }
     }
 
