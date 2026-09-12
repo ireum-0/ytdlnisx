@@ -404,35 +404,52 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     if (resetData) clear()
                     prefs.forEach {
                         val key = it.key
+                        if (!BackupSettingsUtil.isPortablePreferenceKey(key)) return@forEach
                         val prefValue = it.value
-                        when(it.type){
+                        when (it.type) {
                             "String" -> {
                                 putString(key, prefValue)
                             }
                             "Boolean" -> {
-                                putBoolean(key, prefValue.toBoolean())
+                                putBoolean(
+                                    key,
+                                    when (prefValue.lowercase()) {
+                                        "true" -> true
+                                        "false" -> false
+                                        else -> throw IllegalArgumentException(
+                                            "Invalid Boolean preference value for $key",
+                                        )
+                                    },
+                                )
                             }
                             "Int" -> {
                                 putInt(key, prefValue.toInt())
                             }
-                            else -> {
-                                if (it.type?.contains("Set", ignoreCase = true) != true) return@forEach
-                                val parsedSet = runCatching {
-                                    JsonParser.parseString(prefValue)
-                                        .asJsonArray
-                                        .mapNotNull { entry ->
-                                            runCatching { entry.asString }.getOrNull()
+                            "Long" -> {
+                                putLong(key, prefValue.toLong())
+                            }
+                            "Float" -> {
+                                putFloat(key, prefValue.toFloat())
+                            }
+                            "StringSet", "Set", "HashSet", "LinkedHashSet", "ArraySet" -> {
+                                val parsedSet = JsonParser.parseString(prefValue)
+                                    .takeIf { it.isJsonArray }
+                                    ?.asJsonArray
+                                    ?.map { entry ->
+                                        require(entry.isJsonPrimitive && entry.asJsonPrimitive.isString) {
+                                            "Invalid StringSet member for $key"
                                         }
-                                        .toSet()
-                                }.getOrElse {
-                                    prefValue
-                                        .replace("(\")|(\\[)|(])|([ \\t])".toRegex(), "")
-                                        .split(",")
-                                        .filter { value -> value.isNotBlank() }
-                                        .toSet()
-                                }
+                                        entry.asString
+                                    }
+                                    ?.toSet()
+                                    ?: throw IllegalArgumentException(
+                                        "Invalid StringSet preference value for $key",
+                                    )
                                 putStringSet(key, parsedSet)
                             }
+                            else -> throw IllegalArgumentException(
+                                "Unsupported preference type for $key: ${it.type}",
+                            )
                         }
                     }
                 }

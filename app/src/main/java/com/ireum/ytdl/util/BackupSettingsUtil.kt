@@ -63,17 +63,30 @@ object BackupSettingsUtil {
 
     fun backupSettings(preferences: SharedPreferences): Result<JsonArray> = capture {
         val items = preferences.all
-            .filterKeys { it != "app_language" }
+            .filterKeys(::isPortablePreferenceKey)
             .map { (key, value) ->
                 val nonNullValue = requireNotNull(value) { "Preference $key has no value" }
-                BackupSettingsItem(
-                    key = key,
-                    value = when (nonNullValue) {
-                        is Set<*> -> Gson().toJson(nonNullValue.filterIsInstance<String>())
-                        else -> nonNullValue.toString()
-                    },
-                    type = nonNullValue::class.simpleName,
-                )
+                val encoded = when (nonNullValue) {
+                    is String -> BackupSettingsItem(key, nonNullValue, "String")
+                    is Boolean -> BackupSettingsItem(key, nonNullValue.toString(), "Boolean")
+                    is Int -> BackupSettingsItem(key, nonNullValue.toString(), "Int")
+                    is Long -> BackupSettingsItem(key, nonNullValue.toString(), "Long")
+                    is Float -> BackupSettingsItem(key, nonNullValue.toString(), "Float")
+                    is Set<*> -> {
+                        require(nonNullValue.all { it is String }) {
+                            "Preference $key contains a non-string set member"
+                        }
+                        BackupSettingsItem(
+                            key = key,
+                            value = Gson().toJson(nonNullValue.toList()),
+                            type = "StringSet",
+                        )
+                    }
+                    else -> throw IllegalArgumentException(
+                        "Unsupported preference type for $key: ${nonNullValue::class.java.name}",
+                    )
+                }
+                encoded
             }
         toJsonArray(items)
     }
