@@ -1,6 +1,7 @@
 package com.ireum.ytdl.util.storage
 
 import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -179,6 +180,33 @@ internal object DownloadCacheOwnership {
             fields["downloadId"]?.toLongOrNull() == item.id &&
             fields["operationId"] == item.operationId &&
             fields["executionId"] == item.executionId
+    }
+
+    /**
+     * Proves that a numeric cache root is currently owned by the exact live
+     * Download execution.  The marker remains the durable identity binding;
+     * the process-local registry is the liveness witness used only while the
+     * shared cache-maintenance window is held.
+     */
+    fun isLiveOwnedRoot(cacheRoot: File, directory: File): Boolean {
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
+        val candidate = runCatching { directory.canonicalFile }.getOrNull() ?: return false
+        if (candidate.parentFile?.canonicalFile != root) return false
+        val downloadId = candidate.name.toLongOrNull() ?: return false
+        return isLiveOwnedMarker(root, markerFile(root, downloadId))
+    }
+
+    /** True only when this exact marker binds to a currently live execution. */
+    fun isLiveOwnedMarker(cacheRoot: File, marker: File): Boolean {
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
+        val markerFile = runCatching { marker.canonicalFile }.getOrNull() ?: return false
+        if (markerFile.parentFile?.canonicalFile != root || !markerFile.isFile) return false
+        val fields = runCatching { parse(markerFile.readText()) }.getOrNull() ?: return false
+        val downloadId = fields["downloadId"]?.toLongOrNull() ?: return false
+        val executionId = fields["executionId"].orEmpty()
+        return fields["version"] == VERSION &&
+            executionId.isNotBlank() &&
+            DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId)
     }
 
     /** Delete one exact numeric staging root only when its marker proves ownership. */

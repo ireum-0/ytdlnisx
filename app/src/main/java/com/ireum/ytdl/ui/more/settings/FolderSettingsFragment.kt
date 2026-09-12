@@ -489,12 +489,14 @@ class FolderSettingsFragment : BaseSettingsFragment() {
                 return@launch
             }
             val cleared = withContext(Dispatchers.IO) {
-                runCatching {
+                try {
                     val db = DBManager.getInstance(requireContext())
                     db.logDao.deleteAll()
                     db.downloadDao.removeAllLogID()
                     appCacheManager.delete(setOf(AppCacheCategory.LOG_EXPORT_CACHE))
-                }.getOrNull()
+                } catch (_: Throwable) {
+                    null
+                }
             }
             val message = when {
                 cleared == null -> getString(R.string.cache_delete_failed)

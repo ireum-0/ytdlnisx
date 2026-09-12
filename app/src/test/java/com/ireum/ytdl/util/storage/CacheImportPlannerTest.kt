@@ -5,6 +5,7 @@ import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -51,6 +52,27 @@ class CacheImportPlannerTest {
             assertEquals(listOf(output.canonicalPath), manifest.map { it.source.canonicalPath })
             assertTrue(manifest.none { it.source.name == ".ytdlnisx-terminal-owner" })
         } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun liveDownloadOwnerIsExcludedFromImportManifest() {
+        val root = Files.createTempDirectory("cache-import-live-owner-").toFile()
+        val item = item()
+        try {
+            val owned = File(root, item.id.toString()).apply { mkdirs() }
+            DownloadCacheOwnership.ensureMarker(root, item)
+            val output = File(owned, "video.mp4").apply { writeText("owned") }
+            assertTrue(DownloadCacheOwnership.recordArtifacts(root, item, listOf(output.absolutePath)))
+            DownloadWorkerExecutionOwners.claim(item.id, item.executionId)
+
+            assertTrue(CacheImportPlanner.collect(root).isEmpty())
+
+            DownloadWorkerExecutionOwners.release(item.id, item.executionId)
+            assertEquals(listOf(output.canonicalPath), CacheImportPlanner.collect(root).map { it.source.canonicalPath })
+        } finally {
+            DownloadWorkerExecutionOwners.release(item.id, item.executionId)
             root.deleteRecursively()
         }
     }

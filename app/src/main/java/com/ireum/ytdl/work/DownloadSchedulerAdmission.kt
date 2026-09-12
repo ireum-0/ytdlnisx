@@ -9,6 +9,7 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.DownloadPrimarySuccessAuthorityRepository
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
+import com.ireum.ytdl.util.storage.CacheMaintenanceAuthority
 import java.util.UUID
 
 /**
@@ -187,106 +188,108 @@ internal suspend fun claimDownloadThroughProductionAdmission(
     candidate: DownloadItem,
     concurrentDownloadLimit: Int,
     onClaimed: (DownloadItem) -> Unit = {},
-): DownloadItem? = withDownloadWorkerExecutionSideEffectLease(
-    downloadId = candidate.id,
-    executionId = "",
-) {
-    // The claim boundary is also used by production-wiring callers that do
-    // not first enter DownloadWorker.doWork(). Ensure the durable marker
-    // namespace is configured before the fail-closed native check.
-    YtdlpNativeProcessBarrier.configure(context)
-    if (DownloadExecutionRecovery.pendingDownloadIds(context).contains(candidate.id)) {
-        // A durable recovery/finalization carrier is stronger than a queued
-        // observation.  Do not let an unrelated worker reinterpret it as a
-        // fresh E2 attempt while the carrier is still present.
-        return@withDownloadWorkerExecutionSideEffectLease null
-    }
-    if (DownloadProducerRecovery.hasBlockingForAdmission(context, candidate.id)) {
-        // Producer-finality authority covers the pre-publication interval,
-        // including no-output/archive-hit success.  A COMPLETE predecessor
-        // is intentionally excluded from this fence: the worker may claim a
-        // successor solely to adopt/finalize it, while every weaker phase
-        // must converge before a new execution can claim the subject.
-        return@withDownloadWorkerExecutionSideEffectLease null
-    }
-    if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {
-        // A committed primary result is finalization-only even if a stale
-        // queue row was left behind by process death.
-        return@withDownloadWorkerExecutionSideEffectLease null
-    }
-    if (
-        !DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id) ||
-            DownloadWorker.hasAnyRegisteredNativeProcess(candidate.id)
+): DownloadItem? = CacheMaintenanceAuthority.withExecutionAdmission {
+    withDownloadWorkerExecutionSideEffectLease(
+        downloadId = candidate.id,
+        executionId = "",
     ) {
-        // A prior execution still owns an unresolved native process or
-        // durable marker.  Resource reuse remains fenced until recovery has
-        // proved exact quiescence.
-        return@withDownloadWorkerExecutionSideEffectLease null
-    }
-    val dao = dbManager.downloadDao
-    withDownloadWorkerExecutionLock {
-        // Selection may have occurred before another worker claimed a
-        // sibling. Revalidate capacity and hard-sub exclusivity while this
-        // candidate's lease is already held and before publishing its token.
-        // This preserves the lease -> global lock -> short CAS order without
-        // holding the global lock while waiting for a per-Download lease.
-        // Recheck the per-Download native authority here as well: a durable
-        // marker can appear after the initial precheck but before publication.
+        // The claim boundary is also used by production-wiring callers that do
+        // not first enter DownloadWorker.doWork(). Ensure the durable marker
+        // namespace is configured before the fail-closed native check.
+        YtdlpNativeProcessBarrier.configure(context)
+        if (DownloadExecutionRecovery.pendingDownloadIds(context).contains(candidate.id)) {
+            // A durable recovery/finalization carrier is stronger than a queued
+            // observation.  Do not let an unrelated worker reinterpret it as a
+            // fresh E2 attempt while the carrier is still present.
+            return@withDownloadWorkerExecutionSideEffectLease null
+        }
+        if (DownloadProducerRecovery.hasBlockingForAdmission(context, candidate.id)) {
+            // Producer-finality authority covers the pre-publication interval,
+            // including no-output/archive-hit success.  A COMPLETE predecessor
+            // is intentionally excluded from this fence: the worker may claim a
+            // successor solely to adopt/finalize it, while every weaker phase
+            // must converge before a new execution can claim the subject.
+            return@withDownloadWorkerExecutionSideEffectLease null
+        }
+        if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {
+            // A committed primary result is finalization-only even if a stale
+            // queue row was left behind by process death.
+            return@withDownloadWorkerExecutionSideEffectLease null
+        }
         if (
             !DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id) ||
                 DownloadWorker.hasAnyRegisteredNativeProcess(candidate.id)
         ) {
-            return@withDownloadWorkerExecutionLock null
+            // A prior execution still owns an unresolved native process or
+            // durable marker.  Resource reuse remains fenced until recovery has
+            // proved exact quiescence.
+            return@withDownloadWorkerExecutionSideEffectLease null
         }
-        if (DownloadProducerRecovery.hasBlockingForAdmission(context, candidate.id)) {
-            return@withDownloadWorkerExecutionLock null
-        }
-        if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {
-            return@withDownloadWorkerExecutionLock null
-        }
-        val currentOwnership = classifyDownloadSchedulerOwnership(
-            dao.getActiveAndPostProcessingDownloadsList()
-        )
-        if (
-            currentOwnership.liveCapacityIds.size >= concurrentDownloadLimit.coerceAtLeast(1) ||
-                (
-                    isHardSubRedownloadForScheduler(candidate) &&
-                        currentOwnership.liveHardSubIds.isNotEmpty()
-                    )
-        ) {
-            return@withDownloadWorkerExecutionLock null
-        }
-        val currentCandidate = dao.getNullableDownloadById(candidate.id)
-            ?: return@withDownloadWorkerExecutionLock null
-        if (dbManager.lowQualityRedownloadDao.hasCancellationRequestedByDownload(candidate.id)) {
-            // Low-quality phase-one revocation is a durable claim fence.  It
-            // must be rechecked under the same global lock as the claim CAS
-            // so a queued linked child cannot publish E2 after cancellation
-            // has won the coordinator boundary.
-            return@withDownloadWorkerExecutionLock null
-        }
-        if (isDurablyCommittedHistoryReplacementForScheduler(dbManager, currentCandidate)) {
-            // Queue selection and this claim are separate observations.  The
-            // History semantic commit may have won in between; a finalization
-            // debt row must never become a fresh destructive execution.
-            return@withDownloadWorkerExecutionLock null
-        }
-        val executionId = UUID.randomUUID().toString()
-        val claimedItem = dao.claimDownloadForWorkerAndRead(
-            id = candidate.id,
-            expectedOperationId = candidate.operationId,
-            expectedRetryAttempt = candidate.retryAttempt,
-            executionId = executionId,
-        )
-        if (claimedItem == null) {
-            null
-        } else {
-            DownloadClaimTestHooks.afterClaimMaterializationBeforeOwnerPublicationForTesting
-                ?.invoke(claimedItem)
-            DownloadWorkerExecutionOwners.claim(claimedItem.id, claimedItem.executionId)
-            DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting
-                ?.invoke(claimedItem)
-            claimedItem.also(onClaimed)
+        val dao = dbManager.downloadDao
+        withDownloadWorkerExecutionLock {
+            // Selection may have occurred before another worker claimed a
+            // sibling. Revalidate capacity and hard-sub exclusivity while this
+            // candidate's lease is already held and before publishing its token.
+            // This preserves the lease -> global lock -> short CAS order without
+            // holding the global lock while waiting for a per-Download lease.
+            // Recheck the per-Download native authority here as well: a durable
+            // marker can appear after the initial precheck but before publication.
+            if (
+                !DownloadWorkerProcessOwners.canClaimNewExecution(candidate.id) ||
+                    DownloadWorker.hasAnyRegisteredNativeProcess(candidate.id)
+            ) {
+                return@withDownloadWorkerExecutionLock null
+            }
+            if (DownloadProducerRecovery.hasBlockingForAdmission(context, candidate.id)) {
+                return@withDownloadWorkerExecutionLock null
+            }
+            if (DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(dbManager, candidate.id)) {
+                return@withDownloadWorkerExecutionLock null
+            }
+            val currentOwnership = classifyDownloadSchedulerOwnership(
+                dao.getActiveAndPostProcessingDownloadsList()
+            )
+            if (
+                currentOwnership.liveCapacityIds.size >= concurrentDownloadLimit.coerceAtLeast(1) ||
+                    (
+                        isHardSubRedownloadForScheduler(candidate) &&
+                            currentOwnership.liveHardSubIds.isNotEmpty()
+                        )
+            ) {
+                return@withDownloadWorkerExecutionLock null
+            }
+            val currentCandidate = dao.getNullableDownloadById(candidate.id)
+                ?: return@withDownloadWorkerExecutionLock null
+            if (dbManager.lowQualityRedownloadDao.hasCancellationRequestedByDownload(candidate.id)) {
+                // Low-quality phase-one revocation is a durable claim fence.  It
+                // must be rechecked under the same global lock as the claim CAS
+                // so a queued linked child cannot publish E2 after cancellation
+                // has won the coordinator boundary.
+                return@withDownloadWorkerExecutionLock null
+            }
+            if (isDurablyCommittedHistoryReplacementForScheduler(dbManager, currentCandidate)) {
+                // Queue selection and this claim are separate observations.  The
+                // History semantic commit may have won in between; a finalization
+                // debt row must never become a fresh destructive execution.
+                return@withDownloadWorkerExecutionLock null
+            }
+            val executionId = UUID.randomUUID().toString()
+            val claimedItem = dao.claimDownloadForWorkerAndRead(
+                id = candidate.id,
+                expectedOperationId = candidate.operationId,
+                expectedRetryAttempt = candidate.retryAttempt,
+                executionId = executionId,
+            )
+            if (claimedItem == null) {
+                null
+            } else {
+                DownloadClaimTestHooks.afterClaimMaterializationBeforeOwnerPublicationForTesting
+                    ?.invoke(claimedItem)
+                DownloadWorkerExecutionOwners.claim(claimedItem.id, claimedItem.executionId)
+                DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting
+                    ?.invoke(claimedItem)
+                claimedItem.also(onClaimed)
+            }
         }
     }
 }

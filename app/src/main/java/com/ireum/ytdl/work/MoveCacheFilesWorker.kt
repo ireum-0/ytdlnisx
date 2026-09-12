@@ -9,8 +9,8 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
-import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.App
 import com.ireum.ytdl.MainActivity
@@ -19,21 +19,23 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.storage.CacheImportArtifact
 import com.ireum.ytdl.util.storage.CacheImportPlanner
+import com.ireum.ytdl.util.storage.CacheMaintenanceAuthority
 import java.io.File
 import java.nio.file.Files
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 
 class MoveCacheFilesWorker(
     private val context: Context,
     workerParams: WorkerParameters
-) : Worker(context, workerParams) {
-    override fun doWork(): Result {
+) : CoroutineWorker(context, workerParams) {
+    override suspend fun doWork(): Result {
         val notificationUtil = NotificationUtil(App.instance)
         val id = System.currentTimeMillis().toInt()
 
         val cacheRoot = File(FileUtil.getCachePath(context)).canonicalFile
-        val manifest = CacheImportPlanner.collect(cacheRoot)
-        val totalFiles = manifest.size
         val destination = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath +
                 File.separator +
@@ -50,28 +52,31 @@ class MoveCacheFilesWorker(
             setForegroundAsync(ForegroundInfo(id, notification))
         }
 
-        if (manifest.isEmpty()) {
-            notificationUtil.updateCacheMovingNotification(id, 0, 0)
+        return try {
+            withContext(Dispatchers.IO) {
+                CacheMaintenanceAuthority.withMaintenanceWindow {
+                    val manifest = CacheImportPlanner.collect(cacheRoot)
+                    val totalFiles = manifest.size
+                    if (manifest.isEmpty()) {
+                        notificationUtil.updateCacheMovingNotification(id, 0, 0)
+                    }
+                    if (!destination.exists() && !destination.mkdirs() && !destination.isDirectory) {
+                        throw IllegalStateException("Could not create cache import destination")
+                    }
+                    manifest.forEachIndexed { index, artifact ->
+                        notificationUtil.updateCacheMovingNotification(id, index + 1, totalFiles)
+                        moveExact(artifact, destination)
+                    }
+                }
+            }
+            showCompletionToast()
+            Result.success()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            android.util.Log.e(TAG, "Cache import stopped without overwriting unknown files", error)
+            Result.failure()
         }
-
-        return runCatching {
-            if (!destination.exists() && !destination.mkdirs() && !destination.isDirectory) {
-                throw IllegalStateException("Could not create cache import destination")
-            }
-            manifest.forEachIndexed { index, artifact ->
-                notificationUtil.updateCacheMovingNotification(id, index + 1, totalFiles)
-                moveExact(artifact, destination)
-            }
-        }.fold(
-            onSuccess = {
-                showCompletionToast()
-                Result.success()
-            },
-            onFailure = { error ->
-                android.util.Log.e(TAG, "Cache import stopped without overwriting unknown files", error)
-                Result.failure()
-            }
-        )
     }
 
     private fun moveExact(artifact: CacheImportArtifact, destinationRoot: File) {
