@@ -19,6 +19,18 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 
 object BackupSettingsUtil {
+    private val nonPortablePreferenceKeys = setOf(
+        "app_language",
+        // Re-emitted by the youtuber-data payload where old group IDs can be
+        // explicitly remapped to destination group IDs.
+        "history_visible_child_youtuber_groups",
+    )
+    private const val PLAYBACK_POSITION_CACHE_PREFIX = "player_playback_position_"
+
+    internal fun isPortablePreferenceKey(key: String): Boolean =
+        key !in nonPortablePreferenceKeys &&
+            !key.startsWith(PLAYBACK_POSITION_CACHE_PREFIX)
+
     /**
      * A successful empty array is meaningful backup state.  Capture failures
      * therefore remain a typed [Result.failure] instead of being collapsed to

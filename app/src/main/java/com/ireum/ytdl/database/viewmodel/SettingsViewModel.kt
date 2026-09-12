@@ -449,6 +449,11 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         val newHistoryId = historyKeywordAssignments.insertHistory(
                             historyItem.copy(
                                 id = 0L,
+                                // History.downloadId points at a destination-local
+                                // Download row.  No portable Download-ID map exists
+                                // during History restore, so retaining the backup ID
+                                // would create a false relation to an unrelated row.
+                                downloadId = 0L,
                                 // A backup-local path is never portable.  The
                                 // staged payload is bound only after the new
                                 // destination History identity exists.
@@ -500,7 +505,8 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     }
 
                     data.keywordGroupMembers?.mapNotNull { member ->
-                        val mappedGroupId = keywordGroupIdMap[member.groupId] ?: member.groupId
+                        val mappedGroupId = keywordGroupIdMap[member.groupId]
+                            ?: return@mapNotNull null
                         if (mappedGroupId <= 0L) null
                         else com.ireum.ytdl.database.models.KeywordGroupMember(
                             groupId = mappedGroupId,
@@ -541,7 +547,8 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     }
 
                     data.youtuberGroupMembers?.mapNotNull { member ->
-                        val mappedGroupId = youtuberGroupIdMap[member.groupId] ?: member.groupId
+                        val mappedGroupId = youtuberGroupIdMap[member.groupId]
+                            ?: return@mapNotNull null
                         if (mappedGroupId <= 0L) null
                         else com.ireum.ytdl.database.models.YoutuberGroupMember(
                             groupId = mappedGroupId,
@@ -554,8 +561,10 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     }
 
                     data.youtuberGroupRelations?.mapNotNull { relation ->
-                        val mappedParentId = youtuberGroupIdMap[relation.parentGroupId] ?: relation.parentGroupId
-                        val mappedChildId = youtuberGroupIdMap[relation.childGroupId] ?: relation.childGroupId
+                        val mappedParentId = youtuberGroupIdMap[relation.parentGroupId]
+                            ?: return@mapNotNull null
+                        val mappedChildId = youtuberGroupIdMap[relation.childGroupId]
+                            ?: return@mapNotNull null
                         if (mappedParentId <= 0L || mappedChildId <= 0L || mappedParentId == mappedChildId) {
                             null
                         } else {
@@ -578,7 +587,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         preferences.edit(commit = true) {
                             putStringSet(
                                 prefVisibleChildYoutuberGroupsKey,
-                                visible.map { it.toString() }.toSet()
+                                visible.mapNotNull { youtuberGroupIdMap[it]?.toString() }.toSet()
                             )
                         }
                     }
@@ -625,15 +634,30 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         val restoredUserSource = source.copy(
                             id = 0L,
                             observationPurpose = ObservationPurposes.USER,
-                            managedConditionKey = ""
+                            managedConditionKey = "",
+                            // The embedded template can carry the source's
+                            // database-local identity.  It is rebound only
+                            // after the destination source row is allocated.
+                            downloadItemTemplate = source.downloadItemTemplate.copy(
+                                id = 0L,
+                                observeSourceId = 0L,
+                            ),
                         )
                         val insertedId = observeSourcesRepository.insert(restoredUserSource)
-                        val restoredSource = if (insertedId > 0L) {
+                        var restoredSource = if (insertedId > 0L) {
                             restoredUserSource.copy(id = insertedId)
                         } else {
                             observeSourcesRepository.getByURL(source.url)
                         }
                         val restoredId = restoredSource.id
+                        if (insertedId > 0L && restoredId > 0L) {
+                            restoredSource = restoredSource.copy(
+                                downloadItemTemplate = restoredSource.downloadItemTemplate.copy(
+                                    observeSourceId = restoredId,
+                                ),
+                            )
+                            observeSourcesRepository.update(restoredSource)
+                        }
                         if (oldSourceId > 0L && restoredId > 0L) {
                             restoredObserveSourceIdMap[oldSourceId] = restoredId
                         }
@@ -717,7 +741,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                                     ?: return@mapNotNull null
                             HistoryKeywordAssignmentSources.LEGACY_OBSERVE_SOURCE ->
                                 restoredObserveSourceIdMap[assignment.sourceId]
-                                    ?: assignment.sourceId
+                                    ?: return@mapNotNull null
                             else -> return@mapNotNull null
                         }
                         val display = assignment.keyword.trim().replace(Regex("\\s+"), " ")
@@ -764,7 +788,6 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 }
             }
 
-            val liveObserveSourceIdCache = mutableMapOf<Long, Long?>()
             fun remapRestoredDownload(item: com.ireum.ytdl.database.models.DownloadItem) :
                 RemappedDownload {
                 val oldSourceId = item.observeSourceId
@@ -772,17 +795,6 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     0L
                 } else {
                     restoredObserveSourceIdMap[oldSourceId]
-                        ?: if (data.observeSources == null) {
-                            if (liveObserveSourceIdCache.containsKey(oldSourceId)) {
-                                liveObserveSourceIdCache[oldSourceId]
-                            } else {
-                                observeSourcesRepository.getByIDOrNull(oldSourceId)?.id.also {
-                                    liveObserveSourceIdCache[oldSourceId] = it
-                                }
-                            }
-                        } else {
-                            null
-                        }
                 }
                 val restoredStatus =
                     if (
