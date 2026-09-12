@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import android.util.Base64
+import androidx.room.withTransaction
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.preference.PreferenceManager
@@ -22,6 +23,17 @@ import com.ireum.ytdl.database.dao.YoutuberGroupDao
 import com.ireum.ytdl.database.dao.YoutuberMetaDao
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.models.BackupCustomThumbItem
+import com.ireum.ytdl.database.models.AutomaticKeywordRule
+import com.ireum.ytdl.database.models.AutomaticKeywordRuleKeyword
+import com.ireum.ytdl.database.models.AutomaticKeywordRuleVideoMatch
+import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.HistoryKeywordAssignment
+import com.ireum.ytdl.database.models.KeywordGroup
+import com.ireum.ytdl.database.models.KeywordGroupMember
+import com.ireum.ytdl.database.models.YoutuberGroup
+import com.ireum.ytdl.database.models.YoutuberGroupMember
+import com.ireum.ytdl.database.models.YoutuberGroupRelation
+import com.ireum.ytdl.database.models.YoutuberMeta
 import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.AutomaticKeywordRuleTypes
 import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
@@ -50,8 +62,10 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
 import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
@@ -60,6 +74,29 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     private data class RemappedDownload(
         val item: com.ireum.ytdl.database.models.DownloadItem,
         val barrier: HistoryReplacementBarrier? = null,
+    )
+
+    private data class KeywordBackupSnapshot(
+        val groups: List<KeywordGroup>,
+        val members: List<KeywordGroupMember>,
+        val visibleChildKeywords: Set<String>,
+    )
+
+    private data class YoutuberBackupSnapshot(
+        val groups: List<YoutuberGroup>,
+        val members: List<YoutuberGroupMember>,
+        val relations: List<YoutuberGroupRelation>,
+        val visibleChildGroups: Set<String>,
+        val visibleChildYoutubers: Set<String>,
+        val metadata: List<YoutuberMeta>,
+    )
+
+    private data class DownloadBackupSnapshot(
+        val history: List<HistoryItem>,
+        val automaticRules: List<AutomaticKeywordRule>,
+        val automaticRuleKeywords: List<AutomaticKeywordRuleKeyword>,
+        val automaticRuleVideoMatches: List<AutomaticKeywordRuleVideoMatch>,
+        val historyKeywordAssignments: List<HistoryKeywordAssignment>,
     )
 
     private val prefVisibleChildYoutuberGroupsKey = "history_visible_child_youtuber_groups"
@@ -95,99 +132,229 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         youtuberMetaDao = dbManager.youtuberMetaDao
     }
 
-    suspend fun backup(items: List<String> = listOf()) : Result<String> {
-        var list = items
-        if (list.isEmpty()) {
-            list = listOf("settings", "downloads", "keywordData", "youtuberData", "queued", "scheduled", "cancelled", "errored", "saved", "cookies", "templates", "shortcuts", "searchHistory", "observeSources")
+    suspend fun backup(items: List<String> = listOf()): Result<String> {
+        return try {
+            Result.success(backupInternal(items))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+    }
+
+    private suspend fun backupInternal(items: List<String>): String {
+        val list = if (items.isEmpty()) {
+            listOf(
+                "settings",
+                "downloads",
+                "keywordData",
+                "youtuberData",
+                "queued",
+                "scheduled",
+                "cancelled",
+                "errored",
+                "saved",
+                "cookies",
+                "templates",
+                "shortcuts",
+                "searchHistory",
+                "observeSources",
+            )
+        } else {
+            items
         }
 
-        val json = JsonObject()
-        json.addProperty("app", "YTDLnisX_backup")
-        json.addProperty("backup_format_version", 3)
-        list.forEach {
-            runCatching {
-                when(it){
-                    "settings" -> json.add("settings", BackupSettingsUtil.backupSettings(preferences))
-                    "downloads" -> json.add("downloads", BackupSettingsUtil.backupHistory(historyRepository))
-                    "keywordData" -> {
-                        json.add("keyword_groups", BackupSettingsUtil.backupKeywordGroups(keywordGroupDao))
-                        json.add("keyword_group_members", BackupSettingsUtil.backupKeywordGroupMembers(keywordGroupDao))
-                        val visibleChildKeywords = preferences.getStringSet(prefVisibleChildKeywordsKey, emptySet()).orEmpty()
-                        json.add("history_visible_child_keywords", Gson().toJsonTree(visibleChildKeywords).asJsonArray)
+        val json = JsonObject().apply {
+            addProperty("app", "YTDLnisX_backup")
+            addProperty("backup_format_version", 3)
+        }
+
+        list.forEach { item ->
+            when (item) {
+                "settings" -> json.add(
+                    "settings",
+                    BackupSettingsUtil.backupSettings(preferences).getOrThrow(),
+                )
+
+                "downloads" -> {
+                    val snapshot = captureDownloadBackupSnapshot()
+                    val customThumbItems = backupCustomThumbnails(snapshot.history)
+                    json.add("downloads", BackupSettingsUtil.toJsonArray(snapshot.history))
+                    if (customThumbItems.isNotEmpty()) {
+                        json.add("custom_thumbnails", Gson().toJsonTree(customThumbItems).asJsonArray)
                     }
-                    "youtuberData" -> {
-                        json.add("youtuber_groups", BackupSettingsUtil.backupYoutuberGroups(youtuberGroupDao))
-                        json.add("youtuber_group_members", BackupSettingsUtil.backupYoutuberGroupMembers(youtuberGroupDao))
-                        json.add("youtuber_group_relations", BackupSettingsUtil.backupYoutuberGroupRelations(youtuberGroupDao))
-                        val visibleChildYoutuberGroups = preferences
-                            .getStringSet(prefVisibleChildYoutuberGroupsKey, emptySet())
-                            .orEmpty()
-                        json.add("history_visible_child_youtuber_groups", Gson().toJsonTree(visibleChildYoutuberGroups).asJsonArray)
-                        val visibleChildYoutubers = preferences
-                            .getStringSet(prefVisibleChildYoutubersKey, emptySet())
-                            .orEmpty()
-                        json.add("history_visible_child_youtubers", Gson().toJsonTree(visibleChildYoutubers).asJsonArray)
-                        json.add("youtuber_meta", BackupSettingsUtil.backupYoutuberMeta(youtuberMetaDao))
-                    }
-                    "queued" -> json.add("queued", BackupSettingsUtil.backupQueuedDownloads(downloadRepository))
-                    "scheduled" -> json.add("scheduled", BackupSettingsUtil.backupScheduledDownloads(downloadRepository))
-                    "cancelled" -> json.add("cancelled", BackupSettingsUtil.backupCancelledDownloads(downloadRepository))
-                    "errored" -> json.add("errored", BackupSettingsUtil.backupErroredDownloads(downloadRepository))
-                    "saved" -> json.add("saved", BackupSettingsUtil.backupSavedDownloads(downloadRepository))
-                    "cookies" -> json.add("cookies", BackupSettingsUtil.backupCookies(cookieRepository))
-                    "templates" -> json.add("templates", BackupSettingsUtil.backupCommandTemplates(commandTemplateRepository))
-                    "shortcuts" -> json.add("shortcuts", BackupSettingsUtil.backupShortcuts(commandTemplateRepository))
-                    "searchHistory" -> json.add("search_history", BackupSettingsUtil.backupSearchHistory(searchHistoryRepository))
-                    "observeSources" -> json.add("observe_sources", BackupSettingsUtil.backupObserveSources(observeSourcesRepository))
+                    json.add(
+                        "automatic_keyword_rules",
+                        BackupSettingsUtil.toJsonArray(snapshot.automaticRules),
+                    )
+                    json.add(
+                        "automatic_keyword_rule_keywords",
+                        BackupSettingsUtil.toJsonArray(snapshot.automaticRuleKeywords),
+                    )
+                    json.add(
+                        "automatic_keyword_rule_video_matches",
+                        BackupSettingsUtil.toJsonArray(snapshot.automaticRuleVideoMatches),
+                    )
+                    json.add(
+                        "history_keyword_assignments",
+                        BackupSettingsUtil.toJsonArray(snapshot.historyKeywordAssignments),
+                    )
                 }
-            }.onFailure {err ->
-                return Result.failure(err)
-            }
-        }
 
-        if (list.contains("downloads")) {
-            val customThumbItems = backupCustomThumbnails()
-            if (customThumbItems.isNotEmpty()) {
-                json.add("custom_thumbnails", Gson().toJsonTree(customThumbItems).asJsonArray)
+                "keywordData" -> {
+                    val snapshot = captureKeywordBackupSnapshot()
+                    json.add("keyword_groups", BackupSettingsUtil.toJsonArray(snapshot.groups))
+                    json.add("keyword_group_members", BackupSettingsUtil.toJsonArray(snapshot.members))
+                    json.add(
+                        "history_visible_child_keywords",
+                        Gson().toJsonTree(snapshot.visibleChildKeywords).asJsonArray,
+                    )
+                }
+
+                "youtuberData" -> {
+                    val snapshot = captureYoutuberBackupSnapshot()
+                    json.add("youtuber_groups", BackupSettingsUtil.toJsonArray(snapshot.groups))
+                    json.add("youtuber_group_members", BackupSettingsUtil.toJsonArray(snapshot.members))
+                    json.add("youtuber_group_relations", BackupSettingsUtil.toJsonArray(snapshot.relations))
+                    json.add(
+                        "history_visible_child_youtuber_groups",
+                        Gson().toJsonTree(snapshot.visibleChildGroups).asJsonArray,
+                    )
+                    json.add(
+                        "history_visible_child_youtubers",
+                        Gson().toJsonTree(snapshot.visibleChildYoutubers).asJsonArray,
+                    )
+                    json.add("youtuber_meta", BackupSettingsUtil.toJsonArray(snapshot.metadata))
+                }
+
+                "queued" -> json.add(
+                    "queued",
+                    BackupSettingsUtil.backupQueuedDownloads(downloadRepository).getOrThrow(),
+                )
+
+                "scheduled" -> json.add(
+                    "scheduled",
+                    BackupSettingsUtil.backupScheduledDownloads(downloadRepository).getOrThrow(),
+                )
+
+                "cancelled" -> json.add(
+                    "cancelled",
+                    BackupSettingsUtil.backupCancelledDownloads(downloadRepository).getOrThrow(),
+                )
+
+                "errored" -> json.add(
+                    "errored",
+                    BackupSettingsUtil.backupErroredDownloads(downloadRepository).getOrThrow(),
+                )
+
+                "saved" -> json.add(
+                    "saved",
+                    BackupSettingsUtil.backupSavedDownloads(downloadRepository).getOrThrow(),
+                )
+
+                "cookies" -> json.add(
+                    "cookies",
+                    BackupSettingsUtil.backupCookies(cookieRepository).getOrThrow(),
+                )
+
+                "templates" -> json.add(
+                    "templates",
+                    BackupSettingsUtil.backupCommandTemplates(commandTemplateRepository).getOrThrow(),
+                )
+
+                "shortcuts" -> json.add(
+                    "shortcuts",
+                    BackupSettingsUtil.backupShortcuts(commandTemplateRepository).getOrThrow(),
+                )
+
+                "searchHistory" -> json.add(
+                    "search_history",
+                    BackupSettingsUtil.backupSearchHistory(searchHistoryRepository).getOrThrow(),
+                )
+
+                "observeSources" -> json.add(
+                    "observe_sources",
+                    BackupSettingsUtil.backupObserveSources(observeSourcesRepository).getOrThrow(),
+                )
             }
-            val automaticKeywordDao = dbManager.automaticKeywordRuleDao
-            json.add(
-                "automatic_keyword_rules",
-                Gson().toJsonTree(automaticKeywordDao.getAllRules()).asJsonArray
-            )
-            json.add(
-                "automatic_keyword_rule_keywords",
-                Gson().toJsonTree(automaticKeywordDao.getAllRuleKeywords()).asJsonArray
-            )
-            json.add(
-                "automatic_keyword_rule_video_matches",
-                Gson().toJsonTree(automaticKeywordDao.getAllVideoMatches()).asJsonArray
-            )
-            json.add(
-                "history_keyword_assignments",
-                Gson().toJsonTree(automaticKeywordDao.getAllAssignmentsRaw()).asJsonArray
-            )
         }
 
         val currentTime = Calendar.getInstance()
-        val dir = File(FileUtil.getCachePath(application) + "/Backups")
-        dir.mkdirs()
-
-        val saveFile = File("${dir.absolutePath}/YTDLnisX_Backup_${BuildConfig.VERSION_NAME}_${currentTime.get(
-            Calendar.YEAR)}-${currentTime.get(Calendar.MONTH) + 1}-${currentTime.get(
-            Calendar.DAY_OF_MONTH)}_${currentTime.get(Calendar.HOUR)}-${currentTime.get(Calendar.MINUTE)}-${currentTime.get(Calendar.SECOND)}.json")
-
-        saveFile.delete()
-        withContext(Dispatchers.IO) {
-            saveFile.createNewFile()
+        val dir = File(FileUtil.getCachePath(application), "Backups")
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw IOException("Could not create backup directory ${dir.absolutePath}")
         }
-        saveFile.writeText(GsonBuilder().setPrettyPrinting().create().toJson(json))
+        if (!dir.isDirectory || !dir.canWrite()) {
+            throw IOException("Backup directory is not writable: ${dir.absolutePath}")
+        }
 
-        val res = withContext(Dispatchers.IO) {
+        val saveFile = File(
+            dir,
+            "YTDLnisX_Backup_${BuildConfig.VERSION_NAME}_${currentTime.get(Calendar.YEAR)}-" +
+                "${currentTime.get(Calendar.MONTH) + 1}-${currentTime.get(Calendar.DAY_OF_MONTH)}_" +
+                "${currentTime.get(Calendar.HOUR)}-${currentTime.get(Calendar.MINUTE)}-" +
+                "${currentTime.get(Calendar.SECOND)}.json",
+        )
+
+        if (saveFile.exists() && !saveFile.delete()) {
+            throw IOException("Could not replace existing backup file ${saveFile.absolutePath}")
+        }
+        if (!saveFile.createNewFile()) {
+            throw IOException("Could not create backup file ${saveFile.absolutePath}")
+        }
+        withContext(Dispatchers.IO) {
+            saveFile.writeText(GsonBuilder().setPrettyPrinting().create().toJson(json))
+        }
+
+        val movedPaths = withContext(Dispatchers.IO) {
             FileUtil.moveFile(saveFile.parentFile!!, application, FileUtil.getBackupPath(application), false) {}
         }
+        FileUtil.consumeLastMoveFailureDetails()?.let { details ->
+            throw IOException("Backup publication was incomplete: $details")
+        }
+        return movedPaths.firstOrNull()
+            ?: throw IOException("Backup file publication produced no destination")
+    }
 
-        return Result.success(res[0])
+    private suspend fun captureKeywordBackupSnapshot(): KeywordBackupSnapshot = withContext(Dispatchers.IO) {
+        dbManager.withTransaction {
+            KeywordBackupSnapshot(
+                groups = keywordGroupDao.getGroups(),
+                members = keywordGroupDao.getAllMembers(),
+                visibleChildKeywords = preferences
+                    .getStringSet(prefVisibleChildKeywordsKey, emptySet())
+                    .orEmpty(),
+            )
+        }
+    }
+
+    private suspend fun captureYoutuberBackupSnapshot(): YoutuberBackupSnapshot = withContext(Dispatchers.IO) {
+        dbManager.withTransaction {
+            YoutuberBackupSnapshot(
+                groups = youtuberGroupDao.getGroups(),
+                members = youtuberGroupDao.getAllMembers(),
+                relations = youtuberGroupDao.getAllRelations(),
+                visibleChildGroups = preferences
+                    .getStringSet(prefVisibleChildYoutuberGroupsKey, emptySet())
+                    .orEmpty(),
+                visibleChildYoutubers = preferences
+                    .getStringSet(prefVisibleChildYoutubersKey, emptySet())
+                    .orEmpty(),
+                metadata = youtuberMetaDao.getAll(),
+            )
+        }
+    }
+
+    private suspend fun captureDownloadBackupSnapshot(): DownloadBackupSnapshot = withContext(Dispatchers.IO) {
+        dbManager.withTransaction {
+            DownloadBackupSnapshot(
+                history = dbManager.historyDao.getAll(),
+                automaticRules = dbManager.automaticKeywordRuleDao.getAllRules(),
+                automaticRuleKeywords = dbManager.automaticKeywordRuleDao.getAllRuleKeywords(),
+                automaticRuleVideoMatches = dbManager.automaticKeywordRuleDao.getAllVideoMatches(),
+                historyKeywordAssignments = dbManager.automaticKeywordRuleDao.getAllAssignmentsRaw(),
+            )
+        }
     }
 
     suspend fun restoreData(data: RestoreAppDataItem, context: Context, resetData: Boolean = false) : Boolean {
@@ -781,23 +948,29 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             this
         }
 
-    private suspend fun backupCustomThumbnails(): List<BackupCustomThumbItem> {
+    private suspend fun backupCustomThumbnails(historyItems: List<HistoryItem>): List<BackupCustomThumbItem> {
         return withContext(Dispatchers.IO) {
-            historyRepository.getAll()
-                .mapNotNull { historyItem ->
-                    val path = historyItem.customThumb
-                    if (path.isBlank()) return@mapNotNull null
-                    val file = File(path)
-                    if (!file.exists() || !file.isFile || !file.canRead()) return@mapNotNull null
+            val captured = ArrayList<BackupCustomThumbItem>()
+            historyItems.forEach { historyItem ->
+                val path = historyItem.customThumb
+                if (path.isBlank()) return@forEach
 
-                    val bytes = runCatching { file.readBytes() }.getOrNull() ?: return@mapNotNull null
-                    val ext = file.extension.lowercase().ifBlank { "jpg" }
-                    BackupCustomThumbItem(
-                        historyId = historyItem.id,
-                        base64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
-                        extension = ext
+                val file = File(path)
+                if (!file.exists() || !file.isFile || !file.canRead()) {
+                    throw IOException(
+                        "Required custom thumbnail for History ${historyItem.id} is unavailable",
                     )
                 }
+
+                val bytes = file.readBytes()
+                val ext = file.extension.lowercase().ifBlank { "jpg" }
+                captured += BackupCustomThumbItem(
+                    historyId = historyItem.id,
+                    base64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                    extension = ext,
+                )
+            }
+            captured
         }
     }
 

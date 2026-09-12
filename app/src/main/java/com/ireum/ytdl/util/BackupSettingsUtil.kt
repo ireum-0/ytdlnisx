@@ -13,247 +13,127 @@ import com.ireum.ytdl.database.dao.YoutuberGroupDao
 import com.ireum.ytdl.database.dao.YoutuberMetaDao
 import com.google.gson.Gson
 import com.google.gson.JsonArray
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 
 object BackupSettingsUtil {
-    fun backupSettings(preferences: SharedPreferences) : JsonArray {
-        runCatching {
-            val prefs = preferences.all
-            prefs.remove("app_language")
-
-            val res = prefs.map { BackupSettingsItem(
-                key = it.key,
-                value = when (val value = it.value) {
-                    is Set<*> -> Gson().toJson(value.filterIsInstance<String>())
-                    else -> value.toString()
-                },
-                type = it.value!!::class.simpleName
-            ) }
-
-            val arr = JsonArray()
-            res.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    /**
+     * A successful empty array is meaningful backup state.  Capture failures
+     * therefore remain a typed [Result.failure] instead of being collapsed to
+     * that same empty value.
+     */
+    private fun <T> capture(block: () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(error)
     }
 
-    suspend fun backupHistory(historyRepository: HistoryRepository) : JsonArray {
-        runCatching {
-            val historyItems = withContext(Dispatchers.IO) {
-                historyRepository.getAll()
-            }
-            val arr = JsonArray()
-            historyItems.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    private suspend fun <T> captureSuspend(block: suspend () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(error)
     }
 
-    suspend fun backupQueuedDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        val items = withContext(Dispatchers.IO) {
-            downloadRepository.getQueuedDownloadsForBackup()
-        }
-        return JsonArray().also { arr ->
-            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
+    internal fun <T> toJsonArray(items: Iterable<T>): JsonArray {
+        val gson = Gson()
+        return JsonArray().also { array ->
+            items.forEach { item ->
+                array.add(JsonParser.parseString(gson.toJson(item)).asJsonObject)
+            }
         }
     }
 
-    suspend fun backupScheduledDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        val items = withContext(Dispatchers.IO) {
-            downloadRepository.getScheduledDownloadsForBackup()
-        }
-        return JsonArray().also { arr ->
-            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
-        }
+    fun backupSettings(preferences: SharedPreferences): Result<JsonArray> = capture {
+        val items = preferences.all
+            .filterKeys { it != "app_language" }
+            .map { (key, value) ->
+                val nonNullValue = requireNotNull(value) { "Preference $key has no value" }
+                BackupSettingsItem(
+                    key = key,
+                    value = when (nonNullValue) {
+                        is Set<*> -> Gson().toJson(nonNullValue.filterIsInstance<String>())
+                        else -> nonNullValue.toString()
+                    },
+                    type = nonNullValue::class.simpleName,
+                )
+            }
+        toJsonArray(items)
     }
 
-    suspend fun backupCancelledDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        val items = withContext(Dispatchers.IO) {
-            downloadRepository.getCancelledDownloadsForBackup()
-        }
-        return JsonArray().also { arr ->
-            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
-        }
+    suspend fun backupHistory(historyRepository: HistoryRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { historyRepository.getAll() })
     }
 
-    suspend fun backupErroredDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        val items = withContext(Dispatchers.IO) {
-            downloadRepository.getErroredDownloadsForBackup()
-        }
-        return JsonArray().also { arr ->
-            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
-        }
+    suspend fun backupQueuedDownloads(downloadRepository: DownloadRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { downloadRepository.getQueuedDownloadsForBackup() })
     }
 
-    suspend fun backupSavedDownloads(downloadRepository: DownloadRepository) : JsonArray {
-        val items = withContext(Dispatchers.IO) {
-            downloadRepository.getSavedDownloadsForBackup()
-        }
-        return JsonArray().also { arr ->
-            items.forEach { arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject) }
-        }
+    suspend fun backupScheduledDownloads(downloadRepository: DownloadRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { downloadRepository.getScheduledDownloadsForBackup() })
     }
 
-    suspend fun backupCookies(cookieRepository: CookieRepository) : JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                cookieRepository.getAll()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupCancelledDownloads(downloadRepository: DownloadRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { downloadRepository.getCancelledDownloadsForBackup() })
     }
 
-    suspend fun backupCommandTemplates(commandTemplateRepository: CommandTemplateRepository) : JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                commandTemplateRepository.getAll()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                it.useAsExtraCommand = false
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupErroredDownloads(downloadRepository: DownloadRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { downloadRepository.getErroredDownloadsForBackup() })
     }
 
-    suspend fun backupShortcuts(commandTemplateRepository: CommandTemplateRepository) : JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                commandTemplateRepository.getAllShortCuts()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupSavedDownloads(downloadRepository: DownloadRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { downloadRepository.getSavedDownloadsForBackup() })
     }
 
-    suspend fun backupSearchHistory(searchHistoryRepository: SearchHistoryRepository) : JsonArray {
-        runCatching {
-            val historyItems = withContext(Dispatchers.IO) {
-                searchHistoryRepository.getAll()
-            }
-            val arr = JsonArray()
-            historyItems.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupCookies(cookieRepository: CookieRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { cookieRepository.getAll() })
     }
 
-    suspend fun backupObserveSources(observeSourcesRepository: ObserveSourcesRepository) : JsonArray {
-        runCatching {
-            val observeSourcesItems = withContext(Dispatchers.IO) {
-                observeSourcesRepository.getAll()
-            }
-            val arr = JsonArray()
-            observeSourcesItems.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupCommandTemplates(commandTemplateRepository: CommandTemplateRepository): Result<JsonArray> = captureSuspend {
+        val items = withContext(Dispatchers.IO) { commandTemplateRepository.getAll() }
+        items.forEach { it.useAsExtraCommand = false }
+        toJsonArray(items)
     }
 
-    suspend fun backupKeywordGroups(keywordGroupDao: KeywordGroupDao): JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                keywordGroupDao.getGroups()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupShortcuts(commandTemplateRepository: CommandTemplateRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { commandTemplateRepository.getAllShortCuts() })
     }
 
-    suspend fun backupKeywordGroupMembers(keywordGroupDao: KeywordGroupDao): JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                keywordGroupDao.getAllMembers()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupSearchHistory(searchHistoryRepository: SearchHistoryRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { searchHistoryRepository.getAll() })
     }
 
-    suspend fun backupYoutuberGroups(youtuberGroupDao: YoutuberGroupDao): JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                youtuberGroupDao.getGroups()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupObserveSources(observeSourcesRepository: ObserveSourcesRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { observeSourcesRepository.getAll() })
     }
 
-    suspend fun backupYoutuberGroupMembers(youtuberGroupDao: YoutuberGroupDao): JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                youtuberGroupDao.getAllMembers()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupKeywordGroups(keywordGroupDao: KeywordGroupDao): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { keywordGroupDao.getGroups() })
     }
 
-    suspend fun backupYoutuberGroupRelations(youtuberGroupDao: YoutuberGroupDao): JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                youtuberGroupDao.getAllRelations()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupKeywordGroupMembers(keywordGroupDao: KeywordGroupDao): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { keywordGroupDao.getAllMembers() })
     }
 
-    suspend fun backupYoutuberMeta(youtuberMetaDao: YoutuberMetaDao): JsonArray {
-        runCatching {
-            val items = withContext(Dispatchers.IO) {
-                youtuberMetaDao.getAll()
-            }
-            val arr = JsonArray()
-            items.forEach {
-                arr.add(JsonParser.parseString(Gson().toJson(it)).asJsonObject)
-            }
-            return arr
-        }
-        return JsonArray()
+    suspend fun backupYoutuberGroups(youtuberGroupDao: YoutuberGroupDao): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { youtuberGroupDao.getGroups() })
+    }
+
+    suspend fun backupYoutuberGroupMembers(youtuberGroupDao: YoutuberGroupDao): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { youtuberGroupDao.getAllMembers() })
+    }
+
+    suspend fun backupYoutuberGroupRelations(youtuberGroupDao: YoutuberGroupDao): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { youtuberGroupDao.getAllRelations() })
+    }
+
+    suspend fun backupYoutuberMeta(youtuberMetaDao: YoutuberMetaDao): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { youtuberMetaDao.getAll() })
     }
 
 }
