@@ -2249,7 +2249,17 @@ class DownloadViewModel private constructor(
             queuedItems.forEach { item ->
                 val snapshot = sourceSnapshots[item.id]
                 val transitioned = if (snapshot == null || item.id <= 0L) {
-                    val currentCommand = if (duplicateAdmissionMode == DuplicateAdmissionMode.CONFIG) {
+                    // History redownloads (including quality replacements)
+                    // are an explicit privileged flow. Their marker is the
+                    // exact replacement authority, and detectAndMarkDuplicates
+                    // deliberately skips the original History duplicate check.
+                    // Keep that bypass at the final admission boundary too.
+                    val itemAdmissionMode = if (item.isHistoryRedownload()) {
+                        DuplicateAdmissionMode.DISABLED
+                    } else {
+                        duplicateAdmissionMode
+                    }
+                    val currentCommand = if (itemAdmissionMode == DuplicateAdmissionMode.CONFIG) {
                         ytdlpUtil.parseYTDLRequestString(
                             ytdlpUtil.buildYoutubeDLRequest(
                                 item,
@@ -2262,7 +2272,7 @@ class DownloadViewModel private constructor(
                     when (
                         val admission = repository.insertNewWithDuplicateAdmission(
                             item = item,
-                            mode = duplicateAdmissionMode,
+                            mode = itemAdmissionMode,
                             currentCommand = currentCommand,
                         )
                     ) {
