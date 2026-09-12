@@ -157,7 +157,9 @@ class FolderSettingsFragment : BaseSettingsFragment() {
                 true
             }
 
-        cachePath!!.summary = FileUtil.formatPath(preferences.getString("cache_path", FileUtil.getCachePath(requireContext()))!!)
+        // Show the effective native staging root. Provider-only legacy values
+        // intentionally resolve to the app-owned fallback.
+        cachePath!!.summary = FileUtil.formatPath(FileUtil.getCachePath(requireContext()))
         cachePath!!.onPreferenceClickListener =
             Preference.OnPreferenceClickListener {
                 UiUtil.showGenericConfirmDialog(requireContext(), getString(R.string.cache_directory), getString(R.string.cache_directory_warning)) {
@@ -596,6 +598,18 @@ class FolderSettingsFragment : BaseSettingsFragment() {
 
     private fun changePath(p: Preference?, data: Intent?, requestCode: Int) {
         val path = data!!.data.toString()
+        if (
+            requestCode == CACHE_PATH_CODE &&
+                !FileUtil.isSupportedCachePathSelection(requireContext(), path)
+        ) {
+            p?.summary = FileUtil.formatPath(FileUtil.getCachePath(requireContext()))
+            Snackbar.make(
+                requireView(),
+                getString(R.string.cache_directory_warning),
+                Snackbar.LENGTH_LONG
+            ).show()
+            return
+        }
         p!!.summary = FileUtil.formatPath(data.data.toString())
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
         val editor = sharedPreferences.edit()

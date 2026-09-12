@@ -1406,18 +1406,61 @@ object FileUtil {
         }
     }
 
-    fun getCachePath(context: Context) : String {
-        val preference = PreferenceManager.getDefaultSharedPreferences(context).getString("cache_path", "")
-        if (preference.isNullOrBlank()) {
-            val externalPath = context.getExternalFilesDir(null)
-            return if (externalPath == null){
-                context.cacheDir.absolutePath + "/downloads/"
-            }else{
-                externalPath.absolutePath + "/downloads/"
-            }
-        }else {
-            return formatPath(preference)
+    /**
+     * Cache staging is a native/raw-filesystem contract. A persisted SAF
+     * grant authorizes provider I/O, but it does not prove that yt-dlp,
+     * marker files, and ordinary File operations can use the corresponding
+     * raw path. Resolve provider-only or no-longer usable preferences to the
+     * app-owned default before any native/cache consumer receives a root.
+     */
+    fun getCachePath(context: Context): String {
+        val preference = PreferenceManager.getDefaultSharedPreferences(context)
+            .getString("cache_path", "")
+        val defaultPath = defaultCachePath(context)
+        if (preference.isNullOrBlank()) return defaultPath
+        return resolveRawCachePath(context, preference) ?: run {
+            Log.w(
+                "FileUtil",
+                "Configured cache path is not a directly writable filesystem root; using app default",
+            )
+            defaultPath
         }
+    }
+
+    /** True only when a selected value is safe for native/raw cache staging. */
+    fun isSupportedCachePathSelection(context: Context, selectedPath: String): Boolean =
+        resolveRawCachePath(context, selectedPath) != null
+
+    private fun defaultCachePath(context: Context): String {
+        val externalPath = context.getExternalFilesDir(null)
+        return if (externalPath == null) {
+            context.cacheDir.absolutePath + "/downloads/"
+        } else {
+            externalPath.absolutePath + "/downloads/"
+        }
+    }
+
+    private fun resolveRawCachePath(context: Context, selectedPath: String): String? {
+        val normalized = selectedPath.trim()
+        if (normalized.isBlank() || normalized.startsWith("content://", ignoreCase = true)) {
+            return null
+        }
+        val rawPath = when {
+            normalized.startsWith("file://", ignoreCase = true) ->
+                runCatching { Uri.parse(normalized).path.orEmpty() }.getOrDefault("")
+            normalized.startsWith("/") -> normalized
+            else -> formatPath(normalized)
+        }.trim().trimEnd('/', '\\')
+        if (rawPath.isBlank()) return null
+
+        val candidate = File(rawPath)
+        if (isAppOwnedCachePath(context, candidate)) return rawPath + File.separator
+
+        // Non-app-owned paths require direct raw-directory write evidence.
+        // Persisted URI permissions are intentionally not consulted here.
+        val probe = if (candidate.exists()) candidate else candidate.parentFile
+        return rawPath.takeIf { probe?.isDirectory == true && probe.canWrite() }
+            ?.plus(File.separator)
     }
 
     fun deleteCachePathIfAppOwned(context: Context): Boolean {
