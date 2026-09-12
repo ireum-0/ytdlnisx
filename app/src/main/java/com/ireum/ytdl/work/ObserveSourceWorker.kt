@@ -904,6 +904,7 @@ class ObserveSourceWorker(
                 )
                 val parsedCurrentCommand = ytdlpUtil.parseYTDLRequestString(currentCommand)
                 var isDuplicate = false
+                var insertedByFinalAdmission = false
 
                 if (checkDuplicate.isNotEmpty()) {
                     when (checkDuplicate) {
@@ -990,7 +991,12 @@ class ObserveSourceWorker(
                                 },
                             )
                         ) {
-                            is DuplicateAdmissionResult.Inserted -> it.id = admission.id
+                            is DuplicateAdmissionResult.Inserted -> {
+                                it.id = admission.id
+                                insertedByFinalAdmission = true
+                                ObserveSourceWorkerEffectTestHooks.afterFinalAdmissionInsertForTesting
+                                    ?.invoke(it.copy())
+                            }
                             is DuplicateAdmissionResult.Duplicate -> admissionDuplicate = admission
                             is DuplicateAdmissionResult.Refused -> admissionRefusal = admission
                         }
@@ -1021,7 +1027,11 @@ class ObserveSourceWorker(
                         OBS_DUP_LOG_TAG,
                         "queue add sourceId=$sourceID url=${it.url} canonical=${canonicalUrl(it.url)}"
                     )
-                    if (it.id > 0L && it.status == DownloadRepository.Status.Queued.toString()){
+                    if (
+                        !insertedByFinalAdmission &&
+                        it.id > 0L &&
+                        it.status == DownloadRepository.Status.Queued.toString()
+                    ) {
                         downloadRepo.update(it)
                     }
                     queuedItems.add(it)
@@ -1175,6 +1185,11 @@ internal object ObserveSourceWorkerEffectTestHooks {
     internal var startDownloadWorkerForTesting:
         (suspend (List<DownloadItem>, Context) -> kotlin.Result<String>)? = null
 
+    /** Runs after final admission commits a brand-new row, before Observe continues. */
+    @Volatile
+    internal var afterFinalAdmissionInsertForTesting:
+        (suspend (DownloadItem) -> Unit)? = null
+
     /** Controls the notification capability at the real retry-confirmation gate. */
     @Volatile
     internal var retryConfirmationAvailableForTesting: Boolean? = null
@@ -1183,6 +1198,7 @@ internal object ObserveSourceWorkerEffectTestHooks {
         dbManagerForTesting = null
         sourceSnapshotForTesting = null
         startDownloadWorkerForTesting = null
+        afterFinalAdmissionInsertForTesting = null
         retryConfirmationAvailableForTesting = null
     }
 }
