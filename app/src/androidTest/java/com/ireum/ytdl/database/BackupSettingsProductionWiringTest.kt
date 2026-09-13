@@ -26,6 +26,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.io.IOException
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -90,6 +91,60 @@ class BackupSettingsProductionWiringTest {
         assertTrue(staleBackup?.exists() == true)
         assertFalse(published?.readText().orEmpty().contains("stale"))
         publishedBackup = result.getOrNull()
+    }
+
+    @Test
+    fun overlappingBackupsKeepOperationLocalStagingArtifacts() = runBlocking {
+        val selectedPaths = Collections.synchronizedSet(mutableSetOf<String>())
+        val bothSelected = CountDownLatch(2)
+        val releaseWrites = CountDownLatch(1)
+        SettingsViewModel.backupStagingWriteHookForTesting = { file ->
+            selectedPaths += file.absolutePath
+            bothSelected.countDown()
+            check(bothSelected.await(5, TimeUnit.SECONDS)) {
+                "overlapping backups did not both select a staging artifact"
+            }
+            check(releaseWrites.await(5, TimeUnit.SECONDS)) {
+                "overlapping backup writes were not released"
+            }
+        }
+
+        var downloadsPath: String? = null
+        var keywordPath: String? = null
+        try {
+            val downloads = async(Dispatchers.IO) {
+                SettingsViewModel(context as android.app.Application)
+                    .backup(listOf("downloads"))
+            }
+            val keywords = async(Dispatchers.IO) {
+                SettingsViewModel(context as android.app.Application)
+                    .backup(listOf("keywordData"))
+            }
+
+            assertTrue(bothSelected.await(5, TimeUnit.SECONDS))
+            assertEquals(2, selectedPaths.size)
+            releaseWrites.countDown()
+
+            val downloadsResult = downloads.await()
+            val keywordResult = keywords.await()
+            assertTrue(downloadsResult.isSuccess)
+            assertTrue(keywordResult.isSuccess)
+            downloadsPath = downloadsResult.getOrThrow()
+            keywordPath = keywordResult.getOrThrow()
+            assertTrue(downloadsPath != keywordPath)
+
+            val downloadsJson = JsonParser.parseString(File(downloadsPath!!).readText()).asJsonObject
+            val keywordJson = JsonParser.parseString(File(keywordPath!!).readText()).asJsonObject
+            assertTrue(downloadsJson.has("downloads"))
+            assertFalse(downloadsJson.has("keyword_groups"))
+            assertTrue(keywordJson.has("keyword_groups"))
+            assertFalse(keywordJson.has("downloads"))
+        } finally {
+            SettingsViewModel.backupStagingWriteHookForTesting = null
+            releaseWrites.countDown()
+            downloadsPath?.let { File(it).delete() }
+            keywordPath?.let { File(it).delete() }
+        }
     }
 
     @Test
