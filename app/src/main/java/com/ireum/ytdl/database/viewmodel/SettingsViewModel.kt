@@ -73,6 +73,16 @@ import java.util.concurrent.TimeUnit
 
 
 class SettingsViewModel(private val application: Application) : AndroidViewModel(application) {
+    /**
+     * Narrow production-boundary observation used by backup consistency tests.
+     * The default is null, so normal backup execution has no callback or
+     * additional synchronization behavior.
+     */
+    companion object {
+        @Volatile
+        internal var backupCaptureReadHookForTesting: ((String) -> Unit)? = null
+    }
+
     private data class RemappedDownload(
         val item: com.ireum.ytdl.database.models.DownloadItem,
         val barrier: HistoryReplacementBarrier? = null,
@@ -343,8 +353,10 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
     private suspend fun captureKeywordBackupSnapshot(): KeywordBackupSnapshot = withContext(Dispatchers.IO) {
         dbManager.withTransaction {
+            val groups = keywordGroupDao.getGroups()
+            backupCaptureReadHookForTesting?.invoke("keyword_groups")
             KeywordBackupSnapshot(
-                groups = keywordGroupDao.getGroups(),
+                groups = groups,
                 members = keywordGroupDao.getAllMembers(),
                 visibleChildKeywords = preferences
                     .getStringSet(prefVisibleChildKeywordsKey, emptySet())
