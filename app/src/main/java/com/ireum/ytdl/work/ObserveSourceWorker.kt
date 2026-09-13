@@ -327,7 +327,7 @@ class ObserveSourceWorker(
         val workManager = WorkManager.getInstance(context)
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val repo = ObserveSourcesRepository(dbManager.observeSourcesDao, workManager, sharedPreferences)
-        val historyRepo = HistoryRepository(dbManager.historyDao, dbManager.playlistDao)
+        val historyRepo = HistoryRepository(dbManager.historyDao, dbManager.playlistDao, dbManager)
         val downloadRepo = DownloadRepository(dbManager)
         val commandTemplateDao = dbManager.commandTemplateDao
         val resultRepository = ResultRepository(dbManager.resultDao, commandTemplateDao, context)

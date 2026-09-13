@@ -61,6 +61,10 @@ interface PlaylistDao {
     @Query("SELECT * FROM PlaylistItemCrossRef")
     fun getAllPlaylistItems(): List<PlaylistItemCrossRef>
 
+    @Query("SELECT * FROM PlaylistItemCrossRef WHERE historyItemId = :historyItemId")
+    suspend fun getPlaylistItemsForHistory(historyItemId: Long): List<PlaylistItemCrossRef>
+
+
     @Query("DELETE FROM playlists")
     fun clearPlaylists()
 

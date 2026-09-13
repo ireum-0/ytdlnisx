@@ -21,6 +21,7 @@ import com.ireum.ytdl.database.DBManager.SORTING
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignment
+import com.ireum.ytdl.database.models.HistoryUndoSnapshot
 import com.ireum.ytdl.database.models.UiModel
 import com.ireum.ytdl.database.models.YoutuberInfo
 import com.ireum.ytdl.database.repository.HistoryRepository
@@ -312,7 +313,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         val keywordGroupDao = db.keywordGroupDao
         val groupDao = db.youtuberGroupDao
         val metaDao = db.youtuberMetaDao
-        repository = HistoryRepository(dao, playlistDao)
+        repository = HistoryRepository(dao, playlistDao, db)
         websites = repository.websites
         authors = repository.authors
         keywords = repository.keywords
@@ -1700,13 +1701,27 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         invalidateCachedIds(triggerRefresh = true)
     }
 
+    /** Captures the exact History/assignment/playlist graph before removal. */
+    suspend fun deleteHistoryForUndo(historyItemId: Long): HistoryUndoSnapshot? =
+        withContext(Dispatchers.IO) {
+            keywordAssignments.captureAndDeleteHistoryForUndo(historyItemId)?.also {
+                invalidateCachedIds(triggerRefresh = true)
+            }
+        }
+
+    /** Restores an atomic History Undo snapshot without reconstructing relations from UI state. */
+    fun restoreHistory(snapshot: HistoryUndoSnapshot) = viewModelScope.launch(Dispatchers.IO) {
+        keywordAssignments.restoreHistory(snapshot)
+        invalidateCachedIds(triggerRefresh = true)
+    }
+
     suspend fun deleteHistoryItems(ids: List<Long>, deleteAssociatedFiles: Boolean): HistoryDeletionSummary {
         return withContext(Dispatchers.IO) {
             val uniqueIds = ids.distinct()
             if (!deleteAssociatedFiles) {
                 val existingIds = repository.getExistingIds(uniqueIds)
                 val deletionRecords = existingIds.map { id -> HistoryDeletionRecord(id, emptyList()) }
-                repository.deleteRecords(existingIds)
+                keywordAssignments.deleteHistoryRecords(existingIds)
                 invalidateCachedIds(triggerRefresh = true)
                 return@withContext HistoryDeletionPolicy.recordOnly(deletionRecords)
             }
@@ -1864,7 +1879,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         }
         return withContext(Dispatchers.IO) {
             val snapshotIds = repository.getAllIds()
-            repository.deleteRecords(snapshotIds)
+            keywordAssignments.deleteHistoryRecords(snapshotIds)
             invalidateCachedIds(triggerRefresh = true)
             HistoryDeletionSummary(
                 recordsRequested = snapshotIds.size,
@@ -1883,7 +1898,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 keywordAssignments.mergeHistoryAssignments(duplicate.id, retained.id)
             }
         }
-        repository.deleteRecords(duplicateGroups.flatMap { it.drop(1) }.map { it.id })
+        keywordAssignments.deleteHistoryRecords(duplicateGroups.flatMap { it.drop(1) }.map { it.id })
         invalidateCachedIds(triggerRefresh = true)
     }
 

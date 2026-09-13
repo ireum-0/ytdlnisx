@@ -1,6 +1,7 @@
 ﻿package com.ireum.ytdl.database.repository
 
 import com.ireum.ytdl.database.DBManager.SORTING
+import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.dao.HistoryDao
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.KeywordInfo
@@ -13,13 +14,18 @@ import com.ireum.ytdl.util.MissingSourceDatePolicy
 import com.ireum.ytdl.util.storage.HistoryDeletionReferenceRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionCandidateRecord
 import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import androidx.sqlite.db.SimpleSQLiteQuery
 import androidx.sqlite.db.SupportSQLiteQuery
 import java.util.Locale
 
-class HistoryRepository(private val historyDao: HistoryDao, private val playlistDao: com.ireum.ytdl.database.dao.PlaylistDao) {
+class HistoryRepository(
+    private val historyDao: HistoryDao,
+    private val playlistDao: com.ireum.ytdl.database.dao.PlaylistDao,
+    private val database: DBManager? = null,
+) {
     private companion object {
         // Keep Room IN-clause bindings safely below SQLite variable limits.
         const val ID_BATCH_SIZE = 800
@@ -355,22 +361,42 @@ class HistoryRepository(private val historyDao: HistoryDao, private val playlist
 
     suspend fun deleteRecords(ids: List<Long>) {
         HistoryReferenceMutationCoordinator.withLock {
-            deleteRecordsWithinReferenceMutation(ids)
+            deleteRecordsInTransaction(ids)
         }
     }
 
     suspend fun deleteAllRecords() {
         HistoryReferenceMutationCoordinator.withLock {
-            playlistDao.clearPlaylistItems()
-            historyDao.nuke()
+            if (database != null) {
+                database.withTransaction {
+                    playlistDao.clearPlaylistItems()
+                    historyDao.nuke()
+                }
+            } else {
+                playlistDao.clearPlaylistItems()
+                historyDao.nuke()
+            }
         }
     }
 
     suspend fun deleteRecordsWithinReferenceMutation(ids: List<Long>) {
+        deleteRecordsInTransaction(ids)
+    }
+
+    private suspend fun deleteRecordsInTransaction(ids: List<Long>) {
         if (ids.isEmpty()) return
-        ids.chunked(ID_BATCH_SIZE).forEach { batch ->
-            playlistDao.deletePlaylistItemsByHistoryIds(batch)
-            historyDao.deleteWithIds(batch)
+        if (database != null) {
+            database.withTransaction {
+                ids.chunked(ID_BATCH_SIZE).forEach { batch ->
+                    playlistDao.deletePlaylistItemsByHistoryIds(batch)
+                    historyDao.deleteWithIds(batch)
+                }
+            }
+        } else {
+            ids.chunked(ID_BATCH_SIZE).forEach { batch ->
+                playlistDao.deletePlaylistItemsByHistoryIds(batch)
+                historyDao.deleteWithIds(batch)
+            }
         }
     }
 

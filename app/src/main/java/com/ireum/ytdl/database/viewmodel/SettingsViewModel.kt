@@ -160,7 +160,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     private val youtuberMetaDao: YoutuberMetaDao
 
     init {
-        historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao)
+        historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao, dbManager)
         historyKeywordAssignments = HistoryKeywordAssignmentRepository(dbManager)
         downloadRepository = DownloadRepository(dbManager)
         cookieRepository = CookieRepository(dbManager.cookieDao)

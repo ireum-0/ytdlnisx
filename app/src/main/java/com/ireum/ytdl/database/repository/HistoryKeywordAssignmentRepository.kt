@@ -8,6 +8,7 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.DownloadPrimarySuccessAuthority
+import com.ireum.ytdl.database.models.HistoryUndoSnapshot
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
@@ -403,6 +404,46 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         dao.getAssignmentsRaw(historyItemId)
 
     /**
+     * Captures and removes one History row together with every relationship
+     * owned by that row.  The snapshot and both relationship deletions share
+     * one Room transaction, so Undo never claims a graph that was only partly
+     * removed.
+     */
+    suspend fun captureAndDeleteHistoryForUndo(historyItemId: Long): HistoryUndoSnapshot? {
+        require(historyItemId > 0L)
+        return HistoryReferenceMutationCoordinator.withLock {
+            db.withTransaction {
+                val item = db.historyDao.getNullableItem(historyItemId)
+                    ?: return@withTransaction null
+                val snapshot = HistoryUndoSnapshot(
+                    item = item,
+                    assignments = dao.getAssignmentsRaw(historyItemId),
+                    playlistMemberships = db.playlistDao.getPlaylistItemsForHistory(historyItemId),
+                )
+                db.playlistDao.deletePlaylistItemsByHistoryIds(listOf(historyItemId))
+                dao.deleteAssignmentsForHistory(historyItemId)
+                db.historyDao.deleteById(historyItemId)
+                snapshot
+            }
+        }
+    }
+
+    /** Deletes History rows and their playlist/assignment relationships atomically. */
+    suspend fun deleteHistoryRecords(historyItemIds: List<Long>) {
+        val ids = historyItemIds.distinct().filter { it > 0L }
+        if (ids.isEmpty()) return
+        HistoryReferenceMutationCoordinator.withLock {
+            db.withTransaction {
+                ids.chunked(800).forEach { batch ->
+                    db.playlistDao.deletePlaylistItemsByHistoryIds(batch)
+                    batch.forEach { dao.deleteAssignmentsForHistory(it) }
+                    db.historyDao.deleteWithIds(batch)
+                }
+            }
+        }
+    }
+
+    /**
      * Restores a deleted History row together with its authoritative assignment rows.
      * This is intentionally separate from insertHistory(), whose incoming keywords
      * represent a new manual/import source.
@@ -434,6 +475,49 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             }
             materializeInTransaction(item.id)
             item.id
+            }
+        }
+    }
+
+    /**
+     * Restores the exact row/relationship graph captured by
+     * [captureAndDeleteHistoryForUndo].  A replacement row at the old ID is
+     * never overwritten or treated as the deleted row's identity.
+     */
+    suspend fun restoreHistory(snapshot: HistoryUndoSnapshot): Long? {
+        require(snapshot.item.id > 0L)
+        return HistoryReferenceMutationCoordinator.withLock {
+            db.withTransaction {
+                if (db.historyDao.getNullableItem(snapshot.item.id) != null) {
+                    return@withTransaction null
+                }
+                db.historyDao.insertRaw(snapshot.item.copy(keywords = ""))
+                val candidateRuleIds = snapshot.assignments.asSequence()
+                    .filter { it.sourceType == HistoryKeywordAssignmentSources.RULE }
+                    .map { it.sourceId }
+                    .distinct()
+                    .toSet()
+                val existingRuleIds = mutableSetOf<Long>()
+                for (ruleId in candidateRuleIds) {
+                    if (dao.getRule(ruleId) != null) existingRuleIds += ruleId
+                }
+                val restorableAssignments = snapshot.assignments.filter {
+                    it.historyItemId == snapshot.item.id &&
+                        (it.sourceType != HistoryKeywordAssignmentSources.RULE || it.sourceId in existingRuleIds)
+                }
+                if (restorableAssignments.isNotEmpty()) {
+                    dao.insertAssignments(restorableAssignments)
+                }
+                val existingPlaylistIds = db.playlistDao.getAllPlaylistsSync().map { it.id }.toSet()
+                val memberships = snapshot.playlistMemberships.filter { membership ->
+                    membership.historyItemId == snapshot.item.id &&
+                        membership.playlistId in existingPlaylistIds
+                }
+                if (memberships.isNotEmpty()) {
+                    db.playlistDao.insertPlaylistItems(memberships)
+                }
+                materializeInTransaction(snapshot.item.id)
+                snapshot.item.id
             }
         }
     }

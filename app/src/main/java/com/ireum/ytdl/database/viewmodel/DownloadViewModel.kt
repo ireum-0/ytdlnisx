@@ -289,7 +289,7 @@ class DownloadViewModel private constructor(
         dao = dbManager.downloadDao
         commandTemplateDao = DBManager.getInstance(application).commandTemplateDao
         repository = DownloadRepository(dbManager)
-        historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao)
+        historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao, dbManager)
         resultRepository = ResultRepository(dbManager.resultDao, commandTemplateDao, application)
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(application)
         downloadPresetStore = DownloadPresetStore(application, sharedPreferences)

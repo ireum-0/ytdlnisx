@@ -3238,7 +3238,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             var appliedInitialQueuePlayback = false
             if (prefetchedHistoryIds.isNotEmpty()) {
                 val prefetchedItems = withContext(Dispatchers.IO) {
-                    val historyRepo = HistoryRepository(db.historyDao, db.playlistDao)
+                    val historyRepo = HistoryRepository(db.historyDao, db.playlistDao, db)
                     val itemsById = historyRepo.getItemsFromIDs(prefetchedHistoryIds).associateBy { it.id }
                     prefetchedHistoryIds.asSequence()
                         .mapNotNull { id -> itemsById[id] }
@@ -3279,7 +3279,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 }
             }
             val items = withContext(Dispatchers.IO) {
-                val historyRepo = HistoryRepository(db.historyDao, db.playlistDao)
+                val historyRepo = HistoryRepository(db.historyDao, db.playlistDao, db)
                 val keywordForBaseQuery = if (includeChildCategoryVideos && keywordFilter.isNotBlank()) "" else keywordFilter
                 val ids = historyRepo.getFilteredIDs(
                     query = queryFilter,

@@ -102,6 +102,8 @@ import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.util.Extensions.updateMenuItemBadge
 import com.ireum.ytdl.util.extractors.YoutubeApiUtil
 import com.ireum.ytdl.util.storage.HistoryDeletionSummary
+import com.ireum.ytdl.util.storage.HistoryDeletionPolicy
+import com.ireum.ytdl.util.storage.HistoryDeletionRecord
 import com.ireum.ytdl.util.storage.HistoryDeletionDialogState
 import com.ireum.ytdl.util.storage.HistoryDeletionValidation
 import com.ireum.ytdl.util.storage.HistoryDeletionTargetParser
@@ -4675,7 +4677,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private fun showAddKeywordsDialog(selectedIds: List<Long>) {
         lifecycleScope.launch(Dispatchers.IO) {
             val db = DBManager.getInstance(requireContext())
-            val repository = HistoryRepository(db.historyDao, db.playlistDao)
+            val repository = HistoryRepository(db.historyDao, db.playlistDao, db)
             val allItems = historyViewModel.getAll()
             val selectedItems = selectedIds.mapNotNull { id ->
                 runCatching { historyViewModel.getByID(id) }.getOrNull()
@@ -7977,16 +7979,19 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                     performHistoryDeletion(listOf(item.id), deleteAssociatedFiles = true)
                                 } else {
                                     lifecycleScope.launch {
-                                        val assignmentSnapshot =
-                                            historyViewModel.getKeywordAssignmentSnapshot(item.id)
-                                        val result = historyViewModel.deleteHistoryItems(listOf(item.id), deleteAssociatedFiles = false)
+                                        val undoSnapshot = historyViewModel.deleteHistoryForUndo(item.id)
+                                        val result = if (undoSnapshot != null) {
+                                            HistoryDeletionPolicy.recordOnly(
+                                                listOf(HistoryDeletionRecord(item.id, emptyList()))
+                                            )
+                                        } else {
+                                            HistoryDeletionPolicy.recordOnly(emptyList())
+                                        }
                                         showHistoryDeletionResult(result)
+                                        if (undoSnapshot == null) return@launch
                                         Snackbar.make(recyclerView, getString(R.string.you_are_going_to_delete) + ": " + deletedItem.title, Snackbar.LENGTH_INDEFINITE)
                                             .setAction(getString(R.string.undo)) {
-                                                historyViewModel.restoreHistory(
-                                                    deletedItem,
-                                                    assignmentSnapshot
-                                                )
+                                                historyViewModel.restoreHistory(undoSnapshot)
                                             }
                                             .show()
                                     }
