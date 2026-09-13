@@ -128,6 +128,69 @@ class BackupRestoreThumbnailProductionWiringTest {
         )
     }
 
+    @Test
+    fun destinationThumbnailPublicationFailureDoesNotBindFailedPath() = runBlocking {
+        val unrelated = history(901L)
+        val unrelatedId = database.historyDao.insertAndGetIdRaw(unrelated)
+        val sentinel = byteArrayOf(7, 6, 5)
+        assertTrue(restoredThumbnailDirectory.createNewFile())
+        restoredThumbnailDirectory.writeBytes(sentinel)
+
+        val result = SettingsViewModel(context as Application).restoreData(
+            RestoreAppDataItem(
+                downloads = listOf(history(90L)),
+                customThumbnails = listOf(thumbnail(90L, byteArrayOf(1, 2, 3), "jpg")),
+            ),
+            context,
+            resetData = false,
+        )
+
+        assertFalse(result)
+        val rows = database.historyDao.getAll()
+        assertTrue(rows.any { it.id == unrelatedId })
+        val failedRow = rows.single { it.url == "https://example.com/restore-90" }
+        assertEquals("", failedRow.customThumb)
+        assertEquals(sentinel.toList(), restoredThumbnailDirectory.readBytes().toList())
+        assertTrue(
+            !File(context.filesDir, "restore-thumbnail-staging").exists() ||
+                File(context.filesDir, "restore-thumbnail-staging").listFiles().orEmpty().isEmpty()
+        )
+    }
+
+    @Test
+    fun historyInsertFailureAfterThumbnailStagingCleansRestoreArtifacts() = runBlocking {
+        val unrelatedId = database.historyDao.insertAndGetIdRaw(history(902L))
+        val triggerName = "f5_fail_history_insert"
+        val writableDatabase = database.openHelper.writableDatabase
+        writableDatabase.execSQL(
+            "CREATE TRIGGER $triggerName BEFORE INSERT ON history " +
+                "BEGIN SELECT RAISE(ABORT, 'forced F5 History insert failure'); END"
+        )
+        try {
+            val result = SettingsViewModel(context as Application).restoreData(
+                RestoreAppDataItem(
+                    downloads = listOf(history(91L)),
+                    customThumbnails = listOf(thumbnail(91L, byteArrayOf(8, 9), "png")),
+                ),
+                context,
+                resetData = false,
+            )
+
+            assertFalse(result)
+            assertEquals(listOf(unrelatedId), database.historyDao.getAll().map { it.id })
+            assertTrue(
+                !restoredThumbnailDirectory.exists() ||
+                    restoredThumbnailDirectory.listFiles().orEmpty().isEmpty()
+            )
+            assertTrue(
+                !File(context.filesDir, "restore-thumbnail-staging").exists() ||
+                    File(context.filesDir, "restore-thumbnail-staging").listFiles().orEmpty().isEmpty()
+            )
+        } finally {
+            writableDatabase.execSQL("DROP TRIGGER IF EXISTS $triggerName")
+        }
+    }
+
     private fun thumbnail(historyId: Long, bytes: ByteArray, extension: String) =
         BackupCustomThumbItem(
             historyId = historyId,
