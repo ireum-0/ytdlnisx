@@ -130,19 +130,24 @@ class BackupSettingsProductionWiringTest {
         )
 
         val groupsRead = CountDownLatch(1)
-        val writerStarted = CountDownLatch(1)
+        val writerRelease = CountDownLatch(1)
+        val writerAttempted = CountDownLatch(1)
         SettingsViewModel.backupCaptureReadHookForTesting = { phase ->
-            if (phase == "keyword_groups") groupsRead.countDown()
+            if (phase == "keyword_groups") {
+                groupsRead.countDown()
+                check(writerRelease.await(5, TimeUnit.SECONDS)) {
+                    "concurrent writer was not released while backup transaction was held"
+                }
+                check(writerAttempted.await(5, TimeUnit.SECONDS)) {
+                    "concurrent writer did not reach its transaction attempt"
+                }
+            }
         }
 
         try {
-            val backup = async(Dispatchers.IO) {
-                SettingsViewModel(application).backup(listOf("keywordData"))
-            }
-            assertTrue(groupsRead.await(5, TimeUnit.SECONDS))
-
             val writer = async(Dispatchers.IO) {
-                writerStarted.countDown()
+                writerRelease.await()
+                writerAttempted.countDown()
                 database.withTransaction {
                     database.keywordGroupDao.clearMembers()
                     database.keywordGroupDao.clearGroups()
@@ -154,7 +159,11 @@ class BackupSettingsProductionWiringTest {
                     )
                 }
             }
-            assertTrue(writerStarted.await(5, TimeUnit.SECONDS))
+            val backup = async(Dispatchers.IO) {
+                SettingsViewModel(application).backup(listOf("keywordData"))
+            }
+            assertTrue(groupsRead.await(5, TimeUnit.SECONDS))
+            writerRelease.countDown()
 
             val result = backup.await()
             writer.await()
