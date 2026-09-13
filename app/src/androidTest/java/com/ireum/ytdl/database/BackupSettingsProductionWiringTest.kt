@@ -25,6 +25,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -55,6 +56,7 @@ class BackupSettingsProductionWiringTest {
     @After
     fun tearDown() = runBlocking {
         SettingsViewModel.backupCaptureReadHookForTesting = null
+        SettingsViewModel.backupStagingWriteHookForTesting = null
         publishedBackup?.let { File(it).delete() }
         staleBackup?.delete()
         historyRepository.deleteAllRecords()
@@ -205,6 +207,39 @@ class BackupSettingsProductionWiringTest {
             assertTrue(result.getOrNull().isNullOrBlank())
             assertTrue(stagingPath.isFile)
         } finally {
+            if (original == null) {
+                preferences.edit().remove("cache_path").commit()
+            } else {
+                preferences.edit().putString("cache_path", original).commit()
+            }
+            isolatedRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun backupFailsWhenCurrentStagingFileWriteFails() = runBlocking {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val original = preferences.getString("cache_path", null)
+        val isolatedRoot = File(
+            context.getExternalFilesDir(null),
+            "backup-staging-write-failure-${System.nanoTime()}"
+        )
+        val stagingDir = File(isolatedRoot, "Backups")
+        try {
+            preferences.edit().putString("cache_path", isolatedRoot.absolutePath).commit()
+            SettingsViewModel.backupStagingWriteHookForTesting = {
+                throw IOException("forced backup staging write failure")
+            }
+
+            val result = SettingsViewModel(context as android.app.Application)
+                .backup(listOf("downloads"))
+
+            assertFalse(result.isSuccess)
+            assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("forced"))
+            assertTrue(result.getOrNull().isNullOrBlank())
+            assertTrue(stagingDir.listFiles().orEmpty().isNotEmpty())
+        } finally {
+            SettingsViewModel.backupStagingWriteHookForTesting = null
             if (original == null) {
                 preferences.edit().remove("cache_path").commit()
             } else {

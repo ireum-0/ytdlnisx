@@ -81,6 +81,8 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     companion object {
         @Volatile
         internal var backupCaptureReadHookForTesting: ((String) -> Unit)? = null
+        @Volatile
+        internal var backupStagingWriteHookForTesting: ((File) -> Unit)? = null
     }
 
     private data class RemappedDownload(
@@ -329,6 +331,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             throw IOException("Could not create backup file ${saveFile.absolutePath}")
         }
         withContext(Dispatchers.IO) {
+            backupStagingWriteHookForTesting?.invoke(saveFile)
             saveFile.writeText(GsonBuilder().setPrettyPrinting().create().toJson(json))
         }
 
