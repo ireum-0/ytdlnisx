@@ -62,8 +62,14 @@ class BackupPausedProductionWiringTest {
 
     @Test
     fun pausedBackupAndRestorePreserveStateWithoutStartingWork() = runBlocking {
-        val source = pausedDownload(orderPosition = 41L)
+        val expectedOrderPosition = 41L
+        val source = pausedDownload(orderPosition = expectedOrderPosition)
         val sourceId = database.downloadDao.insert(source)
+        database.downloadDao.updateOrderPosition(sourceId, expectedOrderPosition)
+        assertEquals(
+            expectedOrderPosition,
+            database.downloadDao.getPausedDownloadsList().single().orderPosition,
+        )
 
         val backupResult = SettingsViewModel(context as Application)
             .backup(listOf("paused"))
@@ -73,9 +79,10 @@ class BackupPausedProductionWiringTest {
         val encoded = json["paused"].asJsonArray.single()
         val encodedItem = Gson().fromJson(encoded, DownloadItem::class.java)
         assertEquals(DownloadRepository.Status.Paused.name, encodedItem.status)
-        assertEquals(source.orderPosition, encodedItem.orderPosition)
+        assertEquals(expectedOrderPosition, encodedItem.orderPosition)
 
         database.downloadDao.deleteAll()
+        assertTrue(database.downloadDao.getAllDownloadsList().isEmpty())
         assertTrue(
             SettingsViewModel(context as Application).restoreData(
                 RestoreAppDataItem(paused = listOf(encodedItem)),
@@ -90,7 +97,7 @@ class BackupPausedProductionWiringTest {
         assertEquals(source.url, restored.url)
         assertEquals(source.operationId, restored.operationId)
         assertEquals(source.retryAttempt, restored.retryAttempt)
-        assertEquals(source.orderPosition, restored.orderPosition)
+        assertEquals(expectedOrderPosition, restored.orderPosition)
         assertEquals("", restored.executionId)
         assertTrue(
             workManager.getWorkInfosByTag("download").get(20, TimeUnit.SECONDS)

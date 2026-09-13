@@ -384,6 +384,7 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun insertRestoredDownload(
         item: DownloadItem,
         barrier: HistoryReplacementBarrier?,
+        preserveOrderPosition: Boolean = false,
     ): Long = database.withTransaction {
         val restoredItem = barrier?.let {
             item.copy(
@@ -392,7 +393,20 @@ class DownloadRepository(private val database: DBManager) {
                 lastIssueStage = it.issueStage,
             )
         } ?: item
-        val restoredId = downloadDao.insert(restoredItem.copy(id = 0L, executionId = ""))
+        val restoredId = if (preserveOrderPosition) {
+            database.downloadDao.insertRaw(
+                restoredItem.copy(
+                    id = 0L,
+                    executionId = "",
+                    orderPosition = restoredItem.orderPosition,
+                )
+            )
+        } else {
+            downloadDao.insert(restoredItem.copy(id = 0L, executionId = ""))
+        }
+        if (preserveOrderPosition && restoredItem.orderPosition > 0L) {
+            database.downloadDao.updateOrderPosition(restoredId, restoredItem.orderPosition)
+        }
         barrier?.let { source ->
             val restoredBarrier = source.copy(downloadId = restoredId)
             database.historyReplacementBarrierDao.insertIfAbsent(restoredBarrier)

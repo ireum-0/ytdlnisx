@@ -1071,7 +1071,11 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         // Paused restore is deliberately not passed to
                         // startDownloadWorker: this payload is persistent
                         // state, not runnable work.
-                        downloadRepository.insertRestoredDownload(restored.item, restored.barrier)
+                        downloadRepository.insertRestoredDownload(
+                            restored.item,
+                            restored.barrier,
+                            preserveOrderPosition = true,
+                        )
                     }
                 }
             }
