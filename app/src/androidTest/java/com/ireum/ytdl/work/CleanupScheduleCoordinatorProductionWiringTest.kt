@@ -132,6 +132,89 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun disableRetiresPendingDebtBeforeLateEnqueueCompletion() = runBlocking {
+        val first = ControlledOperation().also { controlledOperations += it }
+        val second = ControlledOperation().also { controlledOperations += it }
+        val enqueueCalls = AtomicInteger(0)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(1)
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { _, _, _ ->
+            if (enqueueCalls.getAndIncrement() == 0) first else second
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+                ?.isNotBlank() == true
+        )
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, null))
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+        )
+        assertEquals(1, enqueueCalls.get())
+
+        // A late completion from the superseded operation cannot recreate
+        // work or clear/mutate any newer authority.
+        first.succeed()
+        assertTrue(awaitUnfinishedCount(0))
+        assertTrue(unfinishedCurrentWork().isEmpty())
+        assertEquals(1, enqueueCalls.get())
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+                ?.isNotBlank() == true
+        )
+        assertTrue(CleanupScheduleCoordinator.configure(context, null))
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+        )
+        second.fail(IllegalStateException("late superseded failure"))
+        assertTrue(awaitUnfinishedCount(0))
+        assertTrue(unfinishedCurrentWork().isEmpty())
+        assertEquals(2, enqueueCalls.get())
+    }
+
+    @Test
+    fun supersededReplayCannotRecreateOldCadenceWork() = runBlocking {
+        val first = ControlledOperation().also { controlledOperations += it }
+        val enqueueCalls = AtomicInteger(0)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 25L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 100L
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
+            if (enqueueCalls.getAndIncrement() == 0) {
+                first
+            } else {
+                workManager.enqueueUniqueWork(name, policy, request)
+            }
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val firstGeneration = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY))
+        val secondGeneration = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        assertTrue(firstGeneration != secondGeneration)
+
+        // Complete the superseded operation after the new generation is
+        // authoritative. Only the weekly replay may establish work.
+        first.succeed()
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+            }
+        )
+        val current = unfinishedCurrentWork()
+        assertEquals(1, current.size)
+        assertTrue(current.single().tags.contains(cadenceTag(CleanupSchedulePolicy.WEEKLY)))
+        assertTrue(current.single().tags.contains(generationTag(secondGeneration)))
+        assertTrue(current.single().tags.none { it.contains(firstGeneration) })
+    }
+
+    @Test
     fun successfulRunAppendsExactlyOneCalendarSuccessor() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)

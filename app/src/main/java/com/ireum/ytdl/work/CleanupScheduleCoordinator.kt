@@ -145,6 +145,11 @@ internal object CleanupScheduleCoordinator {
             .commit()
         if (!authorityCommitted) return@synchronized false
 
+        // The new generation wins before any old asynchronous owner can
+        // observe or mutate scheduling debt. Retire the superseded tuple and
+        // its process-local replay owner before replacing/cancelling work.
+        if (!retirePendingDebtLocked(preferences)) return@synchronized false
+
         val workManager = workManager(appContext)
         workManager.cancelAllWorkByTag(TAG)
         if (normalizedCadence == null) {
@@ -176,6 +181,7 @@ internal object CleanupScheduleCoordinator {
 
         if (!CleanupSchedulePolicy.isEnabled(cadence)) {
             workManager.cancelAllWorkByTag(TAG)
+            retirePendingDebtLocked(preferences)
             return@synchronized
         }
 
@@ -505,6 +511,17 @@ internal object CleanupScheduleCoordinator {
         replayJob?.cancel()
         replayJob = null
         replayDebt = null
+    }
+
+    private fun retirePendingDebtLocked(preferences: android.content.SharedPreferences): Boolean {
+        val retired = preferences.edit()
+            .remove(PREF_PENDING_GENERATION)
+            .remove(PREF_PENDING_CADENCE)
+            .remove(PREF_PENDING_ANCHOR_DAY)
+            .remove(PREF_PENDING_OCCURRENCE_AT)
+            .commit()
+        stopReplayOwnerLocked()
+        return retired
     }
 
     internal fun resetReplayOwnerForTesting() = synchronized(lock) {
