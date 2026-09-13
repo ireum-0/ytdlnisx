@@ -115,6 +115,63 @@ class HistoryUndoPersistenceTest {
         assertTrue(database.playlistDao.getPlaylistItemsForHistory(1).isEmpty())
     }
 
+    @Test
+    fun deletionFailureBeforeCommitLeavesOwnedRelationshipsIntact() = runBlocking {
+        insertHistory(1, "https://example.com/blocked")
+        val playlist = database.playlistDao.insertPlaylist(Playlist(name = "One", description = null))
+        database.playlistDao.insertPlaylistItem(PlaylistItemCrossRef(playlist, 1))
+        assignments.initializeManualAssignments(1, "manual")
+
+        val triggerName = "history_undo_delete_failure"
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER $triggerName BEFORE DELETE ON history " +
+                "BEGIN SELECT RAISE(ABORT, 'forced History delete failure'); END"
+        )
+        try {
+            var failure: Throwable? = null
+            try {
+                assignments.captureAndDeleteHistoryForUndo(1)
+            } catch (error: Throwable) {
+                failure = error
+            }
+            assertNotNull(failure)
+            assertNotNull(database.historyDao.getNullableItem(1))
+            assertEquals(1, database.playlistDao.getPlaylistItemsForHistory(1).size)
+            assertEquals(1, database.automaticKeywordRuleDao.getAssignmentsRaw(1).size)
+        } finally {
+            database.openHelper.writableDatabase.execSQL("DROP TRIGGER IF EXISTS $triggerName")
+        }
+    }
+
+    @Test
+    fun undoRestoreFailureLeavesNoPartiallyRestoredGraph() = runBlocking {
+        insertHistory(1, "https://example.com/restore-failure")
+        val playlist = database.playlistDao.insertPlaylist(Playlist(name = "One", description = null))
+        database.playlistDao.insertPlaylistItem(PlaylistItemCrossRef(playlist, 1))
+        assignments.initializeManualAssignments(1, "manual")
+        val snapshot = assignments.captureAndDeleteHistoryForUndo(1)!!
+
+        val triggerName = "history_undo_restore_failure"
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER $triggerName BEFORE INSERT ON history " +
+                "BEGIN SELECT RAISE(ABORT, 'forced History restore failure'); END"
+        )
+        try {
+            var failure: Throwable? = null
+            try {
+                assignments.restoreHistory(snapshot)
+            } catch (error: Throwable) {
+                failure = error
+            }
+            assertNotNull(failure)
+            assertNull(database.historyDao.getNullableItem(1))
+            assertTrue(database.playlistDao.getPlaylistItemsForHistory(1).isEmpty())
+            assertTrue(database.automaticKeywordRuleDao.getAssignmentsRaw(1).isEmpty())
+        } finally {
+            database.openHelper.writableDatabase.execSQL("DROP TRIGGER IF EXISTS $triggerName")
+        }
+    }
+
     private fun insertHistory(id: Long, url: String, keywords: String = "") {
         database.historyDao.insertRaw(
             HistoryItem(
