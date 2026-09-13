@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -237,6 +238,114 @@ class HistoryDateFetchPersistenceTest {
         assertEquals(HistoryDateFetchItemState.FAILED, outcome.stateValue)
         assertEquals(HistoryDateFetchRepository.REASON_UNPROVEN_DATE, outcome.reasonCode)
         assertEquals(0L, database.historyDao.getItem(1).mediaPublishedAt)
+    }
+
+    @Test
+    fun retryableChildRemainsPendingUntilALaterAttemptSucceeds() = runBlocking {
+        insertHistory(1, "https://example.com/retry")
+        val operation = repository.createOrReconnect(now = 100)
+        val pending = repository.getPendingItems(operation.operationId).single()
+
+        assertTrue(
+            repository.checkpointSourceGroup(
+                operation.operationId,
+                listOf(pending),
+                HistoryDateLookupResult(
+                    origin = HistoryDateLookupOrigin.FAILED,
+                    failureReason = "NETWORK",
+                    outcome = HistoryDateLookupOutcome.RetryableFailure("NETWORK"),
+                ),
+                elapsedMs = 5,
+                now = 200,
+            )
+        )
+        assertEquals(
+            HistoryDateFetchItemState.PENDING,
+            database.historyDateFetchDao.getItems(operation.operationId).single().stateValue,
+        )
+        assertNull(repository.finalizeWorkerRun(operation.operationId))
+        assertEquals(HistoryDateFetchOperationState.RUNNING, repository.getOperation(operation.operationId)?.stateValue)
+
+        assertTrue(
+            repository.checkpointSourceGroup(
+                operation.operationId,
+                listOf(pending),
+                HistoryDateLookupResult(
+                    origin = HistoryDateLookupOrigin.MINIMAL,
+                    outcome = HistoryDateLookupOutcome.Found(123L),
+                ),
+                elapsedMs = 5,
+                now = 300,
+            )
+        )
+        assertEquals(HistoryDateFetchOperationState.COMPLETED, repository.finalizeWorkerRun(operation.operationId))
+        assertEquals(123L, database.historyDao.getItem(1).mediaPublishedAt)
+    }
+
+    @Test
+    fun mixedTerminalChildrenProduceFailedParentWithFailedCount() = runBlocking {
+        insertHistory(1, "https://example.com/a")
+        insertHistory(2, "https://example.com/b")
+        val operation = repository.createOrReconnect(now = 100)
+        val pending = repository.getPendingItems(operation.operationId).associateBy { it.historyId }
+
+        assertTrue(
+            repository.checkpointSourceGroup(
+                operation.operationId,
+                listOf(pending.getValue(1)),
+                HistoryDateLookupResult(
+                    origin = HistoryDateLookupOrigin.MINIMAL,
+                    outcome = HistoryDateLookupOutcome.Found(123L),
+                ),
+                elapsedMs = 5,
+                now = 200,
+            )
+        )
+        assertTrue(
+            repository.checkpointSourceGroup(
+                operation.operationId,
+                listOf(pending.getValue(2)),
+                HistoryDateLookupResult(
+                    origin = HistoryDateLookupOrigin.MINIMAL,
+                    outcome = HistoryDateLookupOutcome.FinalFailure("MALFORMED"),
+                ),
+                elapsedMs = 5,
+                now = 210,
+            )
+        )
+        assertEquals(HistoryDateFetchOperationState.FAILED, repository.finalizeWorkerRun(operation.operationId))
+        assertFalse(repository.finishCompleted(operation.operationId))
+        val terminal = repository.getOperation(operation.operationId)!!
+        assertEquals(HistoryDateFetchRepository.REASON_PARTIAL_FAILURE, terminal.terminalReason)
+        assertEquals(1, database.historyDateFetchDao.getCounts(operation.operationId).failed)
+    }
+
+    @Test
+    fun allTerminalFailuresProduceFailedParentWithAllFailedReason() = runBlocking {
+        insertHistory(1, "https://example.com/a")
+        insertHistory(2, "https://example.com/b")
+        val operation = repository.createOrReconnect(now = 100)
+        val pending = repository.getPendingItems(operation.operationId)
+
+        pending.forEachIndexed { index, item ->
+            assertTrue(
+                repository.checkpointSourceGroup(
+                    operation.operationId,
+                    listOf(item),
+                    HistoryDateLookupResult(
+                        origin = HistoryDateLookupOrigin.MINIMAL,
+                        outcome = HistoryDateLookupOutcome.FinalFailure("FAILED_$index"),
+                    ),
+                    elapsedMs = 5,
+                    now = 200L + index,
+                )
+            )
+        }
+        assertEquals(HistoryDateFetchOperationState.FAILED, repository.finalizeWorkerRun(operation.operationId))
+        assertEquals(
+            HistoryDateFetchRepository.REASON_ALL_CHILDREN_FAILED,
+            repository.getOperation(operation.operationId)!!.terminalReason,
+        )
     }
 
     private fun rowCount(table: String): Int =

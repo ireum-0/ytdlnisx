@@ -53,7 +53,7 @@ class HistoryDateFetchNotification(private val context: Context) {
             HistoryDateFetchOperationState.CANCELLED ->
                 context.getString(R.string.fetch_source_dates_cancelled, counts.updated)
             HistoryDateFetchOperationState.FAILED ->
-                context.getString(R.string.fetch_source_dates_failed)
+                context.getString(R.string.fetch_source_dates_failed_with_count, counts.failed)
             HistoryDateFetchOperationState.COMPLETED ->
                 context.getString(R.string.fetch_source_dates_result, counts.updated, counts.total)
             HistoryDateFetchOperationState.RUNNING -> return

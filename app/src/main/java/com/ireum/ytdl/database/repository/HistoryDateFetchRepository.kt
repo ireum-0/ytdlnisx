@@ -189,7 +189,8 @@ class HistoryDateFetchRepository(private val database: DBManager) {
     suspend fun finishCompleted(operationId: String): Boolean = database.withTransaction {
         val operation = dao.getOperation(operationId) ?: return@withTransaction false
         if (operation.stateValue.isTerminal || operation.cancelRequested) return@withTransaction false
-        if (dao.getCounts(operationId).pending > 0) return@withTransaction false
+        val counts = dao.getCounts(operationId)
+        if (counts.pending > 0 || counts.failed > 0) return@withTransaction false
         val now = System.currentTimeMillis()
         dao.finishOperation(
             operationId,
@@ -224,21 +225,31 @@ class HistoryDateFetchRepository(private val database: DBManager) {
             } else {
                 null
             }
-        } else if (dao.getCounts(operationId).pending == 0) {
+        } else {
+            val counts = dao.getCounts(operationId)
+            if (counts.pending > 0) return@withTransaction null
+            val terminalState = if (counts.failed > 0) {
+                HistoryDateFetchOperationState.FAILED
+            } else {
+                HistoryDateFetchOperationState.COMPLETED
+            }
+            val terminalReason = when {
+                counts.failed == counts.total && counts.failed > 0 -> REASON_ALL_CHILDREN_FAILED
+                counts.failed > 0 -> REASON_PARTIAL_FAILURE
+                else -> ""
+            }
             if (
                 dao.finishOperation(
                     operationId,
-                    HistoryDateFetchOperationState.COMPLETED.name,
-                    "",
+                    terminalState.name,
+                    terminalReason,
                     now,
                 ) == 1
             ) {
-                HistoryDateFetchOperationState.COMPLETED
+                terminalState
             } else {
                 null
             }
-        } else {
-            null
         }
     }
 
@@ -279,5 +290,8 @@ class HistoryDateFetchRepository(private val database: DBManager) {
         const val REASON_UNPROVEN_DATE = "UNPROVEN_DATE"
         const val REASON_RETRYABLE_LOOKUP_FAILURE = "RETRYABLE_LOOKUP_FAILURE"
         const val REASON_FINAL_LOOKUP_FAILURE = "FINAL_LOOKUP_FAILURE"
+        const val REASON_RETRY_EXHAUSTED = "RETRY_EXHAUSTED"
+        const val REASON_PARTIAL_FAILURE = "PARTIAL_FAILURE"
+        const val REASON_ALL_CHILDREN_FAILED = "ALL_CHILDREN_FAILED"
     }
 }

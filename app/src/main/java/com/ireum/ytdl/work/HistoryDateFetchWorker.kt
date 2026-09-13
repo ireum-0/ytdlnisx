@@ -9,10 +9,12 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.models.HistoryDateFetchOperationState
 import com.ireum.ytdl.database.repository.HistoryDateFetchRepository
 import com.ireum.ytdl.util.HistoryDateFetchNotification
 import com.ireum.ytdl.util.HistoryDateFetchNotificationPolicy
 import com.ireum.ytdl.util.HistoryDateLookupOrigin
+import com.ireum.ytdl.util.HistoryDateLookupOutcome
 import com.ireum.ytdl.util.HistoryDateResolutionEngine
 import com.ireum.ytdl.util.KnownMediaPublishedDateIndex
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
@@ -38,15 +40,41 @@ class HistoryDateFetchWorker(
 
         return try {
             setForeground(foregroundInfo(operationId))
-            fetchPendingDates(operationId)
-            val transitioned = repository.finalizeWorkerRun(operationId) != null
+            val retryRequired = fetchPendingDates(operationId)
+            if (retryRequired) {
+                if (runAttemptCount < MAX_COORDINATOR_ATTEMPTS - 1) {
+                    return Result.retry()
+                }
+                val transitioned = repository.finishFailed(
+                    operationId,
+                    HistoryDateFetchRepository.REASON_RETRY_EXHAUSTED,
+                )
+                if (HistoryDateFetchNotificationPolicy.emitTerminal(transitioned)) {
+                    repository.progress(operationId)?.let {
+                        logTerminalMetrics(it)
+                        notification.notifyTerminal(it)
+                    }
+                }
+                val terminal = repository.getOperation(operationId)?.stateValue
+                return if (terminal == HistoryDateFetchOperationState.CANCELLED) {
+                    Result.success()
+                } else {
+                    Result.failure()
+                }
+            }
+            val terminalState = repository.finalizeWorkerRun(operationId)
+            val transitioned = terminalState != null
             if (HistoryDateFetchNotificationPolicy.emitTerminal(transitioned)) {
                 repository.progress(operationId)?.let {
                     logTerminalMetrics(it)
                     notification.notifyTerminal(it)
                 }
             }
-            Result.success()
+            if (terminalState == HistoryDateFetchOperationState.FAILED) {
+                Result.failure()
+            } else {
+                Result.success()
+            }
         } catch (cancelled: CancellationException) {
             val latest = repository.getOperation(operationId)
             if (latest?.cancelRequested == true) {
@@ -74,9 +102,9 @@ class HistoryDateFetchWorker(
         }
     }
 
-    private suspend fun fetchPendingDates(operationId: String) {
+    private suspend fun fetchPendingDates(operationId: String): Boolean {
         val pending = repository.getPendingItems(operationId)
-        if (pending.isEmpty()) return
+        if (pending.isEmpty()) return false
         val knownDates = repository.knownDates()
         val knownDateIndex = KnownMediaPublishedDateIndex(knownDates)
         val ytdlp = YTDLPUtil(context, database.commandTemplateDao)
@@ -85,6 +113,7 @@ class HistoryDateFetchWorker(
                 key.substringAfterLast('-').toLongOrNull() ?: Long.MAX_VALUE
             })
 
+        var retryRequired = false
         groups.values.forEachIndexed { index, groupItems ->
             ensureRunning(operationId)
             val source = groupItems.first().sourceUrlSnapshot
@@ -111,6 +140,12 @@ class HistoryDateFetchWorker(
             if (!repository.checkpointSourceGroup(operationId, groupItems, lookup, elapsed)) {
                 ensureRunning(operationId)
             }
+            if (lookup.outcome is HistoryDateLookupOutcome.RetryableFailure) {
+                val groupIds = groupItems.map { it.historyId }.toSet()
+                if (repository.getPendingItems(operationId).any { it.historyId in groupIds }) {
+                    retryRequired = true
+                }
+            }
             Log.i(
                 TAG,
                 "source=${index + 1}/${groups.size} items=${groupItems.size} " +
@@ -119,6 +154,7 @@ class HistoryDateFetchWorker(
             )
             repository.progress(operationId)?.let(notification::updateActive)
         }
+        return retryRequired
     }
 
     private suspend fun ensureRunning(operationId: String) {
