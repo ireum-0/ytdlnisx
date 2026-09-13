@@ -1,12 +1,14 @@
 package com.ireum.ytdl.work
 
 import android.content.Context
+import androidx.core.content.ContextCompat
 import androidx.preference.PreferenceManager
 import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.Operation
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import java.util.Calendar
@@ -68,6 +70,10 @@ internal object CleanupScheduleCoordinator {
     private const val PREF_CADENCE = "cleanup_leftover_downloads"
     private const val PREF_GENERATION = "cleanup_leftover_downloads_generation"
     private const val PREF_MONTHLY_ANCHOR_DAY = "cleanup_leftover_downloads_anchor_day"
+    private const val PREF_PENDING_GENERATION = "cleanup_leftover_downloads_pending_generation"
+    private const val PREF_PENDING_CADENCE = "cleanup_leftover_downloads_pending_cadence"
+    private const val PREF_PENDING_ANCHOR_DAY = "cleanup_leftover_downloads_pending_anchor_day"
+    private const val PREF_PENDING_OCCURRENCE_AT = "cleanup_leftover_downloads_pending_occurrence_at"
 
     private val lock = Any()
 
@@ -80,6 +86,21 @@ internal object CleanupScheduleCoordinator {
     internal var initialDelayOverrideForTesting: Long? = null
     @Volatile
     internal var successorDelayOverrideForTesting: Long? = null
+
+    /** Null-default seam for modeling asynchronous enqueue acceptance/failure. */
+    @Volatile
+    internal var enqueueOverrideForTesting:
+        ((String, ExistingWorkPolicy, OneTimeWorkRequest) -> Operation)? = null
+
+    private data class EnqueueHandle(
+        val request: OneTimeWorkRequest,
+        val operation: Operation?,
+        val alreadyPresent: Boolean = false,
+        val generation: String,
+        val cadence: String,
+        val monthlyAnchorDay: Int,
+        val occurrenceAt: Long,
+    )
 
     fun configure(context: Context, cadence: String?): Boolean = synchronized(lock) {
         val appContext = context.applicationContext
@@ -106,6 +127,7 @@ internal object CleanupScheduleCoordinator {
         }
 
         enqueueNextLocked(
+            context = appContext,
             workManager = workManager,
             generation = generation,
             cadence = normalizedCadence,
@@ -113,7 +135,7 @@ internal object CleanupScheduleCoordinator {
             from = now,
             append = false,
             successor = false,
-        )
+        )?.let { handle -> observeAcceptance(appContext, handle) }
         true
     }
 
@@ -174,6 +196,7 @@ internal object CleanupScheduleCoordinator {
         // occurrence to preserve.
         workManager.cancelAllWorkByTag(TAG)
         enqueueNextLocked(
+            context = appContext,
             workManager = workManager,
             generation = generation,
             cadence = cadence,
@@ -181,7 +204,7 @@ internal object CleanupScheduleCoordinator {
             from = now,
             append = false,
             successor = false,
-        )
+        )?.let { handle -> observeAcceptance(appContext, handle) }
     }
 
     /**
@@ -189,54 +212,68 @@ internal object CleanupScheduleCoordinator {
      * current running request is appended rather than replaced, so it can
      * finish normally. Generation/cadence are revalidated before any enqueue.
      */
-    fun scheduleSuccessor(
+    suspend fun scheduleSuccessor(
         context: Context,
         generation: String?,
         cadence: String?,
         monthlyAnchorDay: Int,
         completedOccurrenceAt: Long? = null,
-    ): Boolean = synchronized(lock) {
+    ): Boolean {
         val appContext = context.applicationContext
-        val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
-        val currentGeneration = preferences.getString(PREF_GENERATION, null)
-        val currentCadence = preferences.getString(PREF_CADENCE, null)
-        if (generation.isNullOrBlank() || generation != currentGeneration || cadence != currentCadence) {
-            return@synchronized false
-        }
-        if (!CleanupSchedulePolicy.isEnabled(currentCadence)) {
-            return@synchronized false
-        }
-
-        val from = currentCalendar().apply {
-            if (completedOccurrenceAt != null && completedOccurrenceAt > 0L) {
-                timeInMillis = completedOccurrenceAt
+        val handle = synchronized(lock) {
+            val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
+            val currentGeneration = preferences.getString(PREF_GENERATION, null)
+            val currentCadence = preferences.getString(PREF_CADENCE, null)
+            if (generation.isNullOrBlank() || generation != currentGeneration || cadence != currentCadence) {
+                return@synchronized null
             }
-        }
-        val next = CleanupSchedulePolicy.nextOccurrence(
-            now = from,
-            cadence = currentCadence!!,
-            monthlyAnchorDay = monthlyAnchorDay,
-        )
-        val occurrenceTag = occurrenceTag(generation, next.timeInMillis)
-        val workManager = workManager(appContext)
-        val current = workManager.getWorkInfosForUniqueWork(WORK_NAME).get()
-        if (current.any { info -> info.tags.contains(occurrenceTag) }) {
-            return@synchronized true
-        }
+            if (!CleanupSchedulePolicy.isEnabled(currentCadence)) {
+                return@synchronized null
+            }
 
-        enqueueNextLocked(
-            workManager = workManager,
-            generation = generation,
-            cadence = currentCadence,
-            monthlyAnchorDay = monthlyAnchorDay,
-            from = from,
-            append = true,
-            successor = true,
-        )
-        true
+            val from = currentCalendar().apply {
+                if (completedOccurrenceAt != null && completedOccurrenceAt > 0L) {
+                    timeInMillis = completedOccurrenceAt
+                }
+            }
+            val next = CleanupSchedulePolicy.nextOccurrence(
+                now = from,
+                cadence = currentCadence!!,
+                monthlyAnchorDay = monthlyAnchorDay,
+            )
+            val occurrenceTag = occurrenceTag(generation, next.timeInMillis)
+            val workManager = workManager(appContext)
+            val current = workManager.getWorkInfosForUniqueWork(WORK_NAME).get()
+            if (current.any { info -> info.tags.contains(occurrenceTag) }) {
+                return@synchronized EnqueueHandle(
+                    request = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>().build(),
+                    operation = null,
+                    alreadyPresent = true,
+                    generation = generation,
+                    cadence = currentCadence,
+                    monthlyAnchorDay = monthlyAnchorDay,
+                    occurrenceAt = next.timeInMillis,
+                )
+            }
+
+            enqueueNextLocked(
+                context = appContext,
+                workManager = workManager,
+                generation = generation,
+                cadence = currentCadence,
+                monthlyAnchorDay = monthlyAnchorDay,
+                from = from,
+                append = true,
+                successor = true,
+            )
+        } ?: return false
+
+        if (handle.alreadyPresent) return true
+        return awaitAcceptance(appContext, handle)
     }
 
     private fun enqueueNextLocked(
+        context: Context,
         workManager: WorkManager,
         generation: String,
         cadence: String,
@@ -244,7 +281,7 @@ internal object CleanupScheduleCoordinator {
         from: Calendar,
         append: Boolean,
         successor: Boolean,
-    ): OneTimeWorkRequest {
+    ): EnqueueHandle? {
         val next = CleanupSchedulePolicy.nextOccurrence(from, cadence, monthlyAnchorDay)
         val occurrenceAt = next.timeInMillis
         val delayOverride = if (successor) {
@@ -271,13 +308,70 @@ internal object CleanupScheduleCoordinator {
             .setInitialDelay(delay, TimeUnit.MILLISECONDS)
             .build()
 
-        workManager.enqueueUniqueWork(
-            WORK_NAME,
-            if (append) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE,
-            request,
-        )
-        return request
+        val policy = if (append) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        if (!preferences.edit()
+                .putString(PREF_PENDING_GENERATION, generation)
+                .putString(PREF_PENDING_CADENCE, cadence)
+                .putInt(PREF_PENDING_ANCHOR_DAY, monthlyAnchorDay)
+                .putLong(PREF_PENDING_OCCURRENCE_AT, occurrenceAt)
+                .commit()
+        ) {
+            return null
+        }
+        return try {
+            EnqueueHandle(
+                request = request,
+                operation = enqueueOverrideForTesting?.invoke(WORK_NAME, policy, request)
+                    ?: workManager.enqueueUniqueWork(WORK_NAME, policy, request),
+                generation = generation,
+                cadence = cadence,
+                monthlyAnchorDay = monthlyAnchorDay,
+                occurrenceAt = occurrenceAt,
+            )
+        } catch (_: Exception) {
+            null
+        }
     }
+
+    private fun observeAcceptance(context: Context, handle: EnqueueHandle) {
+        requireNotNull(handle.operation).result.addListener(
+            {
+                runCatching { requireNotNull(handle.operation).result.get() }
+                    .onSuccess { clearDebtIfCurrent(context, handle) }
+            },
+            ContextCompat.getMainExecutor(context),
+        )
+    }
+
+    private suspend fun awaitAcceptance(context: Context, handle: EnqueueHandle): Boolean =
+        try {
+            requireNotNull(handle.operation).result.get(30L, TimeUnit.SECONDS)
+            clearDebtIfCurrent(context, handle)
+            true
+        } catch (_: Exception) {
+            false
+        }
+
+    private fun clearDebtIfCurrent(context: Context, handle: EnqueueHandle) {
+        synchronized(lock) {
+            val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+            if (
+                preferences.getString(PREF_PENDING_GENERATION, null) == handle.generation &&
+                preferences.getString(PREF_PENDING_CADENCE, null) == handle.cadence &&
+                preferences.getInt(PREF_PENDING_ANCHOR_DAY, -1) == handle.monthlyAnchorDay &&
+                preferences.getLong(PREF_PENDING_OCCURRENCE_AT, -1L) == handle.occurrenceAt
+            ) {
+                preferences.edit()
+                    .remove(PREF_PENDING_GENERATION)
+                    .remove(PREF_PENDING_CADENCE)
+                    .remove(PREF_PENDING_ANCHOR_DAY)
+                    .remove(PREF_PENDING_OCCURRENCE_AT)
+                    .commit()
+            }
+        }
+    }
+
 
     private fun currentCalendar(): Calendar =
         (nowProviderForTesting?.invoke() ?: Calendar.getInstance()).clone() as Calendar

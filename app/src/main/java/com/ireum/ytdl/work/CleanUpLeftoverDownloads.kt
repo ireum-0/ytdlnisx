@@ -6,6 +6,7 @@ import android.os.Build
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
@@ -41,6 +42,7 @@ class CleanUpLeftoverDownloads(
             setForegroundAsync(ForegroundInfo(id, notification))
         }
 
+        var cleanupFailure: Exception? = null
         try {
             val override = cleanupOverrideForTesting
             if (override != null) {
@@ -59,10 +61,13 @@ class CleanUpLeftoverDownloads(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            return if (runAttemptCount < MAX_ATTEMPTS - 1) Result.retry() else Result.failure()
+            if (runAttemptCount < MAX_ATTEMPTS - 1) {
+                return Result.retry()
+            }
+            cleanupFailure = failure
         }
 
-        try {
+        val successorAccepted = try {
             CleanupScheduleCoordinator.scheduleSuccessor(
                 context = applicationContext,
                 generation = inputData.getString(CleanupScheduleCoordinator.INPUT_GENERATION),
@@ -78,11 +83,37 @@ class CleanUpLeftoverDownloads(
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (failure: Exception) {
-            return if (runAttemptCount < MAX_ATTEMPTS - 1) Result.retry() else Result.failure()
+        } catch (_: Exception) {
+            false
+        }
+        if (!successorAccepted) {
+            return if (runAttemptCount < MAX_ATTEMPTS - 1) {
+                Result.retry()
+            } else {
+                Result.failure(
+                    workDataOf(
+                        "cleanup_schedule_failure" to true,
+                        "cleanup_failure" to (cleanupFailure != null),
+                    )
+                )
+            }
         }
 
-        return Result.success()
+        /*
+         * A scheduled occurrence is the owner of the recurring chain.  Once
+         * its successor has been accepted, returning FAILURE would make
+         * WorkManager fail the appended chain as well.  Keep the occurrence's
+         * cleanup failure explicit in output data while completing the chain
+         * successfully so the cadence remains alive.
+         */
+        return cleanupFailure?.let { failure ->
+            Result.success(
+                workDataOf(
+                    "cleanup_failure" to true,
+                    "cleanup_failure_message" to (failure.message ?: failure.javaClass.simpleName),
+                )
+            )
+        } ?: Result.success()
     }
 
 }

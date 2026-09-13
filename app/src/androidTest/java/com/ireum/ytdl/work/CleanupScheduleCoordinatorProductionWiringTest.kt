@@ -1,11 +1,16 @@
 package com.ireum.ytdl.work
 
 import android.content.Context
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
 import androidx.preference.PreferenceManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import androidx.work.Operation
+import androidx.work.impl.utils.futures.SettableFuture
+import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -16,6 +21,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
+import java.util.Collections
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -29,6 +35,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     private lateinit var context: Context
     private lateinit var workManager: WorkManager
     private lateinit var preferences: android.content.SharedPreferences
+    private val controlledOperations = Collections.synchronizedList(mutableListOf<ControlledOperation>())
 
     @Before
     fun setUp() {
@@ -45,6 +52,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
         clearTestSeams()
         clearSchedulePreferences()
+        controlledOperations.clear()
     }
 
     @Test
@@ -225,6 +233,109 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         assertTrue(unfinishedCurrentWork().isEmpty())
     }
 
+    @Test
+    fun finalCleanupFailurePreservesFutureOccurrenceAndReportsFailure() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
+        CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        val attempts = AtomicInteger(0)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            attempts.incrementAndGet()
+            throw IllegalStateException("deterministic final cleanup failure")
+        }
+
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
+        val infos = awaitWork(timeoutMs = 140_000L) { current ->
+            attempts.get() >= CleanUpLeftoverDownloads.MAX_ATTEMPTS &&
+                current.any { it.state == WorkInfo.State.ENQUEUED &&
+                    it.tags.any { tag -> tag.startsWith("${CleanupScheduleCoordinator.TAG}_occurrence_") } } &&
+                current.any { it.state == WorkInfo.State.SUCCEEDED &&
+                    it.outputData.getBoolean("cleanup_failure", false) }
+        }
+
+        assertTrue(attempts.get() >= CleanUpLeftoverDownloads.MAX_ATTEMPTS)
+        assertTrue(infos.any { it.state == WorkInfo.State.SUCCEEDED &&
+            it.outputData.getBoolean("cleanup_failure", false) })
+        assertEquals(1, unfinishedCurrentWork().size)
+    }
+
+    @Test
+    fun asynchronousEnqueueFailureLeavesDebtForStartupReconciliation() = runBlocking {
+        val first = ControlledOperation().also { controlledOperations += it }
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { _, _, _ -> first }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+                ?.isNotBlank() == true
+        )
+        first.fail(IllegalStateException("async enqueue failure"))
+        assertTrue(
+            awaitPreference(timeoutMs = 2_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+                    ?.isNotBlank() == true
+            }
+        )
+
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = null
+        CleanupScheduleCoordinator.reconcile(context)
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+            }
+        )
+        assertEquals(1, unfinishedCurrentWork().size)
+    }
+
+    @Test
+    fun asynchronousEnqueueAcceptanceClearsMatchingDebt() = runBlocking {
+        val operation = ControlledOperation().also { controlledOperations += it }
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { _, _, _ -> operation }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+                ?.isNotBlank() == true
+        )
+        operation.succeed()
+        assertTrue(
+            awaitPreference(timeoutMs = 2_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+            }
+        )
+    }
+
+    @Test
+    fun staleAcceptanceCannotClearNewGenerationDebtAfterCadenceChange() = runBlocking {
+        val first = ControlledOperation().also { controlledOperations += it }
+        val second = ControlledOperation().also { controlledOperations += it }
+        val enqueueCalls = AtomicInteger(0)
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { _, _, _ ->
+            if (enqueueCalls.getAndIncrement() == 0) first else second
+        }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val firstGeneration = preferences.getString("cleanup_leftover_downloads_generation", null)
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY))
+        val secondGeneration = preferences.getString("cleanup_leftover_downloads_generation", null)
+        assertTrue(firstGeneration != secondGeneration)
+
+        first.succeed()
+        assertTrue(
+            awaitPreference(timeoutMs = 2_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == secondGeneration
+            }
+        )
+        second.succeed()
+        assertTrue(
+            awaitPreference(timeoutMs = 2_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+            }
+        )
+    }
+
     private fun clearSchedulePreferences() {
         preferences.edit()
             .remove("cleanup_leftover_downloads")
@@ -275,9 +386,38 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         return true
     }
 
+    private suspend fun awaitPreference(
+        timeoutMs: Long,
+        predicate: () -> Boolean,
+    ): Boolean = withTimeout(timeoutMs) {
+        while (!predicate()) {
+            Thread.sleep(25L)
+        }
+        true
+    }
+
     private fun cadenceTag(cadence: String): String =
         "${CleanupScheduleCoordinator.TAG}_cadence_$cadence"
 
     private fun generationTag(generation: String): String =
         "${CleanupScheduleCoordinator.TAG}_generation_$generation"
+
+    private class ControlledOperation : Operation {
+        private val state = MutableLiveData<Operation.State>(Operation.IN_PROGRESS)
+        private val result = SettableFuture.create<Operation.State.SUCCESS>()
+
+        override fun getState(): LiveData<Operation.State> = state
+
+        override fun getResult(): ListenableFuture<Operation.State.SUCCESS> = result
+
+        fun succeed() {
+            state.postValue(Operation.SUCCESS)
+            result.set(Operation.SUCCESS)
+        }
+
+        fun fail(error: Throwable) {
+            state.postValue(Operation.State.FAILURE(error))
+            result.setException(error)
+        }
+    }
 }
