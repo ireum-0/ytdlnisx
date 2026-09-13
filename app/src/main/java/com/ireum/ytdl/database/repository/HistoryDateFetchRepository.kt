@@ -108,7 +108,7 @@ class HistoryDateFetchRepository(private val database: DBManager) {
                 ?: return@forEach
             if (ledger.stateValue != HistoryDateFetchItemState.PENDING) return@forEach
             val current = database.historyDao.getNullableItem(snapshot.historyId)
-            val outcome = when {
+            val outcome: ItemOutcome? = when {
                 current == null -> ItemOutcome(HistoryDateFetchItemState.SKIPPED, REASON_HISTORY_REMOVED)
                 MediaPublishedDate.isPresent(current.mediaPublishedAt) ->
                     ItemOutcome(HistoryDateFetchItemState.SKIPPED, REASON_ALREADY_UPDATED)
@@ -132,10 +132,7 @@ class HistoryDateFetchRepository(private val database: DBManager) {
                 lookup.outcome is HistoryDateLookupOutcome.AuthoritativeAbsence ->
                     ItemOutcome(HistoryDateFetchItemState.NO_DATE, lookup.origin.name)
                 lookup.outcome is HistoryDateLookupOutcome.RetryableFailure ->
-                    ItemOutcome(
-                        HistoryDateFetchItemState.FAILED,
-                        lookup.failureReason.ifBlank { REASON_RETRYABLE_LOOKUP_FAILURE },
-                    )
+                    null
                 lookup.outcome is HistoryDateLookupOutcome.FinalFailure ->
                     ItemOutcome(
                         HistoryDateFetchItemState.FAILED,
@@ -146,13 +143,15 @@ class HistoryDateFetchRepository(private val database: DBManager) {
                     lookup.failureReason.ifBlank { REASON_UNPROVEN_DATE },
                 )
             }
-            dao.setItemOutcome(
-                operationId = operationId,
-                historyId = ledger.historyId,
-                state = outcome.state.name,
-                reason = outcome.reason,
-                updatedAt = now,
-            )
+            outcome?.let {
+                dao.setItemOutcome(
+                    operationId = operationId,
+                    historyId = ledger.historyId,
+                    state = it.state.name,
+                    reason = it.reason,
+                    updatedAt = now,
+                )
+            }
         }
         dao.recordSourceMetrics(
             operationId = operationId,
