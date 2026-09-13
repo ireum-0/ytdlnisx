@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.preference.PreferenceManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
@@ -61,7 +62,7 @@ class BackupPlaylistProductionWiringTest {
     }
 
     @Test
-    fun playlistGraphCaptureIncludesOneCoherentPayload() = runBlocking {
+    fun playlistOnlySelectionIncludesHistoryAuthorityAndRoundTripsThroughProductionParser() = runBlocking {
         val historyId = database.historyDao.insertAndGetIdRaw(history(0L, "https://example.com/captured"))
         val playlistId = database.playlistDao.insertPlaylist(Playlist(name = "Captured", description = "graph"))
         val groupId = database.playlistGroupDao.insertGroup(PlaylistGroup(name = "Captured group"))
@@ -73,10 +74,37 @@ class BackupPlaylistProductionWiringTest {
         publishedBackup = result.getOrThrow()
         val json = JsonParser.parseString(File(publishedBackup!!).readText()).asJsonObject
         assertEquals(4, json["backup_format_version"].asInt)
+        assertTrue(json.has("downloads"))
         assertEquals(1, json["playlists"].asJsonArray.size())
         assertEquals(1, json["playlist_item_cross_refs"].asJsonArray.size())
         assertEquals(1, json["playlist_groups"].asJsonArray.size())
         assertEquals(1, json["playlist_group_members"].asJsonArray.size())
+
+        // Parse the serialized artifact through the same production helper
+        // used by MainSettingsFragment before handing it to restoreData().
+        val playlistPayload = BackupRestoreParser.parsePlaylistPayload(json, Gson())
+        val imported = RestoreAppDataItem(
+            downloads = json["downloads"].asJsonArray.map {
+                Gson().fromJson(it, HistoryItem::class.java)
+            },
+            playlists = playlistPayload.playlists,
+            playlistItemCrossRefs = playlistPayload.playlistItemCrossRefs,
+            playlistGroups = playlistPayload.playlistGroups,
+            playlistGroupMembers = playlistPayload.playlistGroupMembers,
+        )
+        clearState()
+        assertTrue(SettingsViewModel(context as Application).restoreData(imported, context))
+        val restoredHistory = database.historyDao.getAll().single()
+        val restoredPlaylist = database.playlistDao.getAllPlaylistsSync().single()
+        val restoredGroup = database.playlistGroupDao.getGroups().single()
+        assertEquals(
+            listOf(PlaylistItemCrossRef(restoredPlaylist.id, restoredHistory.id)),
+            database.playlistDao.getAllPlaylistItems(),
+        )
+        assertEquals(
+            listOf(PlaylistGroupMember(restoredGroup.id, restoredPlaylist.id)),
+            database.playlistGroupDao.getAllMembers(),
+        )
     }
 
     @Test

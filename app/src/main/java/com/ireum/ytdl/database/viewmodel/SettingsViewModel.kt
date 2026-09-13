@@ -183,7 +183,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     }
 
     private suspend fun backupInternal(items: List<String>): String {
-        val list = if (items.isEmpty()) {
+        val requestedItems = if (items.isEmpty()) {
             listOf(
                 "settings",
                 "downloads",
@@ -204,6 +204,16 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             )
         } else {
             items
+        }
+        // Playlist cross-references are portable only together with the
+        // History rows that establish importedHistoryIdMap during restore.
+        // Keep the direct API and the settings UI on the same truthful
+        // contract by including that authority whenever playlist data is
+        // requested on its own.
+        val list = if ("playlistData" in requestedItems && "downloads" !in requestedItems) {
+            requestedItems + "downloads"
+        } else {
+            requestedItems
         }
 
         val json = JsonObject().apply {
