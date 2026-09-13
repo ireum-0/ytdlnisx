@@ -56,11 +56,11 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
-    fun cadenceChangesAndRepeatedReconciliationLeaveOneStableLogicalRequest() {
+    fun cadenceChangesAndRepeatedReconciliationLeaveOneStableLogicalRequest() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
 
         CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
-        assertEquals(1, unfinishedCurrentWork().size)
+        awaitUnfinishedCount(1)
         assertTrue(
             unfinishedCurrentWork().single().tags.contains(
                 cadenceTag(CleanupSchedulePolicy.DAILY),
@@ -71,7 +71,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         assertEquals(1, unfinishedCurrentWork().size)
 
         CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY)
-        assertEquals(1, unfinishedCurrentWork().size)
+        awaitUnfinishedCount(1)
         assertTrue(
             unfinishedCurrentWork().single().tags.contains(
                 cadenceTag(CleanupSchedulePolicy.WEEKLY),
@@ -80,6 +80,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.MONTHLY)
         CleanupScheduleCoordinator.reconcile(context)
+        awaitUnfinishedCount(1)
         val finalWork = unfinishedCurrentWork()
         assertEquals(1, finalWork.size)
         assertTrue(finalWork.single().tags.contains(cadenceTag(CleanupSchedulePolicy.MONTHLY)))
@@ -341,6 +342,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             .remove("cleanup_leftover_downloads")
             .remove("cleanup_leftover_downloads_generation")
             .remove("cleanup_leftover_downloads_anchor_day")
+            .remove("cleanup_leftover_downloads_pending_generation")
+            .remove("cleanup_leftover_downloads_pending_cadence")
+            .remove("cleanup_leftover_downloads_pending_anchor_day")
+            .remove("cleanup_leftover_downloads_pending_occurrence_at")
             .commit()
     }
 
