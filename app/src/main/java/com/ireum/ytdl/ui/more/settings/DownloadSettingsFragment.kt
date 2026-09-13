@@ -22,7 +22,7 @@ import com.ireum.ytdl.R
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.work.AlarmScheduler
-import com.ireum.ytdl.work.CleanUpLeftoverDownloads
+import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.work.DownloadWorker
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
@@ -63,35 +63,9 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
                 true
             }
 
-        val workManager = WorkManager.getInstance(requireContext())
         val cleanupLeftoverDownloads = findPreference<Preference>("cleanup_leftover_downloads")
-        cleanupLeftoverDownloads?.setOnPreferenceChangeListener { preference, newValue ->
-            var nextTime : Calendar? = Calendar.getInstance()
-            when(newValue) {
-                "daily" ->  nextTime?.add(Calendar.DAY_OF_WEEK, 1)
-                "weekly" -> nextTime?.add(Calendar.DAY_OF_WEEK, 7)
-                "monthly" -> nextTime?.add(Calendar.MONTH, 1)
-                else -> nextTime = null
-            }
-
-            if (nextTime == null) workManager.cancelAllWorkByTag("cleanup_leftover_downloads")
-            else {
-                val workConstraints = Constraints.Builder()
-
-                val delay = nextTime.timeInMillis.minus(System.currentTimeMillis())
-
-                val workRequest = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>()
-                    .addTag("cleanup_leftover_downloads")
-                    .setConstraints(workConstraints.build())
-                    .setInitialDelay(delay, TimeUnit.MILLISECONDS)
-
-                workManager.enqueueUniqueWork(
-                    System.currentTimeMillis().toString(),
-                    ExistingWorkPolicy.REPLACE,
-                    workRequest.build()
-                )
-            }
-
+        cleanupLeftoverDownloads?.setOnPreferenceChangeListener { _, newValue ->
+            CleanupScheduleCoordinator.configure(requireContext(), newValue as? String)
             true
         }
 

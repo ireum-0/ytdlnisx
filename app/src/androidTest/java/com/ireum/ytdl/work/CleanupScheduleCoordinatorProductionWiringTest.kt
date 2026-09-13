@@ -1,0 +1,283 @@
+package com.ireum.ytdl.work
+
+import android.content.Context
+import androidx.preference.PreferenceManager
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * Drives the real coordinator and CleanUpLeftoverDownloads WorkManager path.
+ * Cleanup itself is replaced only at the narrow side-effect boundary so the
+ * schedule/generation/retry decisions remain production code.
+ */
+@RunWith(AndroidJUnit4::class)
+class CleanupScheduleCoordinatorProductionWiringTest {
+    private lateinit var context: Context
+    private lateinit var workManager: WorkManager
+    private lateinit var preferences: android.content.SharedPreferences
+
+    @Before
+    fun setUp() {
+        context = ApplicationProvider.getApplicationContext()
+        workManager = WorkManager.getInstance(context)
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        clearSchedulePreferences()
+        clearTestSeams()
+    }
+
+    @After
+    fun tearDown() {
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        clearTestSeams()
+        clearSchedulePreferences()
+    }
+
+    @Test
+    fun cadenceChangesAndRepeatedReconciliationLeaveOneStableLogicalRequest() {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
+        assertEquals(1, unfinishedCurrentWork().size)
+        assertTrue(
+            unfinishedCurrentWork().single().tags.contains(
+                cadenceTag(CleanupSchedulePolicy.DAILY),
+            )
+        )
+
+        CleanupScheduleCoordinator.reconcile(context)
+        assertEquals(1, unfinishedCurrentWork().size)
+
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY)
+        assertEquals(1, unfinishedCurrentWork().size)
+        assertTrue(
+            unfinishedCurrentWork().single().tags.contains(
+                cadenceTag(CleanupSchedulePolicy.WEEKLY),
+            )
+        )
+
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.MONTHLY)
+        CleanupScheduleCoordinator.reconcile(context)
+        val finalWork = unfinishedCurrentWork()
+        assertEquals(1, finalWork.size)
+        assertTrue(finalWork.single().tags.contains(cadenceTag(CleanupSchedulePolicy.MONTHLY)))
+    }
+
+    @Test
+    fun startupReconciliationRepairsMissingChainWithoutDuplicatingIt() {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
+        assertEquals(1, unfinishedCurrentWork().size)
+
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        assertTrue(unfinishedCurrentWork().isEmpty())
+
+        CleanupScheduleCoordinator.reconcile(context)
+        CleanupScheduleCoordinator.reconcile(context)
+        val repaired = unfinishedCurrentWork()
+        assertEquals(1, repaired.size)
+        assertTrue(repaired.single().tags.contains(cadenceTag(CleanupSchedulePolicy.DAILY)))
+    }
+
+    @Test
+    fun disableCancelsScheduleAndFencesStaleSuccessor() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+
+        assertFalse(
+            CleanupScheduleCoordinator.scheduleSuccessor(
+                context = context,
+                generation = "stale-generation",
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = 1,
+            )
+        )
+        CleanupScheduleCoordinator.configure(context, null)
+        assertTrue(awaitUnfinishedCount(0))
+        assertFalse(
+            CleanupScheduleCoordinator.scheduleSuccessor(
+                context = context,
+                generation = generation,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = 1,
+            )
+        )
+        assertTrue(unfinishedCurrentWork().isEmpty())
+    }
+
+    @Test
+    fun successfulRunAppendsExactlyOneCalendarSuccessor() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
+        CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        val cleanupRuns = AtomicInteger(0)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            cleanupRuns.incrementAndGet()
+        }
+
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val successor = awaitWork(timeoutMs = 30_000L) { infos ->
+            cleanupRuns.get() >= 1 && infos.any { info ->
+                info.tags.contains(generationTag(generation)) &&
+                    info.tags.any { tag -> tag.startsWith("${CleanupScheduleCoordinator.TAG}_occurrence_") } &&
+                    info.state == WorkInfo.State.ENQUEUED
+            }
+        }
+
+        assertTrue(successor.any { it.tags.contains(cadenceTag(CleanupSchedulePolicy.DAILY)) })
+        assertEquals(1, unfinishedCurrentWork().size)
+        assertTrue(cleanupRuns.get() >= 1)
+    }
+
+    @Test
+    fun retryDoesNotPublishSuccessorBeforeCleanupEventuallySucceeds() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
+        CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        val attempts = AtomicInteger(0)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            if (attempts.getAndIncrement() == 0) {
+                throw IllegalStateException("deterministic cleanup retry")
+            }
+        }
+
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
+        awaitWork(timeoutMs = 30_000L) { infos ->
+            infos.any { it.runAttemptCount >= 1 && it.state == WorkInfo.State.ENQUEUED }
+        }
+        assertEquals(1, unfinishedCurrentWork().size)
+
+        awaitWork(timeoutMs = 40_000L) { infos ->
+            infos.any { it.state == WorkInfo.State.ENQUEUED && it.runAttemptCount == 0 } &&
+                infos.any { it.state == WorkInfo.State.SUCCEEDED }
+        }
+        assertEquals(1, unfinishedCurrentWork().size)
+        assertEquals(2, attempts.get())
+    }
+
+    @Test
+    fun staleWorkerCannotResurrectOldCadenceAfterChange() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
+        CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val invocations = AtomicInteger(0)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            if (invocations.getAndIncrement() == 0) {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS)) { "old cleanup did not release" }
+            }
+        }
+
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
+        assertTrue(entered.await(10, TimeUnit.SECONDS))
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY)
+        release.countDown()
+
+        val weekly = awaitWork(timeoutMs = 30_000L) { infos ->
+            infos.any { info ->
+                info.state == WorkInfo.State.ENQUEUED &&
+                    info.tags.contains(cadenceTag(CleanupSchedulePolicy.WEEKLY))
+            }
+        }
+        assertTrue(weekly.any { it.tags.contains(cadenceTag(CleanupSchedulePolicy.WEEKLY)) })
+        assertTrue(
+            unfinishedCurrentWork().all {
+                it.tags.contains(cadenceTag(CleanupSchedulePolicy.WEEKLY))
+            }
+        )
+    }
+
+    @Test
+    fun staleWorkerCannotResurrectAfterDisable() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            entered.countDown()
+            check(release.await(10, TimeUnit.SECONDS)) { "cleanup did not release" }
+        }
+
+        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
+        assertTrue(entered.await(10, TimeUnit.SECONDS))
+        CleanupScheduleCoordinator.configure(context, null)
+        release.countDown()
+
+        awaitUnfinishedCount(0, timeoutMs = 30_000L)
+        assertTrue(unfinishedCurrentWork().isEmpty())
+    }
+
+    private fun clearSchedulePreferences() {
+        preferences.edit()
+            .remove("cleanup_leftover_downloads")
+            .remove("cleanup_leftover_downloads_generation")
+            .remove("cleanup_leftover_downloads_anchor_day")
+            .commit()
+    }
+
+    private fun clearTestSeams() {
+        CleanupScheduleCoordinator.workManagerForTesting = null
+        CleanupScheduleCoordinator.nowProviderForTesting = null
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = null
+        CleanupScheduleCoordinator.successorDelayOverrideForTesting = null
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = null
+    }
+
+    private fun unfinishedCurrentWork(): List<WorkInfo> = workManager
+        .getWorkInfosForUniqueWork(CleanupScheduleCoordinator.WORK_NAME)
+        .get(20, TimeUnit.SECONDS)
+        .filter { it.state == WorkInfo.State.ENQUEUED ||
+            it.state == WorkInfo.State.RUNNING ||
+            it.state == WorkInfo.State.BLOCKED }
+
+    private fun currentGenerationWork(generation: String): List<WorkInfo> = workManager
+        .getWorkInfosForUniqueWork(CleanupScheduleCoordinator.WORK_NAME)
+        .get(20, TimeUnit.SECONDS)
+        .filter { it.tags.contains(generationTag(generation)) }
+
+    private suspend fun awaitWork(
+        timeoutMs: Long,
+        predicate: (List<WorkInfo>) -> Boolean,
+    ): List<WorkInfo> = withTimeout(timeoutMs) {
+        while (true) {
+            val infos = workManager.getWorkInfosForUniqueWork(
+                CleanupScheduleCoordinator.WORK_NAME
+            ).get(20, TimeUnit.SECONDS)
+            if (predicate(infos)) return@withTimeout infos
+            Thread.sleep(50L)
+        }
+        error("unreachable")
+    }
+
+    private suspend fun awaitUnfinishedCount(
+        expected: Int,
+        timeoutMs: Long = 10_000L,
+    ): Boolean {
+        awaitWork(timeoutMs) { unfinishedCurrentWork().size == expected }
+        return true
+    }
+
+    private fun cadenceTag(cadence: String): String =
+        "${CleanupScheduleCoordinator.TAG}_cadence_$cadence"
+
+    private fun generationTag(generation: String): String =
+        "${CleanupScheduleCoordinator.TAG}_generation_$generation"
+}
