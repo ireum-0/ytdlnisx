@@ -1,7 +1,6 @@
 ﻿package com.ireum.ytdl.database.models
 
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
-import com.google.gson.JsonArray
 
 data class RestoreAppDataItem(
     var settings : List<BackupSettingsItem>? = null,
@@ -17,6 +16,7 @@ data class RestoreAppDataItem(
     var historyVisibleChildKeywords: Set<String>? = null,
     var youtuberMeta: List<YoutuberMeta>? = null,
     var queued: List<DownloadItem>? = null,
+    var paused: List<DownloadItem>? = null,
     var scheduled: List<DownloadItem>? = null,
     var cancelled: List<DownloadItem>? = null,
     var errored: List<DownloadItem>? = null,

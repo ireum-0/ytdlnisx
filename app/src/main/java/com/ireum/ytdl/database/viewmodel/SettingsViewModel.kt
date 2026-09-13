@@ -113,6 +113,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         val historyKeywordAssignments: List<HistoryKeywordAssignment>,
     )
 
+
     private data class RestoredCustomThumbnail(
         val stagedFile: File,
         val extension: String,
@@ -178,6 +179,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 "keywordData",
                 "youtuberData",
                 "queued",
+                "paused",
                 "scheduled",
                 "cancelled",
                 "errored",
@@ -194,7 +196,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
         val json = JsonObject().apply {
             addProperty("app", "YTDLnisX_backup")
-            addProperty("backup_format_version", 3)
+            addProperty("backup_format_version", 4)
         }
 
         list.forEach { item ->
@@ -260,6 +262,11 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     BackupSettingsUtil.backupQueuedDownloads(downloadRepository).getOrThrow(),
                 )
 
+                "paused" -> json.add(
+                    "paused",
+                    BackupSettingsUtil.backupPausedDownloads(downloadRepository).getOrThrow(),
+                )
+
                 "scheduled" -> json.add(
                     "scheduled",
                     BackupSettingsUtil.backupScheduledDownloads(downloadRepository).getOrThrow(),
@@ -304,6 +311,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     "observe_sources",
                     BackupSettingsUtil.backupObserveSources(observeSourcesRepository).getOrThrow(),
                 )
+
             }
         }
 
@@ -923,6 +931,32 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                                 },
                             )
                         )
+                    }
+                }
+            }
+
+            if (resetData && data.paused != null) {
+                withContext(Dispatchers.IO) {
+                    LowQualityRedownloadLedger.refresh(
+                        application,
+                        downloadRepository.deletePaused(),
+                    )
+                }
+            }
+
+            data.paused?.let { paused ->
+                withContext(Dispatchers.IO) {
+                    paused.forEach { item ->
+                        val restored = remapRestoredDownload(
+                            item.copy(
+                                status = DownloadRepository.Status.Paused.toString(),
+                                executionId = "",
+                            )
+                        )
+                        // Paused restore is deliberately not passed to
+                        // startDownloadWorker: this payload is persistent
+                        // state, not runnable work.
+                        downloadRepository.insertRestoredDownload(restored.item, restored.barrier)
                     }
                 }
             }

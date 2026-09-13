@@ -2036,6 +2036,9 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun getQueuedDownloadsForBackup(): List<DownloadItem> =
         projectHistoryRefusalsForBackup(downloadDao.getQueuedDownloadsForBackupList())
 
+    suspend fun getPausedDownloadsForBackup(): List<DownloadItem> =
+        projectHistoryRefusalsForBackup(downloadDao.getPausedDownloadsList())
+
     suspend fun getScheduledDownloadsForBackup(): List<DownloadItem> =
         projectHistoryRefusalsForBackup(downloadDao.getScheduledDownloadsForBackupList())
 
@@ -2936,6 +2939,9 @@ class DownloadRepository(private val database: DBManager) {
 
     suspend fun deleteQueued(): Set<String> =
         deleteKnownUserRemoval(getQueuedDownloads())
+
+    suspend fun deletePaused(): Set<String> =
+        deleteKnownUserRemoval(downloadDao.getPausedDownloadsList())
 
     suspend fun deleteSaved(){
         val saved = getSavedDownloads()

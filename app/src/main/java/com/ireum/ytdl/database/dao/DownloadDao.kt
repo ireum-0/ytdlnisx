@@ -131,7 +131,7 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE status='Paused'")
     fun getPausedDownloads() : Flow<List<DownloadItem>>
 
-    @Query("SELECT * FROM downloads WHERE status='Paused'")
+    @Query("SELECT * FROM downloads WHERE status='Paused' ORDER BY orderPosition, id")
     fun getPausedDownloadsList() : List<DownloadItem>
 
     @Query(

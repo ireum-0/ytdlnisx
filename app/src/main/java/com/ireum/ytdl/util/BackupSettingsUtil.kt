@@ -99,6 +99,10 @@ object BackupSettingsUtil {
         toJsonArray(withContext(Dispatchers.IO) { downloadRepository.getQueuedDownloadsForBackup() })
     }
 
+    suspend fun backupPausedDownloads(downloadRepository: DownloadRepository): Result<JsonArray> = captureSuspend {
+        toJsonArray(withContext(Dispatchers.IO) { downloadRepository.getPausedDownloadsForBackup() })
+    }
+
     suspend fun backupScheduledDownloads(downloadRepository: DownloadRepository): Result<JsonArray> = captureSuspend {
         toJsonArray(withContext(Dispatchers.IO) { downloadRepository.getScheduledDownloadsForBackup() })
     }

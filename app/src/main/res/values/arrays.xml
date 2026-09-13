@@ -821,6 +821,7 @@
         <item>@string/keywords</item>
         <item>@string/youtuber</item>
         <item>@string/in_queue</item>
+        <item>@string/paused_downloads</item>
         <item>@string/scheduled</item>
         <item>@string/cancelled</item>
         <item>@string/errored</item>
@@ -838,6 +839,7 @@
         <item>keywordData</item>
         <item>youtuberData</item>
         <item>queued</item>
+        <item>paused</item>
         <item>scheduled</item>
         <item>cancelled</item>
         <item>errored</item>

@@ -302,6 +302,10 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     //PARSE RESTORE JSON
                     val gson = Gson()
                     val json = gson.fromJson(total.toString(), JsonObject::class.java)
+                    val backupVersion = json.get("backup_format_version")?.asInt ?: 3
+                    require(backupVersion in 3..4) {
+                        "Unsupported backup format version: $backupVersion"
+                    }
                     val restoreData = RestoreAppDataItem()
                     val parsedDataMessage = StringBuilder()
 
@@ -407,6 +411,17 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                             item
                         }
                         parsedDataMessage.appendLine("${getString(R.string.queue)}: ${restoreData.queued!!.size}")
+                    }
+
+                    if (json.has("paused")) {
+                        restoreData.paused = json.getAsJsonArray("paused").map {
+                            val item = gson.fromJson(it, DownloadItem::class.java)
+                            item.id = 0L
+                            item.status = com.ireum.ytdl.database.repository.DownloadRepository.Status.Paused.toString()
+                            item.executionId = ""
+                            item
+                        }
+                        parsedDataMessage.appendLine("${getString(R.string.paused_downloads)}: ${restoreData.paused!!.size}")
                     }
 
                     if (json.has("scheduled")) {
@@ -554,8 +569,9 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                         restoreData.historyKeywordAssignments =
                             json.getAsJsonArray("history_keyword_assignments").map {
                                 gson.fromJson(it, HistoryKeywordAssignment::class.java)
-                            }
+                        }
                     }
+
 
                     showAppRestoreInfoDialog(
                         onMerge = {
