@@ -32,6 +32,7 @@ class BackupPlaylistProductionWiringTest {
     private lateinit var context: Context
     private lateinit var database: DBManager
     private var publishedBackup: String? = null
+    private var backupDestination: File? = null
 
     @Before
     fun setUp() {
@@ -39,9 +40,13 @@ class BackupPlaylistProductionWiringTest {
             context = ApplicationProvider.getApplicationContext()
             database = DBManager.getInstance(context)
             clearState()
+            backupDestination = File(
+                requireNotNull(context.getExternalFilesDir(null)),
+                "backup-playlist-test",
+            ).apply { mkdirs() }
             PreferenceManager.getDefaultSharedPreferences(context).edit()
                 .remove("cache_path")
-                .remove("backup_path")
+                .putString("backup_path", backupDestination!!.absolutePath)
                 .commit()
         }
     }
@@ -50,6 +55,7 @@ class BackupPlaylistProductionWiringTest {
     fun tearDown() {
         runBlocking {
             publishedBackup?.let { File(it).delete() }
+            backupDestination?.listFiles()?.forEach(File::delete)
             clearState()
         }
     }
