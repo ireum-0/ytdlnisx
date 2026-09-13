@@ -262,8 +262,16 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun asynchronousEnqueueFailureLeavesDebtForStartupReconciliation() = runBlocking {
         val first = ControlledOperation().also { controlledOperations += it }
-        CleanupScheduleCoordinator.enqueueOverrideForTesting = { _, _, _ -> first }
-        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        val enqueueCalls = AtomicInteger(0)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 25L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 100L
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
+            if (enqueueCalls.getAndIncrement() == 0) {
+                first
+            } else {
+                workManager.enqueueUniqueWork(name, policy, request)
+            }
+        }
 
         assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
         assertTrue(
@@ -273,18 +281,36 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         first.fail(IllegalStateException("async enqueue failure"))
         assertTrue(
             awaitPreference(timeoutMs = 2_000L) {
-                preferences.getString("cleanup_leftover_downloads_pending_generation", null)
-                    ?.isNotBlank() == true
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
             }
         )
+        assertTrue(enqueueCalls.get() >= 2)
+        assertEquals(1, unfinishedCurrentWork().size)
+    }
 
-        CleanupScheduleCoordinator.enqueueOverrideForTesting = null
-        CleanupScheduleCoordinator.reconcile(context)
+    @Test
+    fun synchronousEnqueueFailureReplaysInProcessWithoutManualReconcile() = runBlocking {
+        val enqueueCalls = AtomicInteger(0)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 25L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 100L
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
+            if (enqueueCalls.getAndIncrement() == 0) {
+                throw IllegalStateException("synchronous enqueue failure")
+            }
+            workManager.enqueueUniqueWork(name, policy, request)
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+                ?.isNotBlank() == true
+        )
         assertTrue(
             awaitPreference(timeoutMs = 5_000L) {
                 preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
             }
         )
+        assertTrue(enqueueCalls.get() >= 2)
         assertEquals(1, unfinishedCurrentWork().size)
     }
 
@@ -350,10 +376,14 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     private fun clearTestSeams() {
+        CleanupScheduleCoordinator.resetReplayOwnerForTesting()
         CleanupScheduleCoordinator.workManagerForTesting = null
         CleanupScheduleCoordinator.nowProviderForTesting = null
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = null
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = null
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = null
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = null
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = null
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = null
     }
 

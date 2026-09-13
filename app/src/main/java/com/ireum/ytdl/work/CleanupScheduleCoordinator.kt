@@ -11,6 +11,15 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.Operation
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.util.Calendar
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -74,8 +83,13 @@ internal object CleanupScheduleCoordinator {
     private const val PREF_PENDING_CADENCE = "cleanup_leftover_downloads_pending_cadence"
     private const val PREF_PENDING_ANCHOR_DAY = "cleanup_leftover_downloads_pending_anchor_day"
     private const val PREF_PENDING_OCCURRENCE_AT = "cleanup_leftover_downloads_pending_occurrence_at"
+    private const val REPLAY_INITIAL_DELAY_MS = 1_000L
+    private const val REPLAY_MAX_DELAY_MS = 60_000L
 
     private val lock = Any()
+    private val replayScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var replayJob: Job? = null
+    private var replayDebt: SchedulingDebt? = null
 
     /** Null-default seams used only by deterministic production-wiring tests. */
     @Volatile
@@ -91,6 +105,17 @@ internal object CleanupScheduleCoordinator {
     @Volatile
     internal var enqueueOverrideForTesting:
         ((String, ExistingWorkPolicy, OneTimeWorkRequest) -> Operation)? = null
+    @Volatile
+    internal var replayInitialDelayOverrideForTesting: Long? = null
+    @Volatile
+    internal var replayMaxDelayOverrideForTesting: Long? = null
+
+    private data class SchedulingDebt(
+        val generation: String,
+        val cadence: String,
+        val monthlyAnchorDay: Int,
+        val occurrenceAt: Long,
+    )
 
     private data class EnqueueHandle(
         val request: OneTimeWorkRequest,
@@ -126,7 +151,7 @@ internal object CleanupScheduleCoordinator {
             return@synchronized true
         }
 
-        enqueueNextLocked(
+        val handle = enqueueNextLocked(
             context = appContext,
             workManager = workManager,
             generation = generation,
@@ -135,10 +160,11 @@ internal object CleanupScheduleCoordinator {
             from = now,
             append = false,
             successor = false,
-        )?.let { handle ->
+        )?.also { handle ->
             handle.operation?.let { observeAcceptance(appContext, handle) }
-            handle
-        } != null
+            ensureReplayOwnerLocked(appContext)
+        }
+        handle != null
     }
 
     /** Reconciles persisted cadence authority with WorkManager after restart. */
@@ -183,6 +209,7 @@ internal object CleanupScheduleCoordinator {
         }
 
         if (hasCurrent) {
+            clearDebtForCurrentWorkLocked(appContext, generation, cadence, anchorDay, current)
             // Retire timestamp-named legacy requests without touching the
             // current stable chain, which may include a running occurrence.
             runCatching {
@@ -206,8 +233,9 @@ internal object CleanupScheduleCoordinator {
             from = now,
             append = false,
             successor = false,
-        )?.let { handle ->
+        )?.also { handle ->
             handle.operation?.let { observeAcceptance(appContext, handle) }
+            ensureReplayOwnerLocked(appContext)
         }
     }
 
@@ -382,8 +410,105 @@ internal object CleanupScheduleCoordinator {
                     .remove(PREF_PENDING_ANCHOR_DAY)
                     .remove(PREF_PENDING_OCCURRENCE_AT)
                     .commit()
+                stopReplayOwnerLocked()
             }
         }
+    }
+
+    /**
+     * A process-local owner retries durable scheduling debt while the app is
+     * alive. The persisted generation/cadence/occurrence tuple remains the
+     * authority; this job is only the bounded replay mechanism.
+     */
+    private fun ensureReplayOwnerLocked(context: Context): Boolean {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val debt = readSchedulingDebt(preferences)
+        if (debt == null) {
+            stopReplayOwnerLocked()
+            return true
+        }
+        if (replayJob?.isActive == true && replayDebt == debt) return true
+        stopReplayOwnerLocked()
+        replayDebt = debt
+        replayJob = replayScope.launch {
+            replaySchedulingDebt(context.applicationContext, debt)
+        }
+        return true
+    }
+
+    private suspend fun replaySchedulingDebt(context: Context, expected: SchedulingDebt) {
+        var backoff = replayInitialDelayOverrideForTesting ?: REPLAY_INITIAL_DELAY_MS
+        val maxBackoff = replayMaxDelayOverrideForTesting ?: REPLAY_MAX_DELAY_MS
+        while (currentCoroutineContext().isActive) {
+            delay(backoff.coerceAtLeast(1L))
+            if (!isSchedulingDebtCurrent(context, expected)) return
+            try {
+                // Reconciliation uses the same durable generation and unique
+                // WorkManager identity as normal startup recovery.
+                reconcile(context)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Keep the debt and continue with bounded backoff.
+            }
+            if (!isSchedulingDebtCurrent(context, expected)) return
+            backoff = (backoff * 2L).coerceAtMost(maxBackoff.coerceAtLeast(backoff))
+        }
+    }
+
+    private fun isSchedulingDebtCurrent(context: Context, expected: SchedulingDebt): Boolean =
+        synchronized(lock) {
+            readSchedulingDebt(
+                PreferenceManager.getDefaultSharedPreferences(context)
+            ) == expected
+        }
+
+    private fun readSchedulingDebt(preferences: android.content.SharedPreferences): SchedulingDebt? {
+        val generation = preferences.getString(PREF_PENDING_GENERATION, null)
+            ?: return null
+        val cadence = preferences.getString(PREF_PENDING_CADENCE, null)
+            ?: return null
+        val anchorDay = preferences.getInt(PREF_PENDING_ANCHOR_DAY, -1)
+        val occurrenceAt = preferences.getLong(PREF_PENDING_OCCURRENCE_AT, -1L)
+        if (!CleanupSchedulePolicy.isEnabled(cadence) || anchorDay < 1 || occurrenceAt <= 0L) {
+            return null
+        }
+        return SchedulingDebt(generation, cadence, anchorDay, occurrenceAt)
+    }
+
+    private fun clearDebtForCurrentWorkLocked(
+        context: Context,
+        generation: String,
+        cadence: String,
+        monthlyAnchorDay: Int,
+        current: List<WorkInfo>,
+    ) {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val debt = readSchedulingDebt(preferences) ?: return
+        if (
+            debt.generation == generation &&
+            debt.cadence == cadence &&
+            debt.monthlyAnchorDay == monthlyAnchorDay &&
+            current.any { it.tags.contains(occurrenceTag(generation, debt.occurrenceAt)) }
+        ) {
+            preferences.edit()
+                .remove(PREF_PENDING_GENERATION)
+                .remove(PREF_PENDING_CADENCE)
+                .remove(PREF_PENDING_ANCHOR_DAY)
+                .remove(PREF_PENDING_OCCURRENCE_AT)
+                .commit()
+            stopReplayOwnerLocked()
+        }
+    }
+
+    private fun stopReplayOwnerLocked() {
+        replayJob?.cancel()
+        replayJob = null
+        replayDebt = null
+    }
+
+    internal fun resetReplayOwnerForTesting() = synchronized(lock) {
+        stopReplayOwnerLocked()
     }
 
 
