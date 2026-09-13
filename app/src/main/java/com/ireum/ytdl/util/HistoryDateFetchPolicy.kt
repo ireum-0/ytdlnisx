@@ -108,13 +108,88 @@ enum class HistoryDateLookupOrigin {
     FAILED,
 }
 
+/**
+ * Typed authority carried by one History media-date lookup.  A nullable date
+ * cannot distinguish a proven source absence from an extractor failure or an
+ * ambiguous/unproven response, so callers must branch on this outcome before
+ * persisting any NO_DATE evidence.
+ */
+sealed interface HistoryDateLookupOutcome {
+    data class Found(val mediaPublishedAt: Long) : HistoryDateLookupOutcome
+
+    data object AuthoritativeAbsence : HistoryDateLookupOutcome
+
+    data class Ambiguous(val reason: String = "") : HistoryDateLookupOutcome
+
+    data class RetryableFailure(val reason: String = "") : HistoryDateLookupOutcome
+
+    data class FinalFailure(val reason: String = "") : HistoryDateLookupOutcome
+}
+
+/** One parsed candidate presented to the date-only authority classifier. */
+data class HistoryDateLookupCandidate(
+    val mediaPublishedAt: Long,
+    val identity: ExtractorSourceIdentity?,
+)
+
+/**
+ * Classifies date-only extractor output without trusting an empty/malformed
+ * result as authoritative absence.  Exactly one clean, source-matching
+ * candidate is required before either Found or AuthoritativeAbsence is
+ * returned.
+ */
+object HistoryDateLookupOutcomePolicy {
+    fun classify(
+        requestedSource: String,
+        candidates: List<HistoryDateLookupCandidate>,
+        malformedOutput: Boolean = false,
+    ): HistoryDateLookupOutcome {
+        if (malformedOutput) {
+            return HistoryDateLookupOutcome.FinalFailure("MALFORMED_OUTPUT")
+        }
+        if (candidates.size != 1) {
+            return HistoryDateLookupOutcome.Ambiguous(
+                if (candidates.isEmpty()) "NO_MATCHING_RESULT" else "MULTIPLE_RESULTS",
+            )
+        }
+        val candidate = candidates.single()
+        val identity = candidate.identity
+            ?: return HistoryDateLookupOutcome.Ambiguous("MISSING_SOURCE_IDENTITY")
+        if (!ExtractorSourceIdentityPolicy.matchesRequestedSource(requestedSource, identity)) {
+            return HistoryDateLookupOutcome.Ambiguous("SOURCE_MISMATCH")
+        }
+        return if (MediaPublishedDate.isPresent(candidate.mediaPublishedAt)) {
+            HistoryDateLookupOutcome.Found(candidate.mediaPublishedAt)
+        } else {
+            HistoryDateLookupOutcome.AuthoritativeAbsence
+        }
+    }
+}
+
 data class HistoryDateLookupResult(
     val mediaPublishedAt: Long = MediaPublishedDate.MISSING,
     val origin: HistoryDateLookupOrigin,
     val extractorLaunches: Int = 0,
     val compatibilityFallbacks: Int = 0,
     val failureReason: String = "",
+    val outcome: HistoryDateLookupOutcome = legacyLookupOutcome(
+        mediaPublishedAt,
+        origin,
+        failureReason,
+    ),
 )
+
+private fun legacyLookupOutcome(
+    mediaPublishedAt: Long,
+    origin: HistoryDateLookupOrigin,
+    failureReason: String,
+): HistoryDateLookupOutcome = when {
+    MediaPublishedDate.isPresent(mediaPublishedAt) ->
+        HistoryDateLookupOutcome.Found(mediaPublishedAt)
+    origin == HistoryDateLookupOrigin.FAILED ->
+        HistoryDateLookupOutcome.RetryableFailure(failureReason.ifBlank { origin.name })
+    else -> HistoryDateLookupOutcome.Ambiguous("LEGACY_UNPROVEN_RESULT")
+}
 
 object HistoryDateResolutionEngine {
     suspend fun resolve(
@@ -123,11 +198,29 @@ object HistoryDateResolutionEngine {
         minimalLookup: suspend () -> Long?,
         compatibilityLookup: suspend () -> Long?,
         ensureRunning: suspend () -> Unit = {},
+    ): HistoryDateLookupResult = resolveTyped(
+        localValues = localValues,
+        cachedValues = cachedValues,
+        minimalLookup = { minimalLookup().toLookupOutcome() },
+        compatibilityLookup = { compatibilityLookup().toLookupOutcome() },
+        ensureRunning = ensureRunning,
+    )
+
+    /** Production typed contract used by the real extractor/worker chain. */
+    suspend fun resolveTyped(
+        localValues: Iterable<Long>,
+        cachedValues: () -> Iterable<Long>,
+        minimalLookup: suspend () -> HistoryDateLookupOutcome,
+        compatibilityLookup: suspend () -> HistoryDateLookupOutcome,
+        ensureRunning: suspend () -> Unit = {},
     ): HistoryDateLookupResult {
         currentCoroutineContext().ensureActive()
         ensureRunning()
         HistoryDateValuePolicy.uniqueNonConflicting(localValues)?.let {
-            return HistoryDateLookupResult(it, HistoryDateLookupOrigin.LOCAL)
+            return resultFor(
+                outcome = HistoryDateLookupOutcome.Found(it),
+                origin = HistoryDateLookupOrigin.LOCAL,
+            )
         }
 
         val cached = try {
@@ -138,7 +231,10 @@ object HistoryDateResolutionEngine {
             null
         }
         if (cached != null) {
-            return HistoryDateLookupResult(cached, HistoryDateLookupOrigin.CACHE)
+            return resultFor(
+                outcome = HistoryDateLookupOutcome.Found(cached),
+                origin = HistoryDateLookupOrigin.CACHE,
+            )
         }
 
         currentCoroutineContext().ensureActive()
@@ -147,46 +243,120 @@ object HistoryDateResolutionEngine {
             minimalLookup()
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Exception) {
-            null
-        }?.takeIf(MediaPublishedDate::isPresent)
-        if (minimal != null) {
-            return HistoryDateLookupResult(
-                mediaPublishedAt = minimal,
-                origin = HistoryDateLookupOrigin.MINIMAL,
-                extractorLaunches = 1,
-            )
+        } catch (error: Exception) {
+            HistoryDateLookupOutcome.RetryableFailure(error.javaClass.simpleName)
+        }
+        when (minimal) {
+            is HistoryDateLookupOutcome.Found -> {
+                if (MediaPublishedDate.isPresent(minimal.mediaPublishedAt)) {
+                    return resultFor(
+                        outcome = minimal,
+                        origin = HistoryDateLookupOrigin.MINIMAL,
+                        extractorLaunches = 1,
+                    )
+                }
+            }
+            HistoryDateLookupOutcome.AuthoritativeAbsence -> {
+                return resultFor(
+                    outcome = minimal,
+                    origin = HistoryDateLookupOrigin.MINIMAL,
+                    extractorLaunches = 1,
+                )
+            }
+            is HistoryDateLookupOutcome.Ambiguous,
+            is HistoryDateLookupOutcome.RetryableFailure,
+            is HistoryDateLookupOutcome.FinalFailure -> Unit
         }
 
         currentCoroutineContext().ensureActive()
         ensureRunning()
-        return try {
-            val compatibility = compatibilityLookup()?.takeIf(MediaPublishedDate::isPresent)
-            if (compatibility == null) {
-                HistoryDateLookupResult(
-                    origin = HistoryDateLookupOrigin.NONE,
-                    extractorLaunches = 2,
-                    compatibilityFallbacks = 1,
-                )
-            } else {
-                HistoryDateLookupResult(
-                    mediaPublishedAt = compatibility,
+        val compatibility = try {
+            compatibilityLookup()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            HistoryDateLookupOutcome.RetryableFailure(error.javaClass.simpleName)
+        }
+        when (compatibility) {
+            is HistoryDateLookupOutcome.Found -> {
+                if (MediaPublishedDate.isPresent(compatibility.mediaPublishedAt)) {
+                    return resultFor(
+                        outcome = compatibility,
+                        origin = HistoryDateLookupOrigin.COMPATIBILITY,
+                        extractorLaunches = 2,
+                        compatibilityFallbacks = 1,
+                    )
+                }
+            }
+            HistoryDateLookupOutcome.AuthoritativeAbsence -> {
+                return resultFor(
+                    outcome = compatibility,
                     origin = HistoryDateLookupOrigin.COMPATIBILITY,
                     extractorLaunches = 2,
                     compatibilityFallbacks = 1,
                 )
             }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            HistoryDateLookupResult(
-                origin = HistoryDateLookupOrigin.FAILED,
-                extractorLaunches = 2,
-                compatibilityFallbacks = 1,
-                failureReason = error.javaClass.simpleName,
-            )
+            is HistoryDateLookupOutcome.Ambiguous,
+            is HistoryDateLookupOutcome.RetryableFailure,
+            is HistoryDateLookupOutcome.FinalFailure -> Unit
         }
+        val unresolved = unresolvedOutcome(minimal, compatibility)
+        return resultFor(
+            outcome = unresolved,
+            origin = if (unresolved is HistoryDateLookupOutcome.Ambiguous) {
+                HistoryDateLookupOrigin.NONE
+            } else {
+                HistoryDateLookupOrigin.FAILED
+            },
+            extractorLaunches = 2,
+            compatibilityFallbacks = 1,
+            failureReason = unresolved.reasonOrEmpty(),
+        )
     }
+
+    private fun resultFor(
+        outcome: HistoryDateLookupOutcome,
+        origin: HistoryDateLookupOrigin,
+        extractorLaunches: Int = 0,
+        compatibilityFallbacks: Int = 0,
+        failureReason: String = outcome.reasonOrEmpty(),
+    ): HistoryDateLookupResult = HistoryDateLookupResult(
+        mediaPublishedAt = (outcome as? HistoryDateLookupOutcome.Found)?.mediaPublishedAt
+            ?: MediaPublishedDate.MISSING,
+        origin = origin,
+        extractorLaunches = extractorLaunches,
+        compatibilityFallbacks = compatibilityFallbacks,
+        failureReason = failureReason,
+        outcome = outcome,
+    )
+
+    private fun unresolvedOutcome(
+        minimal: HistoryDateLookupOutcome,
+        compatibility: HistoryDateLookupOutcome,
+    ): HistoryDateLookupOutcome {
+        val outcomes = listOf(minimal, compatibility)
+        outcomes.filterIsInstance<HistoryDateLookupOutcome.RetryableFailure>()
+            .firstOrNull()?.let { return it }
+        outcomes.filterIsInstance<HistoryDateLookupOutcome.FinalFailure>()
+            .firstOrNull()?.let { return it }
+        val reasons = outcomes.mapNotNull { it.reasonOrEmpty().takeIf(String::isNotBlank) }
+        return HistoryDateLookupOutcome.Ambiguous(reasons.joinToString(";").ifBlank { "UNPROVEN" })
+    }
+}
+
+private fun Long?.toLookupOutcome(): HistoryDateLookupOutcome =
+    if (this != null && MediaPublishedDate.isPresent(this)) {
+        HistoryDateLookupOutcome.Found(this)
+    } else {
+        HistoryDateLookupOutcome.Ambiguous("NO_DATE_RESULT")
+    }
+
+private fun HistoryDateLookupOutcome.reasonOrEmpty(): String = when (this) {
+    is HistoryDateLookupOutcome.Ambiguous -> reason
+    is HistoryDateLookupOutcome.RetryableFailure -> reason
+    is HistoryDateLookupOutcome.FinalFailure -> reason
+    is HistoryDateLookupOutcome.Found,
+    HistoryDateLookupOutcome.AuthoritativeAbsence -> ""
 }
 
 data class HistoryDateBatchResult(

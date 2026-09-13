@@ -10,6 +10,7 @@ import com.ireum.ytdl.database.models.HistoryDateFetchOperationState
 import com.ireum.ytdl.database.models.KnownMediaPublishedDate
 import com.ireum.ytdl.util.HistoryDateFetchProgress
 import com.ireum.ytdl.util.HistoryDateLookupOrigin
+import com.ireum.ytdl.util.HistoryDateLookupOutcome
 import com.ireum.ytdl.util.HistoryDateLookupResult
 import com.ireum.ytdl.util.HistoryDateSourceCandidate
 import com.ireum.ytdl.util.HistoryDateSourceGrouping
@@ -113,11 +114,11 @@ class HistoryDateFetchRepository(private val database: DBManager) {
                     ItemOutcome(HistoryDateFetchItemState.SKIPPED, REASON_ALREADY_UPDATED)
                 current.url.trim() != ledger.sourceUrlSnapshot ->
                     ItemOutcome(HistoryDateFetchItemState.SKIPPED, REASON_SOURCE_CHANGED)
-                MediaPublishedDate.isPresent(lookup.mediaPublishedAt) -> {
+                lookup.outcome is HistoryDateLookupOutcome.Found -> {
                     val updated = database.historyDao.updateMediaPublishedAtIfMissing(
                         id = current.id,
                         normalizedUrl = ledger.sourceUrlSnapshot,
-                        mediaPublishedAt = lookup.mediaPublishedAt,
+                        mediaPublishedAt = lookup.outcome.mediaPublishedAt,
                     )
                     if (updated == 1) {
                         ItemOutcome(
@@ -128,9 +129,22 @@ class HistoryDateFetchRepository(private val database: DBManager) {
                         ItemOutcome(HistoryDateFetchItemState.SKIPPED, REASON_STALE_SNAPSHOT)
                     }
                 }
-                lookup.origin == HistoryDateLookupOrigin.FAILED ->
-                    ItemOutcome(HistoryDateFetchItemState.FAILED, lookup.failureReason)
-                else -> ItemOutcome(HistoryDateFetchItemState.NO_DATE, lookup.origin.name)
+                lookup.outcome is HistoryDateLookupOutcome.AuthoritativeAbsence ->
+                    ItemOutcome(HistoryDateFetchItemState.NO_DATE, lookup.origin.name)
+                lookup.outcome is HistoryDateLookupOutcome.RetryableFailure ->
+                    ItemOutcome(
+                        HistoryDateFetchItemState.FAILED,
+                        lookup.failureReason.ifBlank { REASON_RETRYABLE_LOOKUP_FAILURE },
+                    )
+                lookup.outcome is HistoryDateLookupOutcome.FinalFailure ->
+                    ItemOutcome(
+                        HistoryDateFetchItemState.FAILED,
+                        lookup.failureReason.ifBlank { REASON_FINAL_LOOKUP_FAILURE },
+                    )
+                else -> ItemOutcome(
+                    HistoryDateFetchItemState.FAILED,
+                    lookup.failureReason.ifBlank { REASON_UNPROVEN_DATE },
+                )
             }
             dao.setItemOutcome(
                 operationId = operationId,
@@ -262,5 +276,8 @@ class HistoryDateFetchRepository(private val database: DBManager) {
         const val REASON_ALREADY_UPDATED = "ALREADY_UPDATED"
         const val REASON_SOURCE_CHANGED = "SOURCE_CHANGED"
         const val REASON_STALE_SNAPSHOT = "STALE_SNAPSHOT"
+        const val REASON_UNPROVEN_DATE = "UNPROVEN_DATE"
+        const val REASON_RETRYABLE_LOOKUP_FAILURE = "RETRYABLE_LOOKUP_FAILURE"
+        const val REASON_FINAL_LOOKUP_FAILURE = "FINAL_LOOKUP_FAILURE"
     }
 }

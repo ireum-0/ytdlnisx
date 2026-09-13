@@ -207,6 +207,112 @@ class HistoryDateFetchPolicyTest {
     }
 
     @Test
+    fun authoritativeAbsenceRequiresOneCleanMatchingCandidate() {
+        val source = "https://example.com/video"
+        assertTrue(
+            HistoryDateLookupOutcomePolicy.classify(
+                requestedSource = source,
+                candidates = listOf(
+                    HistoryDateLookupCandidate(
+                        mediaPublishedAt = 0L,
+                        identity = ExtractorSourceIdentity(canonicalUrl = source),
+                    ),
+                ),
+            ) is HistoryDateLookupOutcome.AuthoritativeAbsence,
+        )
+        assertTrue(
+            HistoryDateLookupOutcomePolicy.classify(
+                requestedSource = source,
+                candidates = emptyList(),
+            ) is HistoryDateLookupOutcome.Ambiguous,
+        )
+        assertTrue(
+            HistoryDateLookupOutcomePolicy.classify(
+                requestedSource = source,
+                candidates = listOf(
+                    HistoryDateLookupCandidate(
+                        mediaPublishedAt = 0L,
+                        identity = ExtractorSourceIdentity(canonicalUrl = "https://example.com/other"),
+                    ),
+                ),
+            ) is HistoryDateLookupOutcome.Ambiguous,
+        )
+        assertTrue(
+            HistoryDateLookupOutcomePolicy.classify(
+                requestedSource = source,
+                candidates = listOf(
+                    HistoryDateLookupCandidate(
+                        mediaPublishedAt = 0L,
+                        identity = ExtractorSourceIdentity(canonicalUrl = source),
+                    ),
+                    HistoryDateLookupCandidate(
+                        mediaPublishedAt = 0L,
+                        identity = ExtractorSourceIdentity(canonicalUrl = source),
+                    ),
+                ),
+            ) is HistoryDateLookupOutcome.Ambiguous,
+        )
+        assertTrue(
+            HistoryDateLookupOutcomePolicy.classify(
+                requestedSource = source,
+                candidates = listOf(
+                    HistoryDateLookupCandidate(
+                        mediaPublishedAt = 123L,
+                        identity = ExtractorSourceIdentity(canonicalUrl = source),
+                    ),
+                ),
+            ) is HistoryDateLookupOutcome.Found,
+        )
+        assertTrue(
+            HistoryDateLookupOutcomePolicy.classify(
+                requestedSource = source,
+                candidates = listOf(
+                    HistoryDateLookupCandidate(
+                        mediaPublishedAt = 0L,
+                        identity = ExtractorSourceIdentity(canonicalUrl = source),
+                    ),
+                ),
+                malformedOutput = true,
+            ) is HistoryDateLookupOutcome.FinalFailure,
+        )
+    }
+
+    @Test
+    fun typedMinimalFailureFallsBackToFoundCompatibilityWithoutNoDate() = runBlocking {
+        val result = HistoryDateResolutionEngine.resolveTyped(
+            localValues = emptyList(),
+            cachedValues = { emptyList() },
+            minimalLookup = {
+                HistoryDateLookupOutcome.RetryableFailure("network")
+            },
+            compatibilityLookup = {
+                HistoryDateLookupOutcome.Found(456L)
+            },
+        )
+
+        assertEquals(HistoryDateLookupOrigin.COMPATIBILITY, result.origin)
+        assertEquals(456L, result.mediaPublishedAt)
+        assertTrue(result.outcome is HistoryDateLookupOutcome.Found)
+    }
+
+    @Test
+    fun typedFailuresAndAmbiguityNeverBecomeAuthoritativeAbsence() = runBlocking {
+        val result = HistoryDateResolutionEngine.resolveTyped(
+            localValues = emptyList(),
+            cachedValues = { emptyList() },
+            minimalLookup = {
+                HistoryDateLookupOutcome.FinalFailure("malformed")
+            },
+            compatibilityLookup = {
+                HistoryDateLookupOutcome.Ambiguous("mismatch")
+            },
+        )
+
+        assertTrue(result.outcome !is HistoryDateLookupOutcome.AuthoritativeAbsence)
+        assertEquals(HistoryDateLookupOrigin.FAILED, result.origin)
+    }
+
+    @Test
     fun persistedCancellationIsCheckedBeforeCompatibilityFallback() = runBlocking {
         var checks = 0
         var compatibilityCalled = false

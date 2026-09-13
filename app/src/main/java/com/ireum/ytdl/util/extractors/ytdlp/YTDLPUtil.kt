@@ -41,6 +41,9 @@ import com.ireum.ytdl.util.FormatUtil
 import com.ireum.ytdl.util.MediaPublishedDateParser
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.HistoryRedownloadQueuePolicy
+import com.ireum.ytdl.util.HistoryDateLookupCandidate
+import com.ireum.ytdl.util.HistoryDateLookupOutcome
+import com.ireum.ytdl.util.HistoryDateLookupOutcomePolicy
 import com.ireum.ytdl.util.SubtitleLanguageMatcher
 import com.ireum.ytdl.util.SubtitleSelection
 import com.ireum.ytdl.util.VideoQualityPolicy
@@ -958,44 +961,76 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
      * It intentionally omits format selection, player-client/token configuration,
      * subtitle configuration, and user data-fetch command templates.
      */
-    fun getDateOnlyMetadata(inputUrl: String, processId: String): ResultItem? {
-        val dispatchUrl = WebUrlInput.resolveExtractorInput(inputUrl)?.dispatchValue ?: return null
-        val safeUrl = validateDataFetchUrl(dispatchUrl)
-        val request = YoutubeDLRequest(safeUrl).apply {
-            addOption("--skip-download")
-            addOption("--quiet")
-            addOption("--no-warnings")
-            addOption("--no-playlist")
-            addOption("--no-check-formats")
-            addOption("--ignore-no-formats-error")
-            addOption("-R", "1")
-            addOption(
-                "--print",
-                "%(.{id,title,extractor,extractor_key,webpage_url,original_url,url,_type," +
-                    "playlist_webpage_url,release_timestamp,timestamp,release_date,upload_date," +
-                    "published_at})j",
-            )
-            applyDateFetchNetworkOptions()
+    fun getDateOnlyMetadata(inputUrl: String, processId: String): HistoryDateLookupOutcome {
+        val dispatchUrl = WebUrlInput.resolveExtractorInput(inputUrl)?.dispatchValue
+            ?: return HistoryDateLookupOutcome.FinalFailure("UNSUPPORTED_SOURCE")
+        return try {
+            val safeUrl = validateDataFetchUrl(dispatchUrl)
+            val request = YoutubeDLRequest(safeUrl).apply {
+                addOption("--skip-download")
+                addOption("--quiet")
+                addOption("--no-warnings")
+                addOption("--no-playlist")
+                addOption("--no-check-formats")
+                addOption("--ignore-no-formats-error")
+                addOption("-R", "1")
+                addOption(
+                    "--print",
+                    "%(.{id,title,extractor,extractor_key,webpage_url,original_url,url,_type," +
+                        "playlist_webpage_url,release_timestamp,timestamp,release_date,upload_date," +
+                        "published_at})j",
+                )
+                applyDateFetchNetworkOptions()
+            }
+            val response = YoutubeDLCompat.execute(context, request, processId, true)
+            parseVerifiedSingleDateResult(response.out, dispatchUrl)
+        } catch (cancelled: kotlin.coroutines.cancellation.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            HistoryDateLookupOutcome.RetryableFailure(error.javaClass.simpleName)
         }
-        val response = YoutubeDLCompat.execute(context, request, processId, true)
-        return parseVerifiedSingleDateResult(response.out, dispatchUrl)
     }
 
     /** Uses the existing one-item metadata request as the compatibility fallback. */
-    fun getCompatibilityDateMetadata(inputUrl: String, processId: String): ResultItem? {
-        val dispatchUrl = WebUrlInput.resolveExtractorInput(inputUrl)?.dispatchValue ?: return null
-        if (!isHttpDataFetchUrl(dispatchUrl)) return null
-        val results = getFromYTDLInternal(
-            query = dispatchUrl,
-            singleItem = true,
-            processId = processId,
-            resultsGenerated = {},
-        )
-        return results.filter { result ->
-            val identity = result.sourceIdentity ?: return@filter false
-            ExtractorSourceIdentityPolicy.matchesRequestedSource(dispatchUrl, identity) &&
-                com.ireum.ytdl.util.MediaPublishedDate.isPresent(result.mediaPublishedAt)
-        }.singleOrNull()
+    fun getCompatibilityDateMetadata(
+        inputUrl: String,
+        processId: String,
+    ): HistoryDateLookupOutcome {
+        val dispatchUrl = WebUrlInput.resolveExtractorInput(inputUrl)?.dispatchValue
+            ?: return HistoryDateLookupOutcome.FinalFailure("UNSUPPORTED_SOURCE")
+        if (!isHttpDataFetchUrl(dispatchUrl)) {
+            return HistoryDateLookupOutcome.FinalFailure("UNSUPPORTED_SOURCE")
+        }
+        return try {
+            val results = getFromYTDLInternal(
+                query = dispatchUrl,
+                singleItem = true,
+                processId = processId,
+                resultsGenerated = {},
+            )
+            val candidates = results.map {
+                HistoryDateLookupCandidate(
+                    mediaPublishedAt = it.mediaPublishedAt,
+                    identity = it.sourceIdentity,
+                )
+            }
+            // The compatibility request remains error-tolerant, so a
+            // matching item with no date is unproven rather than authoritative
+            // absence.  The shared classifier still accepts one clean found
+            // date with validated source provenance.
+            when (val classified = HistoryDateLookupOutcomePolicy.classify(dispatchUrl, candidates)) {
+                // getFromYTDLInternal() uses --ignore-errors and tolerant
+                // child parsing, so absence from this compatibility result
+                // can never prove complete source membership.
+                HistoryDateLookupOutcome.AuthoritativeAbsence ->
+                    HistoryDateLookupOutcome.Ambiguous("MISSING_DATE_UNPROVEN")
+                else -> classified
+            }
+        } catch (cancelled: kotlin.coroutines.cancellation.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            HistoryDateLookupOutcome.RetryableFailure(error.javaClass.simpleName)
+        }
     }
 
     private fun YoutubeDLRequest.applyDateFetchNetworkOptions() {
@@ -1018,22 +1053,38 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         }
     }
 
-    private fun parseVerifiedSingleDateResult(payload: String, requestedSource: String): ResultItem? {
-        val results = payload.lineSequence()
+    private fun parseVerifiedSingleDateResult(
+        payload: String,
+        requestedSource: String,
+    ): HistoryDateLookupOutcome {
+        val candidates = mutableListOf<HistoryDateLookupCandidate>()
+        var malformed = false
+        payload.lineSequence()
             .map(String::trim)
             .filter(String::isNotBlank)
-            .flatMap { line ->
-                runCatching {
-                    parseYTDLPListResults(listOf(line), requestedSource = requestedSource).asSequence()
-                }.getOrDefault(emptySequence())
+            .forEach { line ->
+                try {
+                    parseYTDLPListResults(
+                        listOf(line),
+                        requestedSource = requestedSource,
+                    ).forEach { result ->
+                        candidates += HistoryDateLookupCandidate(
+                            mediaPublishedAt = result.mediaPublishedAt,
+                            identity = result.sourceIdentity,
+                        )
+                    }
+                } catch (_: Exception) {
+                    malformed = true
+                }
             }
-            .filter { result ->
-                val identity = result.sourceIdentity ?: return@filter false
-                ExtractorSourceIdentityPolicy.matchesRequestedSource(requestedSource, identity) &&
-                    com.ireum.ytdl.util.MediaPublishedDate.isPresent(result.mediaPublishedAt)
-            }
-            .toList()
-        return results.singleOrNull()
+        if (payload.lineSequence().none { it.trim().isNotBlank() }) {
+            malformed = true
+        }
+        return HistoryDateLookupOutcomePolicy.classify(
+            requestedSource = requestedSource,
+            candidates = candidates,
+            malformedOutput = malformed,
+        )
     }
 
     private fun readInfoJsonPayload(infoJsonFile: File): String {

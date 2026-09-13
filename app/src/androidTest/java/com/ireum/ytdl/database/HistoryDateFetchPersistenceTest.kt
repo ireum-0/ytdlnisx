@@ -11,6 +11,7 @@ import com.ireum.ytdl.database.models.HistoryDateFetchOperationState
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.repository.HistoryDateFetchRepository
 import com.ireum.ytdl.util.HistoryDateLookupOrigin
+import com.ireum.ytdl.util.HistoryDateLookupOutcome
 import com.ireum.ytdl.util.HistoryDateLookupResult
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -189,7 +190,10 @@ class HistoryDateFetchPersistenceTest {
                 repository.checkpointSourceGroup(
                     operation.operationId,
                     listOf(pending),
-                    HistoryDateLookupResult(origin = HistoryDateLookupOrigin.NONE),
+                    HistoryDateLookupResult(
+                        origin = HistoryDateLookupOrigin.MINIMAL,
+                        outcome = HistoryDateLookupOutcome.AuthoritativeAbsence,
+                    ),
                     elapsedMs = 5,
                     now = 150L + index * 100L,
                 )
@@ -211,6 +215,28 @@ class HistoryDateFetchPersistenceTest {
             HistoryDateFetchItemState.NO_DATE,
             database.historyDateFetchDao.getItems(newest.operationId).single().stateValue,
         )
+    }
+
+    @Test
+    fun unprovenLookupIsFailedRatherThanPersistedAsNoDate() = runBlocking {
+        insertHistory(1, "https://example.com/unproven")
+        val operation = repository.createOrReconnect(now = 100)
+        val pending = repository.getPendingItems(operation.operationId).single()
+
+        assertTrue(
+            repository.checkpointSourceGroup(
+                operation.operationId,
+                listOf(pending),
+                HistoryDateLookupResult(origin = HistoryDateLookupOrigin.NONE),
+                elapsedMs = 5,
+                now = 200,
+            )
+        )
+
+        val outcome = database.historyDateFetchDao.getItems(operation.operationId).single()
+        assertEquals(HistoryDateFetchItemState.FAILED, outcome.stateValue)
+        assertEquals(HistoryDateFetchRepository.REASON_UNPROVEN_DATE, outcome.reasonCode)
+        assertEquals(0L, database.historyDao.getItem(1).mediaPublishedAt)
     }
 
     private fun rowCount(table: String): Int =

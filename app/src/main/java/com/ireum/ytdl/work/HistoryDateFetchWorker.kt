@@ -90,19 +90,19 @@ class HistoryDateFetchWorker(
             val source = groupItems.first().sourceUrlSnapshot
             val localValues = knownDateIndex.valuesFor(source)
             val started = SystemClock.elapsedRealtime()
-            val lookup = HistoryDateResolutionEngine.resolve(
+            val lookup = HistoryDateResolutionEngine.resolveTyped(
                 localValues = localValues,
                 cachedValues = {
                     ytdlp.getCachedInfoJsonResultsOrThrow(source).map { it.mediaPublishedAt }
                 },
                 minimalLookup = {
-                    ytdlp.getDateOnlyMetadata(source, processId(operationId))?.mediaPublishedAt
+                    ytdlp.getDateOnlyMetadata(source, processId(operationId))
                 },
                 compatibilityLookup = {
                     ytdlp.getCompatibilityDateMetadata(
                         source,
                         processId(operationId),
-                    )?.mediaPublishedAt
+                    )
                 },
                 ensureRunning = { ensureRunning(operationId) },
             )
