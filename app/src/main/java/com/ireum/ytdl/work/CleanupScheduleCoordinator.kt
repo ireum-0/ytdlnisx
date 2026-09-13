@@ -135,8 +135,10 @@ internal object CleanupScheduleCoordinator {
             from = now,
             append = false,
             successor = false,
-        )?.let { handle -> observeAcceptance(appContext, handle) }
-        true
+        )?.let { handle ->
+            handle.operation?.let { observeAcceptance(appContext, handle) }
+            handle
+        } != null
     }
 
     /** Reconciles persisted cadence authority with WorkManager after restart. */
@@ -204,7 +206,9 @@ internal object CleanupScheduleCoordinator {
             from = now,
             append = false,
             successor = false,
-        )?.let { handle -> observeAcceptance(appContext, handle) }
+        )?.let { handle ->
+            handle.operation?.let { observeAcceptance(appContext, handle) }
+        }
     }
 
     /**
@@ -330,7 +334,17 @@ internal object CleanupScheduleCoordinator {
                 occurrenceAt = occurrenceAt,
             )
         } catch (_: Exception) {
-            null
+            // The generation-bound debt was committed above.  Keep returning
+            // a handle so callers can report durable recovery responsibility
+            // even though this enqueue attempt itself failed.
+            EnqueueHandle(
+                request = request,
+                operation = null,
+                generation = generation,
+                cadence = cadence,
+                monthlyAnchorDay = monthlyAnchorDay,
+                occurrenceAt = occurrenceAt,
+            )
         }
     }
 

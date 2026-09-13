@@ -66,7 +66,6 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
         val cleanupLeftoverDownloads = findPreference<Preference>("cleanup_leftover_downloads")
         cleanupLeftoverDownloads?.setOnPreferenceChangeListener { _, newValue ->
             CleanupScheduleCoordinator.configure(requireContext(), newValue as? String)
-            true
         }
 
 
