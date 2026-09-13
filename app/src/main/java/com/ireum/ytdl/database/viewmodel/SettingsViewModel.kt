@@ -38,6 +38,10 @@ import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.AutomaticKeywordRuleTypes
 import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
+import com.ireum.ytdl.database.models.Playlist
+import com.ireum.ytdl.database.models.PlaylistItemCrossRef
+import com.ireum.ytdl.database.models.PlaylistGroup
+import com.ireum.ytdl.database.models.PlaylistGroupMember
 import com.ireum.ytdl.database.models.observeSources.ObservationPurposes
 import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.ireum.ytdl.database.repository.AutomaticKeywordRuleScheduler
@@ -111,6 +115,13 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         val automaticRuleKeywords: List<AutomaticKeywordRuleKeyword>,
         val automaticRuleVideoMatches: List<AutomaticKeywordRuleVideoMatch>,
         val historyKeywordAssignments: List<HistoryKeywordAssignment>,
+    )
+
+    private data class PlaylistBackupSnapshot(
+        val playlists: List<Playlist>,
+        val playlistItemCrossRefs: List<PlaylistItemCrossRef>,
+        val playlistGroups: List<PlaylistGroup>,
+        val playlistGroupMembers: List<PlaylistGroupMember>,
     )
 
 
@@ -189,6 +200,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 "shortcuts",
                 "searchHistory",
                 "observeSources",
+                "playlistData",
             )
         } else {
             items
@@ -312,6 +324,20 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     BackupSettingsUtil.backupObserveSources(observeSourcesRepository).getOrThrow(),
                 )
 
+                "playlistData" -> {
+                    val snapshot = capturePlaylistBackupSnapshot()
+                    json.add("playlists", BackupSettingsUtil.toJsonArray(snapshot.playlists))
+                    json.add(
+                        "playlist_item_cross_refs",
+                        BackupSettingsUtil.toJsonArray(snapshot.playlistItemCrossRefs),
+                    )
+                    json.add("playlist_groups", BackupSettingsUtil.toJsonArray(snapshot.playlistGroups))
+                    json.add(
+                        "playlist_group_members",
+                        BackupSettingsUtil.toJsonArray(snapshot.playlistGroupMembers),
+                    )
+                }
+
             }
         }
 
@@ -401,6 +427,17 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 automaticRuleKeywords = dbManager.automaticKeywordRuleDao.getAllRuleKeywords(),
                 automaticRuleVideoMatches = dbManager.automaticKeywordRuleDao.getAllVideoMatches(),
                 historyKeywordAssignments = dbManager.automaticKeywordRuleDao.getAllAssignmentsRaw(),
+            )
+        }
+    }
+
+    private suspend fun capturePlaylistBackupSnapshot(): PlaylistBackupSnapshot = withContext(Dispatchers.IO) {
+        dbManager.withTransaction {
+            PlaylistBackupSnapshot(
+                playlists = dbManager.playlistDao.getAllPlaylistsSync(),
+                playlistItemCrossRefs = dbManager.playlistDao.getAllPlaylistItems(),
+                playlistGroups = dbManager.playlistGroupDao.getGroups(),
+                playlistGroupMembers = dbManager.playlistGroupDao.getAllMembers(),
             )
         }
     }
@@ -522,6 +559,84 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                                 runCatching { File(finalPath).delete() }
                                 throw error
                             }
+                        }
+                    }
+                }
+            }
+
+            if (
+                data.playlists != null ||
+                data.playlistItemCrossRefs != null ||
+                data.playlistGroups != null ||
+                data.playlistGroupMembers != null
+            ) {
+                withContext(Dispatchers.IO) {
+                    dbManager.withTransaction {
+                        if (resetData) {
+                            // Relationship rows are removed before their
+                            // endpoint rows to respect Room foreign keys.
+                            dbManager.playlistDao.clearPlaylistItems()
+                            dbManager.playlistGroupDao.clearMembers()
+                            dbManager.playlistGroupDao.clearGroups()
+                            dbManager.playlistDao.clearPlaylists()
+                        }
+
+                        val playlistIdMap = linkedMapOf<Long, Long>()
+                        data.playlists.orEmpty().forEach { playlist ->
+                            if (playlist.id <= 0L) return@forEach
+                            val destinationId = dbManager.playlistDao.insertPlaylist(
+                                playlist.copy(id = 0L)
+                            )
+                            check(destinationId > 0L) {
+                                "Playlist restore did not allocate a destination identity"
+                            }
+                            playlistIdMap[playlist.id] = destinationId
+                        }
+
+                        val groupIdMap = linkedMapOf<Long, Long>()
+                        data.playlistGroups.orEmpty().forEach { group ->
+                            if (group.id <= 0L || group.name.isBlank()) return@forEach
+                            val destinationId = dbManager.playlistGroupDao
+                                .getGroupByName(group.name)
+                                ?.id
+                                ?: dbManager.playlistGroupDao.insertGroup(group.copy(id = 0L))
+                            if (destinationId > 0L) {
+                                groupIdMap[group.id] = destinationId
+                            }
+                        }
+
+                        val mappedCrossRefs = data.playlistItemCrossRefs.orEmpty()
+                            .mapNotNull { relation ->
+                                val playlistId = playlistIdMap[relation.playlistId]
+                                val historyId = importedHistoryIdMap[relation.historyItemId]
+                                if (playlistId == null || historyId == null ||
+                                    playlistId <= 0L || historyId <= 0L
+                                ) {
+                                    null
+                                } else {
+                                    PlaylistItemCrossRef(playlistId, historyId)
+                                }
+                            }
+                            .distinct()
+                        if (mappedCrossRefs.isNotEmpty()) {
+                            dbManager.playlistDao.insertPlaylistItems(mappedCrossRefs)
+                        }
+
+                        val mappedGroupMembers = data.playlistGroupMembers.orEmpty()
+                            .mapNotNull { member ->
+                                val groupId = groupIdMap[member.groupId]
+                                val playlistId = playlistIdMap[member.playlistId]
+                                if (groupId == null || playlistId == null ||
+                                    groupId <= 0L || playlistId <= 0L
+                                ) {
+                                    null
+                                } else {
+                                    PlaylistGroupMember(groupId, playlistId)
+                                }
+                            }
+                            .distinct()
+                        if (mappedGroupMembers.isNotEmpty()) {
+                            dbManager.playlistGroupDao.insertMembers(mappedGroupMembers)
                         }
                     }
                 }

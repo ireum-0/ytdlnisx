@@ -831,6 +831,7 @@
         <item>@string/shortcuts</item>
         <item>@string/search_history</item>
         <item>@string/observe_sources</item>
+        <item>@string/playlist_data</item>
     </array>
 
     <array name="backup_category_values">
@@ -849,6 +850,7 @@
         <item>shortcuts</item>
         <item>searchHistory</item>
         <item>observeSources</item>
+        <item>playlistData</item>
     </array>
 
     <string-array name="sub_formats">

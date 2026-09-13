@@ -43,6 +43,10 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.KeywordGroup
 import com.ireum.ytdl.database.models.KeywordGroupMember
+import com.ireum.ytdl.database.models.Playlist
+import com.ireum.ytdl.database.models.PlaylistItemCrossRef
+import com.ireum.ytdl.database.models.PlaylistGroup
+import com.ireum.ytdl.database.models.PlaylistGroupMember
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.models.SearchHistoryItem
@@ -570,6 +574,38 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                             json.getAsJsonArray("history_keyword_assignments").map {
                                 gson.fromJson(it, HistoryKeywordAssignment::class.java)
                         }
+                    }
+
+                    if (json.has("playlists")) {
+                        restoreData.playlists = json.getAsJsonArray("playlists").map {
+                            gson.fromJson(it, Playlist::class.java)
+                        }
+                        parsedDataMessage.appendLine("Playlists: ${restoreData.playlists!!.size}")
+                    }
+
+                    if (json.has("playlist_item_cross_refs")) {
+                        restoreData.playlistItemCrossRefs = json
+                            .getAsJsonArray("playlist_item_cross_refs")
+                            .map { gson.fromJson(it, PlaylistItemCrossRef::class.java) }
+                        parsedDataMessage.appendLine(
+                            "Playlist items: ${restoreData.playlistItemCrossRefs!!.size}"
+                        )
+                    }
+
+                    if (json.has("playlist_groups")) {
+                        restoreData.playlistGroups = json.getAsJsonArray("playlist_groups").map {
+                            gson.fromJson(it, PlaylistGroup::class.java)
+                        }
+                        parsedDataMessage.appendLine("Playlist groups: ${restoreData.playlistGroups!!.size}")
+                    }
+
+                    if (json.has("playlist_group_members")) {
+                        restoreData.playlistGroupMembers = json
+                            .getAsJsonArray("playlist_group_members")
+                            .map { gson.fromJson(it, PlaylistGroupMember::class.java) }
+                        parsedDataMessage.appendLine(
+                            "Playlist group members: ${restoreData.playlistGroupMembers!!.size}"
+                        )
                     }
 
 

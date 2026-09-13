@@ -30,6 +30,10 @@ data class RestoreAppDataItem(
     var automaticKeywordRuleKeywords: List<AutomaticKeywordRuleKeyword>? = null,
     var automaticKeywordRuleVideoMatches: List<AutomaticKeywordRuleVideoMatch>? = null,
     var historyKeywordAssignments: List<HistoryKeywordAssignment>? = null,
+    var playlists: List<Playlist>? = null,
+    var playlistItemCrossRefs: List<PlaylistItemCrossRef>? = null,
+    var playlistGroups: List<PlaylistGroup>? = null,
+    var playlistGroupMembers: List<PlaylistGroupMember>? = null,
 )
 
 data class BackupSettingsItem(
