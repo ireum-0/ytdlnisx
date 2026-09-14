@@ -1604,6 +1604,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             remaining.removeAll { it.uri == candidate.uri.toString() }
                             return@forEach
                         }
+                        val matchTreeMeta = buildTreeMeta(candidate.treeUri, candidate.uri)
                         val format = Format(
                             format_id = "local",
                             container = candidate.ext,
@@ -1627,8 +1628,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             format = format,
                             filesize = candidate.size,
                             downloadId = 0,
-                            localTreeUri = candidate.treeUri?.toString().orEmpty(),
-                            localTreePath = buildTreeMeta(candidate.treeUri, candidate.uri).second,
+                            localTreeUri = matchTreeMeta.first,
+                            localTreePath = matchTreeMeta.second,
                             mediaPublishedAt = match.item.mediaPublishedAt
                         )
                         com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
