@@ -17,6 +17,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -90,6 +92,87 @@ class LocalAddAdmissionPersistenceTest {
         )
         val second = repository.insertLocalHistory(
             history(secondUri, "url:b", treeUri = treeUri, treePath = "child")
+        )
+
+        assertTrue(first is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(second is LocalHistoryAdmissionResult.AlreadyPresent)
+        assertEquals(1, database.historyDao.getAll().size)
+    }
+
+    @Test
+    fun opaqueDocumentIdsDoNotCollideThroughLegacyTreeMetadata() = runBlocking {
+        val treeUri = DocumentsContract.buildTreeDocumentUri("provider", "A").toString()
+        val firstUri = DocumentsContract.buildDocumentUri("provider", "A/child").toString()
+        val secondUri = DocumentsContract.buildDocumentUri("provider", "Achild").toString()
+
+        assertNotEquals(
+            LocalAddStorageIdentityPolicy.identityForEntry(firstUri, treeUri),
+            LocalAddStorageIdentityPolicy.identityForEntry(secondUri, treeUri),
+        )
+        assertNull(
+            LocalAddStorageIdentityPolicy.validatedTreeMetadata(
+                DocumentsContract.buildTreeDocumentUri("provider", "A"),
+                DocumentsContract.buildDocumentUri("provider", "A/child"),
+            )
+        )
+
+        // Both rows carry the same legacy-looking metadata that the old
+        // prefix parser would have synthesized as "child". Exact opaque
+        // document identities must keep both candidates.
+        val first = repository.insertLocalHistory(
+            history(firstUri, "url:opaque-a", treeUri = treeUri, treePath = "child")
+        )
+        val second = repository.insertLocalHistory(
+            history(secondUri, "url:opaque-b", treeUri = treeUri, treePath = "child")
+        )
+
+        assertTrue(first is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(second is LocalHistoryAdmissionResult.Inserted)
+        assertEquals(2, database.historyDao.getAll().size)
+    }
+
+    @Test
+    fun unrelatedTreeMetadataCannotSuppressDistinctProviderDocuments() = runBlocking {
+        val first = repository.insertLocalHistory(
+            history(
+                DocumentsContract.buildDocumentUri("provider", "first").toString(),
+                "url:unrelated-a",
+                treeUri = DocumentsContract.buildTreeDocumentUri("provider", "root-a").toString(),
+                treePath = "same-name",
+            )
+        )
+        val second = repository.insertLocalHistory(
+            history(
+                DocumentsContract.buildDocumentUri("provider", "second").toString(),
+                "url:unrelated-b",
+                treeUri = DocumentsContract.buildTreeDocumentUri("provider", "root-b").toString(),
+                treePath = "same-name",
+            )
+        )
+
+        assertTrue(first is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(second is LocalHistoryAdmissionResult.Inserted)
+        assertEquals(2, database.historyDao.getAll().size)
+    }
+
+    @Test
+    fun exactProviderDocumentIdentityWinsOverUnrelatedPersistedTreeMetadata() = runBlocking {
+        val documentUri = DocumentsContract.buildDocumentUri("provider", "same").toString()
+        val first = repository.insertLocalHistory(
+            history(
+                documentUri,
+                "url:exact-a",
+                treeUri = DocumentsContract.buildTreeDocumentUri("provider", "root-a").toString(),
+                treePath = "one",
+            )
+        )
+        val second = repository.insertLocalHistory(
+            history(
+                documentUri,
+                "url:exact-b",
+                treeUri = DocumentsContract.buildTreeDocumentUri("provider", "root-b").toString(),
+                treePath = "two",
+            )
         )
 
         assertTrue(first is LocalHistoryAdmissionResult.Inserted)

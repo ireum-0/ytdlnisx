@@ -10,26 +10,34 @@ import java.util.Locale
  * Strong storage identities used by LocalAdd admission.
  *
  * A filename is presentation metadata and is deliberately absent from this
- * policy.  Provider document IDs are scoped by their authority, while tree
- * identities are scoped by the normalized tree URI and relative path.
+ * policy. Provider document IDs are scoped by their authority and are
+ * opaque. A generic DocumentsProvider contract does not give this client a
+ * portable textual relative path, so tree metadata is never used to
+ * manufacture a storage identity. The exact provider document identity
+ * remains usable through the document URI itself.
  */
 object LocalAddStorageIdentityPolicy {
     fun hasSameProviderAuthority(treeUri: Uri, fileUri: Uri): Boolean =
         sameAuthority(treeUri, fileUri)
 
+    /**
+     * Returns tree metadata only when a provider-backed proof of both
+     * membership and path semantics exists. Generic document IDs are opaque
+     * and this shared policy has no such proof, so it intentionally returns
+     * null. Callers must retain the exact document URI instead of inventing a
+     * relative path from a document-ID prefix.
+     */
+    fun validatedTreeMetadata(treeUri: Uri?, fileUri: Uri): Pair<String, String>? = null
+
     fun identityForEntry(uriString: String, treeUriString: String? = null): String? {
         val uri = parseUri(uriString) ?: return null
-        val treeUri = treeUriString?.let(::parseUri)
-        val relativePath = if (treeUri != null) relativePath(treeUri, uri) else null
-        return identityForUri(uri, treeUri, relativePath)
+        return identityForUri(uri)
     }
 
     fun identitiesForHistory(item: HistoryItem): Set<String> {
         val identities = linkedSetOf<String>()
-        val treeUri = item.localTreeUri.trim().takeIf(String::isNotBlank)?.let(::parseUri)
-        val relativePath = item.localTreePath.trim().takeIf(String::isNotBlank)
         item.downloadPath.forEach { path ->
-            identityForUri(path, treeUri, relativePath)?.let(identities::add)
+            identityForUri(path)?.let(identities::add)
         }
         return identities
     }
@@ -40,15 +48,7 @@ object LocalAddStorageIdentityPolicy {
         return candidateIdentities.any { it in identitiesForHistory(existing) }
     }
 
-    private fun identityForUri(
-        uri: Uri,
-        treeUri: Uri?,
-        relativePath: String?,
-    ): String? {
-        if (treeUri != null && !relativePath.isNullOrBlank() && sameAuthority(treeUri, uri)) {
-            treeIdentity(treeUri, relativePath)?.let { return it }
-        }
-
+    private fun identityForUri(uri: Uri): String? {
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
         return when (scheme) {
             "content" -> {
@@ -72,37 +72,9 @@ object LocalAddStorageIdentityPolicy {
 
     private fun identityForUri(
         path: String,
-        treeUri: Uri?,
-        relativePath: String?,
     ): String? {
         val uri = parseUri(path) ?: return null
-        return identityForUri(uri, treeUri, relativePath)
-    }
-
-    private fun treeIdentity(treeUri: Uri, relativePath: String): String? {
-        val normalizedTree = normalizedUri(treeUri) ?: return null
-        val relative = relativePath.trim().trimStart('/').takeIf(String::isNotBlank)
-            ?: return null
-        return "tree:$normalizedTree|$relative"
-    }
-
-    private fun relativePath(treeUri: Uri, fileUri: Uri): String? {
-        if (!sameAuthority(treeUri, fileUri)) return null
-        val treeId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }
-            .getOrNull()
-            ?.takeIf(String::isNotBlank)
-        val documentId = runCatching { DocumentsContract.getDocumentId(fileUri) }
-            .getOrNull()
-            ?.takeIf(String::isNotBlank)
-        if (treeId == null || documentId == null) return null
-        return if (documentId == treeId) {
-            null
-        } else {
-            documentId.removePrefix("$treeId/")
-                .removePrefix(treeId)
-                .trimStart('/')
-                .takeIf(String::isNotBlank)
-        }
+        return identityForUri(uri)
     }
 
     private fun sameAuthority(first: Uri, second: Uri): Boolean {
