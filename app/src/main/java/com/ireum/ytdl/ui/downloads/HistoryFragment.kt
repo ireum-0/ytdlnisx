@@ -2828,11 +2828,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             val doc = documentFileForUri(uri)
             val uriString = uri.toString()
             val treeMeta = buildTreeMeta(treeUri, uri)
-            val existing = db.historyDao.getItemByDownloadPath(escapeLikeQuery(uriString))
-            if (existing != null) {
-                skipped += 1
-                return@forEach
-            }
             if (doc == null || doc.isDirectory) {
                 skipped += 1
                 return@forEach
@@ -3358,13 +3353,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         } else {
             DocumentFile.fromSingleUri(requireContext(), uri)
         }
-    }
-
-    private fun escapeLikeQuery(value: String): String {
-        return value
-            .replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
     }
 
     private fun isVideoDocument(doc: DocumentFile): Boolean {

@@ -82,6 +82,48 @@ class LocalAddAdmissionPersistenceTest {
     }
 
     @Test
+    fun providerDocumentPrefixDoesNotSuppressDistinctCandidate() = runBlocking {
+        val existing = repository.insertLocalHistory(
+            history("content://provider/document/Achild", "url:existing")
+        )
+        val candidate = repository.insertLocalHistory(
+            history("content://provider/document/A", "url:candidate")
+        )
+
+        assertTrue(existing is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(candidate is LocalHistoryAdmissionResult.Inserted)
+        assertEquals(2, database.historyDao.getAll().size)
+    }
+
+    @Test
+    fun reverseProviderDocumentPrefixDoesNotSuppressDistinctCandidate() = runBlocking {
+        val existing = repository.insertLocalHistory(
+            history("content://provider/document/A", "url:existing")
+        )
+        val candidate = repository.insertLocalHistory(
+            history("content://provider/document/Achild", "url:candidate")
+        )
+
+        assertTrue(existing is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(candidate is LocalHistoryAdmissionResult.Inserted)
+        assertEquals(2, database.historyDao.getAll().size)
+    }
+
+    @Test
+    fun filePathPrefixDoesNotSuppressDistinctCandidate() = runBlocking {
+        val existing = repository.insertLocalHistory(
+            history("file:///storage/a/movie", "url:existing")
+        )
+        val candidate = repository.insertLocalHistory(
+            history("file:///storage/a/movie.mp4", "url:candidate")
+        )
+
+        assertTrue(existing is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(candidate is LocalHistoryAdmissionResult.Inserted)
+        assertEquals(2, database.historyDao.getAll().size)
+    }
+
+    @Test
     fun sameTreeAndRelativePathIsDeduplicated() = runBlocking {
         val treeUri = DocumentsContract.buildTreeDocumentUri("provider", "tree").toString()
         val firstUri = DocumentsContract.buildDocumentUri("provider", "tree/child").toString()

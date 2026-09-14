@@ -27,6 +27,7 @@ import com.ireum.ytdl.util.LocalAddEntryDto
 import com.ireum.ytdl.util.LocalAddMatchDto
 import com.ireum.ytdl.util.LocalAddStorage
 import com.ireum.ytdl.util.LocalAddStorageIdentityPolicy
+import com.ireum.ytdl.util.LocalMatchResult
 import com.ireum.ytdl.util.LocalMatchUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.setForegroundSafely
@@ -37,6 +38,24 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import java.util.Locale
 import java.util.UUID
+
+/** Production-worker seams used by deterministic LocalAdd instrumentation. */
+internal object LocalAddWorkerTestHooks {
+    internal data class MetadataOverride(
+        val displayName: String,
+        val size: Long = 0L,
+        val durationSeconds: Int = 0,
+    )
+
+    @Volatile
+    internal var databaseForTesting: DBManager? = null
+
+    @Volatile
+    internal var matchForTesting: (suspend (String, Int) -> LocalMatchResult?)? = null
+
+    @Volatile
+    internal var metadataForTesting: ((Uri) -> MetadataOverride?)? = null
+}
 
 class LocalAddWorker(
     private val context: Context,
@@ -76,7 +95,8 @@ class LocalAddWorker(
         // Prevent background restrictions from stopping a long-running local add session.
         if (!setForegroundSafely()) return Result.retry()
 
-        val db = DBManager.getInstance(context)
+        val db = LocalAddWorkerTestHooks.databaseForTesting
+            ?: DBManager.getInstance(context)
         val resultRepository = ResultRepository(db.resultDao, db.commandTemplateDao, context)
         val pending = mutableListOf<LocalAddCandidateDto>()
         var processed = 0
@@ -91,16 +111,20 @@ class LocalAddWorker(
                 val treeUri = entry.treeUri?.let { Uri.parse(it) }
                 val uriString = uri.toString()
                 val treeMeta = buildTreeMeta(treeUri, uri)
-                val existing = db.historyDao.getItemByDownloadPath(escapeLikeQuery(uriString))
-                if (existing != null) return@forEach
-                val name = getDisplayNameFromUri(uri) ?: return@forEach
+                val metadataOverride = LocalAddWorkerTestHooks.metadataForTesting?.invoke(uri)
+                val name = metadataOverride?.displayName ?: getDisplayNameFromUri(uri) ?: return@forEach
                 val title = name.substringBeforeLast('.')
                 val ext = name.substringAfterLast('.', "")
-                val size = getFileSize(uri)
-                val durationSeconds = getDurationSeconds(uri)
+                val size = metadataOverride?.size ?: getFileSize(uri)
+                val durationSeconds = metadataOverride?.durationSeconds ?: getDurationSeconds(uri)
 
                 val match = try {
-                    LocalMatchUtil.findYoutubeMatch(resultRepository, title, durationSeconds)
+                    val matchOverride = LocalAddWorkerTestHooks.matchForTesting
+                    if (matchOverride != null) {
+                        matchOverride(title, durationSeconds)
+                    } else {
+                        LocalMatchUtil.findYoutubeMatch(resultRepository, title, durationSeconds)
+                    }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
@@ -254,13 +278,6 @@ class LocalAddWorker(
         lastNotifyAt = now
         lastNotifyDone = safeDone
         lastNotifyPercent = percent
-    }
-
-    private fun escapeLikeQuery(input: String): String {
-        return input
-            .replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
     }
 
     private fun getFileSize(uri: Uri): Long {
