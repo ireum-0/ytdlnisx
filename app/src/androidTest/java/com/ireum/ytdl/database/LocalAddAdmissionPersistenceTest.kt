@@ -86,10 +86,12 @@ class LocalAddAdmissionPersistenceTest {
         val exactUri = DocumentsContract.buildDocumentUri("provider", "A")
         val leadingWhitespaceUri = DocumentsContract.buildDocumentUri("provider", " A ")
         val trailingWhitespaceUri = DocumentsContract.buildDocumentUri("provider", "A ")
+        val blankWhitespaceUri = DocumentsContract.buildDocumentUri("provider", " ")
 
         assertEquals("A", DocumentsContract.getDocumentId(exactUri))
         assertEquals(" A ", DocumentsContract.getDocumentId(leadingWhitespaceUri))
         assertEquals("A ", DocumentsContract.getDocumentId(trailingWhitespaceUri))
+        assertEquals(" ", DocumentsContract.getDocumentId(blankWhitespaceUri))
         assertNotEquals(
             LocalAddStorageIdentityPolicy.identityForEntry(exactUri.toString()),
             LocalAddStorageIdentityPolicy.identityForEntry(leadingWhitespaceUri.toString()),
@@ -101,6 +103,9 @@ class LocalAddAdmissionPersistenceTest {
         assertNotEquals(
             LocalAddStorageIdentityPolicy.identityForEntry(leadingWhitespaceUri.toString()),
             LocalAddStorageIdentityPolicy.identityForEntry(trailingWhitespaceUri.toString()),
+        )
+        assertTrue(
+            LocalAddStorageIdentityPolicy.identityForEntry(blankWhitespaceUri.toString()) != null
         )
 
         val exact = repository.insertLocalHistory(
@@ -112,11 +117,15 @@ class LocalAddAdmissionPersistenceTest {
         val trailingWhitespace = repository.insertLocalHistory(
             history(trailingWhitespaceUri.toString(), "url:trailing")
         )
+        val blankWhitespace = repository.insertLocalHistory(
+            history(blankWhitespaceUri.toString(), "url:blank-whitespace")
+        )
 
         assertTrue(exact is LocalHistoryAdmissionResult.Inserted)
         assertTrue(leadingWhitespace is LocalHistoryAdmissionResult.Inserted)
         assertTrue(trailingWhitespace is LocalHistoryAdmissionResult.Inserted)
-        assertEquals(3, database.historyDao.getAll().size)
+        assertTrue(blankWhitespace is LocalHistoryAdmissionResult.Inserted)
+        assertEquals(4, database.historyDao.getAll().size)
     }
 
     @Test

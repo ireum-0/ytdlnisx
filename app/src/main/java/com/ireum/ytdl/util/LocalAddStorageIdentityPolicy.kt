@@ -55,8 +55,7 @@ object LocalAddStorageIdentityPolicy {
                 val authority = uri.authority?.trim()?.lowercase(Locale.ROOT)
                 val documentId = runCatching { DocumentsContract.getDocumentId(uri) }
                     .getOrNull()
-                    ?.takeIf(String::isNotBlank)
-                if (!authority.isNullOrBlank() && !documentId.isNullOrBlank()) {
+                if (!authority.isNullOrBlank() && documentId != null) {
                     "provider:$authority:$documentId"
                 } else {
                     normalizedUri(uri)?.takeIf { authority?.isNotBlank() == true }
