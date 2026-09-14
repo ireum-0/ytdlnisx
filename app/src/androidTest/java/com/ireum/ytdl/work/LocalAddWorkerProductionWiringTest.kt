@@ -52,7 +52,7 @@ class LocalAddWorkerProductionWiringTest {
         LocalAddWorkerTestHooks.databaseForTesting = database
         LocalAddWorkerTestHooks.matchForTesting = { _, _ -> null }
         LocalAddWorkerTestHooks.metadataForTesting = { uri ->
-            if (uri.toString().startsWith("content://provider/document/")) {
+            if (uri.scheme == "content" && uri.pathSegments.firstOrNull() == "document") {
                 LocalAddWorkerTestHooks.MetadataOverride(displayName = "candidate.mp4", size = 3L)
             } else {
                 null
@@ -121,6 +121,30 @@ class LocalAddWorkerProductionWiringTest {
         val sessionId = awaitOpenSession()
         val pending = LocalAddStorage.loadPending(context, sessionId)
         assertEquals(listOf(exactPath, whitespacePath), pending.map { it.uri })
+    }
+
+    @Test
+    fun workerKeepsProviderAuthorityNamespaceCaseDistinctInBatch() = runBlocking {
+        val firstPath = DocumentsContract.buildDocumentUri("Provider.Example", "A").toString()
+        val secondPath = DocumentsContract.buildDocumentUri("provider.example", "A").toString()
+        val entries = Gson().toJson(
+            listOf(
+                LocalAddEntryDto(firstPath, null),
+                LocalAddEntryDto(secondPath, null),
+            )
+        )
+        val workManager = WorkManager.getInstance(context)
+        val request = OneTimeWorkRequestBuilder<LocalAddWorker>()
+            .setInputData(workDataOf(LocalAddWorker.KEY_ENTRIES_JSON to entries))
+            .addTag("local-add-worker-production-test")
+            .build()
+        workManager.enqueue(request)
+        val info = awaitFinished(workManager, request.id)
+
+        assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+        val sessionId = awaitOpenSession()
+        val pending = LocalAddStorage.loadPending(context, sessionId)
+        assertEquals(listOf(firstPath, secondPath), pending.map { it.uri })
     }
 
     private suspend fun awaitFinished(workManager: WorkManager, id: UUID): WorkInfo =

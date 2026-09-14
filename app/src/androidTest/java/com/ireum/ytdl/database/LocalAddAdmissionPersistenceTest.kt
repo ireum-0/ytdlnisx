@@ -143,6 +143,26 @@ class LocalAddAdmissionPersistenceTest {
     }
 
     @Test
+    fun providerAuthorityNamespaceRemainsExact() = runBlocking {
+        val firstUri = DocumentsContract.buildDocumentUri("Provider.Example", "A")
+        val secondUri = DocumentsContract.buildDocumentUri("provider.example", "A")
+
+        assertEquals("Provider.Example", firstUri.authority)
+        assertEquals("provider.example", secondUri.authority)
+        assertNotEquals(
+            LocalAddStorageIdentityPolicy.identityForEntry(firstUri.toString()),
+            LocalAddStorageIdentityPolicy.identityForEntry(secondUri.toString()),
+        )
+
+        val first = repository.insertLocalHistory(history(firstUri.toString(), "url:case-a"))
+        val second = repository.insertLocalHistory(history(secondUri.toString(), "url:case-b"))
+
+        assertTrue(first is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(second is LocalHistoryAdmissionResult.Inserted)
+        assertEquals(2, database.historyDao.getAll().size)
+    }
+
+    @Test
     fun reverseProviderDocumentPrefixDoesNotSuppressDistinctCandidate() = runBlocking {
         val existing = repository.insertLocalHistory(
             history("content://provider/document/A", "url:existing")

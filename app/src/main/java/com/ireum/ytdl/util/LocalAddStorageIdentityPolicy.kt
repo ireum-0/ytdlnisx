@@ -52,7 +52,7 @@ object LocalAddStorageIdentityPolicy {
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
         return when (scheme) {
             "content" -> {
-                val authority = uri.authority?.trim()?.lowercase(Locale.ROOT)
+                val authority = uri.authority
                 val documentId = runCatching { DocumentsContract.getDocumentId(uri) }
                     .getOrNull()
                 if (!authority.isNullOrBlank() && documentId != null) {
@@ -76,8 +76,8 @@ object LocalAddStorageIdentityPolicy {
     }
 
     private fun sameAuthority(first: Uri, second: Uri): Boolean {
-        val firstAuthority = first.authority?.trim()?.lowercase(Locale.ROOT)
-        val secondAuthority = second.authority?.trim()?.lowercase(Locale.ROOT)
+        val firstAuthority = first.authority
+        val secondAuthority = second.authority
         return !firstAuthority.isNullOrBlank() && firstAuthority == secondAuthority
     }
 
