@@ -97,6 +97,24 @@ class LocalAddAdmissionPersistenceTest {
     }
 
     @Test
+    fun treeIdentityDoesNotCrossProviderAuthorities() = runBlocking {
+        val treeUri = DocumentsContract.buildTreeDocumentUri("provider-a", "tree").toString()
+        val firstUri = DocumentsContract.buildDocumentUri("provider-a", "tree/child").toString()
+        val secondUri = DocumentsContract.buildDocumentUri("provider-b", "tree/child").toString()
+
+        val first = repository.insertLocalHistory(
+            history(firstUri, "url:a", treeUri = treeUri, treePath = "child")
+        )
+        val second = repository.insertLocalHistory(
+            history(secondUri, "url:b", treeUri = treeUri, treePath = "child")
+        )
+
+        assertTrue(first is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(second is LocalHistoryAdmissionResult.Inserted)
+        assertEquals(2, database.historyDao.getAll().size)
+    }
+
+    @Test
     fun unprovenStorageIdentityFailsOpenForLocalAdd() = runBlocking {
         val first = repository.insertLocalHistory(history("", "unknown:a"))
         val second = repository.insertLocalHistory(history("", "unknown:b"))

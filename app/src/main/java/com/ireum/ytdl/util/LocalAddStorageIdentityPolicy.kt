@@ -25,9 +25,6 @@ object LocalAddStorageIdentityPolicy {
         val identities = linkedSetOf<String>()
         val treeUri = item.localTreeUri.trim().takeIf(String::isNotBlank)?.let(::parseUri)
         val relativePath = item.localTreePath.trim().takeIf(String::isNotBlank)
-        if (treeUri != null && relativePath != null) {
-            treeIdentity(treeUri, relativePath)?.let(identities::add)
-        }
         item.downloadPath.forEach { path ->
             identityForUri(path, treeUri, relativePath)?.let(identities::add)
         }
@@ -45,7 +42,7 @@ object LocalAddStorageIdentityPolicy {
         treeUri: Uri?,
         relativePath: String?,
     ): String? {
-        if (treeUri != null && !relativePath.isNullOrBlank()) {
+        if (treeUri != null && !relativePath.isNullOrBlank() && sameAuthority(treeUri, uri)) {
             treeIdentity(treeUri, relativePath)?.let { return it }
         }
 
@@ -87,6 +84,7 @@ object LocalAddStorageIdentityPolicy {
     }
 
     private fun relativePath(treeUri: Uri, fileUri: Uri): String? {
+        if (!sameAuthority(treeUri, fileUri)) return null
         val treeId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }
             .getOrNull()
             ?.takeIf(String::isNotBlank)
@@ -102,6 +100,12 @@ object LocalAddStorageIdentityPolicy {
                 .trimStart('/')
                 .takeIf(String::isNotBlank)
         }
+    }
+
+    private fun sameAuthority(first: Uri, second: Uri): Boolean {
+        val firstAuthority = first.authority?.trim()?.lowercase(Locale.ROOT)
+        val secondAuthority = second.authority?.trim()?.lowercase(Locale.ROOT)
+        return !firstAuthority.isNullOrBlank() && firstAuthority == secondAuthority
     }
 
     private fun parseUri(value: String): Uri? = value.trim()
