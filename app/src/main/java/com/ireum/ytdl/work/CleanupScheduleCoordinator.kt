@@ -116,6 +116,8 @@ internal object CleanupScheduleCoordinator {
     internal var enqueueOverrideForTesting:
         ((String, ExistingWorkPolicy, OneTimeWorkRequest) -> Operation)? = null
     @Volatile
+    internal var workInfoQueryOverrideForTesting: (() -> List<WorkInfo>)? = null
+    @Volatile
     internal var authorityCommitOverrideForTesting:
         ((android.content.SharedPreferences.Editor) -> Boolean)? = null
     @Volatile
@@ -197,8 +199,7 @@ internal object CleanupScheduleCoordinator {
                     return@synchronized true
                 }
 
-                val handle = enqueueNextLocked(
-                    context = appContext,
+                enqueueNextLocked(
                     workManager = workManager,
                     generation = generation,
                     cadence = normalizedCadence,
@@ -207,12 +208,11 @@ internal object CleanupScheduleCoordinator {
                     append = false,
                     successor = false,
                     occurrenceAtOverride = initialOccurrenceAt,
-                    persistDebt = false,
-                )?.also { handle ->
+                ).also { handle ->
                     handle.operation?.let { observeAcceptance(appContext, handle) }
                     ensureReplayOwnerLocked(appContext)
                 }
-                handle != null
+                true
             }
         }
 
@@ -269,12 +269,33 @@ internal object CleanupScheduleCoordinator {
                         now.get(Calendar.DAY_OF_MONTH),
                     )
                 }
+                val currentGeneration = requireNotNull(generation)
+                val currentCadence = requireNotNull(cadence)
 
-                val current = runCatching {
-                    workManager.getWorkInfosForUniqueWork(WORK_NAME).get()
-                }.getOrDefault(emptyList())
-                val expectedGenerationTag = generationTag(generation)
-                val expectedCadenceTag = cadenceTag(cadence!!)
+                val persistedDebt = readSchedulingDebt(preferences)?.takeIf { debt ->
+                    debt.generation == currentGeneration &&
+                        debt.cadence == currentCadence &&
+                        debt.monthlyAnchorDay == anchorDay
+                }
+                val current = queryCurrentWork(workManager)
+                if (current == null) {
+                    val recoveryDebt = persistedDebt ?: nextSchedulingDebt(
+                        generation = currentGeneration,
+                        cadence = currentCadence,
+                        monthlyAnchorDay = anchorDay,
+                        from = now,
+                    )
+                    if (persistedDebt == null &&
+                        !persistSchedulingDebtLocked(preferences, recoveryDebt)
+                    ) {
+                        ensureReplayOwnerLocked(appContext, recoveryDebt)
+                        return@synchronized
+                    }
+                    ensureReplayOwnerLocked(appContext, recoveryDebt)
+                    return@synchronized
+                }
+                val expectedGenerationTag = generationTag(currentGeneration)
+                val expectedCadenceTag = cadenceTag(currentCadence)
                 val currentIds = current.map { it.id }.toSet()
                 val hasCurrent = current.any { info ->
                     isUnfinished(info) &&
@@ -283,7 +304,14 @@ internal object CleanupScheduleCoordinator {
                 }
 
                 if (hasCurrent) {
-                    clearDebtForCurrentWorkLocked(appContext, generation, cadence, anchorDay, current)
+                    clearDebtForCurrentWorkLocked(appContext, currentGeneration, currentCadence, anchorDay, current)
+                    readSchedulingDebt(preferences)?.takeIf { debt ->
+                        debt.generation == currentGeneration &&
+                            debt.cadence == currentCadence &&
+                            debt.monthlyAnchorDay == anchorDay
+                    }?.let { debt ->
+                        ensureReplayOwnerLocked(appContext, debt)
+                    }
                     // Retire timestamp-named legacy requests without touching the
                     // current stable chain, which may include a running occurrence.
                     runCatching {
@@ -297,24 +325,30 @@ internal object CleanupScheduleCoordinator {
                 // Missing, finished, or stale-generation work is repaired as one new
                 // stable chain. REPLACE is used here only because there is no current
                 // occurrence to preserve.
-                workManager.cancelAllWorkByTag(TAG)
-                val persistedDebt = readSchedulingDebt(preferences)?.takeIf { debt ->
-                    debt.generation == generation &&
-                        debt.cadence == cadence &&
-                        debt.monthlyAnchorDay == anchorDay
+                val recoveryDebt = persistedDebt ?: nextSchedulingDebt(
+                    generation = currentGeneration,
+                    cadence = currentCadence,
+                    monthlyAnchorDay = anchorDay,
+                    from = now,
+                )
+                if (persistedDebt == null &&
+                    !persistSchedulingDebtLocked(preferences, recoveryDebt)
+                ) {
+                    ensureReplayOwnerLocked(appContext, recoveryDebt)
+                    return@synchronized
                 }
+                ensureReplayOwnerLocked(appContext, recoveryDebt)
+                workManager.cancelAllWorkByTag(TAG)
                 enqueueNextLocked(
-                    context = appContext,
                     workManager = workManager,
-                    generation = generation,
-                    cadence = cadence,
+                    generation = currentGeneration,
+                    cadence = currentCadence,
                     monthlyAnchorDay = anchorDay,
                     from = now,
                     append = false,
                     successor = false,
-                    occurrenceAtOverride = persistedDebt?.occurrenceAt,
-                    persistDebt = persistedDebt == null,
-                )?.also { handle ->
+                    occurrenceAtOverride = recoveryDebt.occurrenceAt,
+                ).also { handle ->
                     handle.operation?.let { observeAcceptance(appContext, handle) }
                     ensureReplayOwnerLocked(appContext)
                 }
@@ -407,10 +441,29 @@ internal object CleanupScheduleCoordinator {
                 cadence = currentCadence!!,
                 monthlyAnchorDay = monthlyAnchorDay,
             )
-            val occurrenceTag = occurrenceTag(generation, next.timeInMillis)
+            val successorDebt = SchedulingDebt(
+                generation = generation,
+                cadence = currentCadence,
+                monthlyAnchorDay = monthlyAnchorDay,
+                occurrenceAt = next.timeInMillis,
+            )
+            if (!persistSchedulingDebtLocked(preferences, successorDebt)) {
+                ensureReplayOwnerLocked(appContext, successorDebt)
+                return@synchronized null
+            }
+            ensureReplayOwnerLocked(appContext, successorDebt)
+
+            val occurrenceTag = occurrenceTag(generation, successorDebt.occurrenceAt)
             val workManager = workManager(appContext)
-            val current = workManager.getWorkInfosForUniqueWork(WORK_NAME).get()
+            val current = queryCurrentWork(workManager) ?: return@synchronized null
             if (current.any { info -> info.tags.contains(occurrenceTag) }) {
+                clearDebtForCurrentWorkLocked(
+                    context = appContext,
+                    generation = generation,
+                    cadence = currentCadence,
+                    monthlyAnchorDay = monthlyAnchorDay,
+                    current = current,
+                )
                 return@synchronized EnqueueHandle(
                     request = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>().build(),
                     operation = null,
@@ -418,12 +471,11 @@ internal object CleanupScheduleCoordinator {
                     generation = generation,
                     cadence = currentCadence,
                     monthlyAnchorDay = monthlyAnchorDay,
-                    occurrenceAt = next.timeInMillis,
-                ).also { ensureReplayOwnerLocked(appContext) }
+                    occurrenceAt = successorDebt.occurrenceAt,
+                )
             }
 
             enqueueNextLocked(
-                context = appContext,
                 workManager = workManager,
                 generation = generation,
                 cadence = currentCadence,
@@ -431,7 +483,8 @@ internal object CleanupScheduleCoordinator {
                 from = from,
                 append = true,
                 successor = true,
-            )?.also { ensureReplayOwnerLocked(appContext) }
+                occurrenceAtOverride = successorDebt.occurrenceAt,
+            ).also { ensureReplayOwnerLocked(appContext, successorDebt) }
         } ?: return false
 
         if (handle.alreadyPresent) return true
@@ -439,7 +492,6 @@ internal object CleanupScheduleCoordinator {
     }
 
     private fun enqueueNextLocked(
-        context: Context,
         workManager: WorkManager,
         generation: String,
         cadence: String,
@@ -448,8 +500,7 @@ internal object CleanupScheduleCoordinator {
         append: Boolean,
         successor: Boolean,
         occurrenceAtOverride: Long? = null,
-        persistDebt: Boolean = true,
-    ): EnqueueHandle? {
+    ): EnqueueHandle {
         val next = CleanupSchedulePolicy.nextOccurrence(from, cadence, monthlyAnchorDay)
         val occurrenceAt = occurrenceAtOverride ?: next.timeInMillis
         val delayOverride = if (successor) {
@@ -484,16 +535,6 @@ internal object CleanupScheduleCoordinator {
         val request = requestBuilder.build()
 
         val policy = if (append) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE
-        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        if (persistDebt && !preferences.edit()
-                .putString(PREF_PENDING_GENERATION, generation)
-                .putString(PREF_PENDING_CADENCE, cadence)
-                .putInt(PREF_PENDING_ANCHOR_DAY, monthlyAnchorDay)
-                .putLong(PREF_PENDING_OCCURRENCE_AT, occurrenceAt)
-                .commit()
-        ) {
-            return null
-        }
         return try {
             EnqueueHandle(
                 request = request,
@@ -505,9 +546,9 @@ internal object CleanupScheduleCoordinator {
                 occurrenceAt = occurrenceAt,
             )
         } catch (_: Exception) {
-            // The generation-bound debt was committed above.  Keep returning
-            // a handle so callers can report durable recovery responsibility
-            // even though this enqueue attempt itself failed.
+            // Callers commit the generation-bound debt before reaching this
+            // function. Keep returning a handle so they can retain durable
+            // recovery responsibility even though this enqueue attempt failed.
             EnqueueHandle(
                 request = request,
                 operation = null,
@@ -531,6 +572,38 @@ internal object CleanupScheduleCoordinator {
 
     private fun commitAuthority(editor: android.content.SharedPreferences.Editor): Boolean =
         authorityCommitOverrideForTesting?.invoke(editor) ?: editor.commit()
+
+    private fun persistSchedulingDebtLocked(
+        preferences: android.content.SharedPreferences,
+        debt: SchedulingDebt,
+    ): Boolean = commitAuthority(
+        preferences.edit()
+            .putString(PREF_PENDING_GENERATION, debt.generation)
+            .putString(PREF_PENDING_CADENCE, debt.cadence)
+            .putInt(PREF_PENDING_ANCHOR_DAY, debt.monthlyAnchorDay)
+            .putLong(PREF_PENDING_OCCURRENCE_AT, debt.occurrenceAt)
+    )
+
+    private fun nextSchedulingDebt(
+        generation: String,
+        cadence: String,
+        monthlyAnchorDay: Int,
+        from: Calendar,
+    ): SchedulingDebt = SchedulingDebt(
+        generation = generation,
+        cadence = cadence,
+        monthlyAnchorDay = monthlyAnchorDay,
+        occurrenceAt = CleanupSchedulePolicy.nextOccurrence(
+            now = from,
+            cadence = cadence,
+            monthlyAnchorDay = monthlyAnchorDay,
+        ).timeInMillis,
+    )
+
+    private fun queryCurrentWork(workManager: WorkManager): List<WorkInfo>? = runCatching {
+        workInfoQueryOverrideForTesting?.invoke()
+            ?: workManager.getWorkInfosForUniqueWork(WORK_NAME).get()
+    }.getOrNull()
 
     private suspend fun awaitAcceptance(context: Context, handle: EnqueueHandle): Boolean =
         try {
@@ -566,9 +639,12 @@ internal object CleanupScheduleCoordinator {
      * alive. The persisted generation/cadence/occurrence tuple remains the
      * authority; this job is only the bounded replay mechanism.
      */
-    private fun ensureReplayOwnerLocked(context: Context): Boolean {
+    private fun ensureReplayOwnerLocked(
+        context: Context,
+        fallbackDebt: SchedulingDebt? = null,
+    ): Boolean {
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        val debt = readSchedulingDebt(preferences)
+        val debt = readSchedulingDebt(preferences) ?: fallbackDebt
         if (debt == null) {
             stopReplayOwnerLocked()
             return true
@@ -588,6 +664,10 @@ internal object CleanupScheduleCoordinator {
         while (currentCoroutineContext().isActive) {
             delay(backoff.coerceAtLeast(1L))
             if (!isSchedulingDebtCurrent(context, expected)) return
+            if (!isSchedulingDebtPersistedOrRepaired(context, expected)) {
+                backoff = (backoff * 2L).coerceAtMost(maxBackoff.coerceAtLeast(backoff))
+                continue
+            }
             try {
                 // Reconciliation uses the same durable generation and unique
                 // WorkManager identity as normal startup recovery.
@@ -604,10 +684,31 @@ internal object CleanupScheduleCoordinator {
 
     private fun isSchedulingDebtCurrent(context: Context, expected: SchedulingDebt): Boolean =
         synchronized(lock) {
-            readSchedulingDebt(
-                PreferenceManager.getDefaultSharedPreferences(context)
-            ) == expected
+            val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+            val persisted = readSchedulingDebt(preferences)
+            when {
+                persisted == expected -> true
+                persisted != null -> false
+                else -> authorityMatchesDebt(preferences, expected)
+            }
         }
+
+    private fun isSchedulingDebtPersistedOrRepaired(
+        context: Context,
+        expected: SchedulingDebt,
+    ): Boolean = synchronized(lock) {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        if (readSchedulingDebt(preferences) == expected) return@synchronized true
+        if (!authorityMatchesDebt(preferences, expected)) return@synchronized false
+        persistSchedulingDebtLocked(preferences, expected)
+    }
+
+    private fun authorityMatchesDebt(
+        preferences: android.content.SharedPreferences,
+        debt: SchedulingDebt,
+    ): Boolean = preferences.getString(PREF_GENERATION, null) == debt.generation &&
+        preferences.getString(PREF_CADENCE, null) == debt.cadence &&
+        preferences.getInt(PREF_MONTHLY_ANCHOR_DAY, -1) == debt.monthlyAnchorDay
 
     private fun readSchedulingDebt(preferences: android.content.SharedPreferences): SchedulingDebt? {
         val generation = preferences.getString(PREF_PENDING_GENERATION, null)

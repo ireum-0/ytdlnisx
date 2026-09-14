@@ -36,6 +36,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.Collections
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.Calendar
 import java.util.UUID
 
 /**
@@ -233,6 +234,218 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         )
         assertTrue(enqueueCalls.get() >= 2)
         assertEquals(1, unfinishedCurrentWork().size)
+    }
+
+    @Test
+    fun successorDiscoveryFailurePersistsExactDebtBeforeQueryAndRecovers() = runBlocking {
+        val scheduleNow = Calendar.getInstance()
+        CleanupScheduleCoordinator.nowProviderForTesting = {
+            scheduleNow.clone() as Calendar
+        }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        assertEquals(1, unfinishedCurrentWork().size)
+        val predecessorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = scheduleNow,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+        val expectedSuccessorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = Calendar.getInstance().apply { timeInMillis = predecessorAt },
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+        CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = {
+            error("scheduler discovery unavailable")
+        }
+
+        assertFalse(
+            CleanupScheduleCoordinator.scheduleSuccessor(
+                context = context,
+                generation = generation,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+                completedOccurrenceAt = predecessorAt,
+            )
+        )
+        assertEquals(
+            generation,
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null),
+        )
+        assertEquals(
+            expectedSuccessorAt,
+            preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+        )
+
+        CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = null
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+            }
+        )
+        assertEquals(1, unfinishedCurrentWork().size)
+    }
+
+    @Test
+    fun successorDebtPersistenceFailureUsesLiveFallbackUntilItCanPersist() = runBlocking {
+        val scheduleNow = Calendar.getInstance()
+        CleanupScheduleCoordinator.nowProviderForTesting = {
+            scheduleNow.clone() as Calendar
+        }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        assertEquals(1, unfinishedCurrentWork().size)
+        val predecessorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = scheduleNow,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+
+        assertFalse(
+            CleanupScheduleCoordinator.scheduleSuccessor(
+                context = context,
+                generation = generation,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+                completedOccurrenceAt = predecessorAt,
+            )
+        )
+        assertNull(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+        )
+
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+            }
+        )
+        assertEquals(1, unfinishedCurrentWork().size)
+    }
+
+    @Test
+    fun startupRecoveryDebtFailureRetainsCurrentProcessOwnership() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        assertTrue(awaitPreference(timeoutMs = 2_000L) { unfinishedCurrentWork().isEmpty() })
+        preferences.edit()
+            .remove("cleanup_leftover_downloads_pending_generation")
+            .remove("cleanup_leftover_downloads_pending_cadence")
+            .remove("cleanup_leftover_downloads_pending_anchor_day")
+            .remove("cleanup_leftover_downloads_pending_occurrence_at")
+            .commit()
+
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        CleanupScheduleCoordinator.reconcile(context)
+
+        assertNull(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+        )
+        assertTrue(unfinishedCurrentWork().isEmpty())
+
+        val enqueueCalls = AtomicInteger(0)
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
+            enqueueCalls.incrementAndGet()
+            workManager.enqueueUniqueWork(name, policy, request)
+        }
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                enqueueCalls.get() >= 1 && unfinishedCurrentWork().size == 1
+            }
+        )
+        assertEquals(1, unfinishedCurrentWork().size)
+    }
+
+    @Test
+    fun restartReconstructsReplayOwnerForUnmatchedSuccessorDebt() = runBlocking {
+        val scheduleNow = Calendar.getInstance()
+        CleanupScheduleCoordinator.nowProviderForTesting = {
+            scheduleNow.clone() as Calendar
+        }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val predecessor = unfinishedCurrentWork().single()
+        val predecessorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = scheduleNow,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+        val successorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = Calendar.getInstance().apply { timeInMillis = predecessorAt },
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+        preferences.edit()
+            .putString("cleanup_leftover_downloads_pending_generation", generation)
+            .putString("cleanup_leftover_downloads_pending_cadence", CleanupSchedulePolicy.DAILY)
+            .putInt("cleanup_leftover_downloads_pending_anchor_day", anchorDay)
+            .putLong("cleanup_leftover_downloads_pending_occurrence_at", successorAt)
+            .commit()
+        CleanupScheduleCoordinator.resetReplayOwnerForTesting()
+
+        CleanupScheduleCoordinator.reconcile(context)
+        assertEquals(
+            successorAt,
+            preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+        )
+        workManager.cancelWorkById(predecessor.id).result.get(20, TimeUnit.SECONDS)
+
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+            }
+        )
+        val repaired = unfinishedCurrentWork()
+        assertEquals(1, repaired.size)
+        assertTrue(repaired.single().tags.contains(occurrenceTag(generation, successorAt)))
+    }
+
+    @Test
+    fun schedulerDiscoveryFailureDoesNotCancelOrReplacePossibleLiveWork() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val before = unfinishedCurrentWork().single()
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = TimeUnit.MINUTES.toMillis(1)
+        val enqueueCalls = AtomicInteger(0)
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
+            enqueueCalls.incrementAndGet()
+            workManager.enqueueUniqueWork(name, policy, request)
+        }
+        CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = {
+            error("scheduler discovery unavailable")
+        }
+
+        CleanupScheduleCoordinator.reconcile(context)
+
+        val after = unfinishedCurrentWork()
+        assertEquals(listOf(before.id), after.map { it.id })
+        assertEquals(0, enqueueCalls.get())
     }
 
     @Test
@@ -874,6 +1087,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = null
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = null
         CleanupScheduleCoordinator.enqueueOverrideForTesting = null
+        CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = null
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = null
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = null
@@ -1000,6 +1214,9 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
     private fun generationTag(generation: String): String =
         "${CleanupScheduleCoordinator.TAG}_generation_$generation"
+
+    private fun occurrenceTag(generation: String, occurrenceAt: Long): String =
+        "${CleanupScheduleCoordinator.TAG}_occurrence_${generation}_$occurrenceAt"
 
     private class ControlledOperation : Operation {
         private val state = MutableLiveData<Operation.State>(Operation.IN_PROGRESS)
