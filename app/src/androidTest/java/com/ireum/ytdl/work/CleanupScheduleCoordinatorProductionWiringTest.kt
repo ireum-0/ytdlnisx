@@ -1,6 +1,8 @@
 package com.ireum.ytdl.work
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.preference.PreferenceManager
@@ -13,9 +15,13 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.impl.utils.futures.SettableFuture
 import androidx.work.workDataOf
 import com.google.common.util.concurrent.ListenableFuture
+import com.ireum.ytdl.ui.more.settings.CleanupSchedulePreferenceController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -93,7 +99,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
-    fun startupReconciliationRepairsMissingChainWithoutDuplicatingIt() {
+    fun startupReconciliationRepairsMissingChainWithoutDuplicatingIt() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
         assertEquals(1, unfinishedCurrentWork().size)
@@ -381,6 +387,133 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun settingsTransitionDoesNotBlockMainWhileCleanupEffectIsActive() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            entered.countDown()
+            check(release.await(10, TimeUnit.SECONDS)) { "cleanup did not release" }
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        assertTrue(entered.await(10, TimeUnit.SECONDS))
+
+        val applied = Collections.synchronizedList(mutableListOf<String>())
+        val controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val controller = CleanupSchedulePreferenceController(
+                context = context,
+                scope = controllerScope,
+                applyPersistedCadence = applied::add,
+            )
+            val callbackReturned = CountDownLatch(1)
+            Handler(Looper.getMainLooper()).post {
+                controller.request(CleanupSchedulePolicy.WEEKLY)
+                callbackReturned.countDown()
+            }
+
+            assertTrue(callbackReturned.await(2, TimeUnit.SECONDS))
+            assertEquals(
+                CleanupSchedulePolicy.DAILY,
+                preferences.getString("cleanup_leftover_downloads", null),
+            )
+
+            release.countDown()
+            assertTrue(
+                awaitPreference(timeoutMs = 5_000L) {
+                    preferences.getString("cleanup_leftover_downloads", null) ==
+                        CleanupSchedulePolicy.WEEKLY
+                }
+            )
+            assertTrue(
+                awaitPreference(timeoutMs = 5_000L) {
+                    synchronized(applied) {
+                        CleanupSchedulePolicy.WEEKLY in applied
+                    }
+                }
+            )
+        } finally {
+            release.countDown()
+            controllerScope.cancel()
+        }
+    }
+
+    @Test
+    fun settingsCommitFailureLeavesPreviousDurableCadenceVisible() = runBlocking {
+        assertTrue(
+            preferences.edit()
+                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+                .commit()
+        )
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+
+        val applied = Collections.synchronizedList(mutableListOf<String>())
+        val controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val controller = CleanupSchedulePreferenceController(
+                context = context,
+                scope = controllerScope,
+                applyPersistedCadence = applied::add,
+            )
+            controller.request(CleanupSchedulePolicy.WEEKLY)
+
+            assertTrue(
+                awaitPreference(timeoutMs = 5_000L) {
+                    synchronized(applied) {
+                        CleanupSchedulePolicy.DAILY in applied
+                    }
+                }
+            )
+            assertEquals(
+                CleanupSchedulePolicy.DAILY,
+                preferences.getString("cleanup_leftover_downloads", null),
+            )
+        } finally {
+            controllerScope.cancel()
+        }
+    }
+
+    @Test
+    fun rapidSettingsRequestsLeaveLatestCadenceAuthoritative() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        assertTrue(
+            preferences.edit()
+                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+                .commit()
+        )
+        val applied = Collections.synchronizedList(mutableListOf<String>())
+        val controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val controller = CleanupSchedulePreferenceController(
+                context = context,
+                scope = controllerScope,
+                applyPersistedCadence = applied::add,
+            )
+
+            Handler(Looper.getMainLooper()).post {
+                controller.request(CleanupSchedulePolicy.WEEKLY)
+                controller.request("")
+            }
+
+            assertTrue(
+                awaitPreference(timeoutMs = 5_000L) {
+                    preferences.getString("cleanup_leftover_downloads", null).orEmpty().isEmpty()
+                }
+            )
+            assertTrue(
+                awaitPreference(timeoutMs = 5_000L) {
+                    synchronized(applied) {
+                        applied.lastOrNull().orEmpty().isEmpty()
+                    }
+                }
+            )
+        } finally {
+            controllerScope.cancel()
+        }
+    }
+
+    @Test
     fun finalCleanupFailurePreservesFutureOccurrenceAndReportsFailure() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
@@ -528,6 +661,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = null
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = null
         CleanupScheduleCoordinator.enqueueOverrideForTesting = null
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = null
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = null
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = null

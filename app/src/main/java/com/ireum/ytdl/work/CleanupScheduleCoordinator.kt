@@ -20,7 +20,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.Calendar
@@ -116,6 +115,9 @@ internal object CleanupScheduleCoordinator {
     internal var enqueueOverrideForTesting:
         ((String, ExistingWorkPolicy, OneTimeWorkRequest) -> Operation)? = null
     @Volatile
+    internal var authorityCommitOverrideForTesting:
+        ((android.content.SharedPreferences.Editor) -> Boolean)? = null
+    @Volatile
     internal var replayInitialDelayOverrideForTesting: Long? = null
     @Volatile
     internal var replayMaxDelayOverrideForTesting: Long? = null
@@ -137,7 +139,7 @@ internal object CleanupScheduleCoordinator {
         val occurrenceAt: Long,
     )
 
-    fun configure(context: Context, cadence: String?): Boolean = runBlocking {
+    suspend fun configure(context: Context, cadence: String?): Boolean =
         destructiveEffectMutex.withLock {
             synchronized(lock) {
                 val appContext = context.applicationContext
@@ -152,7 +154,7 @@ internal object CleanupScheduleCoordinator {
                 // WorkManager cancellation is still in flight.  The effect gate
                 // also prevents this commit from overtaking a cleanup effect
                 // that has already acquired the current generation lease.
-                val authorityCommitted = preferences.edit()
+                val authorityEditor = preferences.edit()
                     .putString(PREF_CADENCE, normalizedCadence.orEmpty())
                     .putString(PREF_GENERATION, generation)
                     .putInt(PREF_MONTHLY_ANCHOR_DAY, anchorDay)
@@ -164,7 +166,9 @@ internal object CleanupScheduleCoordinator {
                     .remove(PREF_PENDING_CADENCE)
                     .remove(PREF_PENDING_ANCHOR_DAY)
                     .remove(PREF_PENDING_OCCURRENCE_AT)
-                    .commit()
+                val authorityCommitted = authorityCommitOverrideForTesting
+                    ?.invoke(authorityEditor)
+                    ?: authorityEditor.commit()
                 if (!authorityCommitted) return@synchronized false
 
                 // The new generation wins before any old asynchronous owner can
@@ -194,10 +198,9 @@ internal object CleanupScheduleCoordinator {
                 handle != null
             }
         }
-    }
 
     /** Reconciles persisted cadence authority with WorkManager after restart. */
-    fun reconcile(context: Context) = runBlocking {
+    suspend fun reconcile(context: Context) {
         reconcileSuspending(context)
     }
 

@@ -22,7 +22,6 @@ import com.ireum.ytdl.R
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.work.AlarmScheduler
-import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.work.DownloadWorker
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
@@ -63,9 +62,18 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
                 true
             }
 
-        val cleanupLeftoverDownloads = findPreference<Preference>("cleanup_leftover_downloads")
-        cleanupLeftoverDownloads?.setOnPreferenceChangeListener { _, newValue ->
-            CleanupScheduleCoordinator.configure(requireContext(), newValue as? String)
+        val cleanupLeftoverDownloads = findPreference<ListPreference>("cleanup_leftover_downloads")
+        cleanupLeftoverDownloads?.let { cleanupPreference ->
+            val transitionController = CleanupSchedulePreferenceController(
+                context = requireContext(),
+                scope = lifecycleScope,
+                applyPersistedCadence = { persistedCadence ->
+                    cleanupPreference.value = persistedCadence
+                },
+            )
+            cleanupPreference.setOnPreferenceChangeListener { _, newValue ->
+                transitionController.request(newValue)
+            }
         }
 
 
