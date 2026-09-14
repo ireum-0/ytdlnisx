@@ -29,23 +29,20 @@ class CleanUpLeftoverDownloads(
         /** Null-default seam for deterministic cleanup retry tests. */
         @Volatile
         internal var cleanupOverrideForTesting: (suspend () -> Unit)? = null
+
+        /**
+         * Runs after the worker has loaded its tuple but before it requests
+         * the generation-owned destructive-effect admission.  It is used to
+         * deterministically place a configure transition before admission;
+         * production correctness is provided by the coordinator gate.
+         */
+        @Volatile
+        internal var beforeCleanupAdmissionForTesting: (() -> Unit)? = null
     }
 
     override suspend fun doWork(): Result {
         val generation = inputData.getString(CleanupScheduleCoordinator.INPUT_GENERATION)
         val cadence = inputData.getString(CleanupScheduleCoordinator.INPUT_CADENCE)
-        // WorkManager cancellation is asynchronous. A request from a
-        // superseded/disabled generation must prove current authority before
-        // it can enter any destructive cleanup effect.
-        if (!CleanupScheduleCoordinator.isCurrentOccurrence(
-                context = applicationContext,
-                generation = generation,
-                cadence = cadence,
-            )
-        ) {
-            return Result.success(workDataOf("cleanup_schedule_stale" to true))
-        }
-
         val notificationUtil = NotificationUtil(App.instance)
         val id = System.currentTimeMillis().toInt()
 
@@ -58,19 +55,33 @@ class CleanUpLeftoverDownloads(
 
         var cleanupFailure: Exception? = null
         try {
-            val override = cleanupOverrideForTesting
-            if (override != null) {
-                override()
-            } else {
-                val dbManager = DBManager.getInstance(context)
-                val downloadRepo = DownloadRepository(dbManager)
-                LowQualityRedownloadLedger.refresh(context, downloadRepo.deleteCancelled())
-                LowQualityRedownloadLedger.refresh(context, downloadRepo.deleteErrored())
+            beforeCleanupAdmissionForTesting?.invoke()
+            when (
+                val admission = CleanupScheduleCoordinator.withCurrentDestructiveEffect(
+                    context = applicationContext,
+                    generation = generation,
+                    cadence = cadence,
+                ) {
+                    val override = cleanupOverrideForTesting
+                    if (override != null) {
+                        override()
+                    } else {
+                        val dbManager = DBManager.getInstance(context)
+                        val downloadRepo = DownloadRepository(dbManager)
+                        LowQualityRedownloadLedger.refresh(context, downloadRepo.deleteCancelled())
+                        LowQualityRedownloadLedger.refresh(context, downloadRepo.deleteErrored())
 
-                val activeDownloadCount = downloadRepo.getActiveDownloadsCount()
-                if (activeDownloadCount == 0){
-                    AppCacheManager(context).delete(setOf(AppCacheCategory.DOWNLOAD_TEMP))
+                        val activeDownloadCount = downloadRepo.getActiveDownloadsCount()
+                        if (activeDownloadCount == 0){
+                            AppCacheManager(context).delete(setOf(AppCacheCategory.DOWNLOAD_TEMP))
+                        }
+                    }
                 }
+            ) {
+                CleanupScheduleCoordinator.DestructiveEffectResult.Stale -> {
+                    return Result.success(workDataOf("cleanup_schedule_stale" to true))
+                }
+                is CleanupScheduleCoordinator.DestructiveEffectResult.Completed -> Unit
             }
         } catch (cancelled: CancellationException) {
             throw cancelled

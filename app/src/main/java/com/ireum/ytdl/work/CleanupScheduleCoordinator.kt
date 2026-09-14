@@ -20,6 +20,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Calendar
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -87,6 +90,13 @@ internal object CleanupScheduleCoordinator {
     private const val REPLAY_MAX_DELAY_MS = 60_000L
 
     private val lock = Any()
+    /**
+     * Serializes durable authority transitions with the destructive cleanup
+     * effect itself.  This is a coroutine mutex rather than a JVM monitor so
+     * the worker may suspend while it owns the effect lease without pinning a
+     * thread-affine lock.
+     */
+    private val destructiveEffectMutex = Mutex()
     private val replayScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var replayJob: Job? = null
     private var replayDebt: SchedulingDebt? = null
@@ -127,129 +137,143 @@ internal object CleanupScheduleCoordinator {
         val occurrenceAt: Long,
     )
 
-    fun configure(context: Context, cadence: String?): Boolean = synchronized(lock) {
-        val appContext = context.applicationContext
-        val normalizedCadence = cadence?.takeIf(CleanupSchedulePolicy::isEnabled)
-        val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
-        val generation = UUID.randomUUID().toString()
-        val now = currentCalendar()
-        val anchorDay = now.get(Calendar.DAY_OF_MONTH)
+    fun configure(context: Context, cadence: String?): Boolean = runBlocking {
+        destructiveEffectMutex.withLock {
+            synchronized(lock) {
+                val appContext = context.applicationContext
+                val normalizedCadence = cadence?.takeIf(CleanupSchedulePolicy::isEnabled)
+                val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
+                val generation = UUID.randomUUID().toString()
+                val now = currentCalendar()
+                val anchorDay = now.get(Calendar.DAY_OF_MONTH)
 
-        // Commit the new authority before cancelling/replacing any old work.
-        // A stale worker therefore observes the new generation even if
-        // WorkManager cancellation is still in flight.
-        val authorityCommitted = preferences.edit()
-            .putString(PREF_CADENCE, normalizedCadence.orEmpty())
-            .putString(PREF_GENERATION, generation)
-            .putInt(PREF_MONTHLY_ANCHOR_DAY, anchorDay)
-            // Retire the previous generation's scheduling debt in the same
-            // durable transition as the new authority.  A later independent
-            // commit must not be able to fail after the new generation has
-            // already become authoritative.
-            .remove(PREF_PENDING_GENERATION)
-            .remove(PREF_PENDING_CADENCE)
-            .remove(PREF_PENDING_ANCHOR_DAY)
-            .remove(PREF_PENDING_OCCURRENCE_AT)
-            .commit()
-        if (!authorityCommitted) return@synchronized false
+                // Commit the new authority before cancelling/replacing any old work.
+                // A stale worker therefore observes the new generation even if
+                // WorkManager cancellation is still in flight.  The effect gate
+                // also prevents this commit from overtaking a cleanup effect
+                // that has already acquired the current generation lease.
+                val authorityCommitted = preferences.edit()
+                    .putString(PREF_CADENCE, normalizedCadence.orEmpty())
+                    .putString(PREF_GENERATION, generation)
+                    .putInt(PREF_MONTHLY_ANCHOR_DAY, anchorDay)
+                    // Retire the previous generation's scheduling debt in the same
+                    // durable transition as the new authority.  A later independent
+                    // commit must not be able to fail after the new generation has
+                    // already become authoritative.
+                    .remove(PREF_PENDING_GENERATION)
+                    .remove(PREF_PENDING_CADENCE)
+                    .remove(PREF_PENDING_ANCHOR_DAY)
+                    .remove(PREF_PENDING_OCCURRENCE_AT)
+                    .commit()
+                if (!authorityCommitted) return@synchronized false
 
-        // The new generation wins before any old asynchronous owner can
-        // observe or mutate scheduling debt. Stop the superseded process-local
-        // replay owner before replacing/cancelling work.
-        stopReplayOwnerLocked()
+                // The new generation wins before any old asynchronous owner can
+                // observe or mutate scheduling debt. Stop the superseded process-local
+                // replay owner before replacing/cancelling work.
+                stopReplayOwnerLocked()
 
-        val workManager = workManager(appContext)
-        workManager.cancelAllWorkByTag(TAG)
-        if (normalizedCadence == null) {
-            return@synchronized true
+                val workManager = workManager(appContext)
+                workManager.cancelAllWorkByTag(TAG)
+                if (normalizedCadence == null) {
+                    return@synchronized true
+                }
+
+                val handle = enqueueNextLocked(
+                    context = appContext,
+                    workManager = workManager,
+                    generation = generation,
+                    cadence = normalizedCadence,
+                    monthlyAnchorDay = anchorDay,
+                    from = now,
+                    append = false,
+                    successor = false,
+                )?.also { handle ->
+                    handle.operation?.let { observeAcceptance(appContext, handle) }
+                    ensureReplayOwnerLocked(appContext)
+                }
+                handle != null
+            }
         }
-
-        val handle = enqueueNextLocked(
-            context = appContext,
-            workManager = workManager,
-            generation = generation,
-            cadence = normalizedCadence,
-            monthlyAnchorDay = anchorDay,
-            from = now,
-            append = false,
-            successor = false,
-        )?.also { handle ->
-            handle.operation?.let { observeAcceptance(appContext, handle) }
-            ensureReplayOwnerLocked(appContext)
-        }
-        handle != null
     }
 
     /** Reconciles persisted cadence authority with WorkManager after restart. */
-    fun reconcile(context: Context) = synchronized(lock) {
-        val appContext = context.applicationContext
-        val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
-        val cadence = preferences.getString(PREF_CADENCE, null)
-        val workManager = workManager(appContext)
+    fun reconcile(context: Context) = runBlocking {
+        reconcileSuspending(context)
+    }
 
-        if (!CleanupSchedulePolicy.isEnabled(cadence)) {
-            workManager.cancelAllWorkByTag(TAG)
-            retirePendingDebtLocked(preferences)
-            return@synchronized
-        }
+    private suspend fun reconcileSuspending(context: Context) {
+        destructiveEffectMutex.withLock {
+            synchronized(lock) {
+                val appContext = context.applicationContext
+                val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
+                val cadence = preferences.getString(PREF_CADENCE, null)
+                val workManager = workManager(appContext)
 
-        val now = currentCalendar()
-        var generation = preferences.getString(PREF_GENERATION, null)
-        if (generation.isNullOrBlank()) {
-            generation = UUID.randomUUID().toString()
-            if (!preferences.edit()
-                    .putString(PREF_GENERATION, generation)
-                    .putInt(PREF_MONTHLY_ANCHOR_DAY, now.get(Calendar.DAY_OF_MONTH))
-                    .commit()
-            ) {
-                return@synchronized
+                if (!CleanupSchedulePolicy.isEnabled(cadence)) {
+                    workManager.cancelAllWorkByTag(TAG)
+                    retirePendingDebtLocked(preferences)
+                    return@synchronized
+                }
+
+                val now = currentCalendar()
+                var generation = preferences.getString(PREF_GENERATION, null)
+                if (generation.isNullOrBlank()) {
+                    generation = UUID.randomUUID().toString()
+                    if (!preferences.edit()
+                            .putString(PREF_GENERATION, generation)
+                            .putInt(PREF_MONTHLY_ANCHOR_DAY, now.get(Calendar.DAY_OF_MONTH))
+                            .commit()
+                    ) {
+                        return@synchronized
+                    }
+                }
+                val anchorDay = preferences.getInt(
+                    PREF_MONTHLY_ANCHOR_DAY,
+                    now.get(Calendar.DAY_OF_MONTH),
+                )
+
+                val current = runCatching {
+                    workManager.getWorkInfosForUniqueWork(WORK_NAME).get()
+                }.getOrDefault(emptyList())
+                val expectedGenerationTag = generationTag(generation)
+                val expectedCadenceTag = cadenceTag(cadence!!)
+                val currentIds = current.map { it.id }.toSet()
+                val hasCurrent = current.any { info ->
+                    isUnfinished(info) &&
+                        info.tags.contains(expectedGenerationTag) &&
+                        info.tags.contains(expectedCadenceTag)
+                }
+
+                if (hasCurrent) {
+                    clearDebtForCurrentWorkLocked(appContext, generation, cadence, anchorDay, current)
+                    // Retire timestamp-named legacy requests without touching the
+                    // current stable chain, which may include a running occurrence.
+                    runCatching {
+                        workManager.getWorkInfosByTag(TAG).get()
+                            .filter { info -> isUnfinished(info) && info.id !in currentIds }
+                            .forEach { info -> workManager.cancelWorkById(info.id) }
+                    }
+                    return@synchronized
+                }
+
+                // Missing, finished, or stale-generation work is repaired as one new
+                // stable chain. REPLACE is used here only because there is no current
+                // occurrence to preserve.
+                workManager.cancelAllWorkByTag(TAG)
+                enqueueNextLocked(
+                    context = appContext,
+                    workManager = workManager,
+                    generation = generation,
+                    cadence = cadence,
+                    monthlyAnchorDay = anchorDay,
+                    from = now,
+                    append = false,
+                    successor = false,
+                )?.also { handle ->
+                    handle.operation?.let { observeAcceptance(appContext, handle) }
+                    ensureReplayOwnerLocked(appContext)
+                }
             }
-        }
-        val anchorDay = preferences.getInt(
-            PREF_MONTHLY_ANCHOR_DAY,
-            now.get(Calendar.DAY_OF_MONTH),
-        )
-
-        val current = runCatching {
-            workManager.getWorkInfosForUniqueWork(WORK_NAME).get()
-        }.getOrDefault(emptyList())
-        val expectedGenerationTag = generationTag(generation)
-        val expectedCadenceTag = cadenceTag(cadence!!)
-        val currentIds = current.map { it.id }.toSet()
-        val hasCurrent = current.any { info ->
-            isUnfinished(info) &&
-                info.tags.contains(expectedGenerationTag) &&
-                info.tags.contains(expectedCadenceTag)
-        }
-
-        if (hasCurrent) {
-            clearDebtForCurrentWorkLocked(appContext, generation, cadence, anchorDay, current)
-            // Retire timestamp-named legacy requests without touching the
-            // current stable chain, which may include a running occurrence.
-            runCatching {
-                workManager.getWorkInfosByTag(TAG).get()
-                    .filter { info -> isUnfinished(info) && info.id !in currentIds }
-                    .forEach { info -> workManager.cancelWorkById(info.id) }
-            }
-            return@synchronized
-        }
-
-        // Missing, finished, or stale-generation work is repaired as one new
-        // stable chain. REPLACE is used here only because there is no current
-        // occurrence to preserve.
-        workManager.cancelAllWorkByTag(TAG)
-        enqueueNextLocked(
-            context = appContext,
-            workManager = workManager,
-            generation = generation,
-            cadence = cadence,
-            monthlyAnchorDay = anchorDay,
-            from = now,
-            append = false,
-            successor = false,
-        )?.also { handle ->
-            handle.operation?.let { observeAcceptance(appContext, handle) }
-            ensureReplayOwnerLocked(appContext)
         }
     }
 
@@ -264,12 +288,44 @@ internal object CleanupScheduleCoordinator {
         generation: String?,
         cadence: String?,
     ): Boolean = synchronized(lock) {
+        isCurrentOccurrenceLocked(context, generation, cadence)
+    }
+
+    private fun isCurrentOccurrenceLocked(
+        context: Context,
+        generation: String?,
+        cadence: String?,
+    ): Boolean {
         if (generation.isNullOrBlank() || !CleanupSchedulePolicy.isEnabled(cadence)) {
-            return@synchronized false
+            return false
         }
         val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
-        preferences.getString(PREF_GENERATION, null) == generation &&
+        return preferences.getString(PREF_GENERATION, null) == generation &&
             preferences.getString(PREF_CADENCE, null) == cadence
+    }
+
+    internal sealed interface DestructiveEffectResult<out T> {
+        data class Completed<T>(val value: T) : DestructiveEffectResult<T>
+        data object Stale : DestructiveEffectResult<Nothing>
+    }
+
+    /**
+     * Admits and executes one occurrence's destructive cleanup as one
+     * generation-owned effect.  Configuration/reconciliation acquire the
+     * same mutex before committing new or disabled authority, so a commit
+     * cannot occur between this admission and the effect body.
+     */
+    internal suspend fun <T> withCurrentDestructiveEffect(
+        context: Context,
+        generation: String?,
+        cadence: String?,
+        effect: suspend () -> T,
+    ): DestructiveEffectResult<T> = destructiveEffectMutex.withLock {
+        if (!isCurrentOccurrenceLocked(context, generation, cadence)) {
+            DestructiveEffectResult.Stale
+        } else {
+            DestructiveEffectResult.Completed(effect())
+        }
     }
 
     /**
@@ -478,7 +534,7 @@ internal object CleanupScheduleCoordinator {
             try {
                 // Reconciliation uses the same durable generation and unique
                 // WorkManager identity as normal startup recovery.
-                reconcile(context)
+                reconcileSuspending(context)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {

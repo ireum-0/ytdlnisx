@@ -13,6 +13,9 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.impl.utils.futures.SettableFuture
 import androidx.work.workDataOf
 import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -284,8 +287,13 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
         assertTrue(entered.await(10, TimeUnit.SECONDS))
-        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY)
+        val reconfigure = async(Dispatchers.Default) {
+            CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY)
+        }
+        Thread.sleep(100L)
+        assertFalse(reconfigure.isCompleted)
         release.countDown()
+        assertTrue(reconfigure.await())
 
         val weekly = awaitWork(timeoutMs = 30_000L) { infos ->
             infos.any { info ->
@@ -313,8 +321,13 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
         assertTrue(entered.await(10, TimeUnit.SECONDS))
-        CleanupScheduleCoordinator.configure(context, null)
+        val disable = async(Dispatchers.Default) {
+            CleanupScheduleCoordinator.configure(context, null)
+        }
+        Thread.sleep(100L)
+        assertFalse(disable.isCompleted)
         release.countDown()
+        assertTrue(disable.await())
 
         awaitUnfinishedCount(0, timeoutMs = 30_000L)
         assertTrue(unfinishedCurrentWork().isEmpty())
@@ -355,6 +368,16 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
         assertTrue(terminal.outputData.getBoolean("cleanup_schedule_stale", false))
         assertEquals(0, cleanupRuns.get())
+    }
+
+    @Test
+    fun disableBeforeDestructiveAdmissionFencesPausedOldWorker() = runBlocking {
+        assertPausedWorkerCannotEnterAfterTransition(null)
+    }
+
+    @Test
+    fun enabledSupersessionBeforeDestructiveAdmissionFencesPausedOldWorker() = runBlocking {
+        assertPausedWorkerCannotEnterAfterTransition(CleanupSchedulePolicy.WEEKLY)
     }
 
     @Test
@@ -508,6 +531,64 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = null
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = null
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = null
+        CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = null
+    }
+
+    private suspend fun assertPausedWorkerCannotEnterAfterTransition(
+        replacementCadence: String?,
+    ) = coroutineScope {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        val admitted = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val cleanupRuns = AtomicInteger(0)
+        CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = {
+            admitted.countDown()
+            check(release.await(10, TimeUnit.SECONDS)) { "paused cleanup did not release" }
+        }
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            cleanupRuns.incrementAndGet()
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val oldGeneration = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val staleRequest = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>()
+            .setInputData(
+                workDataOf(
+                    CleanupScheduleCoordinator.INPUT_GENERATION to oldGeneration,
+                    CleanupScheduleCoordinator.INPUT_CADENCE to CleanupSchedulePolicy.DAILY,
+                )
+            )
+            .build()
+        workManager.enqueue(staleRequest).result.get(20, TimeUnit.SECONDS)
+        assertTrue(admitted.await(10, TimeUnit.SECONDS))
+
+        val transition = async(Dispatchers.Default) {
+            CleanupScheduleCoordinator.configure(context, replacementCadence)
+        }
+        assertTrue(transition.await())
+        if (replacementCadence == null) {
+            assertEquals(
+                "",
+                preferences.getString("cleanup_leftover_downloads", null),
+            )
+        } else {
+            assertEquals(
+                replacementCadence,
+                preferences.getString("cleanup_leftover_downloads", null),
+            )
+        }
+
+        release.countDown()
+        val terminal = awaitWorkById(staleRequest.id) { info ->
+            info.state == WorkInfo.State.SUCCEEDED ||
+                info.state == WorkInfo.State.FAILED ||
+                info.state == WorkInfo.State.CANCELLED
+        }
+        assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
+        assertTrue(terminal.outputData.getBoolean("cleanup_schedule_stale", false))
+        assertEquals(0, cleanupRuns.get())
     }
 
     private fun unfinishedCurrentWork(): List<WorkInfo> = workManager
