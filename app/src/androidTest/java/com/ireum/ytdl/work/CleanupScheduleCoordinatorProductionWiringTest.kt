@@ -26,6 +26,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.Collections
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.UUID
 
 /**
  * Drives the real coordinator and CleanUpLeftoverDownloads WorkManager path.
