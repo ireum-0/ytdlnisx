@@ -12,6 +12,7 @@ import com.ireum.ytdl.database.models.HistoryUndoSnapshot
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
+import com.ireum.ytdl.util.LocalAddStorageIdentityPolicy
 import com.ireum.ytdl.util.LowQualityRedownloadCompletionPolicy
 import com.ireum.ytdl.util.LowQualityReplacementAuthority
 import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
@@ -32,6 +33,11 @@ sealed interface HistoryReplacementAuthorization {
     data object TargetMissing : HistoryReplacementAuthorization
     data object SourceMismatch : HistoryReplacementAuthorization
     data object TypeMismatch : HistoryReplacementAuthorization
+}
+
+sealed interface LocalHistoryAdmissionResult {
+    data class Inserted(val historyId: Long) : LocalHistoryAdmissionResult
+    data class AlreadyPresent(val historyId: Long) : LocalHistoryAdmissionResult
 }
 
 /**
@@ -305,31 +311,52 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         }
     }
 
-    suspend fun insertHistory(item: HistoryItem): Long {
-        val manualKeywords = AutomaticKeywordNormalizer.parseKeywords(item.keywords)
-        val videoKey = AutomaticKeywordNormalizer.videoKey(item.url)
-        return HistoryReferenceMutationCoordinator.withLock {
+    suspend fun insertHistory(item: HistoryItem): Long =
+        HistoryReferenceMutationCoordinator.withLock {
+            db.withTransaction { insertHistoryInTransaction(item) }
+        }
+
+    /**
+     * Final LocalAdd admission.  The candidate is compared with current
+     * History rows while holding the same relationship mutation lock and Room
+     * transaction as publication, so a caller's earlier UI/worker precheck
+     * cannot authorize a second insert after another producer wins.
+     */
+    suspend fun insertLocalHistory(item: HistoryItem): LocalHistoryAdmissionResult =
+        HistoryReferenceMutationCoordinator.withLock {
             db.withTransaction {
-            val id = db.historyDao.insertAndGetIdRaw(item.copy(keywords = ""))
-            replaceSourceKeywordsInTransaction(
-                id,
-                HistoryKeywordAssignmentSources.MANUAL,
-                HistoryKeywordAssignmentSources.MANUAL_SOURCE_ID,
-                manualKeywords
-            )
-            if (videoKey.isNotBlank()) {
-                db.automaticKeywordRuleDao.getEnabledRulesForVideoKey(videoKey).forEach { rule ->
-                    replaceSourceKeywordsInTransaction(
-                        id,
-                        HistoryKeywordAssignmentSources.RULE,
-                        rule.id,
-                        db.automaticKeywordRuleDao.getRuleKeywords(rule.id).map { it.keyword }
-                    )
+                val existing = db.historyDao.getAll().firstOrNull { current ->
+                    (item.url.isNotBlank() && current.url == item.url) ||
+                        LocalAddStorageIdentityPolicy.hasSameStorageIdentity(item, current)
                 }
-            }
-            id
+                if (existing != null) {
+                    return@withTransaction LocalHistoryAdmissionResult.AlreadyPresent(existing.id)
+                }
+                LocalHistoryAdmissionResult.Inserted(insertHistoryInTransaction(item))
             }
         }
+
+    private suspend fun insertHistoryInTransaction(item: HistoryItem): Long {
+        val manualKeywords = AutomaticKeywordNormalizer.parseKeywords(item.keywords)
+        val videoKey = AutomaticKeywordNormalizer.videoKey(item.url)
+        val id = db.historyDao.insertAndGetIdRaw(item.copy(keywords = ""))
+        replaceSourceKeywordsInTransaction(
+            id,
+            HistoryKeywordAssignmentSources.MANUAL,
+            HistoryKeywordAssignmentSources.MANUAL_SOURCE_ID,
+            manualKeywords
+        )
+        if (videoKey.isNotBlank()) {
+            db.automaticKeywordRuleDao.getEnabledRulesForVideoKey(videoKey).forEach { rule ->
+                replaceSourceKeywordsInTransaction(
+                    id,
+                    HistoryKeywordAssignmentSources.RULE,
+                    rule.id,
+                    db.automaticKeywordRuleDao.getRuleKeywords(rule.id).map { it.keyword }
+                )
+            }
+        }
+        return id
     }
 
     /**

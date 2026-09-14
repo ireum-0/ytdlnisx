@@ -26,6 +26,7 @@ import com.ireum.ytdl.util.LocalAddCandidateDto
 import com.ireum.ytdl.util.LocalAddEntryDto
 import com.ireum.ytdl.util.LocalAddMatchDto
 import com.ireum.ytdl.util.LocalAddStorage
+import com.ireum.ytdl.util.LocalAddStorageIdentityPolicy
 import com.ireum.ytdl.util.LocalMatchUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.setForegroundSafely
@@ -34,7 +35,6 @@ import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -65,20 +65,19 @@ class LocalAddWorker(
             LocalAddStorage.clearProgressSnapshot(context)
             return Result.success()
         }
-        val dedupedEntries = entries.distinctBy { entry ->
-            localEntryIdentity(entry)
+        val seenStorageIdentities = mutableSetOf<String>()
+        val dedupedEntries = entries.filter { entry ->
+            val identity = LocalAddStorageIdentityPolicy.identityForEntry(
+                uriString = entry.uri,
+                treeUriString = entry.treeUri,
+            )
+            identity == null || seenStorageIdentities.add(identity)
         }
         // Prevent background restrictions from stopping a long-running local add session.
         if (!setForegroundSafely()) return Result.retry()
 
         val db = DBManager.getInstance(context)
         val resultRepository = ResultRepository(db.resultDao, db.commandTemplateDao, context)
-        val allItems = db.historyDao.getAll()
-        val existingBaseNames = allItems
-            .flatMap { it.downloadPath }
-            .mapNotNull { extractBaseNameFromPath(it)?.lowercase(Locale.getDefault()) }
-            .toMutableSet()
-
         val pending = mutableListOf<LocalAddCandidateDto>()
         var processed = 0
         setProgress(workDataOf(KEY_TOTAL to dedupedEntries.size, KEY_DONE to processed))
@@ -100,9 +99,6 @@ class LocalAddWorker(
                 if (existing != null) return@forEach
                 val name = getDisplayNameFromUri(uri) ?: return@forEach
                 val title = name.substringBeforeLast('.')
-                val baseName = title.ifBlank { name }
-                val baseKey = baseName.lowercase(Locale.getDefault())
-                if (baseName.isNotBlank() && existingBaseNames.contains(baseKey)) return@forEach
                 val ext = name.substringAfterLast('.', "")
                 val size = getFileSize(uri)
                 val durationSeconds = getDurationSeconds(uri)
@@ -118,9 +114,6 @@ class LocalAddWorker(
                 if (match != null && match.exactTitleMatch) {
                     val existingByUrl = db.historyDao.getItem(match.item.url)
                     if (existingByUrl != null) {
-                        if (baseName.isNotBlank()) {
-                            existingBaseNames.add(baseKey)
-                        }
                         return@forEach
                     }
                     val format = Format(
@@ -150,10 +143,7 @@ class LocalAddWorker(
                         localTreePath = treeMeta.second,
                         mediaPublishedAt = match.item.mediaPublishedAt
                     )
-                    HistoryKeywordAssignmentRepository(db).insertHistory(item)
-                    if (baseName.isNotBlank()) {
-                        existingBaseNames.add(baseKey)
-                    }
+                    HistoryKeywordAssignmentRepository(db).insertLocalHistory(item)
                     return@forEach
                 }
 
@@ -277,17 +267,6 @@ class LocalAddWorker(
             .replace("_", "\\_")
     }
 
-    private fun extractBaseNameFromPath(path: String): String? {
-        val name = runCatching {
-            if (path.startsWith("content://") || path.startsWith("file://")) {
-                Uri.parse(path).lastPathSegment ?: path.substringAfterLast('/')
-            } else {
-                File(path).name
-            }
-        }.getOrNull() ?: return null
-        return name.substringBeforeLast('.')
-    }
-
     private fun getFileSize(uri: Uri): Long {
         return DocumentFile.fromSingleUri(context, uri)?.length() ?: 0L
     }
@@ -322,20 +301,6 @@ class LocalAddWorker(
         if (treeId.isNullOrBlank() || docId.isNullOrBlank()) return "" to ""
         val relative = if (docId == treeId) "" else docId.removePrefix("$treeId/").removePrefix(treeId).trimStart('/')
         return treeUri.toString() to relative
-    }
-
-    private fun localEntryIdentity(entry: LocalAddEntryDto): String {
-        val uri = Uri.parse(entry.uri)
-        val treeUri = entry.treeUri?.let { Uri.parse(it) }
-        val treeMeta = buildTreeMeta(treeUri, uri)
-        if (treeMeta.first.isNotBlank() && treeMeta.second.isNotBlank()) {
-            return "tree:${treeMeta.first}|${treeMeta.second}"
-        }
-        val documentId = runCatching { android.provider.DocumentsContract.getDocumentId(uri) }.getOrNull()
-        if (!documentId.isNullOrBlank()) {
-            return "doc:$documentId"
-        }
-        return "uri:${uri.normalizeScheme()}"
     }
 
     companion object {

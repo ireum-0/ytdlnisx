@@ -80,6 +80,7 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.Playlist
 import com.ireum.ytdl.database.models.UiModel
 import com.ireum.ytdl.database.repository.HistoryRepository
+import com.ireum.ytdl.database.repository.LocalHistoryAdmissionResult
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.database.viewmodel.HistoryViewModel
@@ -117,6 +118,7 @@ import androidx.lifecycle.asFlow
 import androidx.work.workDataOf
 import com.ireum.ytdl.util.LocalAddEntryDto
 import com.ireum.ytdl.util.LocalAddStorage
+import com.ireum.ytdl.util.LocalAddStorageIdentityPolicy
 import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.HistorySortPolicy
 import com.ireum.ytdl.util.LowQualityCandidateReason
@@ -1546,11 +1548,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         lifecycleScope.launch(Dispatchers.IO) {
             val db = DBManager.getInstance(requireContext())
             val resultRepository = ResultRepository(db.resultDao, db.commandTemplateDao, requireContext())
-            val allItems = db.historyDao.getAll()
-            val existingBaseNames = allItems
-                .flatMap { it.downloadPath }
-                .mapNotNull { extractBaseNameFromPath(it)?.lowercase(Locale.getDefault()) }
-                .toMutableSet()
             val remaining = LocalAddStorage.loadPending(requireContext(), sessionId).toMutableList()
             decided.forEach { selection ->
                 val candidate = selection.candidate
@@ -1598,7 +1595,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 mediaPublishedAt = manual.mediaPublishedAt
                             )
                             com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
-                                .insertHistory(item)
+                                .insertLocalHistory(item)
                             remaining.removeAll { it.uri == candidate.uri.toString() }
                             return@forEach
                         }
@@ -1635,7 +1632,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             mediaPublishedAt = match.item.mediaPublishedAt
                         )
                         com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
-                            .insertHistory(item)
+                            .insertLocalHistory(item)
                     }
                     LocalMatchChoice.MANUAL -> {
                         val manual = selection.manualMetadata ?: withContext(Dispatchers.Main) {
@@ -1688,12 +1685,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             mediaPublishedAt = manual.mediaPublishedAt
                         )
                         com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
-                            .insertHistory(item)
-                        val baseName = candidate.title.ifBlank { candidate.uri.lastPathSegment ?: "" }
-                        val baseKey = baseName.lowercase(Locale.getDefault())
-                        if (baseName.isNotBlank()) {
-                            existingBaseNames.add(baseKey)
-                        }
+                            .insertLocalHistory(item)
                     }
                     else -> Unit
                 }
@@ -2615,10 +2607,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         val missingCandidates = allItems
             .filter { it.type == DownloadType.video && it.downloadPath.all { path -> !FileUtil.exists(path) } }
             .toMutableList()
-        val existingBaseNames = allItems
-            .flatMap { it.downloadPath }
-            .mapNotNull { extractBaseNameFromPath(it)?.lowercase(Locale.getDefault()) }
-            .toMutableSet()
         var added = 0
         var skipped = 0
         var suppressManualPrompts = false
@@ -2707,14 +2695,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 localTreePath = updatedTreeMeta.second,
                 mediaPublishedAt = manual.mediaPublishedAt
             )
-            com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
-                .insertHistory(item)
-            val baseName = candidate.title.ifBlank { candidate.uri.lastPathSegment ?: "" }
-            val baseKey = baseName.lowercase(Locale.getDefault())
-            if (baseName.isNotBlank()) {
-                existingBaseNames.add(baseKey)
+            val admission = com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                .insertLocalHistory(item)
+            counterMutex.withLock {
+                if (admission is LocalHistoryAdmissionResult.Inserted) added += 1 else skipped += 1
             }
-            counterMutex.withLock { added += 1 }
         }
 
         localMatchConfirmCallback = localMatchConfirmCallback@{ selections ->
@@ -2752,8 +2737,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                             )
                             val updatedUriString = localUpdate.uri.toString()
                             val updatedTreeMeta = buildTreeMeta(candidate.treeUri, localUpdate.uri)
-                            val baseName = candidate.title.ifBlank { candidate.uri.lastPathSegment ?: "" }
-                            val baseKey = baseName.lowercase(Locale.getDefault())
                             val existingByUrl = db.historyDao.getItem(match.item.url)
                             if (existingByUrl != null) {
                                 counterMutex.withLock { skipped += 1 }
@@ -2787,12 +2770,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                                 localTreePath = updatedTreeMeta.second,
                                 mediaPublishedAt = match.item.mediaPublishedAt
                             )
-                            com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
-                                .insertHistory(item)
-                            if (baseName.isNotBlank()) {
-                                existingBaseNames.add(baseKey)
+                            val admission = com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                                .insertLocalHistory(item)
+                            counterMutex.withLock {
+                                if (admission is LocalHistoryAdmissionResult.Inserted) added += 1 else skipped += 1
                             }
-                            counterMutex.withLock { added += 1 }
                             pendingSet.remove(candidate)
                         }
                         LocalMatchChoice.MANUAL -> {
@@ -2863,12 +2845,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             }
             val name = doc?.name ?: uri.lastPathSegment ?: getString(R.string.unknown)
             val title = name.substringBeforeLast('.')
-            val baseName = title.ifBlank { name }
-            val baseKey = baseName.lowercase(Locale.getDefault())
-            if (baseName.isNotBlank() && existingBaseNames.contains(baseKey)) {
-                skipped += 1
-                return@forEach
-            }
             val ext = name.substringAfterLast('.', "")
             val size = doc?.length() ?: 0L
             val durationSeconds = getDurationSeconds(requireContext(), uri)
@@ -2897,9 +2873,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                         selected = selected
                     )
                 if (reconnected) {
-                    if (baseName.isNotBlank()) {
-                        existingBaseNames.add(baseKey)
-                    }
                     added += 1
                     return@forEach
                 }
@@ -3318,8 +3291,10 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 result.add(LocalUriEntry(uri, null))
             }
         }
-        return result.distinctBy { entry ->
-            localEntryIdentity(entry)
+        val seenStorageIdentities = mutableSetOf<String>()
+        return result.filter { entry ->
+            val identity = localEntryIdentity(entry)
+            identity == null || seenStorageIdentities.add(identity)
         }
     }
 
@@ -3371,17 +3346,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         searchSheet.show()
     }
 
-    private fun localEntryIdentity(entry: LocalUriEntry): String {
-        val treeMeta = buildTreeMeta(entry.treeUri, entry.uri)
-        if (treeMeta.first.isNotBlank() && treeMeta.second.isNotBlank()) {
-            return "tree:${treeMeta.first}|${treeMeta.second}"
-        }
-        val documentId = runCatching { DocumentsContract.getDocumentId(entry.uri) }.getOrNull()
-        if (!documentId.isNullOrBlank()) {
-            return "doc:$documentId"
-        }
-        return "uri:${entry.uri.normalizeScheme()}"
-    }
+    private fun localEntryIdentity(entry: LocalUriEntry): String? =
+        LocalAddStorageIdentityPolicy.identityForEntry(
+            uriString = entry.uri.toString(),
+            treeUriString = entry.treeUri?.toString(),
+        )
 
     private fun collectVideoUrisRecursive(dir: DocumentFile, output: MutableList<LocalUriEntry>, treeUri: Uri) {
         dir.listFiles().forEach { child ->
@@ -3398,19 +3367,6 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
             DocumentFile.fromTreeUri(requireContext(), uri)
         } else {
             DocumentFile.fromSingleUri(requireContext(), uri)
-        }
-    }
-
-    private fun extractBaseNameFromPath(path: String): String? {
-        if (path.isBlank()) return null
-        return when {
-            path.startsWith("content://") || path.startsWith("file://") -> {
-                val uri = Uri.parse(path)
-                val doc = documentFileForUri(uri)
-                val name = doc?.name ?: uri.lastPathSegment
-                name?.substringBeforeLast('.')?.trim().takeIf { !it.isNullOrBlank() }
-            }
-            else -> File(path).nameWithoutExtension.trim().takeIf { it.isNotBlank() }
         }
     }
 
