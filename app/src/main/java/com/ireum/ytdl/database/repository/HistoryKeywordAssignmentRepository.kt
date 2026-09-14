@@ -492,18 +492,9 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                     return@withTransaction null
                 }
                 db.historyDao.insertRaw(snapshot.item.copy(keywords = ""))
-                val candidateRuleIds = snapshot.assignments.asSequence()
-                    .filter { it.sourceType == HistoryKeywordAssignmentSources.RULE }
-                    .map { it.sourceId }
-                    .distinct()
-                    .toSet()
-                val existingRuleIds = mutableSetOf<Long>()
-                for (ruleId in candidateRuleIds) {
-                    if (dao.getRule(ruleId) != null) existingRuleIds += ruleId
-                }
                 val restorableAssignments = snapshot.assignments.filter {
                     it.historyItemId == snapshot.item.id &&
-                        (it.sourceType != HistoryKeywordAssignmentSources.RULE || it.sourceId in existingRuleIds)
+                        it.sourceType != HistoryKeywordAssignmentSources.RULE
                 }
                 if (restorableAssignments.isNotEmpty()) {
                     dao.insertAssignments(restorableAssignments)
@@ -515,6 +506,28 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 }
                 if (memberships.isNotEmpty()) {
                     db.playlistDao.insertPlaylistItems(memberships)
+                }
+
+                // RULE assignments are derived authority, not portable
+                // relationship state.  Recompute them from the current
+                // enabled rule/video-match graph while the restored History
+                // row and every assignment mutation are still in this same
+                // transaction.  Snapshot rule IDs/keywords may describe a
+                // deleted, edited, disabled, or recreated rule and therefore
+                // must never authorize restoring stale semantics.
+                val videoKey = AutomaticKeywordNormalizer.videoKey(snapshot.item.url)
+                if (videoKey.isNotBlank()) {
+                    db.automaticKeywordRuleDao.getEnabledRulesForVideoKey(videoKey)
+                        .forEach { rule ->
+                            replaceSourceKeywordsInTransaction(
+                                historyItemId = snapshot.item.id,
+                                sourceType = HistoryKeywordAssignmentSources.RULE,
+                                sourceId = rule.id,
+                                keywords = db.automaticKeywordRuleDao
+                                    .getRuleKeywords(rule.id)
+                                    .map { it.keyword },
+                            )
+                        }
                 }
                 materializeInTransaction(snapshot.item.id)
                 snapshot.item.id

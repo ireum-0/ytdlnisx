@@ -5,12 +5,15 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ireum.ytdl.database.enums.DownloadType
+import com.ireum.ytdl.database.models.AutomaticKeywordRuleKeyword
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.database.models.Playlist
 import com.ireum.ytdl.database.models.PlaylistItemCrossRef
+import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
+import com.ireum.ytdl.database.repository.AutomaticKeywordRuleEngine
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -70,6 +73,103 @@ class HistoryUndoPersistenceTest {
             setOf(HistoryKeywordAssignmentSources.MANUAL),
             database.automaticKeywordRuleDao.getAssignmentsRaw(1).map { it.sourceType }.toSet(),
         )
+    }
+
+    @Test
+    fun undoRecomputesCurrentEnabledRuleKeywordsInsteadOfSnapshotKeywords() = runBlocking {
+        val repository = HistoryKeywordAssignmentRepository(database)
+        val historyId = repository.insertHistory(history())
+        val ruleId = rule("youtube:playlist:A", listOf("Old"))
+        AutomaticKeywordRuleEngine(database).applyFullSync(
+            ruleId,
+            listOf(result("https://youtu.be/video1")),
+        )
+        val snapshot = repository.captureAndDeleteHistoryForUndo(historyId)!!
+
+        database.automaticKeywordRuleDao.deleteRuleKeywords(ruleId)
+        database.automaticKeywordRuleDao.insertRuleKeywords(
+            listOf(AutomaticKeywordRuleKeyword(ruleId, "new", "New", 0))
+        )
+
+        assertEquals(historyId, repository.restoreHistory(snapshot))
+        val restoredRuleAssignments = database.automaticKeywordRuleDao
+            .getAssignmentsRaw(historyId)
+            .filter { it.sourceType == HistoryKeywordAssignmentSources.RULE }
+        assertEquals(listOf(ruleId), restoredRuleAssignments.map { it.sourceId })
+        assertEquals(listOf("New"), restoredRuleAssignments.map { it.keyword })
+        assertEquals("New", database.historyDao.getItem(historyId).keywords)
+    }
+
+    @Test
+    fun undoDoesNotRestoreRuleAssignmentWhenRuleIsDisabledOrNoLongerEligible() = runBlocking {
+        val repository = HistoryKeywordAssignmentRepository(database)
+        val historyId = repository.insertHistory(history())
+        val ruleId = rule("youtube:playlist:A", listOf("Current"))
+        AutomaticKeywordRuleEngine(database).applyFullSync(
+            ruleId,
+            listOf(result("https://youtu.be/video1")),
+        )
+        val snapshot = repository.captureAndDeleteHistoryForUndo(historyId)!!
+
+        val savedRule = database.automaticKeywordRuleDao.getRule(ruleId)!!
+        database.automaticKeywordRuleDao.updateRule(savedRule.copy(enabled = false))
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE automatic_keyword_rule_video_matches " +
+                "SET eligibleForAssignment = 0 WHERE ruleId = $ruleId"
+        )
+
+        assertEquals(historyId, repository.restoreHistory(snapshot))
+        assertTrue(
+            database.automaticKeywordRuleDao.getAssignmentsRaw(historyId)
+                .none { it.sourceType == HistoryKeywordAssignmentSources.RULE }
+        )
+        assertEquals("", database.historyDao.getItem(historyId).keywords)
+    }
+
+    @Test
+    fun undoNeverUsesDeletedAndRecreatedRuleNumericIdentity() = runBlocking {
+        val repository = HistoryKeywordAssignmentRepository(database)
+        val historyId = repository.insertHistory(history())
+        val oldRuleId = rule("youtube:playlist:A", listOf("Old"))
+        AutomaticKeywordRuleEngine(database).applyFullSync(
+            oldRuleId,
+            listOf(result("https://youtu.be/video1")),
+        )
+        val snapshot = repository.captureAndDeleteHistoryForUndo(historyId)!!
+
+        database.automaticKeywordRuleDao.deleteRule(oldRuleId)
+        val newRuleId = rule("youtube:playlist:A", listOf("Fresh"))
+        AutomaticKeywordRuleEngine(database).applyFullSync(
+            newRuleId,
+            listOf(result("https://youtu.be/video1")),
+        )
+
+        assertEquals(historyId, repository.restoreHistory(snapshot))
+        val restoredRuleAssignments = database.automaticKeywordRuleDao
+            .getAssignmentsRaw(historyId)
+            .filter { it.sourceType == HistoryKeywordAssignmentSources.RULE }
+        assertEquals(listOf(newRuleId), restoredRuleAssignments.map { it.sourceId })
+        assertTrue(restoredRuleAssignments.none { it.sourceId == oldRuleId })
+        assertEquals(listOf("Fresh"), restoredRuleAssignments.map { it.keyword })
+    }
+
+    @Test
+    fun undoAssignsACurrentlyEligibleRuleThatWasAbsentFromTheSnapshot() = runBlocking {
+        val repository = HistoryKeywordAssignmentRepository(database)
+        val historyId = repository.insertHistory(history())
+        val snapshot = repository.captureAndDeleteHistoryForUndo(historyId)!!
+        val ruleId = rule("youtube:playlist:A", listOf("Newly eligible"))
+        AutomaticKeywordRuleEngine(database).applyFullSync(
+            ruleId,
+            listOf(result("https://youtu.be/video1")),
+        )
+
+        assertEquals(historyId, repository.restoreHistory(snapshot))
+        val restoredRuleAssignments = database.automaticKeywordRuleDao
+            .getAssignmentsRaw(historyId)
+            .filter { it.sourceType == HistoryKeywordAssignmentSources.RULE }
+        assertEquals(listOf(ruleId), restoredRuleAssignments.map { it.sourceId })
+        assertEquals(listOf("Newly eligible"), restoredRuleAssignments.map { it.keyword })
     }
 
     @Test
@@ -191,4 +291,50 @@ class HistoryUndoPersistenceTest {
             )
         )
     }
+
+    private fun history() = HistoryItem(
+        id = 0,
+        url = "https://youtu.be/video1",
+        title = "Video",
+        author = "Creator",
+        duration = "00:01:00",
+        thumb = "",
+        type = DownloadType.video,
+        time = 1000,
+        downloadPath = emptyList(),
+        website = "YouTube",
+        format = Format(format_id = "best"),
+        downloadId = 0,
+        keywords = "",
+    )
+
+    private suspend fun rule(conditionKey: String, keywords: List<String>): Long {
+        val id = database.automaticKeywordRuleDao.insertRule(
+            com.ireum.ytdl.database.models.AutomaticKeywordRule(
+                conditionValue = "https://www.youtube.com/playlist?list=A",
+                conditionKey = conditionKey,
+                playlistName = "Playlist",
+            )
+        )
+        database.automaticKeywordRuleDao.insertRuleKeywords(
+            keywords.mapIndexed { index, keyword ->
+                AutomaticKeywordRuleKeyword(id, keyword.lowercase(), keyword, index)
+            }
+        )
+        return id
+    }
+
+    private fun result(url: String) = ResultItem(
+        id = 0,
+        url = url,
+        title = "Video",
+        author = "Creator",
+        duration = "1:00",
+        thumb = "",
+        website = "YouTube",
+        playlistTitle = "Playlist",
+        urls = "",
+        chapters = null,
+        playlistURL = "https://www.youtube.com/playlist?list=A",
+    )
 }
