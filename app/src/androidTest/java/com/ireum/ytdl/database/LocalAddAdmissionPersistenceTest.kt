@@ -82,6 +82,44 @@ class LocalAddAdmissionPersistenceTest {
     }
 
     @Test
+    fun providerDocumentWhitespaceIsPreservedAsOpaqueIdentity() = runBlocking {
+        val exactUri = DocumentsContract.buildDocumentUri("provider", "A")
+        val leadingWhitespaceUri = DocumentsContract.buildDocumentUri("provider", " A ")
+        val trailingWhitespaceUri = DocumentsContract.buildDocumentUri("provider", "A ")
+
+        assertEquals("A", DocumentsContract.getDocumentId(exactUri))
+        assertEquals(" A ", DocumentsContract.getDocumentId(leadingWhitespaceUri))
+        assertEquals("A ", DocumentsContract.getDocumentId(trailingWhitespaceUri))
+        assertNotEquals(
+            LocalAddStorageIdentityPolicy.identityForEntry(exactUri.toString()),
+            LocalAddStorageIdentityPolicy.identityForEntry(leadingWhitespaceUri.toString()),
+        )
+        assertNotEquals(
+            LocalAddStorageIdentityPolicy.identityForEntry(exactUri.toString()),
+            LocalAddStorageIdentityPolicy.identityForEntry(trailingWhitespaceUri.toString()),
+        )
+        assertNotEquals(
+            LocalAddStorageIdentityPolicy.identityForEntry(leadingWhitespaceUri.toString()),
+            LocalAddStorageIdentityPolicy.identityForEntry(trailingWhitespaceUri.toString()),
+        )
+
+        val exact = repository.insertLocalHistory(
+            history(exactUri.toString(), "url:exact")
+        )
+        val leadingWhitespace = repository.insertLocalHistory(
+            history(leadingWhitespaceUri.toString(), "url:leading")
+        )
+        val trailingWhitespace = repository.insertLocalHistory(
+            history(trailingWhitespaceUri.toString(), "url:trailing")
+        )
+
+        assertTrue(exact is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(leadingWhitespace is LocalHistoryAdmissionResult.Inserted)
+        assertTrue(trailingWhitespace is LocalHistoryAdmissionResult.Inserted)
+        assertEquals(3, database.historyDao.getAll().size)
+    }
+
+    @Test
     fun providerDocumentPrefixDoesNotSuppressDistinctCandidate() = runBlocking {
         val existing = repository.insertLocalHistory(
             history("content://provider/document/Achild", "url:existing")

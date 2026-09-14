@@ -1,6 +1,7 @@
 package com.ireum.ytdl.work
 
 import android.content.Context
+import android.provider.DocumentsContract
 import androidx.preference.PreferenceManager
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -96,6 +97,30 @@ class LocalAddWorkerProductionWiringTest {
         val pending = LocalAddStorage.loadPending(context, sessionId)
         assertEquals(listOf(candidatePath), pending.map { it.uri })
         assertEquals(1, database.historyDao.getAll().size)
+    }
+
+    @Test
+    fun workerKeepsWhitespaceDistinctOpaqueProviderDocumentsInBatch() = runBlocking {
+        val exactPath = DocumentsContract.buildDocumentUri("provider", "A").toString()
+        val whitespacePath = DocumentsContract.buildDocumentUri("provider", " A ").toString()
+        val entries = Gson().toJson(
+            listOf(
+                LocalAddEntryDto(exactPath, null),
+                LocalAddEntryDto(whitespacePath, null),
+            )
+        )
+        val workManager = WorkManager.getInstance(context)
+        val request = OneTimeWorkRequestBuilder<LocalAddWorker>()
+            .setInputData(workDataOf(LocalAddWorker.KEY_ENTRIES_JSON to entries))
+            .addTag("local-add-worker-production-test")
+            .build()
+        workManager.enqueue(request)
+        val info = awaitFinished(workManager, request.id)
+
+        assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+        val sessionId = awaitOpenSession()
+        val pending = LocalAddStorage.loadPending(context, sessionId)
+        assertEquals(listOf(exactPath, whitespacePath), pending.map { it.uri })
     }
 
     private suspend fun awaitFinished(workManager: WorkManager, id: UUID): WorkInfo =
