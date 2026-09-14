@@ -148,6 +148,13 @@ internal object CleanupScheduleCoordinator {
                 val generation = UUID.randomUUID().toString()
                 val now = currentCalendar()
                 val anchorDay = now.get(Calendar.DAY_OF_MONTH)
+                val initialOccurrenceAt = normalizedCadence?.let {
+                    CleanupSchedulePolicy.nextOccurrence(
+                        now = now,
+                        cadence = it,
+                        monthlyAnchorDay = anchorDay,
+                    ).timeInMillis
+                }
 
                 // Commit the new authority before cancelling/replacing any old work.
                 // A stale worker therefore observes the new generation even if
@@ -166,6 +173,13 @@ internal object CleanupScheduleCoordinator {
                     .remove(PREF_PENDING_CADENCE)
                     .remove(PREF_PENDING_ANCHOR_DAY)
                     .remove(PREF_PENDING_OCCURRENCE_AT)
+                if (normalizedCadence != null) {
+                    authorityEditor
+                        .putString(PREF_PENDING_GENERATION, generation)
+                        .putString(PREF_PENDING_CADENCE, normalizedCadence)
+                        .putInt(PREF_PENDING_ANCHOR_DAY, anchorDay)
+                        .putLong(PREF_PENDING_OCCURRENCE_AT, initialOccurrenceAt!!)
+                }
                 val authorityCommitted = authorityCommitOverrideForTesting
                     ?.invoke(authorityEditor)
                     ?: authorityEditor.commit()
@@ -191,6 +205,8 @@ internal object CleanupScheduleCoordinator {
                     from = now,
                     append = false,
                     successor = false,
+                    occurrenceAtOverride = initialOccurrenceAt,
+                    persistDebt = false,
                 )?.also { handle ->
                     handle.operation?.let { observeAcceptance(appContext, handle) }
                     ensureReplayOwnerLocked(appContext)
@@ -263,6 +279,11 @@ internal object CleanupScheduleCoordinator {
                 // stable chain. REPLACE is used here only because there is no current
                 // occurrence to preserve.
                 workManager.cancelAllWorkByTag(TAG)
+                val persistedDebt = readSchedulingDebt(preferences)?.takeIf { debt ->
+                    debt.generation == generation &&
+                        debt.cadence == cadence &&
+                        debt.monthlyAnchorDay == anchorDay
+                }
                 enqueueNextLocked(
                     context = appContext,
                     workManager = workManager,
@@ -272,6 +293,8 @@ internal object CleanupScheduleCoordinator {
                     from = now,
                     append = false,
                     successor = false,
+                    occurrenceAtOverride = persistedDebt?.occurrenceAt,
+                    persistDebt = persistedDebt == null,
                 )?.also { handle ->
                     handle.operation?.let { observeAcceptance(appContext, handle) }
                     ensureReplayOwnerLocked(appContext)
@@ -405,9 +428,11 @@ internal object CleanupScheduleCoordinator {
         from: Calendar,
         append: Boolean,
         successor: Boolean,
+        occurrenceAtOverride: Long? = null,
+        persistDebt: Boolean = true,
     ): EnqueueHandle? {
         val next = CleanupSchedulePolicy.nextOccurrence(from, cadence, monthlyAnchorDay)
-        val occurrenceAt = next.timeInMillis
+        val occurrenceAt = occurrenceAtOverride ?: next.timeInMillis
         val delayOverride = if (successor) {
             successorDelayOverrideForTesting
         } else {
@@ -434,7 +459,7 @@ internal object CleanupScheduleCoordinator {
 
         val policy = if (append) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        if (!preferences.edit()
+        if (persistDebt && !preferences.edit()
                 .putString(PREF_PENDING_GENERATION, generation)
                 .putString(PREF_PENDING_CADENCE, cadence)
                 .putInt(PREF_PENDING_ANCHOR_DAY, monthlyAnchorDay)

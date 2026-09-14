@@ -475,6 +475,55 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun enabledAuthorityAndInitialDebtCommitBeforeEnqueueAttempt() = runBlocking {
+        val operation = ControlledOperation().also { controlledOperations += it }
+        val authorityCommits = AtomicInteger(0)
+        var enqueueSawMatchingDebt = false
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { editor ->
+            authorityCommits.incrementAndGet()
+            editor.commit()
+        }
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { _, _, request ->
+            val generation = request.workSpec.input.getString(
+                CleanupScheduleCoordinator.INPUT_GENERATION,
+            )
+            val cadence = request.workSpec.input.getString(
+                CleanupScheduleCoordinator.INPUT_CADENCE,
+            )
+            val anchorDay = request.workSpec.input.getInt(
+                CleanupScheduleCoordinator.INPUT_MONTHLY_ANCHOR_DAY,
+                -1,
+            )
+            val occurrenceAt = request.workSpec.input.getLong(
+                CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT,
+                -1L,
+            )
+            enqueueSawMatchingDebt =
+                generation == preferences.getString(
+                    "cleanup_leftover_downloads_pending_generation",
+                    null,
+                ) &&
+                    cadence == preferences.getString(
+                        "cleanup_leftover_downloads_pending_cadence",
+                        null,
+                    ) &&
+                    anchorDay == preferences.getInt(
+                        "cleanup_leftover_downloads_pending_anchor_day",
+                        -1,
+                    ) &&
+                    occurrenceAt == preferences.getLong(
+                        "cleanup_leftover_downloads_pending_occurrence_at",
+                        -1L,
+                    )
+            operation
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        assertEquals(1, authorityCommits.get())
+        assertTrue(enqueueSawMatchingDebt)
+    }
+
+    @Test
     fun rapidSettingsRequestsLeaveLatestCadenceAuthoritative() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         assertTrue(
