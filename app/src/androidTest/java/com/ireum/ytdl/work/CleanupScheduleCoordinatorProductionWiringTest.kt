@@ -9,7 +9,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.Operation
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.impl.utils.futures.SettableFuture
+import androidx.work.workDataOf
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -318,6 +320,43 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun staleOccurrenceIsRejectedBeforeCleanupEffectAfterDisable() = runBlocking {
+        val cleanupRuns = AtomicInteger(0)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            cleanupRuns.incrementAndGet()
+        }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val oldGeneration = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        assertTrue(CleanupScheduleCoordinator.configure(context, null))
+
+        // WorkManager cancellation is asynchronous.  Submit an old-generation
+        // request directly so the real worker must prove current authority at
+        // its effect boundary rather than relying on cancellation timing.
+        val staleRequest = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>()
+            .setInputData(
+                workDataOf(
+                    CleanupScheduleCoordinator.INPUT_GENERATION to oldGeneration,
+                    CleanupScheduleCoordinator.INPUT_CADENCE to CleanupSchedulePolicy.DAILY,
+                )
+            )
+            .build()
+        workManager.enqueue(staleRequest).result.get(20, TimeUnit.SECONDS)
+
+        val terminal = awaitWorkById(staleRequest.id) { info ->
+            info.state == WorkInfo.State.SUCCEEDED ||
+                info.state == WorkInfo.State.FAILED ||
+                info.state == WorkInfo.State.CANCELLED
+        }
+        assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
+        assertTrue(terminal.outputData.getBoolean("cleanup_schedule_stale", false))
+        assertEquals(0, cleanupRuns.get())
+    }
+
+    @Test
     fun finalCleanupFailurePreservesFutureOccurrenceAndReportsFailure() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
@@ -491,6 +530,18 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 CleanupScheduleCoordinator.WORK_NAME
             ).get(20, TimeUnit.SECONDS)
             if (predicate(infos)) return@withTimeout infos
+            Thread.sleep(50L)
+        }
+        error("unreachable")
+    }
+
+    private suspend fun awaitWorkById(
+        id: UUID,
+        predicate: (WorkInfo) -> Boolean,
+    ): WorkInfo = withTimeout(30_000L) {
+        while (true) {
+            val info = workManager.getWorkInfoById(id).get(20, TimeUnit.SECONDS)
+            if (info != null && predicate(info)) return@withTimeout info
             Thread.sleep(50L)
         }
         error("unreachable")

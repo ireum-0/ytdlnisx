@@ -142,13 +142,21 @@ internal object CleanupScheduleCoordinator {
             .putString(PREF_CADENCE, normalizedCadence.orEmpty())
             .putString(PREF_GENERATION, generation)
             .putInt(PREF_MONTHLY_ANCHOR_DAY, anchorDay)
+            // Retire the previous generation's scheduling debt in the same
+            // durable transition as the new authority.  A later independent
+            // commit must not be able to fail after the new generation has
+            // already become authoritative.
+            .remove(PREF_PENDING_GENERATION)
+            .remove(PREF_PENDING_CADENCE)
+            .remove(PREF_PENDING_ANCHOR_DAY)
+            .remove(PREF_PENDING_OCCURRENCE_AT)
             .commit()
         if (!authorityCommitted) return@synchronized false
 
         // The new generation wins before any old asynchronous owner can
-        // observe or mutate scheduling debt. Retire the superseded tuple and
-        // its process-local replay owner before replacing/cancelling work.
-        if (!retirePendingDebtLocked(preferences)) return@synchronized false
+        // observe or mutate scheduling debt. Stop the superseded process-local
+        // replay owner before replacing/cancelling work.
+        stopReplayOwnerLocked()
 
         val workManager = workManager(appContext)
         workManager.cancelAllWorkByTag(TAG)
@@ -243,6 +251,25 @@ internal object CleanupScheduleCoordinator {
             handle.operation?.let { observeAcceptance(appContext, handle) }
             ensureReplayOwnerLocked(appContext)
         }
+    }
+
+    /**
+     * Returns whether a scheduled occurrence still belongs to the current
+     * durable cleanup authority. Workers must check this immediately before
+     * entering cleanup effects; WorkManager cancellation is asynchronous and
+     * can otherwise leave a superseded occurrence executable.
+     */
+    internal fun isCurrentOccurrence(
+        context: Context,
+        generation: String?,
+        cadence: String?,
+    ): Boolean = synchronized(lock) {
+        if (generation.isNullOrBlank() || !CleanupSchedulePolicy.isEnabled(cadence)) {
+            return@synchronized false
+        }
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+        preferences.getString(PREF_GENERATION, null) == generation &&
+            preferences.getString(PREF_CADENCE, null) == cadence
     }
 
     /**

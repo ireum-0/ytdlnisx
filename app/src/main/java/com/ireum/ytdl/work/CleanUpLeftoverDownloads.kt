@@ -32,6 +32,20 @@ class CleanUpLeftoverDownloads(
     }
 
     override suspend fun doWork(): Result {
+        val generation = inputData.getString(CleanupScheduleCoordinator.INPUT_GENERATION)
+        val cadence = inputData.getString(CleanupScheduleCoordinator.INPUT_CADENCE)
+        // WorkManager cancellation is asynchronous. A request from a
+        // superseded/disabled generation must prove current authority before
+        // it can enter any destructive cleanup effect.
+        if (!CleanupScheduleCoordinator.isCurrentOccurrence(
+                context = applicationContext,
+                generation = generation,
+                cadence = cadence,
+            )
+        ) {
+            return Result.success(workDataOf("cleanup_schedule_stale" to true))
+        }
+
         val notificationUtil = NotificationUtil(App.instance)
         val id = System.currentTimeMillis().toInt()
 
@@ -70,8 +84,8 @@ class CleanUpLeftoverDownloads(
         val successorAccepted = try {
             CleanupScheduleCoordinator.scheduleSuccessor(
                 context = applicationContext,
-                generation = inputData.getString(CleanupScheduleCoordinator.INPUT_GENERATION),
-                cadence = inputData.getString(CleanupScheduleCoordinator.INPUT_CADENCE),
+                generation = generation,
+                cadence = cadence,
                 monthlyAnchorDay = inputData.getInt(
                     CleanupScheduleCoordinator.INPUT_MONTHLY_ANCHOR_DAY,
                     Calendar.getInstance().get(Calendar.DAY_OF_MONTH),
