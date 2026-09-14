@@ -3,6 +3,7 @@ package com.ireum.ytdl.work
 import android.content.Context
 import androidx.core.content.ContextCompat
 import androidx.preference.PreferenceManager
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
@@ -121,6 +122,8 @@ internal object CleanupScheduleCoordinator {
     internal var replayInitialDelayOverrideForTesting: Long? = null
     @Volatile
     internal var replayMaxDelayOverrideForTesting: Long? = null
+    @Volatile
+    internal var retryBackoffDelayOverrideForTesting: Long? = null
 
     private data class SchedulingDebt(
         val generation: String,
@@ -180,9 +183,7 @@ internal object CleanupScheduleCoordinator {
                         .putInt(PREF_PENDING_ANCHOR_DAY, anchorDay)
                         .putLong(PREF_PENDING_OCCURRENCE_AT, initialOccurrenceAt!!)
                 }
-                val authorityCommitted = authorityCommitOverrideForTesting
-                    ?.invoke(authorityEditor)
-                    ?: authorityEditor.commit()
+                val authorityCommitted = commitAuthority(authorityEditor)
                 if (!authorityCommitted) return@synchronized false
 
                 // The new generation wins before any old asynchronous owner can
@@ -236,20 +237,38 @@ internal object CleanupScheduleCoordinator {
 
                 val now = currentCalendar()
                 var generation = preferences.getString(PREF_GENERATION, null)
+                val anchorDay: Int
                 if (generation.isNullOrBlank()) {
-                    generation = UUID.randomUUID().toString()
-                    if (!preferences.edit()
-                            .putString(PREF_GENERATION, generation)
-                            .putInt(PREF_MONTHLY_ANCHOR_DAY, now.get(Calendar.DAY_OF_MONTH))
-                            .commit()
-                    ) {
+                    val bootstrappedGeneration = UUID.randomUUID().toString()
+                    val bootstrappedAnchorDay = now.get(Calendar.DAY_OF_MONTH)
+                    val bootstrappedOccurrenceAt = CleanupSchedulePolicy.nextOccurrence(
+                        now = now,
+                        cadence = cadence!!,
+                        monthlyAnchorDay = bootstrappedAnchorDay,
+                    ).timeInMillis
+                    val bootstrapEditor = preferences.edit()
+                        .putString(PREF_GENERATION, bootstrappedGeneration)
+                        .putInt(PREF_MONTHLY_ANCHOR_DAY, bootstrappedAnchorDay)
+                        .remove(PREF_PENDING_GENERATION)
+                        .remove(PREF_PENDING_CADENCE)
+                        .remove(PREF_PENDING_ANCHOR_DAY)
+                        .remove(PREF_PENDING_OCCURRENCE_AT)
+                        .putString(PREF_PENDING_GENERATION, bootstrappedGeneration)
+                        .putString(PREF_PENDING_CADENCE, cadence)
+                        .putInt(PREF_PENDING_ANCHOR_DAY, bootstrappedAnchorDay)
+                        .putLong(PREF_PENDING_OCCURRENCE_AT, bootstrappedOccurrenceAt)
+                    if (!commitAuthority(bootstrapEditor)) {
                         return@synchronized
                     }
+                    stopReplayOwnerLocked()
+                    generation = bootstrappedGeneration
+                    anchorDay = bootstrappedAnchorDay
+                } else {
+                    anchorDay = preferences.getInt(
+                        PREF_MONTHLY_ANCHOR_DAY,
+                        now.get(Calendar.DAY_OF_MONTH),
+                    )
                 }
-                val anchorDay = preferences.getInt(
-                    PREF_MONTHLY_ANCHOR_DAY,
-                    now.get(Calendar.DAY_OF_MONTH),
-                )
 
                 val current = runCatching {
                     workManager.getWorkInfosForUniqueWork(WORK_NAME).get()
@@ -400,7 +419,7 @@ internal object CleanupScheduleCoordinator {
                     cadence = currentCadence,
                     monthlyAnchorDay = monthlyAnchorDay,
                     occurrenceAt = next.timeInMillis,
-                )
+                ).also { ensureReplayOwnerLocked(appContext) }
             }
 
             enqueueNextLocked(
@@ -412,7 +431,7 @@ internal object CleanupScheduleCoordinator {
                 from = from,
                 append = true,
                 successor = true,
-            )
+            )?.also { ensureReplayOwnerLocked(appContext) }
         } ?: return false
 
         if (handle.alreadyPresent) return true
@@ -440,7 +459,7 @@ internal object CleanupScheduleCoordinator {
         }
         val delay = (delayOverride ?: (occurrenceAt - System.currentTimeMillis()))
             .coerceAtLeast(0L)
-        val request = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>()
+        val requestBuilder = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>()
             .setConstraints(Constraints.Builder().build())
             .setInputData(
                 Data.Builder()
@@ -455,7 +474,14 @@ internal object CleanupScheduleCoordinator {
             .addTag(cadenceTag(cadence))
             .addTag(occurrenceTag(generation, occurrenceAt))
             .setInitialDelay(delay, TimeUnit.MILLISECONDS)
-            .build()
+        retryBackoffDelayOverrideForTesting?.let { retryBackoffDelay ->
+            requestBuilder.setBackoffCriteria(
+                BackoffPolicy.LINEAR,
+                retryBackoffDelay.coerceAtLeast(1L),
+                TimeUnit.MILLISECONDS,
+            )
+        }
+        val request = requestBuilder.build()
 
         val policy = if (append) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
@@ -502,6 +528,9 @@ internal object CleanupScheduleCoordinator {
             ContextCompat.getMainExecutor(context),
         )
     }
+
+    private fun commitAuthority(editor: android.content.SharedPreferences.Editor): Boolean =
+        authorityCommitOverrideForTesting?.invoke(editor) ?: editor.commit()
 
     private suspend fun awaitAcceptance(context: Context, handle: EnqueueHandle): Boolean =
         try {
