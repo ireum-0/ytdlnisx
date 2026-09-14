@@ -10,6 +10,7 @@ import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.database.repository.LocalHistoryAdmissionResult
+import com.ireum.ytdl.util.LocalAddStorageIdentityPolicy
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -101,6 +102,19 @@ class LocalAddAdmissionPersistenceTest {
         val treeUri = DocumentsContract.buildTreeDocumentUri("provider-a", "tree").toString()
         val firstUri = DocumentsContract.buildDocumentUri("provider-a", "tree/child").toString()
         val secondUri = DocumentsContract.buildDocumentUri("provider-b", "tree/child").toString()
+
+        assertTrue(
+            LocalAddStorageIdentityPolicy.hasSameProviderAuthority(
+                android.net.Uri.parse(treeUri),
+                android.net.Uri.parse(firstUri),
+            )
+        )
+        assertTrue(
+            !LocalAddStorageIdentityPolicy.hasSameProviderAuthority(
+                android.net.Uri.parse(treeUri),
+                android.net.Uri.parse(secondUri),
+            )
+        )
 
         val first = repository.insertLocalHistory(
             history(firstUri, "url:a", treeUri = treeUri, treePath = "child")

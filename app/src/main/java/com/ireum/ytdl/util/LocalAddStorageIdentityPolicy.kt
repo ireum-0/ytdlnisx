@@ -14,6 +14,9 @@ import java.util.Locale
  * identities are scoped by the normalized tree URI and relative path.
  */
 object LocalAddStorageIdentityPolicy {
+    fun hasSameProviderAuthority(treeUri: Uri, fileUri: Uri): Boolean =
+        sameAuthority(treeUri, fileUri)
+
     fun identityForEntry(uriString: String, treeUriString: String? = null): String? {
         val uri = parseUri(uriString) ?: return null
         val treeUri = treeUriString?.let(::parseUri)

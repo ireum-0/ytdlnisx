@@ -296,6 +296,9 @@ class LocalAddWorker(
 
     private fun buildTreeMeta(treeUri: Uri?, fileUri: Uri): Pair<String, String> {
         if (treeUri == null) return "" to ""
+        if (!LocalAddStorageIdentityPolicy.hasSameProviderAuthority(treeUri, fileUri)) {
+            return "" to ""
+        }
         val treeId = runCatching { android.provider.DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
         val docId = runCatching { android.provider.DocumentsContract.getDocumentId(fileUri) }.getOrNull()
         if (treeId.isNullOrBlank() || docId.isNullOrBlank()) return "" to ""
