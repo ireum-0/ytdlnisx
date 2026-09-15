@@ -1,0 +1,289 @@
+{
+  "schema_version": "lens-history-v1",
+  "dataset_kind": "frozen_historical_reconstruction_manifest",
+  "source": {
+    "snapshot_commit": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "root_tree": "65b83782fe5ca70974da0ea457b09d8d07722aa7",
+    "review_runs_tree": "4c235538a24a599755240104a2a1144e7700e807",
+    "checkpoints_tree": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "checkpoint_path_touching_commits": {
+      "state": "DIRECT",
+      "value": 764
+    },
+    "oldest_checkpoint_path_commit": {
+      "state": "DIRECT",
+      "value": "3385e695edd2fdbb84b2ed69b9a9820f6acfef9c"
+    }
+  },
+  "rules": {
+    "aggregate_rule": "lens-history-v1/final-only-explicit",
+    "allowed_states": [
+      "DIRECT",
+      "DERIVABLE",
+      "NOT_VERIFIED",
+      "NOT_APPLICABLE"
+    ],
+    "constraints": {
+      "legacy_audit_lens_to_modern_coverage": "FORBIDDEN",
+      "missing_metric_to_zero": "FORBIDDEN",
+      "missing_coverage_to_not_run": "FORBIDDEN",
+      "intermediate_in_cumulative_effectiveness": "FORBIDDEN",
+      "supporting_lens_duplicate_finding_count": "FORBIDDEN",
+      "post_snapshot_backfill": "FORBIDDEN"
+    }
+  },
+  "transitions": {
+    "verified_legacy_field_example": {
+      "checkpoint_commit": "0f8f305526458001cea3bf158d23cac7a2e1810e",
+      "checkpoint_file": "review-runs/checkpoints/2026-09-15T052900Z__2bcffa78__eba6bc09__checkpoint.md",
+      "checkpoint_kind": "BOOTSTRAP",
+      "raw_audit_lens": {
+        "state": "DIRECT",
+        "value": "persistence / first-write failure / recovery / process-death"
+      },
+      "modern_lens_mapping": {
+        "state": "NOT_VERIFIED"
+      }
+    },
+    "verified_legacy_final_example": {
+      "checkpoint_commit": "9de92c350989a7a4da4bbfa48a7275dceeb57d27",
+      "checkpoint_file": "review-runs/checkpoints/2026-09-15T054100Z__2bcffa78__edd9f10b__checkpoint.md",
+      "checkpoint_kind": "FINAL",
+      "raw_audit_lens": {
+        "state": "DIRECT",
+        "value": "persistence / first-write failure / recovery / process-death"
+      }
+    },
+    "last_legacy_only_final": {
+      "checkpoint_commit": "c497da58ac844efb1a8d28f2da328f0253d1b914",
+      "checkpoint_file": "review-runs/checkpoints/2026-09-15T112900Z__a5160ab5__0248ef2e__checkpoint.md",
+      "checkpoint_kind": "FINAL",
+      "raw_audit_lens": {
+        "state": "DIRECT",
+        "value": "5 — exact upstream API semantics + caller/consumer/final-effect closure"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "structured_effectiveness": {
+        "state": "NOT_VERIFIED"
+      }
+    },
+    "status_conflict_reconciliation": {
+      "checkpoint_commit": "8151c278e6a6f1c28f47e52db14e6ebbe1faaa55",
+      "checkpoint_file": "review-runs/checkpoints/2026-09-15T205700+0900__a5160ab5__f10-prestart-checkpoint-reconciliation.md",
+      "structured_lens_fields": {
+        "state": "NOT_APPLICABLE",
+        "reason": "reconciliation document does not introduce structured lens fields"
+      }
+    },
+    "first_structured_checkpoint": {
+      "checkpoint_commit": "4d1f937c90d19234b57496c6d2288323fe2d9e4a",
+      "checkpoint_file": "review-runs/checkpoints/2026-09-15T122700Z__a5160ab5__8151c278__checkpoint.md",
+      "checkpoint_kind": "INTERMEDIATE",
+      "primary_deep_lens": {
+        "state": "DIRECT",
+        "value": "L6"
+      },
+      "lens_coverage_current_sha": {
+        "state": "DIRECT",
+        "value": {
+          "L1": "DEEP",
+          "L2": "DEEP",
+          "L3": "DEEP",
+          "L4": "DEEP",
+          "L5": "DEEP",
+          "L6": "DEEP"
+        }
+      },
+      "provisional_effectiveness_present": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "cumulative_effectiveness_contribution": {
+        "state": "NOT_APPLICABLE",
+        "reason": "intermediate checkpoint explicitly excluded from cumulative statistics"
+      }
+    },
+    "first_structured_final": {
+      "checkpoint_commit": "d8c9e3d94ecaaa6121f9912cab4240375e8b5680",
+      "checkpoint_file": "review-runs/checkpoints/2026-09-15T123300Z__a5160ab5__4d1f937c__final-checkpoint.md",
+      "checkpoint_kind": "FINAL",
+      "primary_deep_lens": {
+        "state": "DIRECT",
+        "value": "L6"
+      }
+    },
+    "frozen_snapshot_final": {
+      "checkpoint_commit": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+      "checkpoint_file": "review-runs/checkpoints/2026-09-15T133900Z__a67cb4ff__9218b8d2__final-checkpoint.md",
+      "checkpoint_kind": "FINAL",
+      "primary_deep_lens": {
+        "state": "DIRECT",
+        "value": "L4"
+      }
+    }
+  },
+  "pilot_provenance": [
+    {
+      "implementation_sha": "c4f630a8699662ebc07d94caa006d70b9779091d",
+      "final_checkpoint_file": "review-runs/checkpoints/2026-09-15T042900Z__c4f630a8__checkpoint.md",
+      "checkpoint_commit": "077e226ac4f24a9274c4eabd9044e2e563989def",
+      "recorded_schema": "PRE_STRUCTURED"
+    },
+    {
+      "implementation_sha": "09058d574d19d211cd0db36cbf47726bb8fa7dc5",
+      "final_checkpoint_file": "review-runs/checkpoints/2026-09-14T114015Z__09058d57__checkpoint.md",
+      "checkpoint_commit": "ea3ea5954b7f0a92e94444a90130ba80b9bd77a9",
+      "recorded_schema": "PRE_STRUCTURED"
+    },
+    {
+      "implementation_sha": "55e54888a0e03c17a4cbdb51817d3ad4336107f4",
+      "final_checkpoint_file": "review-runs/checkpoints/2026-09-14__55e54888__completed-wave-verdict.md",
+      "checkpoint_commit": "c844cee44aca0e1c781fafbe9f1d05d238e8ca4a",
+      "recorded_schema": "PRE_STRUCTURED"
+    },
+    {
+      "implementation_sha": "a67cb4ff8a367f3a4261eb816d4abfe1290b8e4f",
+      "final_checkpoint_file": "review-runs/checkpoints/2026-09-15T133900Z__a67cb4ff__9218b8d2__final-checkpoint.md",
+      "checkpoint_commit": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+      "recorded_schema": "STRUCTURED_FINAL"
+    }
+  ],
+  "measured_structured_finals": [
+    {
+      "checkpoint_commit": "d8c9e3d94ecaaa6121f9912cab4240375e8b5680",
+      "checkpoint_file": "review-runs/checkpoints/2026-09-15T123300Z__a5160ab5__4d1f937c__final-checkpoint.md",
+      "implementation_sha": "a5160ab51dbe3c6f8d5f87853c4e4037469b9684",
+      "lens": "L6",
+      "coverage_level": {
+        "state": "DIRECT",
+        "value": "DEEP"
+      },
+      "metrics": {
+        "new_confirmed_findings": {"state": "DIRECT", "value": 0},
+        "existing_finding_status_changes": {"state": "DIRECT", "value": 0},
+        "confirmed_residuals_or_subcases": {"state": "DIRECT", "value": 0},
+        "rejected_candidates_with_proof": {"state": "DIRECT", "value": 2},
+        "not_verified_candidates": {"state": "DIRECT", "value": 1},
+        "checklist_gaps_triggered": {"state": "DIRECT", "value": 0},
+        "cross_feature_propagation_hits": {"state": "DIRECT", "value": 2}
+      }
+    },
+    {
+      "checkpoint_commit": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+      "checkpoint_file": "review-runs/checkpoints/2026-09-15T133900Z__a67cb4ff__9218b8d2__final-checkpoint.md",
+      "implementation_sha": "a67cb4ff8a367f3a4261eb816d4abfe1290b8e4f",
+      "coverage": {
+        "state": "DIRECT",
+        "value": {
+          "L1": "BASELINE",
+          "L2": "BASELINE",
+          "L3": "BASELINE",
+          "L4": "DEEP",
+          "L5": "BASELINE",
+          "L6": "BASELINE"
+        }
+      },
+      "metrics_by_lens": {
+        "L1": {
+          "new_confirmed_findings": 0,
+          "existing_finding_status_changes": 0,
+          "confirmed_residuals_or_subcases": 0,
+          "rejected_candidates_with_proof": 0,
+          "not_verified_candidates": 0,
+          "checklist_gaps_triggered": 0,
+          "cross_feature_propagation_hits": 0
+        },
+        "L2": {
+          "new_confirmed_findings": 0,
+          "existing_finding_status_changes": 0,
+          "confirmed_residuals_or_subcases": 0,
+          "rejected_candidates_with_proof": 0,
+          "not_verified_candidates": 0,
+          "checklist_gaps_triggered": 0,
+          "cross_feature_propagation_hits": 0
+        },
+        "L3": {
+          "new_confirmed_findings": 0,
+          "existing_finding_status_changes": 0,
+          "confirmed_residuals_or_subcases": 0,
+          "rejected_candidates_with_proof": 0,
+          "not_verified_candidates": 0,
+          "checklist_gaps_triggered": 0,
+          "cross_feature_propagation_hits": 0
+        },
+        "L4": {
+          "new_confirmed_findings": 0,
+          "existing_finding_status_changes": 0,
+          "confirmed_residuals_or_subcases": 1,
+          "rejected_candidates_with_proof": 1,
+          "not_verified_candidates": 0,
+          "checklist_gaps_triggered": 0,
+          "cross_feature_propagation_hits": 0,
+          "primary_detecting_lens_for_confirmed_residual": true,
+          "supporting_lenses": ["L1", "L5"]
+        },
+        "L5": {
+          "new_confirmed_findings": 0,
+          "existing_finding_status_changes": 0,
+          "confirmed_residuals_or_subcases": 0,
+          "rejected_candidates_with_proof": 0,
+          "not_verified_candidates": 0,
+          "checklist_gaps_triggered": 0,
+          "cross_feature_propagation_hits": 0
+        },
+        "L6": {
+          "new_confirmed_findings": 0,
+          "existing_finding_status_changes": 0,
+          "confirmed_residuals_or_subcases": 0,
+          "rejected_candidates_with_proof": 0,
+          "not_verified_candidates": 0,
+          "checklist_gaps_triggered": 0,
+          "cross_feature_propagation_hits": 0
+        }
+      }
+    }
+  ],
+  "observed_measured_effectiveness": {
+    "state": "DERIVABLE",
+    "rule": "lens-history-v1/final-only-explicit",
+    "value": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    }
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  },
+  "explicit_unattributed_substantive_discovery": {
+    "checkpoint_commit": "eb2dc35fc97e75963b75d63ddb42a6811bf8336f",
+    "checkpoint_file": "review-runs/checkpoints/2026-09-15__a5160ab5__cleanup-stale-row-authority.md",
+    "finding_id": "CLEANUP-STALE-DOWNLOAD-ROW-01",
+    "finding_state": {
+      "state": "DIRECT",
+      "value": "P2 / OPEN new distinct root"
+    },
+    "modern_primary_detecting_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "cumulative_effectiveness_contribution": {
+      "state": "NOT_APPLICABLE",
+      "reason": "not a cumulative-eligible structured FINAL effectiveness record"
+    }
+  },
+  "backfill_status": {
+    "contract": "COMPLETE",
+    "transition_boundaries": "COMPLETE",
+    "pilot_provenance": "COMPLETE",
+    "measured_final_aggregate": "COMPLETE",
+    "exhaustive_per_checkpoint_record_materialization": "PENDING",
+    "historical_total_effectiveness": "NOT_VERIFIED"
+  }
+}
