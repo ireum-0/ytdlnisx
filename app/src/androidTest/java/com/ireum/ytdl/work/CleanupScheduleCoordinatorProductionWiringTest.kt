@@ -3,11 +3,15 @@ package com.ireum.ytdl.work
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import androidx.test.core.app.ActivityScenario
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.preference.PreferenceManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.action.ViewActions.click
+import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.Operation
@@ -16,6 +20,10 @@ import androidx.work.impl.utils.futures.SettableFuture
 import androidx.work.workDataOf
 import com.google.common.util.concurrent.ListenableFuture
 import com.ireum.ytdl.ui.more.settings.CleanupSchedulePreferenceController
+import com.ireum.ytdl.ui.more.settings.DownloadSettingsFragment
+import com.ireum.ytdl.ui.more.settings.SettingsActivity
+import com.ireum.ytdl.R
+import androidx.navigation.fragment.NavHostFragment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CoroutineScope
@@ -146,6 +154,93 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             preferences.getString("cleanup_leftover_downloads_pending_generation", null)
         )
         assertTrue(unfinishedCurrentWork().isEmpty())
+    }
+
+    @Test
+    fun startupMissingGenerationCommitFailureRetainsCurrentProcessBootstrapOwner() = runBlocking {
+        assertTrue(
+            preferences.edit()
+                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+                .remove("cleanup_leftover_downloads_generation")
+                .remove("cleanup_leftover_downloads_anchor_day")
+                .remove("cleanup_leftover_downloads_pending_generation")
+                .remove("cleanup_leftover_downloads_pending_cadence")
+                .remove("cleanup_leftover_downloads_pending_anchor_day")
+                .remove("cleanup_leftover_downloads_pending_occurrence_at")
+                .remove("cleanup_leftover_downloads_active_generation")
+                .remove("cleanup_leftover_downloads_active_cadence")
+                .remove("cleanup_leftover_downloads_active_anchor_day")
+                .remove("cleanup_leftover_downloads_active_occurrence_at")
+                .commit()
+        )
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+
+        CleanupScheduleCoordinator.reconcile(context)
+
+        assertNull(preferences.getString("cleanup_leftover_downloads_generation", null))
+        assertNull(
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+        )
+        assertTrue(unfinishedCurrentWork().isEmpty())
+
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                val generation = preferences.getString(
+                    "cleanup_leftover_downloads_generation",
+                    null,
+                )
+                generation != null && (
+                    preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+                        == generation ||
+                        preferences.getString("cleanup_leftover_downloads_active_generation", null)
+                            == generation
+                    )
+            }
+        )
+        assertTrue(awaitUnfinishedCount(1))
+    }
+
+    @Test
+    fun bootstrapReplayIsFencedByDisableAndSupersession() = runBlocking {
+        preferences.edit()
+            .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+            .remove("cleanup_leftover_downloads_generation")
+            .remove("cleanup_leftover_downloads_anchor_day")
+            .commit()
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        CleanupScheduleCoordinator.reconcile(context)
+
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        assertTrue(CleanupScheduleCoordinator.configure(context, null))
+        assertEquals("", preferences.getString("cleanup_leftover_downloads", null))
+        assertNull(preferences.getString("cleanup_leftover_downloads_pending_generation", null))
+        assertNull(preferences.getString("cleanup_leftover_downloads_active_generation", null))
+
+        preferences.edit()
+            .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+            .remove("cleanup_leftover_downloads_generation")
+            .remove("cleanup_leftover_downloads_anchor_day")
+            .commit()
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        CleanupScheduleCoordinator.reconcile(context)
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY))
+        assertEquals(
+            CleanupSchedulePolicy.WEEKLY,
+            preferences.getString("cleanup_leftover_downloads", null),
+        )
+        assertEquals(1, unfinishedCurrentWork().size)
+        assertTrue(
+            unfinishedCurrentWork().single().tags.contains(
+                cadenceTag(CleanupSchedulePolicy.WEEKLY),
+            )
+        )
     }
 
     @Test
@@ -354,7 +449,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(1)
         CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
-        CleanUpLeftoverDownloads.cleanupOverrideForTesting = { }
+        val cleanupRuns = AtomicInteger(0)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            cleanupRuns.incrementAndGet()
+        }
         val admissionEntered = CountDownLatch(1)
         val releaseAdmission = CountDownLatch(1)
         CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = {
@@ -388,14 +486,15 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         assertTrue(admissionEntered.await(10, TimeUnit.SECONDS))
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
         releaseAdmission.countDown()
-        val failed = awaitWork(timeoutMs = 30_000L) { infos ->
+        val terminal = awaitWork(timeoutMs = 30_000L) { infos ->
             infos.any { info ->
-                info.state == WorkInfo.State.FAILED &&
+                info.state == WorkInfo.State.SUCCEEDED &&
                     info.tags.contains(occurrenceTag(generation, predecessorAt)) &&
-                    info.runAttemptCount >= CleanUpLeftoverDownloads.MAX_ATTEMPTS - 1
+                    info.outputData.getBoolean("cleanup_schedule_handoff_pending", false)
             }
         }
-        assertTrue(failed.any { it.state == WorkInfo.State.FAILED })
+        assertTrue(terminal.any { it.state == WorkInfo.State.SUCCEEDED })
+        assertEquals(1, cleanupRuns.get())
         CleanupScheduleCoordinator.resetReplayOwnerForTesting()
 
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
@@ -1111,7 +1210,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
         CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
-        CleanUpLeftoverDownloads.cleanupOverrideForTesting = { }
+        val cleanupRuns = AtomicInteger(0)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            cleanupRuns.incrementAndGet()
+        }
         val successorEnqueueAttempts = AtomicInteger(0)
 
         assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
@@ -1126,8 +1228,9 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         }
         val infos = awaitWork(timeoutMs = 60_000L) { current ->
             current.any { info ->
-                info.state == WorkInfo.State.FAILED &&
-                    info.tags.contains(generationTag(generation))
+                info.state == WorkInfo.State.SUCCEEDED &&
+                    info.tags.contains(generationTag(generation)) &&
+                    info.outputData.getBoolean("cleanup_schedule_handoff_pending", false)
             } && current.any { info ->
                 info.state == WorkInfo.State.ENQUEUED &&
                     info.tags.contains(generationTag(generation)) &&
@@ -1137,7 +1240,11 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             }
         }
 
-        assertTrue(infos.any { info -> info.state == WorkInfo.State.FAILED })
+        assertTrue(infos.any { info ->
+            info.state == WorkInfo.State.SUCCEEDED &&
+                info.outputData.getBoolean("cleanup_schedule_handoff_pending", false)
+        })
+        assertEquals(1, cleanupRuns.get())
         assertTrue(successorEnqueueAttempts.get() > CleanUpLeftoverDownloads.MAX_ATTEMPTS)
         assertTrue(
             awaitPreference(timeoutMs = 5_000L) {
@@ -1145,6 +1252,130 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             }
         )
         assertEquals(1, unfinishedCurrentWork().size)
+    }
+
+    @Test
+    fun successfulCleanupDoesNotRepeatWhenSuccessorDiscoveryIsUnknown() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
+        CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        val cleanupRuns = AtomicInteger(0)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            cleanupRuns.incrementAndGet()
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = {
+            error("scheduler discovery unavailable")
+        }
+
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val terminal = awaitWork(timeoutMs = 30_000L) { infos ->
+            infos.any { info ->
+                info.state == WorkInfo.State.SUCCEEDED &&
+                    info.tags.contains(generationTag(generation)) &&
+                    info.outputData.getBoolean("cleanup_schedule_handoff_pending", false)
+            }
+        }
+        assertTrue(terminal.any { info ->
+            info.state == WorkInfo.State.SUCCEEDED &&
+                info.outputData.getBoolean("cleanup_schedule_handoff_pending", false)
+        })
+        assertEquals(1, cleanupRuns.get())
+
+        CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = null
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L) == -1L &&
+                    preferences.getLong("cleanup_leftover_downloads_active_occurrence_at", -1L) > 0L
+            }
+        )
+        assertEquals(1, cleanupRuns.get())
+        assertEquals(1, unfinishedCurrentWork().size)
+    }
+
+    @Test
+    fun downloadSettingsResetDisablesCleanupThroughProductionConsumer() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        assertEquals(1, unfinishedCurrentWork().size)
+
+        val scenario = ActivityScenario.launch(SettingsActivity::class.java)
+        try {
+            scenario.onActivity { activity ->
+                val navHost = activity.supportFragmentManager
+                    .findFragmentById(R.id.frame_layout) as NavHostFragment
+                navHost.navController.navigate(R.id.downloadSettingsFragment)
+                navHost.childFragmentManager.executePendingTransactions()
+                val fragment = navHost.childFragmentManager.primaryNavigationFragment
+                    as DownloadSettingsFragment
+                fragment.findPreference<androidx.preference.Preference>("reset_preferences")
+                    ?.performClick()
+            }
+            onView(withText(R.string.continue_anyway)).perform(click())
+
+            assertTrue(
+                awaitPreference(timeoutMs = 10_000L) {
+                    preferences.getString("cleanup_leftover_downloads", null).orEmpty().isEmpty()
+                }
+            )
+            assertNull(preferences.getString("cleanup_leftover_downloads_pending_generation", null))
+            assertNull(preferences.getString("cleanup_leftover_downloads_active_generation", null))
+            assertTrue(awaitUnfinishedCount(0, timeoutMs = 10_000L))
+        } finally {
+            scenario.close()
+        }
+    }
+
+    @Test
+    fun downloadSettingsResetWaitsForAdmittedCleanupWithoutBlockingUi() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
+        val cleanupStarted = CountDownLatch(1)
+        val releaseCleanup = CountDownLatch(1)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            cleanupStarted.countDown()
+            check(releaseCleanup.await(10, TimeUnit.SECONDS)) {
+                "cleanup effect did not release"
+            }
+        }
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        assertTrue(cleanupStarted.await(10, TimeUnit.SECONDS))
+
+        val scenario = ActivityScenario.launch(SettingsActivity::class.java)
+        try {
+            scenario.onActivity { activity ->
+                val navHost = activity.supportFragmentManager
+                    .findFragmentById(R.id.frame_layout) as NavHostFragment
+                navHost.navController.navigate(R.id.downloadSettingsFragment)
+                navHost.childFragmentManager.executePendingTransactions()
+                val fragment = navHost.childFragmentManager.primaryNavigationFragment
+                    as DownloadSettingsFragment
+                fragment.findPreference<androidx.preference.Preference>("reset_preferences")
+                    ?.performClick()
+            }
+            onView(withText(R.string.continue_anyway)).perform(click())
+
+            // The reset request is asynchronous.  Its initiating UI callback
+            // returns while the admitted cleanup still owns the effect gate.
+            assertEquals(
+                CleanupSchedulePolicy.DAILY,
+                preferences.getString("cleanup_leftover_downloads", null),
+            )
+            releaseCleanup.countDown()
+            assertTrue(
+                awaitPreference(timeoutMs = 10_000L) {
+                    preferences.getString("cleanup_leftover_downloads", null).orEmpty().isEmpty()
+                }
+            )
+            assertNull(preferences.getString("cleanup_leftover_downloads_pending_generation", null))
+            assertNull(preferences.getString("cleanup_leftover_downloads_active_generation", null))
+        } finally {
+            releaseCleanup.countDown()
+            scenario.close()
+        }
     }
 
     @Test

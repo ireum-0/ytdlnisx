@@ -59,6 +59,18 @@ internal class CleanupSchedulePreferenceController(
         return false
     }
 
+    /**
+     * Invalidates a pending preference transition before a screen-level reset
+     * takes ownership of the cleanup cadence.  Cancelling the lifecycle job
+     * also prevents a late completion from applying or publishing an older
+     * user request after reset has started.
+     */
+    fun cancelPendingRequest() {
+        latestRequest++
+        transitionJob?.cancel()
+        transitionJob = null
+    }
+
     private companion object {
         const val PREFERENCE_KEY = "cleanup_leftover_downloads"
     }

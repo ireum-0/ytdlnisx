@@ -54,6 +54,7 @@ class CleanUpLeftoverDownloads(
         }
 
         var cleanupFailure: Exception? = null
+        var cleanupEffectSucceeded = false
         try {
             beforeCleanupAdmissionForTesting?.invoke()
             when (
@@ -81,7 +82,9 @@ class CleanUpLeftoverDownloads(
                 CleanupScheduleCoordinator.DestructiveEffectResult.Stale -> {
                     return Result.success(workDataOf("cleanup_schedule_stale" to true))
                 }
-                is CleanupScheduleCoordinator.DestructiveEffectResult.Completed -> Unit
+                is CleanupScheduleCoordinator.DestructiveEffectResult.Completed -> {
+                    cleanupEffectSucceeded = true
+                }
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -112,6 +115,26 @@ class CleanUpLeftoverDownloads(
             false
         }
         if (!successorAccepted) {
+            if (cleanupEffectSucceeded) {
+                // The destructive effect already completed.  Retrying this
+                // WorkManager request would run deleteCancelled(),
+                // deleteErrored(), and temp-cache cleanup a second time.  The
+                // coordinator has retained exact predecessor/successor
+                // ownership and a replay/reconciliation owner for the
+                // unresolved handoff, so complete this occurrence without
+                // asking WorkManager to repeat the destructive body.
+                return if (
+                    CleanupScheduleCoordinator.isCurrentOccurrence(
+                        context = applicationContext,
+                        generation = generation,
+                        cadence = cadence,
+                    )
+                ) {
+                    Result.success(workDataOf("cleanup_schedule_handoff_pending" to true))
+                } else {
+                    Result.success(workDataOf("cleanup_schedule_stale" to true))
+                }
+            }
             return if (runAttemptCount < MAX_ATTEMPTS - 1) {
                 Result.retry()
             } else {

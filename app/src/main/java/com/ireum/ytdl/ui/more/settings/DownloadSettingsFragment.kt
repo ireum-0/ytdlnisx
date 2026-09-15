@@ -22,7 +22,11 @@ import com.ireum.ytdl.R
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.work.AlarmScheduler
+import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.work.DownloadWorker
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
@@ -31,6 +35,7 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
     override val title: Int = R.string.downloads
 
     private lateinit var archivePath: Preference
+    private var cleanupTransitionController: CleanupSchedulePreferenceController? = null
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.downloading_preferences, rootKey)
@@ -71,6 +76,7 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
                     cleanupPreference.value = persistedCadence
                 },
             )
+            cleanupTransitionController = transitionController
             cleanupPreference.setOnPreferenceChangeListener { _, newValue ->
                 transitionController.request(newValue)
             }
@@ -245,13 +251,57 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
 
         findPreference<Preference>("reset_preferences")?.setOnPreferenceClickListener {
             UiUtil.showGenericConfirmDialog(requireContext(), getString(R.string.reset), getString(R.string.reset_preferences_in_screen)) {
-                resetPreferences(preferences.edit(), R.xml.downloading_preferences)
-                requireActivity().recreate()
-                val fragmentId = findNavController().currentDestination?.id
-                findNavController().popBackStack(fragmentId!!,true)
-                findNavController().navigate(fragmentId)
+                cleanupTransitionController?.cancelPendingRequest()
+                resetDownloadingPreferences(preferences)
             }
             true
+        }
+    }
+
+    /**
+     * Resets this screen without allowing the generic preference reset to
+     * bypass the cleanup scheduler's authority transition.  The coordinator
+     * is deliberately awaited from lifecycle-owned background work: it may
+     * wait for an admitted destructive cleanup effect, but the preference
+     * callback and Android main thread never wait synchronously.
+     */
+    private fun resetDownloadingPreferences(
+        preferences: android.content.SharedPreferences,
+    ) {
+        val appContext = requireContext().applicationContext
+        viewLifecycleOwner.lifecycleScope.launch {
+            val cleanupDisabled = runCatching {
+                withContext(Dispatchers.IO) {
+                    CleanupScheduleCoordinator.configure(appContext, null)
+                }
+            }.getOrDefault(false)
+            if (!cleanupDisabled) {
+                if (isAdded) {
+                    findPreference<ListPreference>("cleanup_leftover_downloads")?.value =
+                        preferences.getString("cleanup_leftover_downloads", null).orEmpty()
+                }
+                return@launch
+            }
+            if (!isAdded) {
+                return@launch
+            }
+
+            // Keep the coordinator-owned disabled value in place while the
+            // other downloading preferences are reset.  Removing this key
+            // after the coordinated transition would make the generic reset
+            // another writer of cleanup authority.
+            resetPreferences(
+                editor = preferences.edit(),
+                key = R.xml.downloading_preferences,
+                excludedKeys = setOf("cleanup_leftover_downloads"),
+            )
+            if (!isAdded) return@launch
+            requireActivity().recreate()
+            val fragmentId = findNavController().currentDestination?.id
+            if (fragmentId != null) {
+                findNavController().popBackStack(fragmentId, true)
+                findNavController().navigate(fragmentId)
+            }
         }
     }
 

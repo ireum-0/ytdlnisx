@@ -104,6 +104,7 @@ internal object CleanupScheduleCoordinator {
     private val replayScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var replayJob: Job? = null
     private var replayDebt: SchedulingDebt? = null
+    private var replayBootstrapCadence: String? = null
 
     /** Null-default seams used only by deterministic production-wiring tests. */
     @Volatile
@@ -270,6 +271,12 @@ internal object CleanupScheduleCoordinator {
                         .putInt(PREF_PENDING_ANCHOR_DAY, bootstrappedAnchorDay)
                         .putLong(PREF_PENDING_OCCURRENCE_AT, bootstrappedOccurrenceAt)
                     if (!commitAuthority(bootstrapEditor)) {
+                        // The enabled cadence is legacy durable authority, but
+                        // generation/debt publication failed atomically. Keep
+                        // a process-owned bootstrap recovery owner so the
+                        // running process can retry the same logical
+                        // bootstrap without exposing partial authority.
+                        ensureBootstrapReplayOwnerLocked(appContext, cadence)
                         return@synchronized
                     }
                     stopReplayOwnerLocked()
@@ -352,7 +359,20 @@ internal object CleanupScheduleCoordinator {
                     // The active occurrence itself is the durable owner. It
                     // must remain recorded until that occurrence publishes
                     // its successor; acceptance is not a safe clear point.
-                    stopReplayOwnerLocked()
+                    // If successor recovery was already requested after a
+                    // successful effect, retain that exact successor owner
+                    // while the predecessor is still running.  Stopping it
+                    // here would lose the only in-process handoff retry just
+                    // because the predecessor has not terminalized yet.
+                    val successorRecovery = successorDebtOf(activeDebt)
+                        .takeIf { successor ->
+                            pendingDebt == successor || replayDebt == successor
+                        }
+                    if (successorRecovery != null) {
+                        ensureReplayOwnerLocked(appContext, successorRecovery)
+                    } else {
+                        stopReplayOwnerLocked()
+                    }
                     retireLegacyWork(workManager, currentIds)
                     return@synchronized
                 }
@@ -825,6 +845,68 @@ internal object CleanupScheduleCoordinator {
         return true
     }
 
+    /**
+     * Owns recovery for the legacy enabled state in which cadence is durable
+     * but generation publication has not yet succeeded.  There is no
+     * generation-bound debt to persist in this state, so the owner retries
+     * reconciliation only while the same enabled legacy authority remains
+     * current.  A successful bootstrap replaces this owner with the normal
+     * exact-debt owner; disable/supersession cancels it through
+     * [stopReplayOwnerLocked].
+     */
+    private fun ensureBootstrapReplayOwnerLocked(
+        context: Context,
+        cadence: String,
+    ): Boolean {
+        if (!CleanupSchedulePolicy.isEnabled(cadence)) {
+            stopReplayOwnerLocked()
+            return false
+        }
+        if (replayJob?.isActive == true &&
+            replayDebt == null &&
+            replayBootstrapCadence == cadence
+        ) {
+            return true
+        }
+
+        stopReplayOwnerLocked()
+        replayBootstrapCadence = cadence
+        replayJob = replayScope.launch {
+            var backoff = replayInitialDelayOverrideForTesting ?: REPLAY_INITIAL_DELAY_MS
+            val maxBackoff = replayMaxDelayOverrideForTesting ?: REPLAY_MAX_DELAY_MS
+            while (currentCoroutineContext().isActive) {
+                delay(backoff.coerceAtLeast(1L))
+                val stillNeedsBootstrap = synchronized(lock) {
+                    val preferences = PreferenceManager
+                        .getDefaultSharedPreferences(context.applicationContext)
+                    preferences.getString(PREF_CADENCE, null) == cadence &&
+                        preferences.getString(PREF_GENERATION, null).isNullOrBlank()
+                }
+                if (!stillNeedsBootstrap) return@launch
+
+                try {
+                    reconcileSuspending(context.applicationContext)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Keep the enabled legacy authority and retry.  The
+                    // atomic bootstrap commit remains the only publication
+                    // boundary for generation and its initial debt.
+                }
+
+                val remainsUnpublished = synchronized(lock) {
+                    val preferences = PreferenceManager
+                        .getDefaultSharedPreferences(context.applicationContext)
+                    preferences.getString(PREF_CADENCE, null) == cadence &&
+                        preferences.getString(PREF_GENERATION, null).isNullOrBlank()
+                }
+                if (!remainsUnpublished) return@launch
+                backoff = (backoff * 2L).coerceAtMost(maxBackoff.coerceAtLeast(backoff))
+            }
+        }
+        return true
+    }
+
     private suspend fun replaySchedulingDebt(context: Context, expected: SchedulingDebt) {
         var backoff = replayInitialDelayOverrideForTesting ?: REPLAY_INITIAL_DELAY_MS
         val maxBackoff = replayMaxDelayOverrideForTesting ?: REPLAY_MAX_DELAY_MS
@@ -1029,6 +1111,7 @@ internal object CleanupScheduleCoordinator {
         replayJob?.cancel()
         replayJob = null
         replayDebt = null
+        replayBootstrapCadence = null
     }
 
     private fun retirePendingDebtLocked(preferences: android.content.SharedPreferences): Boolean {

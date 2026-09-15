@@ -39,9 +39,13 @@ abstract class BaseSettingsFragment : PreferenceFragmentCompat() {
         return list
     }
 
-    fun resetPreferences(editor: SharedPreferences.Editor, key: Int) {
+    fun resetPreferences(
+        editor: SharedPreferences.Editor,
+        key: Int,
+        excludedKeys: Set<String> = emptySet(),
+    ) {
         getPreferences(preferenceScreen, mutableListOf()).forEach {
-            editor.remove(it.key)
+            if (it.key !in excludedKeys) editor.remove(it.key)
         }
         editor.apply()
         PreferenceManager.setDefaultValues(requireActivity().applicationContext, key, true)
