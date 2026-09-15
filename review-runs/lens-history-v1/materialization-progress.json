@@ -24,12 +24,18 @@
       "value": 8
     },
     "inventory_batches": {
-      "completed": 1,
-      "history_entries_materialized": 5,
-      "newest_history_rank_materialized_through": 5,
-      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0001-newest-001-005.jsonl",
+      "completed": 2,
+      "history_entries_materialized": 10,
+      "newest_history_rank_materialized_through": 10,
+      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0002-newest-006-010.jsonl",
       "batch_0001_checks": {
         "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE"
+      },
+      "batch_0002_checks": {
+        "commit_detail_or_preverified_file_binding": "COMPLETE",
         "frozen_tree_presence": "COMPLETE",
         "source_blob_identity": "COMPLETE",
         "schema_class_assignment": "COMPLETE"
@@ -78,7 +84,7 @@
     "document_identity": "review-runs/lens-history-v1/rules/document-identity-v1.md"
   },
   "next_strategy": [
-    "continue bounded history extraction from rank 6 while binding each commit to its exact changed checkpoint path",
+    "continue bounded history extraction from rank 11 while binding each commit to its exact changed checkpoint path",
     "verify each candidate path exists in the frozen checkpoint tree and record its frozen blob identity",
     "deduplicate exact checkpoint document paths rather than assuming one commit equals one file",
     "materialize one lens-history-v1 ledger record per frozen checkpoint document",
