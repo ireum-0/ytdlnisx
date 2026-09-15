@@ -9,7 +9,7 @@
     "source_snapshot",
     "checkpoint",
     "implementation_sha",
-    "era",
+    "schema_class",
     "effectiveness_eligibility"
   ],
   "properties": {
@@ -30,9 +30,9 @@
       }
     },
     "implementation_sha": {"$ref": "#/$defs/stateValue"},
-    "era": {
+    "schema_class": {
       "enum": [
-        "PRE_LENS",
+        "UNINSTRUMENTED",
         "LEGACY_AUDIT_LENS",
         "STRUCTURED_PROVISIONAL",
         "STRUCTURED_FINAL"
