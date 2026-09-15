@@ -127,6 +127,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 .remove("cleanup_leftover_downloads_pending_cadence")
                 .remove("cleanup_leftover_downloads_pending_anchor_day")
                 .remove("cleanup_leftover_downloads_pending_occurrence_at")
+                .remove("cleanup_leftover_downloads_active_generation")
+                .remove("cleanup_leftover_downloads_active_cadence")
+                .remove("cleanup_leftover_downloads_active_anchor_day")
+                .remove("cleanup_leftover_downloads_active_occurrence_at")
                 .commit()
         )
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
@@ -234,6 +238,177 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         )
         assertTrue(enqueueCalls.get() >= 2)
         assertEquals(1, unfinishedCurrentWork().size)
+    }
+
+    @Test
+    fun failedAcceptedOccurrencePromotionRetainsDebtUntilDurablePromotion() = runBlocking {
+        val operation = ControlledOperation().also { controlledOperations += it }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
+            workManager.enqueueUniqueWork(name, policy, request)
+            operation
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        operation.succeed()
+
+        assertTrue(
+            awaitPreference(timeoutMs = 2_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == generation
+            }
+        )
+        assertNull(preferences.getString("cleanup_leftover_downloads_active_generation", null))
+
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        assertTrue(
+            awaitPreference(timeoutMs = 2_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null &&
+                    preferences.getString("cleanup_leftover_downloads_active_generation", null) == generation
+            }
+        )
+    }
+
+    @Test
+    fun failedPredecessorClearAndSuccessorWriteAdvanceOnlyExactSuccessor() = runBlocking {
+        val operation = ControlledOperation().also { controlledOperations += it }
+        val scheduleNow = Calendar.getInstance()
+        CleanupScheduleCoordinator.nowProviderForTesting = {
+            scheduleNow.clone() as Calendar
+        }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
+            workManager.enqueueUniqueWork(name, policy, request)
+            operation
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val predecessorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = scheduleNow,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+        val expectedSuccessorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = Calendar.getInstance().apply { timeInMillis = predecessorAt },
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        operation.succeed()
+        assertTrue(
+            awaitPreference(timeoutMs = 2_000L) {
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == generation
+            }
+        )
+        assertFalse(
+            CleanupScheduleCoordinator.scheduleSuccessor(
+                context = context,
+                generation = generation,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+                completedOccurrenceAt = predecessorAt,
+            )
+        )
+        assertEquals(
+            predecessorAt,
+            preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+        )
+
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = null
+        // Model the predecessor no longer being discoverable.  The replay
+        // owner must advance the exact successor rather than selecting the
+        // stale predecessor tuple merely because its clear commit failed.
+        CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = { emptyList() }
+
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L) == -1L &&
+                    preferences.getLong("cleanup_leftover_downloads_active_occurrence_at", -1L) == expectedSuccessorAt
+            }
+        )
+        val current = unfinishedCurrentWork()
+        assertEquals(1, current.size)
+        assertTrue(current.single().tags.contains(occurrenceTag(generation, expectedSuccessorAt)))
+        assertTrue(current.single().tags.none { it.contains("_$predecessorAt") })
+    }
+
+    @Test
+    fun terminalWorkerRetainsExactSuccessorAcrossReplayOwnerLoss() = runBlocking {
+        val scheduleNow = Calendar.getInstance()
+        CleanupScheduleCoordinator.nowProviderForTesting = {
+            scheduleNow.clone() as Calendar
+        }
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(1)
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = { }
+        val admissionEntered = CountDownLatch(1)
+        val releaseAdmission = CountDownLatch(1)
+        CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = {
+            admissionEntered.countDown()
+            check(releaseAdmission.await(10, TimeUnit.SECONDS)) {
+                "cleanup admission did not release"
+            }
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val predecessorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = scheduleNow,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+        val expectedSuccessorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = Calendar.getInstance().apply { timeInMillis = predecessorAt },
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                preferences.getString("cleanup_leftover_downloads_active_generation", null) == generation
+            }
+        )
+
+        assertTrue(admissionEntered.await(10, TimeUnit.SECONDS))
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        releaseAdmission.countDown()
+        val failed = awaitWork(timeoutMs = 30_000L) { infos ->
+            infos.any { info ->
+                info.state == WorkInfo.State.FAILED &&
+                    info.tags.contains(occurrenceTag(generation, predecessorAt)) &&
+                    info.runAttemptCount >= CleanUpLeftoverDownloads.MAX_ATTEMPTS - 1
+            }
+        }
+        assertTrue(failed.any { it.state == WorkInfo.State.FAILED })
+        CleanupScheduleCoordinator.resetReplayOwnerForTesting()
+
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        CleanupScheduleCoordinator.reconcile(context)
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                preferences.getLong("cleanup_leftover_downloads_active_occurrence_at", -1L) == expectedSuccessorAt
+            }
+        )
+        val current = unfinishedCurrentWork()
+        assertEquals(1, current.size)
+        assertTrue(current.single().tags.contains(occurrenceTag(generation, expectedSuccessorAt)))
+        assertTrue(current.single().tags.none { it.contains("_$predecessorAt") })
     }
 
     @Test
@@ -350,6 +525,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             .remove("cleanup_leftover_downloads_pending_cadence")
             .remove("cleanup_leftover_downloads_pending_anchor_day")
             .remove("cleanup_leftover_downloads_pending_occurrence_at")
+            .remove("cleanup_leftover_downloads_active_generation")
+            .remove("cleanup_leftover_downloads_active_cadence")
+            .remove("cleanup_leftover_downloads_active_anchor_day")
+            .remove("cleanup_leftover_downloads_active_occurrence_at")
             .commit()
 
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
@@ -402,6 +581,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             monthlyAnchorDay = anchorDay,
         ).timeInMillis
         preferences.edit()
+            .remove("cleanup_leftover_downloads_active_generation")
+            .remove("cleanup_leftover_downloads_active_cadence")
+            .remove("cleanup_leftover_downloads_active_anchor_day")
+            .remove("cleanup_leftover_downloads_active_occurrence_at")
             .putString("cleanup_leftover_downloads_pending_generation", generation)
             .putString("cleanup_leftover_downloads_pending_cadence", CleanupSchedulePolicy.DAILY)
             .putInt("cleanup_leftover_downloads_pending_anchor_day", anchorDay)
@@ -1020,7 +1203,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
-    fun asynchronousEnqueueAcceptanceClearsMatchingDebt() = runBlocking {
+    fun asynchronousEnqueueAcceptancePromotesMatchingDebt() = runBlocking {
         val operation = ControlledOperation().also { controlledOperations += it }
         CleanupScheduleCoordinator.enqueueOverrideForTesting = { _, _, _ -> operation }
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
@@ -1033,7 +1216,9 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         operation.succeed()
         assertTrue(
             awaitPreference(timeoutMs = 2_000L) {
-                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null &&
+                    preferences.getString("cleanup_leftover_downloads_active_generation", null)
+                        ?.isNotBlank() == true
             }
         )
     }
@@ -1077,6 +1262,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             .remove("cleanup_leftover_downloads_pending_cadence")
             .remove("cleanup_leftover_downloads_pending_anchor_day")
             .remove("cleanup_leftover_downloads_pending_occurrence_at")
+            .remove("cleanup_leftover_downloads_active_generation")
+            .remove("cleanup_leftover_downloads_active_cadence")
+            .remove("cleanup_leftover_downloads_active_anchor_day")
+            .remove("cleanup_leftover_downloads_active_occurrence_at")
             .commit()
     }
 

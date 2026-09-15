@@ -86,6 +86,10 @@ internal object CleanupScheduleCoordinator {
     private const val PREF_PENDING_CADENCE = "cleanup_leftover_downloads_pending_cadence"
     private const val PREF_PENDING_ANCHOR_DAY = "cleanup_leftover_downloads_pending_anchor_day"
     private const val PREF_PENDING_OCCURRENCE_AT = "cleanup_leftover_downloads_pending_occurrence_at"
+    private const val PREF_ACTIVE_GENERATION = "cleanup_leftover_downloads_active_generation"
+    private const val PREF_ACTIVE_CADENCE = "cleanup_leftover_downloads_active_cadence"
+    private const val PREF_ACTIVE_ANCHOR_DAY = "cleanup_leftover_downloads_active_anchor_day"
+    private const val PREF_ACTIVE_OCCURRENCE_AT = "cleanup_leftover_downloads_active_occurrence_at"
     private const val REPLAY_INITIAL_DELAY_MS = 1_000L
     private const val REPLAY_MAX_DELAY_MS = 60_000L
 
@@ -178,6 +182,10 @@ internal object CleanupScheduleCoordinator {
                     .remove(PREF_PENDING_CADENCE)
                     .remove(PREF_PENDING_ANCHOR_DAY)
                     .remove(PREF_PENDING_OCCURRENCE_AT)
+                    .remove(PREF_ACTIVE_GENERATION)
+                    .remove(PREF_ACTIVE_CADENCE)
+                    .remove(PREF_ACTIVE_ANCHOR_DAY)
+                    .remove(PREF_ACTIVE_OCCURRENCE_AT)
                 if (normalizedCadence != null) {
                     authorityEditor
                         .putString(PREF_PENDING_GENERATION, generation)
@@ -253,6 +261,10 @@ internal object CleanupScheduleCoordinator {
                         .remove(PREF_PENDING_CADENCE)
                         .remove(PREF_PENDING_ANCHOR_DAY)
                         .remove(PREF_PENDING_OCCURRENCE_AT)
+                        .remove(PREF_ACTIVE_GENERATION)
+                        .remove(PREF_ACTIVE_CADENCE)
+                        .remove(PREF_ACTIVE_ANCHOR_DAY)
+                        .remove(PREF_ACTIVE_OCCURRENCE_AT)
                         .putString(PREF_PENDING_GENERATION, bootstrappedGeneration)
                         .putString(PREF_PENDING_CADENCE, cadence)
                         .putInt(PREF_PENDING_ANCHOR_DAY, bootstrappedAnchorDay)
@@ -272,22 +284,41 @@ internal object CleanupScheduleCoordinator {
                 val currentGeneration = requireNotNull(generation)
                 val currentCadence = requireNotNull(cadence)
 
-                val persistedDebt = readSchedulingDebt(preferences)?.takeIf { debt ->
-                    debt.generation == currentGeneration &&
-                        debt.cadence == currentCadence &&
-                        debt.monthlyAnchorDay == anchorDay
+                val pendingDebt = readSchedulingDebt(preferences)?.takeIf { debt ->
+                    debt.matchesAuthority(currentGeneration, currentCadence, anchorDay)
+                }
+                val activeDebt = readActiveSchedulingDebt(preferences)?.takeIf { debt ->
+                    debt.matchesAuthority(currentGeneration, currentCadence, anchorDay)
+                }
+                if (pendingDebt != null && activeDebt != null) {
+                    // A transition commit should never publish both slots. Do
+                    // not guess which one owns the schedule if storage shows
+                    // an impossible mixed state.
+                    ensureReplayOwnerLocked(appContext, pendingDebt)
+                    return@synchronized
                 }
                 val current = queryCurrentWork(workManager)
                 if (current == null) {
-                    val recoveryDebt = persistedDebt ?: nextSchedulingDebt(
-                        generation = currentGeneration,
-                        cadence = currentCadence,
-                        monthlyAnchorDay = anchorDay,
-                        from = now,
-                    )
-                    if (persistedDebt == null &&
-                        !persistSchedulingDebtLocked(preferences, recoveryDebt)
-                    ) {
+                    val recoveryDebt = when {
+                        pendingDebt != null -> pendingDebt
+                        activeDebt != null -> successorDebtOf(activeDebt)
+                        else -> nextSchedulingDebt(
+                            generation = currentGeneration,
+                            cadence = currentCadence,
+                            monthlyAnchorDay = anchorDay,
+                            from = now,
+                        )
+                    }
+                    val published = when {
+                        pendingDebt != null -> true
+                        activeDebt != null -> persistSuccessorDebtLocked(
+                            preferences = preferences,
+                            successor = recoveryDebt,
+                            completedOccurrenceAt = activeDebt.occurrenceAt,
+                        )
+                        else -> persistSchedulingDebtLocked(preferences, recoveryDebt)
+                    }
+                    if (!published) {
                         ensureReplayOwnerLocked(appContext, recoveryDebt)
                         return@synchronized
                     }
@@ -297,43 +328,115 @@ internal object CleanupScheduleCoordinator {
                 val expectedGenerationTag = generationTag(currentGeneration)
                 val expectedCadenceTag = cadenceTag(currentCadence)
                 val currentIds = current.map { it.id }.toSet()
-                val hasCurrent = current.any { info ->
+                val unfinishedCurrent = current.filter { info ->
                     isUnfinished(info) &&
                         info.tags.contains(expectedGenerationTag) &&
                         info.tags.contains(expectedCadenceTag)
                 }
 
-                if (hasCurrent) {
-                    clearDebtForCurrentWorkLocked(appContext, currentGeneration, currentCadence, anchorDay, current)
-                    readSchedulingDebt(preferences)?.takeIf { debt ->
-                        debt.generation == currentGeneration &&
-                            debt.cadence == currentCadence &&
-                            debt.monthlyAnchorDay == anchorDay
-                    }?.let { debt ->
-                        ensureReplayOwnerLocked(appContext, debt)
+                val pendingIsCurrent = pendingDebt?.let { debt ->
+                    unfinishedCurrent.any { it.matchesOccurrence(debt) }
+                } == true
+                val activeIsCurrent = activeDebt?.let { debt ->
+                    unfinishedCurrent.any { it.matchesOccurrence(debt) }
+                } == true
+                if (pendingIsCurrent) {
+                    val currentPendingDebt = pendingDebt
+                    if (!promotePendingDebtLocked(appContext, currentPendingDebt)) {
+                        ensureReplayOwnerLocked(appContext, currentPendingDebt)
                     }
-                    // Retire timestamp-named legacy requests without touching the
-                    // current stable chain, which may include a running occurrence.
-                    runCatching {
-                        workManager.getWorkInfosByTag(TAG).get()
-                            .filter { info -> isUnfinished(info) && info.id !in currentIds }
-                            .forEach { info -> workManager.cancelWorkById(info.id) }
+                    retireLegacyWork(workManager, currentIds)
+                    return@synchronized
+                }
+                if (activeIsCurrent) {
+                    // The active occurrence itself is the durable owner. It
+                    // must remain recorded until that occurrence publishes
+                    // its successor; acceptance is not a safe clear point.
+                    stopReplayOwnerLocked()
+                    retireLegacyWork(workManager, currentIds)
+                    return@synchronized
+                }
+                if (unfinishedCurrent.isNotEmpty()) {
+                    val replayDebt = pendingDebt ?: activeDebt?.let(::successorDebtOf)
+                    if (replayDebt == null) {
+                        // Adopt an exact occurrence tag left by an older
+                        // version that did not persist the active marker. Do
+                        // not infer ownership from a work item without our
+                        // exact occurrence identity.
+                        unfinishedCurrent.asSequence()
+                            .mapNotNull {
+                                it.debtFromOccurrenceTag(
+                                    generation = currentGeneration,
+                                    cadence = currentCadence,
+                                    monthlyAnchorDay = anchorDay,
+                                )
+                            }
+                            .maxByOrNull { it.occurrenceAt }
+                            ?.let { adopted ->
+                                if (commitAuthority(preferences.edit().putActiveDebt(adopted))) {
+                                    stopReplayOwnerLocked()
+                                } else {
+                                    ensureReplayOwnerLocked(appContext, successorDebtOf(adopted))
+                                }
+                            }
                     }
+                    replayDebt?.let { ensureReplayOwnerLocked(appContext, it) }
+                    retireLegacyWork(workManager, currentIds)
                     return@synchronized
                 }
 
-                // Missing, finished, or stale-generation work is repaired as one new
-                // stable chain. REPLACE is used here only because there is no current
-                // occurrence to preserve.
-                val recoveryDebt = persistedDebt ?: nextSchedulingDebt(
-                    generation = currentGeneration,
-                    cadence = currentCadence,
-                    monthlyAnchorDay = anchorDay,
-                    from = now,
-                )
-                if (persistedDebt == null &&
-                    !persistSchedulingDebtLocked(preferences, recoveryDebt)
-                ) {
+                val pendingIsTerminal = pendingDebt?.let { debt ->
+                    current.any { !isUnfinished(it) && it.matchesOccurrence(debt) }
+                } == true
+                val recoveryDebt: SchedulingDebt
+                val debtPublished: Boolean
+                if (activeDebt != null) {
+                    recoveryDebt = successorDebtOf(activeDebt)
+                    debtPublished = persistSuccessorDebtLocked(
+                        preferences = preferences,
+                        successor = recoveryDebt,
+                        completedOccurrenceAt = activeDebt.occurrenceAt,
+                    )
+                } else if (pendingIsTerminal) {
+                    val terminalPendingDebt = pendingDebt
+                    recoveryDebt = successorDebtOf(terminalPendingDebt)
+                    debtPublished = persistSuccessorDebtLocked(
+                        preferences = preferences,
+                        successor = recoveryDebt,
+                        completedOccurrenceAt = terminalPendingDebt.occurrenceAt,
+                    )
+                } else if (pendingDebt != null) {
+                    recoveryDebt = pendingDebt
+                    debtPublished = true
+                } else {
+                    val observedTerminalDebt = current.asSequence()
+                        .filter { !isUnfinished(it) }
+                        .mapNotNull {
+                            it.debtFromOccurrenceTag(
+                                generation = currentGeneration,
+                                cadence = currentCadence,
+                                monthlyAnchorDay = anchorDay,
+                            )
+                        }
+                        .maxByOrNull { it.occurrenceAt }
+                    if (observedTerminalDebt != null) {
+                        recoveryDebt = successorDebtOf(observedTerminalDebt)
+                        debtPublished = persistSuccessorDebtLocked(
+                            preferences = preferences,
+                            successor = recoveryDebt,
+                            completedOccurrenceAt = observedTerminalDebt.occurrenceAt,
+                        )
+                    } else {
+                        recoveryDebt = nextSchedulingDebt(
+                            generation = currentGeneration,
+                            cadence = currentCadence,
+                            monthlyAnchorDay = anchorDay,
+                            from = now,
+                        )
+                        debtPublished = persistSchedulingDebtLocked(preferences, recoveryDebt)
+                    }
+                }
+                if (!debtPublished) {
                     ensureReplayOwnerLocked(appContext, recoveryDebt)
                     return@synchronized
                 }
@@ -350,9 +453,19 @@ internal object CleanupScheduleCoordinator {
                     occurrenceAtOverride = recoveryDebt.occurrenceAt,
                 ).also { handle ->
                     handle.operation?.let { observeAcceptance(appContext, handle) }
-                    ensureReplayOwnerLocked(appContext)
+                    ensureReplayOwnerLocked(appContext, recoveryDebt)
                 }
             }
+        }
+    }
+
+    private fun retireLegacyWork(workManager: WorkManager, currentIds: Set<UUID>) {
+        // Retire timestamp-named legacy requests without touching the current
+        // stable chain, which may include a running occurrence.
+        runCatching {
+            workManager.getWorkInfosByTag(TAG).get()
+                .filter { info -> isUnfinished(info) && info.id !in currentIds }
+                .forEach { info -> workManager.cancelWorkById(info.id) }
         }
     }
 
@@ -447,7 +560,12 @@ internal object CleanupScheduleCoordinator {
                 monthlyAnchorDay = monthlyAnchorDay,
                 occurrenceAt = next.timeInMillis,
             )
-            if (!persistSchedulingDebtLocked(preferences, successorDebt)) {
+            if (!persistSuccessorDebtLocked(
+                    preferences = preferences,
+                    successor = successorDebt,
+                    completedOccurrenceAt = completedOccurrenceAt ?: 0L,
+                )
+            ) {
                 ensureReplayOwnerLocked(appContext, successorDebt)
                 return@synchronized null
             }
@@ -457,13 +575,7 @@ internal object CleanupScheduleCoordinator {
             val workManager = workManager(appContext)
             val current = queryCurrentWork(workManager) ?: return@synchronized null
             if (current.any { info -> info.tags.contains(occurrenceTag) }) {
-                clearDebtForCurrentWorkLocked(
-                    context = appContext,
-                    generation = generation,
-                    cadence = currentCadence,
-                    monthlyAnchorDay = monthlyAnchorDay,
-                    current = current,
-                )
+                promotePendingDebtLocked(appContext, successorDebt)
                 return@synchronized EnqueueHandle(
                     request = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>().build(),
                     operation = null,
@@ -564,7 +676,7 @@ internal object CleanupScheduleCoordinator {
         requireNotNull(handle.operation).result.addListener(
             {
                 runCatching { requireNotNull(handle.operation).result.get() }
-                    .onSuccess { clearDebtIfCurrent(context, handle) }
+                    .onSuccess { promoteAcceptedDebt(context, handle) }
             },
             ContextCompat.getMainExecutor(context),
         )
@@ -576,13 +688,68 @@ internal object CleanupScheduleCoordinator {
     private fun persistSchedulingDebtLocked(
         preferences: android.content.SharedPreferences,
         debt: SchedulingDebt,
-    ): Boolean = commitAuthority(
-        preferences.edit()
-            .putString(PREF_PENDING_GENERATION, debt.generation)
-            .putString(PREF_PENDING_CADENCE, debt.cadence)
-            .putInt(PREF_PENDING_ANCHOR_DAY, debt.monthlyAnchorDay)
-            .putLong(PREF_PENDING_OCCURRENCE_AT, debt.occurrenceAt)
-    )
+    ): Boolean = commitAuthority(preferences.edit().putPendingDebt(debt))
+
+    /**
+     * Promotes an accepted occurrence into the durable active slot. The
+     * predecessor remains recorded until its exact successor is published, so
+     * a failed successor write can still be reconstructed after process death.
+     */
+    private fun promotePendingDebtLocked(
+        context: Context,
+        debt: SchedulingDebt,
+    ): Boolean {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        if (readActiveSchedulingDebt(preferences) == debt) {
+            stopReplayOwnerLocked()
+            return true
+        }
+        if (readSchedulingDebt(preferences) != debt) return false
+        val committed = commitAuthority(
+            preferences.edit()
+                .removePendingDebt()
+                .putActiveDebt(debt)
+        )
+        if (committed) {
+            stopReplayOwnerLocked()
+        } else {
+            // The pending tuple remains the durable recovery carrier. Do not
+            // stop its owner merely because promotion failed.
+            ensureReplayOwnerLocked(context, debt)
+        }
+        return committed
+    }
+
+    /**
+     * Atomically advances the durable predecessor marker to the exact
+     * successor. On a failed commit, the predecessor remains durable and can
+     * be advanced again by restart reconciliation.
+     */
+    private fun persistSuccessorDebtLocked(
+        preferences: android.content.SharedPreferences,
+        successor: SchedulingDebt,
+        completedOccurrenceAt: Long,
+    ): Boolean {
+        val predecessor = readActiveSchedulingDebt(preferences)
+            ?: readSchedulingDebt(preferences)
+        if (readSchedulingDebt(preferences) == successor ||
+            readActiveSchedulingDebt(preferences) == successor
+        ) {
+            return true
+        }
+        if (completedOccurrenceAt > 0L && predecessor != null &&
+            predecessor.occurrenceAt != completedOccurrenceAt
+        ) {
+            // A late predecessor callback cannot overwrite newer debt.
+            return false
+        }
+        return commitAuthority(
+            preferences.edit()
+                .removePendingDebt()
+                .removeActiveDebt()
+                .putPendingDebt(successor)
+        )
+    }
 
     private fun nextSchedulingDebt(
         generation: String,
@@ -608,29 +775,23 @@ internal object CleanupScheduleCoordinator {
     private suspend fun awaitAcceptance(context: Context, handle: EnqueueHandle): Boolean =
         try {
             requireNotNull(handle.operation).result.get(30L, TimeUnit.SECONDS)
-            clearDebtIfCurrent(context, handle)
+            promoteAcceptedDebt(context, handle)
             true
         } catch (_: Exception) {
             false
         }
 
-    private fun clearDebtIfCurrent(context: Context, handle: EnqueueHandle) {
+    private fun promoteAcceptedDebt(context: Context, handle: EnqueueHandle) {
         synchronized(lock) {
-            val preferences = PreferenceManager.getDefaultSharedPreferences(context)
-            if (
-                preferences.getString(PREF_PENDING_GENERATION, null) == handle.generation &&
-                preferences.getString(PREF_PENDING_CADENCE, null) == handle.cadence &&
-                preferences.getInt(PREF_PENDING_ANCHOR_DAY, -1) == handle.monthlyAnchorDay &&
-                preferences.getLong(PREF_PENDING_OCCURRENCE_AT, -1L) == handle.occurrenceAt
-            ) {
-                preferences.edit()
-                    .remove(PREF_PENDING_GENERATION)
-                    .remove(PREF_PENDING_CADENCE)
-                    .remove(PREF_PENDING_ANCHOR_DAY)
-                    .remove(PREF_PENDING_OCCURRENCE_AT)
-                    .commit()
-                stopReplayOwnerLocked()
-            }
+            promotePendingDebtLocked(
+                context,
+                SchedulingDebt(
+                    generation = handle.generation,
+                    cadence = handle.cadence,
+                    monthlyAnchorDay = handle.monthlyAnchorDay,
+                    occurrenceAt = handle.occurrenceAt,
+                ),
+            )
         }
     }
 
@@ -644,7 +805,13 @@ internal object CleanupScheduleCoordinator {
         fallbackDebt: SchedulingDebt? = null,
     ): Boolean {
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        val debt = readSchedulingDebt(preferences) ?: fallbackDebt
+        // An explicit fallback is used only when it is the exact persisted
+        // tuple or the immediate successor of the persisted predecessor.  In
+        // the latter case it must take precedence: the predecessor has
+        // already completed and its failed clear/write must not make replay
+        // resurrect that occurrence instead of advancing to this successor.
+        val debt = fallbackDebt?.takeIf { canUseFallbackDebt(preferences, it) }
+            ?: readSchedulingDebt(preferences)
         if (debt == null) {
             stopReplayOwnerLocked()
             return true
@@ -685,10 +852,12 @@ internal object CleanupScheduleCoordinator {
     private fun isSchedulingDebtCurrent(context: Context, expected: SchedulingDebt): Boolean =
         synchronized(lock) {
             val preferences = PreferenceManager.getDefaultSharedPreferences(context)
-            val persisted = readSchedulingDebt(preferences)
+            val pending = readSchedulingDebt(preferences)
+            val active = readActiveSchedulingDebt(preferences)
             when {
-                persisted == expected -> true
-                persisted != null -> false
+                pending == expected || active == expected -> true
+                pending != null -> successorDebtOf(pending) == expected
+                active != null -> successorDebtOf(active) == expected
                 else -> authorityMatchesDebt(preferences, expected)
             }
         }
@@ -698,7 +867,21 @@ internal object CleanupScheduleCoordinator {
         expected: SchedulingDebt,
     ): Boolean = synchronized(lock) {
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        if (readSchedulingDebt(preferences) == expected) return@synchronized true
+        if (readSchedulingDebt(preferences) == expected ||
+            readActiveSchedulingDebt(preferences) == expected
+        ) {
+            return@synchronized true
+        }
+        val predecessor = readSchedulingDebt(preferences)
+            ?: readActiveSchedulingDebt(preferences)
+        if (predecessor != null) {
+            if (successorDebtOf(predecessor) != expected) return@synchronized false
+            return@synchronized persistSuccessorDebtLocked(
+                preferences = preferences,
+                successor = expected,
+                completedOccurrenceAt = predecessor.occurrenceAt,
+            )
+        }
         if (!authorityMatchesDebt(preferences, expected)) return@synchronized false
         persistSchedulingDebtLocked(preferences, expected)
     }
@@ -710,43 +893,137 @@ internal object CleanupScheduleCoordinator {
         preferences.getString(PREF_CADENCE, null) == debt.cadence &&
         preferences.getInt(PREF_MONTHLY_ANCHOR_DAY, -1) == debt.monthlyAnchorDay
 
-    private fun readSchedulingDebt(preferences: android.content.SharedPreferences): SchedulingDebt? {
-        val generation = preferences.getString(PREF_PENDING_GENERATION, null)
-            ?: return null
-        val cadence = preferences.getString(PREF_PENDING_CADENCE, null)
-            ?: return null
-        val anchorDay = preferences.getInt(PREF_PENDING_ANCHOR_DAY, -1)
-        val occurrenceAt = preferences.getLong(PREF_PENDING_OCCURRENCE_AT, -1L)
+    private fun canUseFallbackDebt(
+        preferences: android.content.SharedPreferences,
+        fallback: SchedulingDebt,
+    ): Boolean {
+        val pending = readSchedulingDebt(preferences)
+        val active = readActiveSchedulingDebt(preferences)
+        return when {
+            pending == null && active == null -> authorityMatchesDebt(preferences, fallback)
+            pending == fallback || active == fallback -> true
+            pending != null -> successorDebtOf(pending) == fallback
+            active != null -> successorDebtOf(active) == fallback
+            else -> false
+        }
+    }
+
+    private fun successorDebtOf(predecessor: SchedulingDebt): SchedulingDebt =
+        nextSchedulingDebt(
+            generation = predecessor.generation,
+            cadence = predecessor.cadence,
+            monthlyAnchorDay = predecessor.monthlyAnchorDay,
+            from = currentCalendar().apply { timeInMillis = predecessor.occurrenceAt },
+        )
+
+    private fun readSchedulingDebt(preferences: android.content.SharedPreferences): SchedulingDebt? =
+        readDebt(
+            preferences = preferences,
+            generationKey = PREF_PENDING_GENERATION,
+            cadenceKey = PREF_PENDING_CADENCE,
+            anchorKey = PREF_PENDING_ANCHOR_DAY,
+            occurrenceKey = PREF_PENDING_OCCURRENCE_AT,
+        )
+
+    private fun readActiveSchedulingDebt(
+        preferences: android.content.SharedPreferences,
+    ): SchedulingDebt? = readDebt(
+        preferences = preferences,
+        generationKey = PREF_ACTIVE_GENERATION,
+        cadenceKey = PREF_ACTIVE_CADENCE,
+        anchorKey = PREF_ACTIVE_ANCHOR_DAY,
+        occurrenceKey = PREF_ACTIVE_OCCURRENCE_AT,
+    )
+
+    private fun readDebt(
+        preferences: android.content.SharedPreferences,
+        generationKey: String,
+        cadenceKey: String,
+        anchorKey: String,
+        occurrenceKey: String,
+    ): SchedulingDebt? {
+        val generation = preferences.getString(generationKey, null) ?: return null
+        val cadence = preferences.getString(cadenceKey, null) ?: return null
+        val anchorDay = preferences.getInt(anchorKey, -1)
+        val occurrenceAt = preferences.getLong(occurrenceKey, -1L)
         if (!CleanupSchedulePolicy.isEnabled(cadence) || anchorDay < 1 || occurrenceAt <= 0L) {
             return null
         }
         return SchedulingDebt(generation, cadence, anchorDay, occurrenceAt)
     }
 
-    private fun clearDebtForCurrentWorkLocked(
-        context: Context,
+    private fun SchedulingDebt.matchesAuthority(
         generation: String,
         cadence: String,
         monthlyAnchorDay: Int,
-        current: List<WorkInfo>,
-    ) {
-        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        val debt = readSchedulingDebt(preferences) ?: return
-        if (
-            debt.generation == generation &&
-            debt.cadence == cadence &&
-            debt.monthlyAnchorDay == monthlyAnchorDay &&
-            current.any { it.tags.contains(occurrenceTag(generation, debt.occurrenceAt)) }
-        ) {
-            preferences.edit()
-                .remove(PREF_PENDING_GENERATION)
-                .remove(PREF_PENDING_CADENCE)
-                .remove(PREF_PENDING_ANCHOR_DAY)
-                .remove(PREF_PENDING_OCCURRENCE_AT)
-                .commit()
-            stopReplayOwnerLocked()
-        }
+    ): Boolean = this.generation == generation &&
+        this.cadence == cadence &&
+        this.monthlyAnchorDay == monthlyAnchorDay
+
+    private fun WorkInfo.matchesOccurrence(debt: SchedulingDebt): Boolean =
+        tags.contains(occurrenceTag(debt.generation, debt.occurrenceAt))
+
+    private fun WorkInfo.debtFromOccurrenceTag(
+        generation: String,
+        cadence: String,
+        monthlyAnchorDay: Int,
+    ): SchedulingDebt? {
+        val prefix = "${TAG}_occurrence_${generation}_"
+        val occurrenceAt = tags.firstOrNull { it.startsWith(prefix) }
+            ?.removePrefix(prefix)
+            ?.toLongOrNull()
+            ?: return null
+        return SchedulingDebt(
+            generation = generation,
+            cadence = cadence,
+            monthlyAnchorDay = monthlyAnchorDay,
+            occurrenceAt = occurrenceAt,
+        )
     }
+
+    private fun android.content.SharedPreferences.Editor.putPendingDebt(
+        debt: SchedulingDebt,
+    ): android.content.SharedPreferences.Editor = putString(
+        PREF_PENDING_GENERATION,
+        debt.generation,
+    ).putString(
+        PREF_PENDING_CADENCE,
+        debt.cadence,
+    ).putInt(
+        PREF_PENDING_ANCHOR_DAY,
+        debt.monthlyAnchorDay,
+    ).putLong(
+        PREF_PENDING_OCCURRENCE_AT,
+        debt.occurrenceAt,
+    )
+
+    private fun android.content.SharedPreferences.Editor.putActiveDebt(
+        debt: SchedulingDebt,
+    ): android.content.SharedPreferences.Editor = putString(
+        PREF_ACTIVE_GENERATION,
+        debt.generation,
+    ).putString(
+        PREF_ACTIVE_CADENCE,
+        debt.cadence,
+    ).putInt(
+        PREF_ACTIVE_ANCHOR_DAY,
+        debt.monthlyAnchorDay,
+    ).putLong(
+        PREF_ACTIVE_OCCURRENCE_AT,
+        debt.occurrenceAt,
+    )
+
+    private fun android.content.SharedPreferences.Editor.removePendingDebt():
+        android.content.SharedPreferences.Editor = remove(PREF_PENDING_GENERATION)
+            .remove(PREF_PENDING_CADENCE)
+            .remove(PREF_PENDING_ANCHOR_DAY)
+            .remove(PREF_PENDING_OCCURRENCE_AT)
+
+    private fun android.content.SharedPreferences.Editor.removeActiveDebt():
+        android.content.SharedPreferences.Editor = remove(PREF_ACTIVE_GENERATION)
+            .remove(PREF_ACTIVE_CADENCE)
+            .remove(PREF_ACTIVE_ANCHOR_DAY)
+            .remove(PREF_ACTIVE_OCCURRENCE_AT)
 
     private fun stopReplayOwnerLocked() {
         replayJob?.cancel()
@@ -755,13 +1032,12 @@ internal object CleanupScheduleCoordinator {
     }
 
     private fun retirePendingDebtLocked(preferences: android.content.SharedPreferences): Boolean {
-        val retired = preferences.edit()
-            .remove(PREF_PENDING_GENERATION)
-            .remove(PREF_PENDING_CADENCE)
-            .remove(PREF_PENDING_ANCHOR_DAY)
-            .remove(PREF_PENDING_OCCURRENCE_AT)
-            .commit()
-        stopReplayOwnerLocked()
+        val retired = commitAuthority(
+            preferences.edit()
+                .removePendingDebt()
+                .removeActiveDebt()
+        )
+        if (retired) stopReplayOwnerLocked()
         return retired
     }
 
