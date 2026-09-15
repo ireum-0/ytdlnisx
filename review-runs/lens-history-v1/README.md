@@ -48,16 +48,17 @@ Every reconstructable field is represented with one of these states.
 - `L5`: Platform contract closure
 - `L6`: Cross-feature semantic propagation
 
-## Historical schema eras
+## Record schema classes
 
-Era classification is record-driven. Do not assign an era from date alone when the checkpoint fields disagree.
+Schema class is determined from fields in the individual record. It is not a timestamp-derived era label. In particular, lens-uninstrumented substantive documents can occur after structured instrumentation was introduced.
 
-### PRE_LENS
+### UNINSTRUMENTED
 
-The checkpoint contains neither a legacy `audit_lens` nor structured lens fields.
+The checkpoint/document contains neither a legacy `audit_lens` nor structured lens fields.
 
-- generic checkpoint/provenance fields may be `DIRECT`;
-- modern lens coverage/effectiveness is `NOT_VERIFIED` unless independently explicit.
+- generic checkpoint/provenance/finding fields may be `DIRECT`;
+- modern lens coverage/effectiveness is `NOT_VERIFIED` unless independently explicit;
+- the earliest historical checkpoints are in this class, but later uninstrumented documents can also be in this class.
 
 ### LEGACY_AUDIT_LENS
 
@@ -190,7 +191,7 @@ A reconstruction record should contain at least:
     "kind": {"state":"DIRECT","value":"FINAL"}
   },
   "implementation_sha": {"state":"DIRECT","value":"..."},
-  "era": "STRUCTURED_FINAL",
+  "schema_class": "STRUCTURED_FINAL",
   "raw_audit_lens": {"state":"NOT_APPLICABLE","reason":"structured schema"},
   "primary_deep_lens": {"state":"DIRECT","value":"L4"},
   "lens_selection_reason": {"state":"DIRECT","value":"..."},
