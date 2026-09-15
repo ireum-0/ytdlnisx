@@ -27,6 +27,25 @@ data class AppCacheScan(
     val totalBytes: Long = categories.sumOf { it.bytes }
 }
 
+/**
+ * Exact file authority captured for one cache-maintenance operation.
+ *
+ * [files] is intentionally a frozen set.  A later cleanup pass may delete
+ * only these path/metadata identities; it must not rediscover newly-created
+ * files in the same cache root.
+ */
+data class AppCacheExactFile(
+    val relativePath: String,
+    val size: Long,
+    val lastModified: Long,
+)
+
+data class AppCacheExactSnapshot(
+    val category: AppCacheCategory,
+    val rootPath: String,
+    val files: List<AppCacheExactFile>,
+)
+
 data class AppCacheDeletionResult(
     val requestedCategories: Set<AppCacheCategory>,
     val deletedBytes: Long,
@@ -81,6 +100,58 @@ class AppCacheManager(private val context: Context) {
         )
     }
 
+    /**
+     * Captures exact file paths for a later destructive operation.  A null
+     * result means that the cache root or one of its directory listings could
+     * not be proven; callers must fail closed rather than treating it as an
+     * empty cache.
+     */
+    fun snapshotExact(category: AppCacheCategory): AppCacheExactSnapshot? {
+        val target = targets()[category] ?: return null
+        if (!target.available) return null
+        val root = runCatching { target.root.canonicalFile }.getOrNull() ?: return null
+        if (!root.exists()) {
+            return AppCacheExactSnapshot(category, root.path, emptyList())
+        }
+        if (!root.isDirectory) return null
+
+        val files = mutableListOf<AppCacheExactFile>()
+        fun visit(directory: File): Boolean {
+            val children = directory.listFiles() ?: return false
+            children.forEach { child ->
+                if (!AppOwnedPathPolicy.isWithin(child, listOf(root))) return@forEach
+                if (target.exclusions.any { excluded ->
+                        AppOwnedPathPolicy.isWithin(child, listOf(excluded))
+                    }
+                ) {
+                    return@forEach
+                }
+                if (child.isDirectory) {
+                    if (!visit(child)) return false
+                } else if (child.isFile) {
+                    val relative = runCatching {
+                        child.canonicalFile.relativeTo(root).invariantSeparatorsPath
+                    }.getOrNull() ?: return false
+                    if (relative.isNotBlank()) {
+                        files += AppCacheExactFile(
+                            relativePath = relative,
+                            size = child.length().coerceAtLeast(0L),
+                            lastModified = child.lastModified(),
+                        )
+                    }
+                }
+            }
+            return true
+        }
+        if (!visit(root)) return null
+        return AppCacheExactSnapshot(
+            category = category,
+            rootPath = root.path,
+            files = files.distinctBy(AppCacheExactFile::relativePath)
+                .sortedBy(AppCacheExactFile::relativePath),
+        )
+    }
+
     suspend fun delete(categories: Set<AppCacheCategory>): AppCacheDeletionResult =
         CacheMaintenanceAuthority.withMaintenanceWindow {
             val targets = targets()
@@ -124,6 +195,75 @@ class AppCacheManager(private val context: Context) {
                 deletedFiles = deletedFiles,
                 failedEntries = failedEntries,
                 skippedCategories = skipped
+            )
+        }
+
+    /**
+     * Deletes only the exact files captured by [snapshot].  The current
+     * category root must still resolve to the captured canonical path, and
+     * live-owned entries remain protected by the normal maintenance gate.
+     */
+    suspend fun deleteExact(snapshot: AppCacheExactSnapshot): AppCacheDeletionResult =
+        CacheMaintenanceAuthority.withMaintenanceWindow {
+            val target = targets()[snapshot.category]
+            val root = target?.let { runCatching { it.root.canonicalFile }.getOrNull() }
+            if (target == null || !target.available || root == null || root.path != snapshot.rootPath) {
+                return@withMaintenanceWindow AppCacheDeletionResult(
+                    requestedCategories = setOf(snapshot.category),
+                    deletedBytes = 0L,
+                    deletedFiles = 0,
+                    failedEntries = 0,
+                    skippedCategories = setOf(snapshot.category),
+                )
+            }
+
+            var deletedBytes = 0L
+            var deletedFiles = 0
+            var failedEntries = 0
+            snapshot.files.distinctBy(AppCacheExactFile::relativePath).forEach { file ->
+                val candidate = runCatching {
+                    File(root, file.relativePath).canonicalFile
+                }.getOrNull()
+                if (
+                    candidate == null ||
+                    candidate == root ||
+                    !AppOwnedPathPolicy.isWithin(candidate, listOf(root)) ||
+                    target.exclusions.any { excluded ->
+                        AppOwnedPathPolicy.isWithin(candidate, listOf(excluded))
+                    }
+                ) {
+                    failedEntries++
+                    return@forEach
+                }
+                if (!candidate.exists()) return@forEach
+                if (!candidate.isFile || isLiveOwnedEntry(root, candidate)) {
+                    failedEntries++
+                    return@forEach
+                }
+                if (
+                    candidate.length().coerceAtLeast(0L) != file.size ||
+                    candidate.lastModified() != file.lastModified
+                ) {
+                    // The path was reused or changed after the journaled
+                    // snapshot.  Keep it rather than treating path equality
+                    // as proof that it is still the same artifact.
+                    failedEntries++
+                    return@forEach
+                }
+                val size = candidate.length().coerceAtLeast(0L)
+                if (candidate.delete() || !candidate.exists()) {
+                    deletedBytes += size
+                    deletedFiles++
+                } else {
+                    failedEntries++
+                }
+            }
+            AppCacheDeletionResult(
+                requestedCategories = setOf(snapshot.category),
+                deletedBytes = deletedBytes,
+                deletedFiles = deletedFiles,
+                failedEntries = failedEntries,
+                skippedCategories = emptySet(),
             )
         }
 

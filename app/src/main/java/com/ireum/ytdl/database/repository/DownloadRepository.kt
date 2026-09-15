@@ -2941,6 +2941,16 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun deleteCancelled(): Set<String> =
         deleteKnownUserRemoval(getCancelledDownloads())
 
+    /**
+     * Deletes only the exact cancelled rows captured by one cleanup
+     * occurrence.  Re-reading by id is an eligibility check, not target
+     * discovery: rows that changed state after the occurrence was journaled
+     * are left for their appropriate future authority.
+     */
+    internal suspend fun deleteCancelledExactTargets(
+        targets: List<DownloadItem>,
+    ): Set<String> = deleteKnownUserRemoval(targets, Status.Cancelled)
+
     fun getActiveDownloadsCount() : Int {
         return downloadDao.getDownloadsCountByStatus(listOf(Status.Active, Status.PostProcessing).toListString())
     }
@@ -2950,6 +2960,11 @@ class DownloadRepository(private val database: DBManager) {
 
     suspend fun deleteErrored(): Set<String> =
         deleteKnownUserRemoval(getErroredDownloads())
+
+    /** See [deleteCancelledExactTargets]. */
+    internal suspend fun deleteErroredExactTargets(
+        targets: List<DownloadItem>,
+    ): Set<String> = deleteKnownUserRemoval(targets, Status.Error)
 
     suspend fun deleteQueued(): Set<String> =
         deleteKnownUserRemoval(getQueuedDownloads())
@@ -3871,11 +3886,41 @@ class DownloadRepository(private val database: DBManager) {
         return setOf(ledgerItem.operationId)
     }
 
-    private suspend fun deleteKnownUserRemoval(items: List<DownloadItem>): Set<String> {
+    private fun currentTargetsWithStatus(
+        targets: List<DownloadItem>,
+        status: Status,
+    ): List<DownloadItem> {
+        val targetIds = targets.map(DownloadItem::id).distinct()
+        if (targetIds.isEmpty()) return emptyList()
+        val targetsById = targets.associateBy(DownloadItem::id)
+        return getAllItemsByIDs(targetIds).filter { item ->
+            val target = targetsById[item.id] ?: return@filter false
+            item.status == status.name &&
+                item.operationId == target.operationId &&
+                item.executionId == target.executionId &&
+                item.downloadStartTime == target.downloadStartTime
+        }
+    }
+
+    private suspend fun deleteKnownUserRemoval(
+        items: List<DownloadItem>,
+        expectedStatus: Status? = null,
+    ): Set<String> {
         if (items.isEmpty()) return emptySet()
-        val ids = items.map(DownloadItem::id).distinct()
         val pendingTokensToRelease = linkedSetOf<String>()
+        var authorizedItems = emptyList<DownloadItem>()
         val operationIds = database.withTransaction {
+            authorizedItems = if (expectedStatus == null) {
+                items
+            } else {
+                // The journal is the authority for candidate identity, but
+                // status/operation ownership is revalidated inside the same
+                // Room transaction as deletion.  A row that changed state
+                // after capture cannot be deleted by this occurrence.
+                currentTargetsWithStatus(items, expectedStatus)
+            }
+            if (authorizedItems.isEmpty()) return@withTransaction emptySet()
+            val ids = authorizedItems.map(DownloadItem::id).distinct()
             val now = System.currentTimeMillis()
             val affected = terminalizeLinkedChildren(
                 downloadIds = ids,
@@ -3888,7 +3933,10 @@ class DownloadRepository(private val database: DBManager) {
             affected
         }
         pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
-        deleteCache(items)
+        if (expectedStatus != null) {
+            cleanupAfterRoomDeletionForTesting?.invoke()?.let { throw it }
+        }
+        deleteCache(authorizedItems)
         return operationIds
     }
 
@@ -4349,6 +4397,10 @@ class DownloadRepository(private val database: DBManager) {
         /** Test seam for a later failure in a rollback-capable child terminalization transaction. */
         @Volatile
         internal var terminalizeLinkedChildrenFailureForTesting: (() -> Exception?)? = null
+
+        /** Test seam after the cleanup Room deletion commits and before cache deletion. */
+        @Volatile
+        internal var cleanupAfterRoomDeletionForTesting: (() -> Exception?)? = null
 
         internal fun isLivePendingRemovalToken(token: String): Boolean =
             synchronized(undoAuthorityLock) {

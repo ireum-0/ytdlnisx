@@ -56,6 +56,7 @@ class CleanUpLeftoverDownloads(
         var cleanupFailure: Exception? = null
         var cleanupEffectConsumed = false
         var cleanupEffectRecoveryRequired = false
+        var cleanupEffectIncomplete = false
         val monthlyAnchorDay = inputData.getInt(
             CleanupScheduleCoordinator.INPUT_MONTHLY_ANCHOR_DAY,
             Calendar.getInstance().get(Calendar.DAY_OF_MONTH),
@@ -73,22 +74,13 @@ class CleanUpLeftoverDownloads(
                     cadence = cadence,
                     monthlyAnchorDay = monthlyAnchorDay,
                     occurrenceAt = occurrenceAt,
-                ) {
-                    val override = cleanupOverrideForTesting
-                    if (override != null) {
-                        override()
-                    } else {
-                        val dbManager = DBManager.getInstance(context)
-                        val downloadRepo = DownloadRepository(dbManager)
-                        LowQualityRedownloadLedger.refresh(context, downloadRepo.deleteCancelled())
-                        LowQualityRedownloadLedger.refresh(context, downloadRepo.deleteErrored())
-
-                        val activeDownloadCount = downloadRepo.getActiveDownloadsCount()
-                        if (activeDownloadCount == 0){
-                            AppCacheManager(context).delete(setOf(AppCacheCategory.DOWNLOAD_TEMP))
-                        }
-                    }
-                }
+                prepare = {
+                    prepareCleanupEffectJournal()
+                },
+                effect = { journal ->
+                    executeCleanupEffect(journal)
+                },
+            )
             ) {
                 CleanupScheduleCoordinator.DestructiveEffectResult.Stale -> {
                     return Result.success(workDataOf("cleanup_schedule_stale" to true))
@@ -107,11 +99,11 @@ class CleanUpLeftoverDownloads(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (recoveryRequired: CleanupScheduleCoordinator.EffectPhaseRecoveryRequired) {
-            // The cleanup body threw, but its durable reset to ELIGIBLE could
-            // not be recorded.  The IN_PROGRESS marker is therefore the
-            // fail-closed carrier: do not run the potentially partial effect
-            // again; hand the exact occurrence to successor recovery.
-            cleanupEffectConsumed = true
+            // The body contains independently committing effects.  Its exact
+            // journal remains IN_PROGRESS and records the unfinished suffix;
+            // never publish a successor while that responsibility is still
+            // incomplete.
+            cleanupEffectIncomplete = true
             cleanupEffectRecoveryRequired = true
             cleanupFailure = recoveryRequired.cause as? Exception ?: recoveryRequired
         } catch (failure: Exception) {
@@ -119,6 +111,20 @@ class CleanUpLeftoverDownloads(
                 return Result.retry()
             }
             cleanupFailure = failure
+        }
+
+        if (cleanupEffectIncomplete || !cleanupEffectConsumed) {
+            return if (runAttemptCount < MAX_ATTEMPTS - 1) {
+                Result.retry()
+            } else {
+                Result.failure(
+                    workDataOf(
+                        "cleanup_schedule_failure" to true,
+                        "cleanup_failure" to (cleanupFailure != null),
+                        "cleanup_effect_recovery_required" to cleanupEffectRecoveryRequired,
+                    )
+                )
+            }
         }
 
         val successorAccepted = try {
@@ -194,5 +200,138 @@ class CleanUpLeftoverDownloads(
             Result.success()
         }
     }
+
+    private fun prepareCleanupEffectJournal(): CleanupEffectJournal {
+        val occurrenceGeneration = requireNotNull(
+            inputData.getString(CleanupScheduleCoordinator.INPUT_GENERATION),
+        )
+        val occurrenceCadence = requireNotNull(
+            inputData.getString(CleanupScheduleCoordinator.INPUT_CADENCE),
+        )
+        val occurrenceAnchor = inputData.getInt(
+            CleanupScheduleCoordinator.INPUT_MONTHLY_ANCHOR_DAY,
+            Calendar.getInstance().get(Calendar.DAY_OF_MONTH),
+        )
+        val occurrenceTime = inputData.getLong(
+            CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT,
+            0L,
+        )
+
+        // The override is a narrow test seam for schedule/worker tests.  The
+        // real production path below always captures repository and cache
+        // targets before phase admission.
+        if (cleanupOverrideForTesting != null) {
+            return CleanupEffectJournal(
+                generation = occurrenceGeneration,
+                cadence = occurrenceCadence,
+                monthlyAnchorDay = occurrenceAnchor,
+                occurrenceAt = occurrenceTime,
+            )
+        }
+
+        val repository = DownloadRepository(DBManager.getInstance(context))
+        val cancelledTargets = repository.getCancelledDownloads()
+        val erroredTargets = repository.getErroredDownloads()
+        val tempCleanupRequired = repository.getActiveDownloadsCount() == 0
+        val tempSnapshot = if (tempCleanupRequired) {
+            AppCacheManager(context).snapshotExact(AppCacheCategory.DOWNLOAD_TEMP)
+                ?: throw IllegalStateException("unable to capture exact download temp cache")
+        } else {
+            null
+        }
+        return CleanupEffectJournal(
+            generation = occurrenceGeneration,
+            cadence = occurrenceCadence,
+            monthlyAnchorDay = occurrenceAnchor,
+            occurrenceAt = occurrenceTime,
+            cancelledTargets = cancelledTargets,
+            erroredTargets = erroredTargets,
+            cancelledOperationIds = cancelledTargets.mapNotNull { it.operationId.takeIf(String::isNotBlank) },
+            erroredOperationIds = erroredTargets.mapNotNull { it.operationId.takeIf(String::isNotBlank) },
+            tempSnapshot = tempSnapshot,
+            tempCleanupRequired = tempCleanupRequired,
+            tempCleanupComplete = !tempCleanupRequired,
+        )
+    }
+
+    private suspend fun executeCleanupEffect(journal: CleanupEffectJournal) {
+        cleanupOverrideForTesting?.invoke()
+        if (cleanupOverrideForTesting != null) {
+            advanceJournal(journal) { current ->
+                current.copy(
+                    cancelledDeletionComplete = true,
+                    cancelledRefreshComplete = true,
+                    erroredDeletionComplete = true,
+                    erroredRefreshComplete = true,
+                    tempCleanupComplete = true,
+                )
+            }
+            return
+        }
+
+        val repository = DownloadRepository(DBManager.getInstance(context))
+        var current = journal
+        if (!current.cancelledDeletionComplete) {
+            val affectedOperationIds = repository.deleteCancelledExactTargets(
+                current.cancelledTargets,
+            )
+            current = advanceJournal(current) {
+                it.copy(
+                    cancelledDeletionComplete = true,
+                    cancelledOperationIds = (it.cancelledOperationIds + affectedOperationIds)
+                        .filter(String::isNotBlank)
+                        .distinct(),
+                )
+            }
+        }
+        if (!current.cancelledRefreshComplete) {
+            LowQualityRedownloadLedger.refresh(context, current.cancelledOperationIds)
+            current = advanceJournal(current) { it.copy(cancelledRefreshComplete = true) }
+        }
+        if (!current.erroredDeletionComplete) {
+            val affectedOperationIds = repository.deleteErroredExactTargets(
+                current.erroredTargets,
+            )
+            current = advanceJournal(current) {
+                it.copy(
+                    erroredDeletionComplete = true,
+                    erroredOperationIds = (it.erroredOperationIds + affectedOperationIds)
+                        .filter(String::isNotBlank)
+                        .distinct(),
+                )
+            }
+        }
+        if (!current.erroredRefreshComplete) {
+            LowQualityRedownloadLedger.refresh(context, current.erroredOperationIds)
+            current = advanceJournal(current) { it.copy(erroredRefreshComplete = true) }
+        }
+        if (!current.tempCleanupComplete) {
+            val snapshot = current.tempSnapshot
+                ?: throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
+                    IllegalStateException("cleanup temp snapshot is missing"),
+                )
+            val deletion = AppCacheManager(context).deleteExact(snapshot)
+            if (!deletion.isComplete) {
+                throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
+                    IllegalStateException("exact cleanup temp deletion is incomplete"),
+                )
+            }
+            advanceJournal(current) { it.copy(tempCleanupComplete = true) }
+        }
+    }
+
+    private fun advanceJournal(
+        current: CleanupEffectJournal,
+        update: (CleanupEffectJournal) -> CleanupEffectJournal,
+    ): CleanupEffectJournal = CleanupScheduleCoordinator.updateEffectJournal(
+        context = applicationContext,
+        generation = current.generation,
+        cadence = current.cadence,
+        monthlyAnchorDay = current.monthlyAnchorDay,
+        occurrenceAt = current.occurrenceAt,
+        update = update,
+    ) ?: throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
+        IllegalStateException("cleanup effect journal transition could not be persisted"),
+    )
 
 }
