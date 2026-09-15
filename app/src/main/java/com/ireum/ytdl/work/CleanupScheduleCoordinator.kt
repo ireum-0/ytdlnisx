@@ -1188,14 +1188,22 @@ internal object CleanupScheduleCoordinator {
             return null
         }
         val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+        val pending = readSchedulingDebt(preferences)
+        val active = readActiveSchedulingDebt(preferences)
+        if (pending != null && active != null) {
+            // Both slots being populated is an impossible transition state;
+            // do not grant destructive authority to whichever tuple happens
+            // to match the caller.
+            return null
+        }
         val matchingOccurrences = buildList {
-            readSchedulingDebt(preferences)
+            pending
                 ?.takeIf { debt ->
                     debt.matchesAuthority(generation, cadence, monthlyAnchorDay) &&
                         debt.occurrenceAt == occurrenceAt
                 }
                 ?.let { add(OwnedEffectOccurrence(it, EffectOccurrenceSlot.PENDING)) }
-            readActiveSchedulingDebt(preferences)
+            active
                 ?.takeIf { debt ->
                     debt.matchesAuthority(generation, cadence, monthlyAnchorDay) &&
                         debt.occurrenceAt == occurrenceAt
