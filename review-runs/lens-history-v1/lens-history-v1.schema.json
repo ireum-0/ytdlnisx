@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ireum-0/ytdlnisx/review-runs/lens-history-v1/lens-history-v1.schema.json",
+  "title": "YTDLnisX lens-history-v1 reconstruction record",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "source_snapshot",
+    "checkpoint",
+    "implementation_sha",
+    "era",
+    "effectiveness_eligibility"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "lens-history-v1"
+    },
+    "source_snapshot": {
+      "const": "25a554d1768f8d3cdd09a6e384a89d915eeeace4"
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "file", "kind"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "file": {"type": "string", "minLength": 1},
+        "kind": {"$ref": "#/$defs/stateValue"}
+      }
+    },
+    "implementation_sha": {"$ref": "#/$defs/stateValue"},
+    "era": {
+      "enum": [
+        "PRE_LENS",
+        "LEGACY_AUDIT_LENS",
+        "STRUCTURED_PROVISIONAL",
+        "STRUCTURED_FINAL"
+      ]
+    },
+    "raw_audit_lens": {"$ref": "#/$defs/stateValue"},
+    "primary_deep_lens": {"$ref": "#/$defs/stateValue"},
+    "lens_selection_reason": {"$ref": "#/$defs/stateValue"},
+    "lens_coverage_current_sha": {"$ref": "#/$defs/stateValue"},
+    "effectiveness_eligibility": {"$ref": "#/$defs/stateValue"},
+    "effectiveness": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/lensEffectiveness"}
+    },
+    "finding_attribution": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "direct": {
+      "type": "object",
+      "required": ["state", "value"],
+      "properties": {
+        "state": {"const": "DIRECT"},
+        "value": {}
+      },
+      "additionalProperties": false
+    },
+    "derivable": {
+      "type": "object",
+      "required": ["state", "value", "rule"],
+      "properties": {
+        "state": {"const": "DERIVABLE"},
+        "value": {},
+        "rule": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "notVerified": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": {"const": "NOT_VERIFIED"},
+        "reason": {"type": "string"}
+      },
+      "not": {"required": ["value"]},
+      "additionalProperties": false
+    },
+    "notApplicable": {
+      "type": "object",
+      "required": ["state", "reason"],
+      "properties": {
+        "state": {"const": "NOT_APPLICABLE"},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "not": {"required": ["value"]},
+      "additionalProperties": false
+    },
+    "stateValue": {
+      "oneOf": [
+        {"$ref": "#/$defs/direct"},
+        {"$ref": "#/$defs/derivable"},
+        {"$ref": "#/$defs/notVerified"},
+        {"$ref": "#/$defs/notApplicable"}
+      ]
+    },
+    "lensEffectiveness": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "coverage_level": {"$ref": "#/$defs/stateValue"},
+        "new_confirmed_findings": {"$ref": "#/$defs/stateValue"},
+        "existing_finding_status_changes": {"$ref": "#/$defs/stateValue"},
+        "confirmed_residuals_or_subcases": {"$ref": "#/$defs/stateValue"},
+        "rejected_candidates_with_proof": {"$ref": "#/$defs/stateValue"},
+        "not_verified_candidates": {"$ref": "#/$defs/stateValue"},
+        "checklist_gaps_triggered": {"$ref": "#/$defs/stateValue"},
+        "upstream_semantic_checks": {"$ref": "#/$defs/stateValue"},
+        "cross_feature_propagation_hits": {"$ref": "#/$defs/stateValue"},
+        "lens_scope_reviewed": {"$ref": "#/$defs/stateValue"}
+      }
+    }
+  }
+}
