@@ -23,21 +23,33 @@
       "state": "DIRECT",
       "value": 8
     },
+    "inventory_batches": {
+      "completed": 1,
+      "history_entries_materialized": 5,
+      "newest_history_rank_materialized_through": 5,
+      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0001-newest-001-005.jsonl",
+      "batch_0001_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE"
+      }
+    },
     "exhaustive_inventory": {
-      "status": "PENDING_EXHAUSTIVE_EXTRACTION",
+      "status": "IN_PROGRESS",
       "unit": "distinct checkpoint document path at the frozen tree",
       "reason": "764 is the exact number of commits touching review-runs/checkpoints, not an established count of distinct checkpoint files"
     },
     "content_enrichment": {
-      "status": "PENDING_AFTER_INVENTORY",
+      "status": "IN_PROGRESS_FOR_MATERIALIZED_BATCHES",
       "rule": "lens fields are populated only from the exact source document or deterministic lens-history-v1 derivation"
     },
     "schema_validation": {
-      "status": "PENDING_AFTER_MATERIALIZATION",
+      "status": "PENDING_AFTER_LEDGER_MATERIALIZATION",
       "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json"
     },
     "aggregate_reconciliation": {
-      "status": "PENDING_AFTER_MATERIALIZATION",
+      "status": "PENDING_AFTER_LEDGER_MATERIALIZATION",
       "required_observed_measured_effectiveness": {
         "new_confirmed_findings": 0,
         "existing_finding_status_changes": 0,
@@ -62,12 +74,16 @@
       "do not include intermediate/provisional effectiveness in cumulative totals"
     ]
   },
+  "derivation_rules": {
+    "document_identity": "review-runs/lens-history-v1/rules/document-identity-v1.md"
+  },
   "next_strategy": [
-    "enumerate the frozen checkpoint tree into a lossless distinct-path inventory using bounded extraction",
-    "bind each frozen checkpoint document to exact adding/final provenance without assuming one commit equals one file",
-    "materialize one lens-history-v1 record per frozen checkpoint document",
+    "continue bounded history extraction from rank 6 while binding each commit to its exact changed checkpoint path",
+    "verify each candidate path exists in the frozen checkpoint tree and record its frozen blob identity",
+    "deduplicate exact checkpoint document paths rather than assuming one commit equals one file",
+    "materialize one lens-history-v1 ledger record per frozen checkpoint document",
     "content-enrich only fields supported by the exact source text",
-    "validate every record against lens-history-v1.schema.json",
+    "validate every ledger record against lens-history-v1.schema.json",
     "recompute lens-history-v1/final-only-explicit and require exact equality with the frozen manifest"
   ],
   "historical_total_effectiveness": {
