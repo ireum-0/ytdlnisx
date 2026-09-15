@@ -41,6 +41,16 @@
         "schema_class_assignment": "COMPLETE"
       }
     },
+    "ledger_batches": {
+      "completed": 2,
+      "records_materialized": 10,
+      "newest_history_rank_materialized_through": 10,
+      "latest_batch": "review-runs/lens-history-v1/ledger-batches/0002-newest-006-010.jsonl",
+      "cumulative_eligible_structured_finals_materialized": [
+        "d8c9e3d94ecaaa6121f9912cab4240375e8b5680",
+        "25a554d1768f8d3cdd09a6e384a89d915eeeace4"
+      ]
+    },
     "exhaustive_inventory": {
       "status": "IN_PROGRESS",
       "unit": "distinct checkpoint document path at the frozen tree",
@@ -51,11 +61,11 @@
       "rule": "lens fields are populated only from the exact source document or deterministic lens-history-v1 derivation"
     },
     "schema_validation": {
-      "status": "PENDING_AFTER_LEDGER_MATERIALIZATION",
+      "status": "PENDING_BATCH_VALIDATION",
       "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json"
     },
     "aggregate_reconciliation": {
-      "status": "PENDING_AFTER_LEDGER_MATERIALIZATION",
+      "status": "MEASURED_FINAL_INPUTS_MATERIALIZED__FULL_LEDGER_RECONCILIATION_PENDING",
       "required_observed_measured_effectiveness": {
         "new_confirmed_findings": 0,
         "existing_finding_status_changes": 0,
@@ -84,12 +94,12 @@
     "document_identity": "review-runs/lens-history-v1/rules/document-identity-v1.md"
   },
   "next_strategy": [
+    "validate ledger batches 0001 and 0002 against lens-history-v1.schema.json",
     "continue bounded history extraction from rank 11 while binding each commit to its exact changed checkpoint path",
     "verify each candidate path exists in the frozen checkpoint tree and record its frozen blob identity",
     "deduplicate exact checkpoint document paths rather than assuming one commit equals one file",
     "materialize one lens-history-v1 ledger record per frozen checkpoint document",
     "content-enrich only fields supported by the exact source text",
-    "validate every ledger record against lens-history-v1.schema.json",
     "recompute lens-history-v1/final-only-explicit and require exact equality with the frozen manifest"
   ],
   "historical_total_effectiveness": {
