@@ -1,0 +1,77 @@
+{
+  "schema_version": "lens-history-v1",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "source_checkpoint_tree": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+  "history_scope": {
+    "checkpoint_path_touching_commits": {
+      "state": "DIRECT",
+      "value": 764
+    },
+    "oldest_checkpoint_path_commit": {
+      "state": "DIRECT",
+      "value": "3385e695edd2fdbb84b2ed69b9a9820f6acfef9c"
+    },
+    "distinct_checkpoint_documents_in_frozen_tree": {
+      "state": "NOT_VERIFIED",
+      "reason": "the frozen checkpoint tree is known exactly, but a lossless distinct-path enumeration has not yet been materialized through the current bounded extraction path"
+    },
+    "commit_count_is_file_count": false
+  },
+  "materialization": {
+    "status": "IN_PROGRESS",
+    "verified_seed_records": {
+      "state": "DIRECT",
+      "value": 8
+    },
+    "exhaustive_inventory": {
+      "status": "PENDING_EXHAUSTIVE_EXTRACTION",
+      "unit": "distinct checkpoint document path at the frozen tree",
+      "reason": "764 is the exact number of commits touching review-runs/checkpoints, not an established count of distinct checkpoint files"
+    },
+    "content_enrichment": {
+      "status": "PENDING_AFTER_INVENTORY",
+      "rule": "lens fields are populated only from the exact source document or deterministic lens-history-v1 derivation"
+    },
+    "schema_validation": {
+      "status": "PENDING_AFTER_MATERIALIZATION",
+      "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json"
+    },
+    "aggregate_reconciliation": {
+      "status": "PENDING_AFTER_MATERIALIZATION",
+      "required_observed_measured_effectiveness": {
+        "new_confirmed_findings": 0,
+        "existing_finding_status_changes": 0,
+        "confirmed_residuals_or_subcases": 1,
+        "rejected_candidates_with_proof": 3,
+        "not_verified_candidates": 1,
+        "checklist_gaps_triggered": 0,
+        "cross_feature_propagation_hits": 2
+      }
+    }
+  },
+  "inventory_contract": {
+    "history_entry": "a commit that touched review-runs/checkpoints on the frozen ancestry",
+    "frozen_document": "a distinct checkpoint file path present in the frozen checkpoints tree",
+    "ledger_record": "one reconstruction record for one frozen checkpoint document, tied to exact source provenance",
+    "no_assumed_bijection": true,
+    "prohibited_shortcuts": [
+      "do not equate 764 path-touching commits with 764 checkpoint files",
+      "do not create a ledger row from a commit unless the exact checkpoint document provenance is established",
+      "do not infer modern lens fields from filename, chronology, or legacy audit_lens text",
+      "do not fill missing numeric metrics with zero",
+      "do not include intermediate/provisional effectiveness in cumulative totals"
+    ]
+  },
+  "next_strategy": [
+    "enumerate the frozen checkpoint tree into a lossless distinct-path inventory using bounded extraction",
+    "bind each frozen checkpoint document to exact adding/final provenance without assuming one commit equals one file",
+    "materialize one lens-history-v1 record per frozen checkpoint document",
+    "content-enrich only fields supported by the exact source text",
+    "validate every record against lens-history-v1.schema.json",
+    "recompute lens-history-v1/final-only-explicit and require exact equality with the frozen manifest"
+  ],
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  }
+}
