@@ -61,11 +61,14 @@
       "rule": "lens fields are populated only from the exact source document or deterministic lens-history-v1 derivation"
     },
     "schema_validation": {
-      "status": "PENDING_BATCH_VALIDATION",
-      "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json"
+      "status": "PASS_FOR_MATERIALIZED_BATCHES",
+      "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+      "validation_report": "review-runs/lens-history-v1/validation/ledger-batches-0001-0002.json",
+      "records_checked": 10,
+      "invalid_records": 0
     },
     "aggregate_reconciliation": {
-      "status": "MEASURED_FINAL_INPUTS_MATERIALIZED__FULL_LEDGER_RECONCILIATION_PENDING",
+      "status": "PASS_FOR_MATERIALIZED_MEASURED_FINAL_INPUTS__FULL_LEDGER_RECONCILIATION_PENDING",
       "required_observed_measured_effectiveness": {
         "new_confirmed_findings": 0,
         "existing_finding_status_changes": 0,
@@ -94,12 +97,12 @@
     "document_identity": "review-runs/lens-history-v1/rules/document-identity-v1.md"
   },
   "next_strategy": [
-    "validate ledger batches 0001 and 0002 against lens-history-v1.schema.json",
     "continue bounded history extraction from rank 11 while binding each commit to its exact changed checkpoint path",
     "verify each candidate path exists in the frozen checkpoint tree and record its frozen blob identity",
     "deduplicate exact checkpoint document paths rather than assuming one commit equals one file",
     "materialize one lens-history-v1 ledger record per frozen checkpoint document",
     "content-enrich only fields supported by the exact source text",
+    "validate each additional ledger batch before extending further",
     "recompute lens-history-v1/final-only-explicit and require exact equality with the frozen manifest"
   ],
   "historical_total_effectiveness": {
