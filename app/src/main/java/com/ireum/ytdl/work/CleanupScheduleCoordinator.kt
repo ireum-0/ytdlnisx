@@ -90,6 +90,11 @@ internal object CleanupScheduleCoordinator {
     private const val PREF_ACTIVE_CADENCE = "cleanup_leftover_downloads_active_cadence"
     private const val PREF_ACTIVE_ANCHOR_DAY = "cleanup_leftover_downloads_active_anchor_day"
     private const val PREF_ACTIVE_OCCURRENCE_AT = "cleanup_leftover_downloads_active_occurrence_at"
+    private const val PREF_PENDING_EFFECT_PHASE = "cleanup_leftover_downloads_pending_effect_phase"
+    private const val PREF_ACTIVE_EFFECT_PHASE = "cleanup_leftover_downloads_active_effect_phase"
+    private const val EFFECT_PHASE_ELIGIBLE = "eligible"
+    private const val EFFECT_PHASE_IN_PROGRESS = "in_progress"
+    private const val EFFECT_PHASE_CONSUMED = "consumed"
     private const val REPLAY_INITIAL_DELAY_MS = 1_000L
     private const val REPLAY_MAX_DELAY_MS = 60_000L
 
@@ -126,6 +131,9 @@ internal object CleanupScheduleCoordinator {
     internal var authorityCommitOverrideForTesting:
         ((android.content.SharedPreferences.Editor) -> Boolean)? = null
     @Volatile
+    internal var effectPhaseCommitOverrideForTesting:
+        ((android.content.SharedPreferences.Editor) -> Boolean)? = null
+    @Volatile
     internal var replayInitialDelayOverrideForTesting: Long? = null
     @Volatile
     internal var replayMaxDelayOverrideForTesting: Long? = null
@@ -147,6 +155,23 @@ internal object CleanupScheduleCoordinator {
         val cadence: String,
         val monthlyAnchorDay: Int,
         val occurrenceAt: Long,
+    )
+
+    private enum class EffectOccurrenceSlot {
+        PENDING,
+        ACTIVE,
+    }
+
+    private enum class EffectPhase {
+        ELIGIBLE,
+        IN_PROGRESS,
+        CONSUMED,
+        UNKNOWN,
+    }
+
+    private data class OwnedEffectOccurrence(
+        val debt: SchedulingDebt,
+        val slot: EffectOccurrenceSlot,
     )
 
     suspend fun configure(context: Context, cadence: String?): Boolean =
@@ -183,16 +208,19 @@ internal object CleanupScheduleCoordinator {
                     .remove(PREF_PENDING_CADENCE)
                     .remove(PREF_PENDING_ANCHOR_DAY)
                     .remove(PREF_PENDING_OCCURRENCE_AT)
+                    .remove(PREF_PENDING_EFFECT_PHASE)
                     .remove(PREF_ACTIVE_GENERATION)
                     .remove(PREF_ACTIVE_CADENCE)
                     .remove(PREF_ACTIVE_ANCHOR_DAY)
                     .remove(PREF_ACTIVE_OCCURRENCE_AT)
+                    .remove(PREF_ACTIVE_EFFECT_PHASE)
                 if (normalizedCadence != null) {
                     authorityEditor
                         .putString(PREF_PENDING_GENERATION, generation)
                         .putString(PREF_PENDING_CADENCE, normalizedCadence)
                         .putInt(PREF_PENDING_ANCHOR_DAY, anchorDay)
                         .putLong(PREF_PENDING_OCCURRENCE_AT, initialOccurrenceAt!!)
+                        .putString(PREF_PENDING_EFFECT_PHASE, EFFECT_PHASE_ELIGIBLE)
                 }
                 val authorityCommitted = commitAuthority(authorityEditor)
                 if (!authorityCommitted) return@synchronized false
@@ -262,14 +290,17 @@ internal object CleanupScheduleCoordinator {
                         .remove(PREF_PENDING_CADENCE)
                         .remove(PREF_PENDING_ANCHOR_DAY)
                         .remove(PREF_PENDING_OCCURRENCE_AT)
+                        .remove(PREF_PENDING_EFFECT_PHASE)
                         .remove(PREF_ACTIVE_GENERATION)
                         .remove(PREF_ACTIVE_CADENCE)
                         .remove(PREF_ACTIVE_ANCHOR_DAY)
                         .remove(PREF_ACTIVE_OCCURRENCE_AT)
+                        .remove(PREF_ACTIVE_EFFECT_PHASE)
                         .putString(PREF_PENDING_GENERATION, bootstrappedGeneration)
                         .putString(PREF_PENDING_CADENCE, cadence)
                         .putInt(PREF_PENDING_ANCHOR_DAY, bootstrappedAnchorDay)
                         .putLong(PREF_PENDING_OCCURRENCE_AT, bootstrappedOccurrenceAt)
+                        .putString(PREF_PENDING_EFFECT_PHASE, EFFECT_PHASE_ELIGIBLE)
                     if (!commitAuthority(bootstrapEditor)) {
                         // The enabled cadence is legacy durable authority, but
                         // generation/debt publication failed atomically. Keep
@@ -351,6 +382,19 @@ internal object CleanupScheduleCoordinator {
                     val currentPendingDebt = pendingDebt
                     if (!promotePendingDebtLocked(appContext, currentPendingDebt)) {
                         ensureReplayOwnerLocked(appContext, currentPendingDebt)
+                    } else if (
+                        readEffectPhase(preferences, EffectOccurrenceSlot.ACTIVE) !=
+                            EffectPhase.ELIGIBLE
+                    ) {
+                        // A process may restart after this exact occurrence
+                        // has entered or consumed its effect but before the
+                        // worker's terminal result is durable.  Rebuild the
+                        // immediate successor owner even though WorkManager
+                        // still reports the predecessor as unfinished.
+                        ensureReplayOwnerLocked(
+                            appContext,
+                            successorDebtOf(currentPendingDebt),
+                        )
                     }
                     retireLegacyWork(workManager, currentIds)
                     return@synchronized
@@ -370,6 +414,18 @@ internal object CleanupScheduleCoordinator {
                         }
                     if (successorRecovery != null) {
                         ensureReplayOwnerLocked(appContext, successorRecovery)
+                    } else if (
+                        readEffectPhase(preferences, EffectOccurrenceSlot.ACTIVE) !=
+                            EffectPhase.ELIGIBLE
+                    ) {
+                        // The effect phase is a durable restart carrier.  If
+                        // no successor debt was published before process
+                        // death, let the replay owner publish exactly the
+                        // immediate successor without re-running cleanup.
+                        ensureReplayOwnerLocked(
+                            appContext,
+                            successorDebtOf(activeDebt),
+                        )
                     } else {
                         stopReplayOwnerLocked()
                     }
@@ -518,8 +574,22 @@ internal object CleanupScheduleCoordinator {
 
     internal sealed interface DestructiveEffectResult<out T> {
         data class Completed<T>(val value: T) : DestructiveEffectResult<T>
+        data class AlreadyConsumed(
+            val recoveryRequired: Boolean,
+        ) : DestructiveEffectResult<Nothing>
+
+        data object PhaseUnavailable : DestructiveEffectResult<Nothing>
         data object Stale : DestructiveEffectResult<Nothing>
     }
+
+    /**
+     * The effect may already have started, but its transition back to an
+     * eligible phase could not be durably recorded.  Re-running the effect
+     * would therefore be unsafe; the worker must retain/recover the schedule
+     * without claiming that the destructive body completed cleanly.
+     */
+    internal class EffectPhaseRecoveryRequired(cause: Exception) :
+        Exception("Cleanup effect phase could not be durably recovered", cause)
 
     /**
      * Admits and executes one occurrence's destructive cleanup as one
@@ -531,12 +601,98 @@ internal object CleanupScheduleCoordinator {
         context: Context,
         generation: String?,
         cadence: String?,
+        monthlyAnchorDay: Int,
+        occurrenceAt: Long?,
         effect: suspend () -> T,
     ): DestructiveEffectResult<T> = destructiveEffectMutex.withLock {
         if (!isCurrentOccurrenceLocked(context, generation, cadence)) {
             DestructiveEffectResult.Stale
         } else {
-            DestructiveEffectResult.Completed(effect())
+            val ownedOccurrence = currentEffectOccurrence(
+                context = context,
+                generation = requireNotNull(generation),
+                cadence = requireNotNull(cadence),
+                monthlyAnchorDay = monthlyAnchorDay,
+                occurrenceAt = occurrenceAt,
+            )
+            if (ownedOccurrence == null) {
+                // Exact occurrence ownership is required for destructive
+                // admission.  Generation/cadence alone cannot distinguish a
+                // stale re-entry from the current occurrence.
+                DestructiveEffectResult.Stale
+            } else {
+                when (readEffectPhase(context, ownedOccurrence.slot)) {
+                    EffectPhase.CONSUMED -> DestructiveEffectResult.AlreadyConsumed(
+                        recoveryRequired = false,
+                    )
+                    EffectPhase.IN_PROGRESS,
+                    EffectPhase.UNKNOWN -> DestructiveEffectResult.AlreadyConsumed(
+                        recoveryRequired = true,
+                    )
+                    EffectPhase.ELIGIBLE -> {
+                        val markedInProgress = commitEffectPhaseForOccurrence(
+                            context = context,
+                            generation = generation,
+                            cadence = cadence,
+                            monthlyAnchorDay = monthlyAnchorDay,
+                            occurrenceAt = occurrenceAt,
+                            phase = EffectPhase.IN_PROGRESS,
+                        )
+                        if (!markedInProgress) {
+                            DestructiveEffectResult.PhaseUnavailable
+                        } else {
+                            try {
+                                val result = effect()
+                                if (commitEffectPhaseForOccurrence(
+                                        context = context,
+                                        generation = generation,
+                                        cadence = cadence,
+                                        monthlyAnchorDay = monthlyAnchorDay,
+                                        occurrenceAt = occurrenceAt,
+                                        phase = EffectPhase.CONSUMED,
+                                    )
+                                ) {
+                                    DestructiveEffectResult.Completed(result)
+                                } else {
+                                    // The durable IN_PROGRESS marker remains
+                                    // the fail-closed carrier.  A later
+                                    // re-entry must not repeat a possibly
+                                    // completed destructive effect.
+                                    DestructiveEffectResult.AlreadyConsumed(
+                                        recoveryRequired = true,
+                                    )
+                                }
+                            } catch (cancelled: CancellationException) {
+                                // Keep IN_PROGRESS.  A cancellation/crash
+                                // leaves effect completion ambiguous, so a
+                                // later occurrence re-entry must not repeat
+                                // the destructive body.
+                                throw cancelled
+                            } catch (failure: Exception) {
+                                if (commitEffectPhaseForOccurrence(
+                                        context = context,
+                                        generation = generation,
+                                        cadence = cadence,
+                                        monthlyAnchorDay = monthlyAnchorDay,
+                                        occurrenceAt = occurrenceAt,
+                                        phase = EffectPhase.ELIGIBLE,
+                                    )
+                                ) {
+                                    // Preserve the existing bounded retry
+                                    // contract for a known, non-partial
+                                    // cleanup failure.
+                                    throw failure
+                                }
+                                // Without a durable reset, retrying could
+                                // repeat a partially applied effect.  Keep
+                                // the occurrence fail-closed and hand the
+                                // schedule to successor recovery.
+                                throw EffectPhaseRecoveryRequired(failure)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -705,6 +861,9 @@ internal object CleanupScheduleCoordinator {
     private fun commitAuthority(editor: android.content.SharedPreferences.Editor): Boolean =
         authorityCommitOverrideForTesting?.invoke(editor) ?: editor.commit()
 
+    private fun commitEffectPhase(editor: android.content.SharedPreferences.Editor): Boolean =
+        effectPhaseCommitOverrideForTesting?.invoke(editor) ?: editor.commit()
+
     private fun persistSchedulingDebtLocked(
         preferences: android.content.SharedPreferences,
         debt: SchedulingDebt,
@@ -725,10 +884,11 @@ internal object CleanupScheduleCoordinator {
             return true
         }
         if (readSchedulingDebt(preferences) != debt) return false
+        val pendingEffectPhase = readEffectPhase(preferences, EffectOccurrenceSlot.PENDING)
         val committed = commitAuthority(
             preferences.edit()
                 .removePendingDebt()
-                .putActiveDebt(debt)
+                .putActiveDebt(debt, pendingEffectPhase)
         )
         if (committed) {
             stopReplayOwnerLocked()
@@ -1017,6 +1177,95 @@ internal object CleanupScheduleCoordinator {
         occurrenceKey = PREF_ACTIVE_OCCURRENCE_AT,
     )
 
+    private fun currentEffectOccurrence(
+        context: Context,
+        generation: String,
+        cadence: String,
+        monthlyAnchorDay: Int,
+        occurrenceAt: Long?,
+    ): OwnedEffectOccurrence? {
+        if (occurrenceAt == null || occurrenceAt <= 0L || monthlyAnchorDay < 1) {
+            return null
+        }
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+        val matchingOccurrences = buildList {
+            readSchedulingDebt(preferences)
+                ?.takeIf { debt ->
+                    debt.matchesAuthority(generation, cadence, monthlyAnchorDay) &&
+                        debt.occurrenceAt == occurrenceAt
+                }
+                ?.let { add(OwnedEffectOccurrence(it, EffectOccurrenceSlot.PENDING)) }
+            readActiveSchedulingDebt(preferences)
+                ?.takeIf { debt ->
+                    debt.matchesAuthority(generation, cadence, monthlyAnchorDay) &&
+                        debt.occurrenceAt == occurrenceAt
+                }
+                ?.let { add(OwnedEffectOccurrence(it, EffectOccurrenceSlot.ACTIVE)) }
+        }
+        return matchingOccurrences.singleOrNull()
+    }
+
+    private fun readEffectPhase(
+        context: Context,
+        slot: EffectOccurrenceSlot,
+    ): EffectPhase {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+        return readEffectPhase(preferences, slot)
+    }
+
+    private fun readEffectPhase(
+        preferences: android.content.SharedPreferences,
+        slot: EffectOccurrenceSlot,
+    ): EffectPhase {
+        val key = when (slot) {
+            EffectOccurrenceSlot.PENDING -> PREF_PENDING_EFFECT_PHASE
+            EffectOccurrenceSlot.ACTIVE -> PREF_ACTIVE_EFFECT_PHASE
+        }
+        return when (preferences.getString(key, null)) {
+            // Occurrence slots written by this protocol always carry an
+            // explicit phase. A missing phase on an older durable slot is
+            // not proof that its effect is still eligible, so re-entry must
+            // fail closed rather than repeat an unknown effect.
+            null -> EffectPhase.UNKNOWN
+            EFFECT_PHASE_ELIGIBLE -> EffectPhase.ELIGIBLE
+            EFFECT_PHASE_IN_PROGRESS -> EffectPhase.IN_PROGRESS
+            EFFECT_PHASE_CONSUMED -> EffectPhase.CONSUMED
+            else -> EffectPhase.UNKNOWN
+        }
+    }
+
+    private fun commitEffectPhaseForOccurrence(
+        context: Context,
+        generation: String?,
+        cadence: String?,
+        monthlyAnchorDay: Int,
+        occurrenceAt: Long?,
+        phase: EffectPhase,
+    ): Boolean = synchronized(lock) {
+        val ownedOccurrence = currentEffectOccurrence(
+            context = context,
+            generation = requireNotNull(generation),
+            cadence = requireNotNull(cadence),
+            monthlyAnchorDay = monthlyAnchorDay,
+            occurrenceAt = occurrenceAt,
+        ) ?: return@synchronized false
+        val key = when (ownedOccurrence.slot) {
+            EffectOccurrenceSlot.PENDING -> PREF_PENDING_EFFECT_PHASE
+            EffectOccurrenceSlot.ACTIVE -> PREF_ACTIVE_EFFECT_PHASE
+        }
+        val storedPhase = when (phase) {
+            EffectPhase.ELIGIBLE -> EFFECT_PHASE_ELIGIBLE
+            EffectPhase.IN_PROGRESS -> EFFECT_PHASE_IN_PROGRESS
+            EffectPhase.CONSUMED -> EFFECT_PHASE_CONSUMED
+            EffectPhase.UNKNOWN -> return@synchronized false
+        }
+        commitEffectPhase(
+            PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+                .edit()
+                .putString(key, storedPhase)
+        )
+    }
+
     private fun readDebt(
         preferences: android.content.SharedPreferences,
         generationKey: String,
@@ -1065,6 +1314,7 @@ internal object CleanupScheduleCoordinator {
 
     private fun android.content.SharedPreferences.Editor.putPendingDebt(
         debt: SchedulingDebt,
+        effectPhase: EffectPhase = EffectPhase.ELIGIBLE,
     ): android.content.SharedPreferences.Editor = putString(
         PREF_PENDING_GENERATION,
         debt.generation,
@@ -1077,10 +1327,14 @@ internal object CleanupScheduleCoordinator {
     ).putLong(
         PREF_PENDING_OCCURRENCE_AT,
         debt.occurrenceAt,
+    ).putString(
+        PREF_PENDING_EFFECT_PHASE,
+        effectPhase.storageValue(),
     )
 
     private fun android.content.SharedPreferences.Editor.putActiveDebt(
         debt: SchedulingDebt,
+        effectPhase: EffectPhase = EffectPhase.ELIGIBLE,
     ): android.content.SharedPreferences.Editor = putString(
         PREF_ACTIVE_GENERATION,
         debt.generation,
@@ -1093,6 +1347,9 @@ internal object CleanupScheduleCoordinator {
     ).putLong(
         PREF_ACTIVE_OCCURRENCE_AT,
         debt.occurrenceAt,
+    ).putString(
+        PREF_ACTIVE_EFFECT_PHASE,
+        effectPhase.storageValue(),
     )
 
     private fun android.content.SharedPreferences.Editor.removePendingDebt():
@@ -1100,12 +1357,23 @@ internal object CleanupScheduleCoordinator {
             .remove(PREF_PENDING_CADENCE)
             .remove(PREF_PENDING_ANCHOR_DAY)
             .remove(PREF_PENDING_OCCURRENCE_AT)
+            .remove(PREF_PENDING_EFFECT_PHASE)
 
     private fun android.content.SharedPreferences.Editor.removeActiveDebt():
         android.content.SharedPreferences.Editor = remove(PREF_ACTIVE_GENERATION)
             .remove(PREF_ACTIVE_CADENCE)
             .remove(PREF_ACTIVE_ANCHOR_DAY)
             .remove(PREF_ACTIVE_OCCURRENCE_AT)
+            .remove(PREF_ACTIVE_EFFECT_PHASE)
+
+    private fun EffectPhase.storageValue(): String = when (this) {
+        EffectPhase.ELIGIBLE -> EFFECT_PHASE_ELIGIBLE
+        EffectPhase.IN_PROGRESS -> EFFECT_PHASE_IN_PROGRESS
+        EffectPhase.CONSUMED -> EFFECT_PHASE_CONSUMED
+        // An unrecognized persisted phase must never become eligible merely
+        // because it crossed a pending -> active transition.
+        EffectPhase.UNKNOWN -> EFFECT_PHASE_IN_PROGRESS
+    }
 
     private fun stopReplayOwnerLocked() {
         replayJob?.cancel()

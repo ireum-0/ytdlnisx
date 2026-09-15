@@ -54,7 +54,16 @@ class CleanUpLeftoverDownloads(
         }
 
         var cleanupFailure: Exception? = null
-        var cleanupEffectSucceeded = false
+        var cleanupEffectConsumed = false
+        var cleanupEffectRecoveryRequired = false
+        val monthlyAnchorDay = inputData.getInt(
+            CleanupScheduleCoordinator.INPUT_MONTHLY_ANCHOR_DAY,
+            Calendar.getInstance().get(Calendar.DAY_OF_MONTH),
+        )
+        val occurrenceAt = inputData.getLong(
+            CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT,
+            0L,
+        )
         try {
             beforeCleanupAdmissionForTesting?.invoke()
             when (
@@ -62,6 +71,8 @@ class CleanUpLeftoverDownloads(
                     context = applicationContext,
                     generation = generation,
                     cadence = cadence,
+                    monthlyAnchorDay = monthlyAnchorDay,
+                    occurrenceAt = occurrenceAt,
                 ) {
                     val override = cleanupOverrideForTesting
                     if (override != null) {
@@ -82,12 +93,27 @@ class CleanUpLeftoverDownloads(
                 CleanupScheduleCoordinator.DestructiveEffectResult.Stale -> {
                     return Result.success(workDataOf("cleanup_schedule_stale" to true))
                 }
+                CleanupScheduleCoordinator.DestructiveEffectResult.PhaseUnavailable -> {
+                    throw IllegalStateException("cleanup effect phase could not be persisted")
+                }
                 is CleanupScheduleCoordinator.DestructiveEffectResult.Completed -> {
-                    cleanupEffectSucceeded = true
+                    cleanupEffectConsumed = true
+                }
+                is CleanupScheduleCoordinator.DestructiveEffectResult.AlreadyConsumed -> {
+                    cleanupEffectConsumed = true
+                    cleanupEffectRecoveryRequired = admission.recoveryRequired
                 }
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (recoveryRequired: CleanupScheduleCoordinator.EffectPhaseRecoveryRequired) {
+            // The cleanup body threw, but its durable reset to ELIGIBLE could
+            // not be recorded.  The IN_PROGRESS marker is therefore the
+            // fail-closed carrier: do not run the potentially partial effect
+            // again; hand the exact occurrence to successor recovery.
+            cleanupEffectConsumed = true
+            cleanupEffectRecoveryRequired = true
+            cleanupFailure = recoveryRequired.cause as? Exception ?: recoveryRequired
         } catch (failure: Exception) {
             if (runAttemptCount < MAX_ATTEMPTS - 1) {
                 return Result.retry()
@@ -100,14 +126,8 @@ class CleanUpLeftoverDownloads(
                 context = applicationContext,
                 generation = generation,
                 cadence = cadence,
-                monthlyAnchorDay = inputData.getInt(
-                    CleanupScheduleCoordinator.INPUT_MONTHLY_ANCHOR_DAY,
-                    Calendar.getInstance().get(Calendar.DAY_OF_MONTH),
-                ),
-                completedOccurrenceAt = inputData.getLong(
-                    CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT,
-                    0L,
-                ),
+                monthlyAnchorDay = monthlyAnchorDay,
+                completedOccurrenceAt = occurrenceAt,
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -115,14 +135,15 @@ class CleanUpLeftoverDownloads(
             false
         }
         if (!successorAccepted) {
-            if (cleanupEffectSucceeded) {
-                // The destructive effect already completed.  Retrying this
-                // WorkManager request would run deleteCancelled(),
-                // deleteErrored(), and temp-cache cleanup a second time.  The
-                // coordinator has retained exact predecessor/successor
-                // ownership and a replay/reconciliation owner for the
-                // unresolved handoff, so complete this occurrence without
-                // asking WorkManager to repeat the destructive body.
+            if (cleanupEffectConsumed) {
+                // The destructive effect is already consumed or may have
+                // started. Retrying this WorkManager request would run
+                // deleteCancelled(), deleteErrored(), and temp-cache cleanup
+                // a second time. The coordinator has retained exact
+                // predecessor/successor ownership and a
+                // replay/reconciliation owner for the unresolved handoff,
+                // so complete this occurrence without asking WorkManager to
+                // repeat the destructive body.
                 return if (
                     CleanupScheduleCoordinator.isCurrentOccurrence(
                         context = applicationContext,
@@ -130,7 +151,12 @@ class CleanUpLeftoverDownloads(
                         cadence = cadence,
                     )
                 ) {
-                    Result.success(workDataOf("cleanup_schedule_handoff_pending" to true))
+                    Result.success(
+                        workDataOf(
+                            "cleanup_schedule_handoff_pending" to true,
+                            "cleanup_effect_recovery_required" to cleanupEffectRecoveryRequired,
+                        )
+                    )
                 } else {
                     Result.success(workDataOf("cleanup_schedule_stale" to true))
                 }
@@ -159,9 +185,14 @@ class CleanUpLeftoverDownloads(
                 workDataOf(
                     "cleanup_failure" to true,
                     "cleanup_failure_message" to (failure.message ?: failure.javaClass.simpleName),
+                    "cleanup_effect_recovery_required" to cleanupEffectRecoveryRequired,
                 )
             )
-        } ?: Result.success()
+        } ?: if (cleanupEffectRecoveryRequired) {
+            Result.success(workDataOf("cleanup_effect_recovery_required" to true))
+        } else {
+            Result.success()
+        }
     }
 
 }
