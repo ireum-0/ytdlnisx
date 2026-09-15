@@ -1,0 +1,69 @@
+{
+  "schema_version": "lens-history-v1",
+  "validation_scope": {
+    "ledger_batches": [
+      "review-runs/lens-history-v1/ledger-batches/0001-newest-001-005.jsonl",
+      "review-runs/lens-history-v1/ledger-batches/0002-newest-006-010.jsonl"
+    ],
+    "records": 10,
+    "history_rank_from_newest": {
+      "start": 1,
+      "end": 10
+    }
+  },
+  "schema": {
+    "path": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "draft": "2020-12"
+  },
+  "byte_identity": {
+    "batch_0001": {
+      "computed_git_blob_sha": "b7abe6abed33787a778ccaf8560aaa657641995b",
+      "stored_git_blob_sha": "b7abe6abed33787a778ccaf8560aaa657641995b",
+      "match": true
+    },
+    "batch_0002": {
+      "computed_git_blob_sha": "21b461d87bacd1b993f88b5d689282e449bec74f",
+      "stored_git_blob_sha": "21b461d87bacd1b993f88b5d689282e449bec74f",
+      "match": true
+    }
+  },
+  "json_schema_validation": {
+    "validator": "Draft202012Validator",
+    "records_checked": 10,
+    "invalid_records": 0,
+    "status": "PASS"
+  },
+  "measured_final_reconciliation": {
+    "rule": "lens-history-v1/final-only-explicit",
+    "eligible_final_commits": [
+      "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+      "d8c9e3d94ecaaa6121f9912cab4240375e8b5680"
+    ],
+    "recomputed": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "required_manifest_value": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "match": true,
+    "status": "PASS"
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "successful measured-final reconciliation does not make the pre-structured historical input complete"
+  },
+  "overall": "PASS"
+}
