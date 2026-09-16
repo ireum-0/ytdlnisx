@@ -1,0 +1,96 @@
+{
+  "schema_version": "lens-history-v1-materializer-receipt-v1",
+  "run_id": "R0A-20260916T1310Z-001",
+  "stage": "REPLAY_001_030",
+  "logical_rank_range": [1, 30],
+  "microsegment_rank_range": [1, 5],
+  "previous_receipt": null,
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c",
+    "start_progress_blob_sha": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8"
+  },
+  "existing_materialization": {
+    "ledger_path": "review-runs/lens-history-v1/ledger-batches/0001-newest-001-005.jsonl",
+    "ledger_blob_sha": "b7abe6abed33787a778ccaf8560aaa657641995b"
+  },
+  "records": [
+    {
+      "rank": 1,
+      "history_commit": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+      "file_pages_checked": 2,
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_changes": [{"path":"review-runs/checkpoints/2026-09-15T133900Z__a67cb4ff__9218b8d2__final-checkpoint.md","status":"added","source_blob":"f8b581783d16c38cce64c62b8762368601cea007","frozen_present":true,"frozen_blob":"f8b581783d16c38cce64c62b8762368601cea007"}],
+      "implementation_sha": "a67cb4ff8a367f3a4261eb816d4abfe1290b8e4f",
+      "schema_class": "STRUCTURED_FINAL",
+      "checkpoint_kind": {"state":"DIRECT","value":"FINAL","evidence":"explicit checkpoint_kind: FINAL"},
+      "effectiveness_eligibility": {"state":"DIRECT","value":"CUMULATIVE_ELIGIBLE"},
+      "exception_triggers": [],
+      "replay_comparison": {"ledger_record_position":1,"status":"PASS","required_fields_agree":true}
+    },
+    {
+      "rank": 2,
+      "history_commit": "9218b8d259a4123363dba9095de22c3608f02bda",
+      "file_pages_checked": 2,
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_changes": [{"path":"review-runs/checkpoints/2026-09-15T133500Z__a67cb4ff__8269471a__intermediate.md","status":"added","source_blob":"b60b1e05239f936f5007a2e86e50c79bab8bae26","frozen_present":true,"frozen_blob":"b60b1e05239f936f5007a2e86e50c79bab8bae26"}],
+      "implementation_sha": "a67cb4ff8a367f3a4261eb816d4abfe1290b8e4f",
+      "schema_class": "STRUCTURED_PROVISIONAL",
+      "checkpoint_kind": {"state":"DIRECT","value":"INTERMEDIATE","evidence":"explicit checkpoint_kind: intermediate"},
+      "effectiveness_eligibility": {"state":"NOT_APPLICABLE","reason":"intermediate checkpoint explicitly excludes provisional effectiveness"},
+      "exception_triggers": [],
+      "replay_comparison": {"ledger_record_position":2,"status":"PASS","required_fields_agree":true}
+    },
+    {
+      "rank": 3,
+      "history_commit": "8269471a92611710daa85a0eb47ac25edb9b791c",
+      "file_pages_checked": 2,
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_changes": [{"path":"review-runs/checkpoints/2026-09-15T132456Z__a67cb4ff__34506615__bootstrap.md","status":"added","source_blob":"52b88fb7b6dc0768c7d636bd74738303c2da4139","frozen_present":true,"frozen_blob":"52b88fb7b6dc0768c7d636bd74738303c2da4139"}],
+      "implementation_sha": "a67cb4ff8a367f3a4261eb816d4abfe1290b8e4f",
+      "schema_class": "STRUCTURED_PROVISIONAL",
+      "checkpoint_kind": {"state":"DIRECT","value":"BOOTSTRAP_INTERMEDIATE","evidence":"explicit checkpoint_kind: bootstrap/intermediate"},
+      "effectiveness_eligibility": {"state":"NOT_APPLICABLE","reason":"bootstrap/intermediate checkpoint explicitly excludes provisional effectiveness"},
+      "exception_triggers": [],
+      "replay_comparison": {"ledger_record_position":3,"status":"PASS","required_fields_agree":true}
+    },
+    {
+      "rank": 4,
+      "history_commit": "34506615a286aaeea1dfdafb040dafabcaf410de",
+      "file_pages_checked": 2,
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_changes": [{"path":"review-runs/checkpoints/2026-09-15__a5160ab5__cleanup-stale-row-recovery-debt-addendum.md","status":"added","source_blob":"693f7c026001393b2fe10e0689128a4c546b929f","frozen_present":true,"frozen_blob":"693f7c026001393b2fe10e0689128a4c546b929f"}],
+      "implementation_sha": "a5160ab51dbe3c6f8d5f87853c4e4037469b9684",
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {"state":"DERIVABLE","value":"SUBSTANTIVE_NON_FINAL","rule":"lens-history-v1/document-identity-v1","evidence":"title identifies addendum; body records scope expansion, confirmed subcase, and count delta 0; no final-run claim"},
+      "effectiveness_eligibility": {"state":"NOT_APPLICABLE","reason":"substantive non-final excluded from cumulative structured-final effectiveness"},
+      "exception_triggers": ["ADDENDUM","SCOPE_EXPANSION","CONFIRMED_SUBCASE","COUNT_DELTA"],
+      "replay_comparison": {"ledger_record_position":4,"status":"PASS","required_fields_agree":true}
+    },
+    {
+      "rank": 5,
+      "history_commit": "eb2dc35fc97e75963b75d63ddb42a6811bf8336f",
+      "file_pages_checked": 2,
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_changes": [{"path":"review-runs/checkpoints/2026-09-15__a5160ab5__cleanup-stale-row-authority.md","status":"added","source_blob":"b1be3da70899d561352b070f3ab9dc68b337a1a8","frozen_present":true,"frozen_blob":"b1be3da70899d561352b070f3ab9dc68b337a1a8"}],
+      "implementation_sha": "a5160ab51dbe3c6f8d5f87853c4e4037469b9684",
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {"state":"DERIVABLE","value":"SUBSTANTIVE_NON_FINAL","rule":"lens-history-v1/document-identity-v1","evidence":"focused authority record with explicit New finding and count change; no final-run claim"},
+      "effectiveness_eligibility": {"state":"NOT_APPLICABLE","reason":"substantive non-final excluded from cumulative structured-final effectiveness"},
+      "exception_triggers": ["NEW_FINDING","COUNT_DELTA"],
+      "replay_comparison": {"ledger_record_position":5,"status":"PASS","required_fields_agree":true}
+    }
+  ],
+  "summary": {
+    "ranks_checked": 5,
+    "history_order_match": true,
+    "file_enumerations_closed": 5,
+    "source_frozen_blob_matches": 5,
+    "replay_required_field_mismatches": 0,
+    "semantic_exception_ranks": [4,5]
+  }
+}
