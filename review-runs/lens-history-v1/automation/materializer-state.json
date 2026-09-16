@@ -10,8 +10,8 @@
   "microsegment_size": 5,
   "next_rank": 11,
   "completed_microsegments": [
-    {"range":[1,5],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r001-005.json","blob_sha":"3d60e46476f0f5f5c3f5015a21601eec7b2663f9"},
-    {"range":[6,10],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r006-010.json","blob_sha":"0c115759ca2b376c63dc62908264c439d1ea110f"}
+    {"range":[1,5],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r001-005.json","blob_sha":"3d60e46476f0f5f5c3f5015a21601eec7b2663f9","corrections":[]},
+    {"range":[6,10],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r006-010.json","blob_sha":"0c115759ca2b376c63dc62908264c439d1ea110f","corrections":[{"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/corrections/r006-010-c001.json","blob_sha":"66a534434f957cd946c5404d42ff09faf36af48c"}]}
   ],
   "start_head": "16e1a5f08488d4fe53c299ea56e63beb169a2ff0",
   "lease_commit": "473a3041d7f069ce7936fd879b5608d65b9b919a",
@@ -30,5 +30,5 @@
     "consecutive_clean_30_materialization_batches": 0,
     "consecutive_clean_40_materialization_batches": 0
   },
-  "reconciliation": "Protocol test certified two contiguous internal receipts covering ranks 1-10. No official replay validation/inventory/ledger/progress output has been written by this run; resume the same 1-30 logical batch from rank 11 after re-verifying receipt 6-10 and its source/frozen bindings."
+  "reconciliation": "Protocol test certified ranks 1-10 through two immutable receipts. Full structured-payload verification discovered one factual exception-trigger omission at rank 8; it was preserved by append-only correction r006-010-c001 without changing classification or existing-ledger replay comparison. Resume from rank 11 after validating base receipts and correction chain."
 }
