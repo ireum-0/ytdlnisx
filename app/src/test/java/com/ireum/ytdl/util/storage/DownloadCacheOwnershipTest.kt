@@ -142,6 +142,44 @@ class DownloadCacheOwnershipTest {
     }
 
     @Test
+    fun frozenOldRootDoesNotMutateNewerOwnerAtReboundRoot() {
+        val oldRoot = Files.createTempDirectory("download-cache-old-root-").toFile()
+        val newerRoot = Files.createTempDirectory("download-cache-new-root-").toFile()
+        try {
+            val old = item(operationId = "operation-old", executionId = "execution-old")
+            val newer = item(operationId = "operation-new", executionId = "execution-new")
+
+            DownloadCacheOwnership.ensureMarker(oldRoot, old)
+            val oldDirectory = File(oldRoot, old.id.toString()).apply { mkdirs() }
+            val oldFile = oldDirectory.resolve("old.bin").apply { writeText("old") }
+            assertTrue(DownloadCacheOwnership.recordArtifacts(oldRoot, old, listOf(oldFile.absolutePath)))
+
+            DownloadCacheOwnership.ensureMarker(newerRoot, newer)
+            val newerDirectory = File(newerRoot, newer.id.toString()).apply { mkdirs() }
+            val newerFile = newerDirectory.resolve("new.bin").apply { writeText("new") }
+            assertTrue(
+                DownloadCacheOwnership.recordArtifacts(
+                    newerRoot,
+                    newer,
+                    listOf(newerFile.absolutePath),
+                )
+            )
+
+            assertEquals(
+                DownloadCacheOwnership.ExactCleanupResult.Completed,
+                DownloadCacheOwnership.deleteIfOwnedResult(oldRoot, old),
+            )
+            assertFalse(oldFile.exists())
+            assertTrue(newerFile.isFile)
+            assertTrue(DownloadCacheOwnership.markerFile(newerRoot, newer.id).isFile)
+            assertTrue(DownloadCacheOwnership.artifactManifestFile(newerRoot, newer.id).isFile)
+        } finally {
+            oldRoot.deleteRecursively()
+            newerRoot.deleteRecursively()
+        }
+    }
+
+    @Test
     fun failedOwnedFileDeletionRetainsManifestAndMarkerForExactRetry() {
         val root = Files.createTempDirectory("download-cache-retryable-").toFile()
         try {

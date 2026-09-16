@@ -43,6 +43,7 @@ import com.ireum.ytdl.util.storage.AppCacheCategory
 import com.ireum.ytdl.util.storage.AppCacheCategorySnapshot
 import com.ireum.ytdl.util.storage.AppCacheManager
 import com.ireum.ytdl.util.storage.AppCacheScan
+import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import com.ireum.ytdl.work.MoveCacheFilesWorker
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -609,6 +610,26 @@ class FolderSettingsFragment : BaseSettingsFragment() {
                 Snackbar.LENGTH_LONG
             ).show()
             return
+        }
+        if (requestCode == CACHE_PATH_CODE) {
+            val currentCacheRoot = runCatching {
+                File(FileUtil.getCachePath(requireContext())).canonicalFile
+            }.getOrNull()
+            if (
+                currentCacheRoot == null ||
+                    !DownloadCacheOwnership.captureOwnedRootsForPathTransition(
+                        context = requireContext(),
+                        cacheRoot = currentCacheRoot,
+                    )
+            ) {
+                p?.summary = FileUtil.formatPath(FileUtil.getCachePath(requireContext()))
+                Snackbar.make(
+                    requireView(),
+                    getString(R.string.cache_directory_warning),
+                    Snackbar.LENGTH_LONG
+                ).show()
+                return
+            }
         }
         p!!.summary = FileUtil.formatPath(data.data.toString())
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(requireContext())

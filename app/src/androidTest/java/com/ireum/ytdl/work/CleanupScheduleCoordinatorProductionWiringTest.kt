@@ -83,6 +83,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         preferences = CleanupScheduleCoordinator.criticalPreferencesForTesting(context)
         legacyPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         clearTestSeams()
+        DownloadCacheOwnership.clearRootBindingsForTesting(context)
         clearSchedulePreferences()
     }
 
@@ -90,6 +91,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     fun tearDown() {
         workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
         clearTestSeams()
+        DownloadCacheOwnership.clearRootBindingsForTesting(context)
         if (createdDownloadIds.isNotEmpty()) {
             runBlocking {
                 DownloadRepository(database).deleteAllWithIDs(createdDownloadIds.toList())
@@ -198,13 +200,27 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         CleanupScheduleCoordinator.reconcile(context)
 
-        assertNull(preferences.getString("cleanup_leftover_downloads_critical_store_version", null))
+        // The failure seam deliberately models Android's commit(false)
+        // behavior: the rejected target is visible in this process even
+        // though it is not confirmed durable.  Restart must consult the
+        // independent durable image rather than treating this value as
+        // authority.
+        assertEquals(
+            1,
+            preferences.getInt("cleanup_leftover_downloads_critical_store_version", -1),
+        )
         assertEquals(
             generation,
             legacyPreferences.getString("cleanup_leftover_downloads_generation", null),
         )
+        assertTrue(
+            legacyPreferences.edit()
+                .putString("schedule_start", "08:00")
+                .commit(),
+        )
 
         CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+        assertNull(preferences.getString("cleanup_leftover_downloads_critical_store_version", null))
         CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = false
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
         CleanupScheduleCoordinator.reconcile(context)
@@ -1653,6 +1669,139 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             1,
             infos.count { it.tags.contains(occurrenceTag(generation, occurrenceAt)) },
         )
+    }
+
+    @Test
+    fun cleanupJournalReusesFrozenRootAfterCachePathRebindAndRestart() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        val id = database.downloadDao.insert(cleanupDownload("cache-root-rebind"))
+        createdDownloadIds += id
+        val target = requireNotNull(database.downloadDao.getNullableDownloadById(id))
+        val rootOne = context.cacheDir.resolve("cleanup-root-one-${UUID.randomUUID()}").apply { mkdirs() }
+        val rootTwo = context.cacheDir.resolve("cleanup-root-two-${UUID.randomUUID()}").apply { mkdirs() }
+        val hadCachePath = legacyPreferences.contains("cache_path")
+        val previousCachePath = legacyPreferences.getString("cache_path", null)
+        val releaseSecondDeletion = CountDownLatch(1)
+        val secondDeletionEntered = CountDownLatch(1)
+        val failSecondOnce = AtomicBoolean(true)
+        try {
+            assertTrue(legacyPreferences.edit().putString("cache_path", rootOne.absolutePath).commit())
+            val directory = File(rootOne, id.toString()).apply { mkdirs() }
+            DownloadCacheOwnership.prepareAttempt(rootOne, target, context)
+            val first = directory.resolve("first.bin").apply { writeText("first") }
+            val second = directory.resolve("second.bin").apply { writeText("second") }
+            assertTrue(
+                DownloadCacheOwnership.recordArtifacts(
+                    rootOne,
+                    target,
+                    listOf(first.absolutePath, second.absolutePath),
+                )
+            )
+            DownloadCacheOwnership.fileDeletionForTesting = { file ->
+                if (file.name == second.name && failSecondOnce.compareAndSet(true, false)) {
+                    secondDeletionEntered.countDown()
+                    check(releaseSecondDeletion.await(10, TimeUnit.SECONDS)) {
+                        "root-rebind cache failure seam was not released"
+                    }
+                    false
+                } else {
+                    file.delete()
+                }
+            }
+
+            assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+            val generation = requireNotNull(
+                preferences.getString("cleanup_leftover_downloads_generation", null),
+            )
+            val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+            val occurrenceAt = currentScheduledOccurrenceAt()
+            workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+            val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
+            workManager.enqueue(request).result.get(20, TimeUnit.SECONDS)
+
+            assertTrue(awaitDownload(timeoutMs = 10_000L) {
+                database.downloadDao.getNullableDownloadById(id) == null
+            })
+            assertTrue(secondDeletionEntered.await(10, TimeUnit.SECONDS))
+            assertFalse(first.exists())
+            assertTrue(second.exists())
+
+            // Model the real settings transition: valid old-root carriers are
+            // registered before the mutable cache_path preference changes.
+            assertTrue(
+                DownloadCacheOwnership.captureOwnedRootsForPathTransition(
+                    context = context,
+                    cacheRoot = rootOne,
+                )
+            )
+            assertTrue(legacyPreferences.edit().putString("cache_path", rootTwo.absolutePath).commit())
+            CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+            DownloadCacheOwnership.resetRootBindingProcessStateForTesting()
+            DownloadCacheOwnership.fileDeletionForTesting = null
+            releaseSecondDeletion.countDown()
+
+            val terminal = awaitWorkById(request.id) { info ->
+                info.state == WorkInfo.State.SUCCEEDED ||
+                    info.state == WorkInfo.State.FAILED ||
+                    info.state == WorkInfo.State.CANCELLED
+            }
+            assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
+            assertFalse(second.exists())
+            assertFalse(DownloadCacheOwnership.markerFile(rootOne, id).exists())
+            assertFalse(DownloadCacheOwnership.artifactManifestFile(rootOne, id).exists())
+            assertFalse(File(rootTwo, id.toString()).exists())
+            assertEquals(
+                1,
+                workManager.getWorkInfosForUniqueWork(
+                    CleanupScheduleCoordinator.WORK_NAME,
+                ).get(20, TimeUnit.SECONDS).count {
+                    it.tags.contains(occurrenceTag(generation, occurrenceAt))
+                },
+            )
+        } finally {
+            releaseSecondDeletion.countDown()
+            DownloadCacheOwnership.fileDeletionForTesting = null
+            if (hadCachePath) {
+                legacyPreferences.edit().putString("cache_path", previousCachePath).commit()
+            } else {
+                legacyPreferences.edit().remove("cache_path").commit()
+            }
+            rootOne.deleteRecursively()
+            rootTwo.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun preJournalCacheRootDiscoveryUsesRegisteredOldRootNotCurrentPreference() = runBlocking {
+        val id = database.downloadDao.insert(cleanupDownload("cache-root-prejournal"))
+        createdDownloadIds += id
+        val target = requireNotNull(database.downloadDao.getNullableDownloadById(id))
+        val rootOne = context.cacheDir.resolve("cleanup-prejournal-one-${UUID.randomUUID()}").apply { mkdirs() }
+        val rootTwo = context.cacheDir.resolve("cleanup-prejournal-two-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            DownloadCacheOwnership.prepareAttempt(rootOne, target, context)
+            val directory = File(rootOne, id.toString()).apply { mkdirs() }
+            val owned = directory.resolve("owned.bin").apply { writeText("owned") }
+            assertTrue(DownloadCacheOwnership.recordArtifacts(rootOne, target, listOf(owned.absolutePath)))
+            assertTrue(
+                DownloadCacheOwnership.captureOwnedRootsForPathTransition(
+                    context = context,
+                    cacheRoot = rootOne,
+                )
+            )
+            assertTrue(legacyPreferences.edit().putString("cache_path", rootTwo.absolutePath).commit())
+
+            val bindings = DownloadRepository(database).exactCacheCleanupBindings(listOf(target))
+            assertEquals(1, bindings.size)
+            assertEquals(rootOne.canonicalFile.absolutePath, bindings.single().rootPath)
+            assertTrue(owned.isFile)
+            assertFalse(File(rootTwo, id.toString()).exists())
+        } finally {
+            legacyPreferences.edit().remove("cache_path").commit()
+            rootOne.deleteRecursively()
+            rootTwo.deleteRecursively()
+        }
     }
 
     @Test

@@ -2963,6 +2963,7 @@ class DownloadRepository(private val database: DBManager) {
      */
     internal fun deleteExactCacheForTargetOutcome(
         target: DownloadItem,
+        cacheRoot: File? = null,
     ): DownloadCacheOwnership.ExactCleanupResult {
         exactCacheDeletionForTesting?.let {
             return if (it(target)) {
@@ -2971,7 +2972,7 @@ class DownloadRepository(private val database: DBManager) {
                 DownloadCacheOwnership.ExactCleanupResult.RetryableFailure
             }
         }
-        val cacheDir = File(FileUtil.getCachePath(App.instance))
+        val cacheDir = cacheRoot?.canonicalFile ?: File(FileUtil.getCachePath(App.instance))
         return runCatching {
             DownloadCacheOwnership.deleteIfOwnedOrAlreadyAbsentResult(cacheDir, target)
         }.getOrDefault(DownloadCacheOwnership.ExactCleanupResult.RetryableFailure)
@@ -2986,11 +2987,41 @@ class DownloadRepository(private val database: DBManager) {
      * new numeric cache directory appears for the same Download id.
      */
     internal fun exactCacheCleanupRequired(targets: List<DownloadItem>): List<Long> {
-        val cacheDir = File(FileUtil.getCachePath(App.instance))
-        return targets.filter { target ->
-            DownloadCacheOwnership.hasCleanupResponsibility(cacheDir, target)
-        }.map(DownloadItem::id)
+        return exactCacheCleanupBindings(targets).map(DownloadCacheOwnership.CacheBinding::downloadId).distinct()
     }
+
+    /**
+     * Captures every exact cache root currently bound to each target.  The
+     * returned paths are persisted in the cleanup journal and must be reused
+     * unchanged on Room/cache retry and process restart.
+     */
+    internal fun exactCacheCleanupBindings(
+        targets: List<DownloadItem>,
+    ): List<DownloadCacheOwnership.CacheBinding> {
+        val cacheDir = File(FileUtil.getCachePath(App.instance))
+        return targets.flatMap { target ->
+            DownloadCacheOwnership.cleanupBindings(
+                context = App.instance,
+                cacheRoot = cacheDir,
+                item = target,
+            )
+        }.distinct()
+    }
+
+    /**
+     * Resolves the explicit roots for an older id-only cleanup journal.  A
+     * missing binding is intentionally not replaced with the current mutable
+     * cache_path: the worker must fail closed rather than prove an old suffix
+     * absent at a new root.
+     */
+    internal fun knownCacheCleanupBindings(
+        target: DownloadItem,
+    ): List<DownloadCacheOwnership.CacheBinding> =
+        DownloadCacheOwnership.knownCacheBindings(
+            context = App.instance,
+            cacheRoot = File(FileUtil.getCachePath(App.instance)),
+            item = target,
+        )
 
     fun getActiveDownloadsCount() : Int {
         return downloadDao.getDownloadsCountByStatus(listOf(Status.Active, Status.PostProcessing).toListString())

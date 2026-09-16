@@ -7024,7 +7024,11 @@ class DownloadWorker(
             "Failed to create temporary download directory"
         }
         val preparedDirectory = runCatching {
-            DownloadCacheOwnership.prepareAttempt(cacheRoot, downloadItem)
+            DownloadCacheOwnership.prepareAttempt(
+                cacheRoot = cacheRoot,
+                item = downloadItem,
+                context = applicationContext,
+            )
         }.getOrElse { error ->
             throw IOException("$createFailure ownership/cleanup: ${error.message}", error)
         }

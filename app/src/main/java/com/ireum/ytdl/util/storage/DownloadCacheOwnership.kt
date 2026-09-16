@@ -1,5 +1,6 @@
 package com.ireum.ytdl.util.storage
 
+import android.content.Context
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import java.io.File
@@ -7,6 +8,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.nio.charset.StandardCharsets
+import org.json.JSONArray
 
 /**
  * Durable ownership proof for the legacy numeric Download cache layout.
@@ -21,7 +23,136 @@ internal object DownloadCacheOwnership {
     private const val ARTIFACT_MANIFEST_NAME = ".ytdlnisx-download-artifacts.txt"
     private const val ARTIFACT_MANIFEST_HEADER = "ytdlnisx-download-artifacts"
     private const val VERSION = "1"
+    private const val ROOT_BINDING_PREFERENCES = "ytdlnisx-download-cache-root-bindings"
+    private const val ROOT_BINDING_PREFIX = "binding-"
     private val ownershipLock = Any()
+
+    /** One exact cache root bound to one frozen Download operation. */
+    data class CacheBinding(
+        val downloadId: Long,
+        val rootPath: String,
+    )
+
+    private data class CacheOwnerIdentity(
+        val downloadId: Long,
+        val operationId: String,
+        val executionId: String,
+    )
+
+    /**
+     * The cache path preference is mutable, while a marker is an operation
+     * carrier.  Keep the locator for every root at which this exact operation
+     * was claimed.  The roots are only discovery hints: deletion still
+     * requires the exact marker and manifest checks below.
+     *
+     * This store has its own confirmed-write fence.  A failed Android
+     * SharedPreferences commit may update the process map before returning
+     * false; such a root must not become the only restart locator, nor may a
+     * later write be built from that contaminated map.
+     */
+    private object RootBindingStore {
+        private val lock = Any()
+
+        @Volatile
+        private var confirmedRoots: Map<String, List<String>>? = null
+
+        fun roots(context: Context, identity: CacheOwnerIdentity): List<File> = synchronized(lock) {
+            val key = key(identity)
+            confirmedMap(context)[key].orEmpty().mapNotNull { path ->
+                runCatching { File(path).canonicalFile }.getOrNull()
+            }
+        }
+
+        fun bind(
+            context: Context,
+            identity: CacheOwnerIdentity,
+            root: File,
+        ): Boolean = synchronized(lock) {
+            val appContext = context.applicationContext
+            val canonicalRoot = runCatching { root.canonicalFile }.getOrNull() ?: return@synchronized false
+            if (!canonicalRoot.isAbsolute) return@synchronized false
+            val bindingKey = key(identity)
+            val before = confirmedMap(appContext).toMutableMap()
+            val existing = before[bindingKey].orEmpty()
+            if (canonicalRoot.absolutePath in existing) return@synchronized true
+            val target = before.toMutableMap().apply {
+                this[bindingKey] = (existing + canonicalRoot.absolutePath).distinct()
+            }
+            val preferences = appContext.getSharedPreferences(
+                ROOT_BINDING_PREFERENCES,
+                Context.MODE_PRIVATE,
+            )
+            val editor = preferences.edit()
+            // This store is dedicated to root locators.  Rebuild its complete
+            // namespace from confirmed values so a failed prior write cannot
+            // be collateral-persisted by this later bind.
+            preferences.all.keys
+                .filter { it.startsWith(ROOT_BINDING_PREFIX) }
+                .forEach(editor::remove)
+            target.forEach { (storedKey, roots) ->
+                editor.putString(storedKey, JSONArray(roots).toString())
+            }
+            val committed = runCatching { editor.commit() }.getOrDefault(false)
+            if (committed) {
+                confirmedRoots = readRaw(preferences)
+            } else {
+                // Keep the last confirmed map as the only process-visible
+                // locator.  The rejected root remains recoverable only if
+                // another confirmed path/marker already carries it.
+                confirmedRoots = before
+            }
+            committed
+        }
+
+        fun clearForTesting(context: Context) = synchronized(lock) {
+            context.applicationContext
+                .getSharedPreferences(ROOT_BINDING_PREFERENCES, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .commit()
+            confirmedRoots = null
+        }
+
+        fun resetProcessStateForTesting() = synchronized(lock) {
+            confirmedRoots = null
+        }
+
+        private fun confirmedMap(context: Context): Map<String, List<String>> {
+            confirmedRoots?.let { return it }
+            val loaded = readRaw(
+                context.applicationContext.getSharedPreferences(
+                    ROOT_BINDING_PREFERENCES,
+                    Context.MODE_PRIVATE,
+                )
+            )
+            confirmedRoots = loaded
+            return loaded
+        }
+
+        private fun readRaw(preferences: android.content.SharedPreferences): Map<String, List<String>> =
+            preferences.all.keys
+                .filter { it.startsWith(ROOT_BINDING_PREFIX) }
+                .associateWith { storedKey ->
+                    val raw = preferences.getString(storedKey, null) ?: return@associateWith emptyList()
+                    runCatching {
+                        val json = JSONArray(raw)
+                        buildList(json.length()) {
+                            for (index in 0 until json.length()) {
+                                json.optString(index).takeIf(String::isNotBlank)?.let(::add)
+                            }
+                        }.distinct()
+                    }.getOrDefault(emptyList())
+                }
+
+        private fun key(identity: CacheOwnerIdentity): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(
+                    "${identity.downloadId}\n${identity.operationId}\n${identity.executionId}"
+                        .toByteArray(StandardCharsets.UTF_8)
+                )
+            return ROOT_BINDING_PREFIX + digest.joinToString("") { byte -> "%02x".format(byte) }
+        }
+    }
 
     /** Semantic outcome of an exact frozen-cache cleanup attempt. */
     sealed interface ExactCleanupResult {
@@ -53,6 +184,85 @@ internal object DownloadCacheOwnership {
         val directory: File,
         val marker: File,
     )
+
+    internal fun cacheBinding(
+        downloadId: Long,
+        root: File,
+    ): CacheBinding? = runCatching {
+        CacheBinding(downloadId = downloadId, rootPath = root.canonicalFile.absolutePath)
+    }.getOrNull()
+
+    /**
+     * Persist the exact root before an attempt can create/reuse its marker.
+     * Without this binding, a later cache_path change could make the marker
+     * undiscoverable before an effect journal is prepared.
+     */
+    fun bindRoot(context: Context, item: DownloadItem, cacheRoot: File): Boolean = synchronized(ownershipLock) {
+        if (item.id <= 0L || item.operationId.isBlank() || item.executionId.isBlank()) return@synchronized false
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return@synchronized false
+        RootBindingStore.bind(
+            context = context,
+            identity = CacheOwnerIdentity(item.id, item.operationId, item.executionId),
+            root = root,
+        )
+    }
+
+    /**
+     * Register valid existing markers before the user changes cache_path.
+     * This is deliberately a bounded scan of the explicitly selected current
+     * root, not ambient recovery: malformed/legacy markers are ignored and
+     * remain preserved, while every valid operation carrier gets a durable
+     * locator for later journal capture.
+     */
+    fun captureOwnedRootsForPathTransition(context: Context, cacheRoot: File): Boolean =
+        synchronized(ownershipLock) {
+            val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return@synchronized false
+            ownedMarkerIdentities(root)?.all { identity ->
+                RootBindingStore.bind(
+                    context = context,
+                    identity = identity,
+                    root = root,
+                )
+            } ?: false
+        }
+
+    private fun ownedMarkerIdentities(root: File): List<CacheOwnerIdentity>? {
+        if (!root.exists()) return emptyList()
+        if (!root.isDirectory) return null
+        val children = root.listFiles() ?: return null
+        val identities = mutableListOf<CacheOwnerIdentity>()
+        children
+            .asSequence()
+            .filter { marker ->
+                marker.isFile &&
+                    marker.name.startsWith(MARKER_PREFIX) &&
+                    marker.name.endsWith(MARKER_SUFFIX)
+            }
+            .forEach { marker ->
+                val fields = runCatching { parse(marker.readText()) }.getOrElse { return null }
+                val downloadId = fields["downloadId"]?.toLongOrNull() ?: return@forEach
+                val operationId = fields["operationId"].orEmpty()
+                val executionId = fields["executionId"].orEmpty()
+                if (
+                    fields["version"] != VERSION ||
+                        operationId.isBlank() ||
+                        executionId.isBlank() ||
+                        marker.name != "$MARKER_PREFIX$downloadId$MARKER_SUFFIX"
+                ) {
+                    return@forEach
+                }
+                identities += CacheOwnerIdentity(downloadId, operationId, executionId)
+            }
+        return identities.distinct()
+    }
+
+    internal fun clearRootBindingsForTesting(context: Context) {
+        RootBindingStore.clearForTesting(context)
+    }
+
+    internal fun resetRootBindingProcessStateForTesting() {
+        RootBindingStore.resetProcessStateForTesting()
+    }
 
     fun markerFile(cacheRoot: File, downloadId: Long): File =
         File(cacheRoot, "$MARKER_PREFIX$downloadId$MARKER_SUFFIX")
@@ -149,8 +359,17 @@ internal object DownloadCacheOwnership {
      * children.  Existing files must be listed in the prior operation's exact
      * artifact manifest; otherwise the caller fails closed.
      */
-    fun prepareAttempt(cacheRoot: File, item: DownloadItem): File = synchronized(ownershipLock) {
+    fun prepareAttempt(
+        cacheRoot: File,
+        item: DownloadItem,
+        context: Context? = null,
+    ): File = synchronized(ownershipLock) {
         val root = cacheRoot.canonicalFile
+        if (context != null && !bindRoot(context, item, root)) {
+            throw IllegalStateException(
+                "Could not durably bind Download cache root: ${root.absolutePath}",
+            )
+        }
         val marker = ensureMarker(root, item)
         val directory = File(root, item.id.toString()).canonicalFile
         if (directory.exists()) {
@@ -231,6 +450,50 @@ internal object DownloadCacheOwnership {
         }
         val validated = validatedManifestEntries(directory, manifest) ?: return@synchronized false
         files.all { it in validated }
+    }
+
+    /**
+     * Returns every registered root that still carries a provable exact
+     * responsibility, plus the explicitly current root when it does.  The
+     * caller journals these roots; it never re-resolves them on retry.
+     */
+    fun cleanupBindings(
+        context: Context,
+        cacheRoot: File,
+        item: DownloadItem,
+    ): List<CacheBinding> = synchronized(ownershipLock) {
+        val current = runCatching { cacheRoot.canonicalFile }.getOrNull()
+            ?: return@synchronized emptyList()
+        val roots = (RootBindingStore.roots(
+            context,
+            CacheOwnerIdentity(item.id, item.operationId, item.executionId),
+        ) + current).distinctBy(File::getAbsolutePath)
+        roots.filter { root -> hasCleanupResponsibility(root, item) }
+            .mapNotNull { root -> cacheBinding(item.id, root) }
+            .distinct()
+    }
+
+    /**
+     * Resolves legacy id-only journals without treating a changed cache_path
+     * as proof that an old suffix is absent.  Registered roots remain useful
+     * even after their marker/directory has completed; the exact helper then
+     * classifies absence idempotently.  The current root is admitted only
+     * when its marker still proves this exact operation.
+     */
+    fun knownCacheBindings(
+        context: Context,
+        cacheRoot: File,
+        item: DownloadItem,
+    ): List<CacheBinding> = synchronized(ownershipLock) {
+        val current = runCatching { cacheRoot.canonicalFile }.getOrNull()
+            ?: return@synchronized emptyList()
+        val roots = (
+            RootBindingStore.roots(
+                context,
+                CacheOwnerIdentity(item.id, item.operationId, item.executionId),
+            ) + current.takeIf { isOwned(it, item) }
+            ).filterNotNull().distinctBy(File::getAbsolutePath)
+        roots.mapNotNull { root -> cacheBinding(item.id, root) }.distinct()
     }
 
     /**

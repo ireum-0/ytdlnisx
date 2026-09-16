@@ -3,6 +3,7 @@ package com.ireum.ytdl.work
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.util.storage.AppCacheCategory
 import com.ireum.ytdl.util.storage.AppCacheExactSnapshot
+import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 
 /**
  * Restart-reconstructible authority for one cleanup occurrence.
@@ -29,10 +30,18 @@ internal data class CleanupEffectJournal(
     val cancelledCacheCleanupRequiredIds: List<Long> = emptyList(),
     /** Exact cache suffixes completed after the Room deletion step. */
     val cancelledCacheCleanupCompletedIds: List<Long> = emptyList(),
+    /** Exact cache roots captured for each cancelled target. */
+    val cancelledCacheCleanupBindings: List<DownloadCacheOwnership.CacheBinding> = emptyList(),
+    /** Exact cache roots completed after the Room deletion step. */
+    val cancelledCacheCleanupCompletedBindings: List<DownloadCacheOwnership.CacheBinding> = emptyList(),
     val cancelledRefreshComplete: Boolean = false,
     val erroredDeletionComplete: Boolean = false,
     val erroredCacheCleanupRequiredIds: List<Long> = emptyList(),
     val erroredCacheCleanupCompletedIds: List<Long> = emptyList(),
+    /** Exact cache roots captured for each errored target. */
+    val erroredCacheCleanupBindings: List<DownloadCacheOwnership.CacheBinding> = emptyList(),
+    /** Exact cache roots completed after the Room deletion step. */
+    val erroredCacheCleanupCompletedBindings: List<DownloadCacheOwnership.CacheBinding> = emptyList(),
     val erroredRefreshComplete: Boolean = false,
     val tempCleanupComplete: Boolean = true,
 ) {
@@ -74,6 +83,24 @@ internal data class CleanupEffectJournal(
             erroredCacheCleanupCompletedIds.all { id ->
                 id in erroredCacheCleanupRequiredIds
             } &&
+            validBindings(
+                required = cancelledCacheCleanupBindings.orEmpty(),
+                completed = cancelledCacheCleanupCompletedBindings.orEmpty(),
+                targets = cancelledTargets,
+            ) &&
+            (cancelledCacheCleanupBindings.orEmpty().isEmpty() ||
+                cancelledCacheCleanupRequiredIds.orEmpty().all { id ->
+                    cancelledCacheCleanupBindings.orEmpty().any { it.downloadId == id }
+                }) &&
+            validBindings(
+                required = erroredCacheCleanupBindings.orEmpty(),
+                completed = erroredCacheCleanupCompletedBindings.orEmpty(),
+                targets = erroredTargets,
+            ) &&
+            (erroredCacheCleanupBindings.orEmpty().isEmpty() ||
+                erroredCacheCleanupRequiredIds.orEmpty().all { id ->
+                    erroredCacheCleanupBindings.orEmpty().any { it.downloadId == id }
+                }) &&
             (!tempCleanupRequired || (
                 tempSnapshot != null &&
                     tempSnapshot.category == AppCacheCategory.DOWNLOAD_TEMP &&
@@ -83,14 +110,47 @@ internal data class CleanupEffectJournal(
 
     val isComplete: Boolean
         get() = cancelledDeletionComplete &&
-            cancelledCacheCleanupRequiredIds.all {
-                it in cancelledCacheCleanupCompletedIds
-            } &&
+            cacheBindingsComplete(
+                required = cancelledCacheCleanupBindings.orEmpty(),
+                completed = cancelledCacheCleanupCompletedBindings.orEmpty(),
+                requiredIds = cancelledCacheCleanupRequiredIds,
+                completedIds = cancelledCacheCleanupCompletedIds,
+            ) &&
             cancelledRefreshComplete &&
             erroredDeletionComplete &&
-            erroredCacheCleanupRequiredIds.all {
-                it in erroredCacheCleanupCompletedIds
-            } &&
+            cacheBindingsComplete(
+                required = erroredCacheCleanupBindings.orEmpty(),
+                completed = erroredCacheCleanupCompletedBindings.orEmpty(),
+                requiredIds = erroredCacheCleanupRequiredIds,
+                completedIds = erroredCacheCleanupCompletedIds,
+            ) &&
             erroredRefreshComplete &&
             (!tempCleanupRequired || tempCleanupComplete)
+
+    private fun validBindings(
+        required: List<DownloadCacheOwnership.CacheBinding>,
+        completed: List<DownloadCacheOwnership.CacheBinding>,
+        targets: List<DownloadItem>,
+    ): Boolean = required.distinct().size == required.size &&
+        completed.distinct().size == completed.size &&
+        required.all { binding ->
+            binding.downloadId > 0L &&
+                targets.any { target -> target.id == binding.downloadId } &&
+                runCatching {
+                    val root = java.io.File(binding.rootPath).canonicalFile
+                    root.isAbsolute && root.absolutePath == binding.rootPath
+                }.getOrDefault(false)
+        } && completed.all { it in required }
+
+    private fun cacheBindingsComplete(
+        required: List<DownloadCacheOwnership.CacheBinding>,
+        completed: List<DownloadCacheOwnership.CacheBinding>,
+        requiredIds: List<Long>,
+        completedIds: List<Long>,
+    ): Boolean = if (required.isNotEmpty()) {
+        requiredIds.orEmpty().all { id -> required.any { it.downloadId == id } } &&
+            required.all { it in completed }
+    } else {
+        requiredIds.all { it in completedIds }
+    }
 }

@@ -18,6 +18,7 @@ import com.ireum.ytdl.util.storage.AppCacheManager
 import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.CancellationException
+import java.io.File
 import java.util.Calendar
 
 
@@ -241,6 +242,8 @@ class CleanUpLeftoverDownloads(
         } else {
             null
         }
+        val cancelledCacheBindings = repository.exactCacheCleanupBindings(cancelledTargets)
+        val erroredCacheBindings = repository.exactCacheCleanupBindings(erroredTargets)
         return CleanupEffectJournal(
             generation = occurrenceGeneration,
             cadence = occurrenceCadence,
@@ -250,8 +253,14 @@ class CleanUpLeftoverDownloads(
             erroredTargets = erroredTargets,
             cancelledOperationIds = cancelledTargets.mapNotNull { it.operationId.takeIf(String::isNotBlank) },
             erroredOperationIds = erroredTargets.mapNotNull { it.operationId.takeIf(String::isNotBlank) },
-            cancelledCacheCleanupRequiredIds = repository.exactCacheCleanupRequired(cancelledTargets),
-            erroredCacheCleanupRequiredIds = repository.exactCacheCleanupRequired(erroredTargets),
+            cancelledCacheCleanupRequiredIds = cancelledCacheBindings
+                .map(DownloadCacheOwnership.CacheBinding::downloadId)
+                .distinct(),
+            cancelledCacheCleanupBindings = cancelledCacheBindings,
+            erroredCacheCleanupRequiredIds = erroredCacheBindings
+                .map(DownloadCacheOwnership.CacheBinding::downloadId)
+                .distinct(),
+            erroredCacheCleanupBindings = erroredCacheBindings,
             tempSnapshot = tempSnapshot,
             tempCleanupRequired = tempCleanupRequired,
             tempCleanupComplete = !tempCleanupRequired,
@@ -275,6 +284,21 @@ class CleanUpLeftoverDownloads(
 
         val repository = DownloadRepository(DBManager.getInstance(context))
         var current = journal
+        current = resolveLegacyCacheBindings(
+            current = current,
+            targets = current.cancelledTargets,
+            requiredIds = current.cancelledCacheCleanupRequiredIds,
+            bindings = current.cancelledCacheCleanupBindings.orEmpty(),
+            completedBindings = current.cancelledCacheCleanupCompletedBindings.orEmpty(),
+            completedIds = current.cancelledCacheCleanupCompletedIds,
+            repository = repository,
+            update = { existing, resolved, completed ->
+                existing.copy(
+                    cancelledCacheCleanupBindings = resolved,
+                    cancelledCacheCleanupCompletedBindings = completed,
+                )
+            },
+        )
         if (!current.cancelledDeletionComplete) {
             val affectedOperationIds = repository.deleteCancelledExactTargets(
                 current.cancelledTargets,
@@ -291,17 +315,37 @@ class CleanUpLeftoverDownloads(
         current = advanceExactCacheCleanup(
             current = current,
             targets = current.cancelledTargets,
+            requiredBindings = current.cancelledCacheCleanupBindings.orEmpty(),
+            completedBindings = current.cancelledCacheCleanupCompletedBindings.orEmpty(),
             requiredIds = current.cancelledCacheCleanupRequiredIds,
             completedIds = current.cancelledCacheCleanupCompletedIds,
             repository = repository,
-            update = { journal, completed ->
-                journal.copy(cancelledCacheCleanupCompletedIds = completed)
+            update = { journal, completed, completedIds ->
+                journal.copy(
+                    cancelledCacheCleanupCompletedBindings = completed,
+                    cancelledCacheCleanupCompletedIds = completedIds,
+                )
             },
         )
         if (!current.cancelledRefreshComplete) {
             LowQualityRedownloadLedger.refresh(context, current.cancelledOperationIds)
             current = advanceJournal(current) { it.copy(cancelledRefreshComplete = true) }
         }
+        current = resolveLegacyCacheBindings(
+            current = current,
+            targets = current.erroredTargets,
+            requiredIds = current.erroredCacheCleanupRequiredIds,
+            bindings = current.erroredCacheCleanupBindings.orEmpty(),
+            completedBindings = current.erroredCacheCleanupCompletedBindings.orEmpty(),
+            completedIds = current.erroredCacheCleanupCompletedIds,
+            repository = repository,
+            update = { existing, resolved, completed ->
+                existing.copy(
+                    erroredCacheCleanupBindings = resolved,
+                    erroredCacheCleanupCompletedBindings = completed,
+                )
+            },
+        )
         if (!current.erroredDeletionComplete) {
             val affectedOperationIds = repository.deleteErroredExactTargets(
                 current.erroredTargets,
@@ -318,11 +362,16 @@ class CleanUpLeftoverDownloads(
         current = advanceExactCacheCleanup(
             current = current,
             targets = current.erroredTargets,
+            requiredBindings = current.erroredCacheCleanupBindings.orEmpty(),
+            completedBindings = current.erroredCacheCleanupCompletedBindings.orEmpty(),
             requiredIds = current.erroredCacheCleanupRequiredIds,
             completedIds = current.erroredCacheCleanupCompletedIds,
             repository = repository,
-            update = { journal, completed ->
-                journal.copy(erroredCacheCleanupCompletedIds = completed)
+            update = { journal, completed, completedIds ->
+                journal.copy(
+                    erroredCacheCleanupCompletedBindings = completed,
+                    erroredCacheCleanupCompletedIds = completedIds,
+                )
             },
         )
         if (!current.erroredRefreshComplete) {
@@ -347,20 +396,32 @@ class CleanUpLeftoverDownloads(
     private fun advanceExactCacheCleanup(
         current: CleanupEffectJournal,
         targets: List<DownloadItem>,
+        requiredBindings: List<DownloadCacheOwnership.CacheBinding>,
+        completedBindings: List<DownloadCacheOwnership.CacheBinding>,
         requiredIds: List<Long>,
         completedIds: List<Long>,
         repository: DownloadRepository,
-        update: (CleanupEffectJournal, List<Long>) -> CleanupEffectJournal,
+        update: (
+            CleanupEffectJournal,
+            List<DownloadCacheOwnership.CacheBinding>,
+            List<Long>,
+        ) -> CleanupEffectJournal,
     ): CleanupEffectJournal {
         var journal = current
-        var completed = completedIds.distinct()
+        val resolvedBindings = requiredBindings.orEmpty()
+        var completed = completedBindings.orEmpty().distinct()
         val targetsById = targets.associateBy { it.id }
-        requiredIds.distinct().filterNot { it in completed }.forEach { targetId ->
-            val target = targetsById[targetId]
+        resolvedBindings.filterNot { it in completed }.forEach { binding ->
+            val target = targetsById[binding.downloadId]
                 ?: throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
                     IllegalStateException("cleanup cache target is missing from journal"),
                 )
-            when (repository.deleteExactCacheForTargetOutcome(target)) {
+            when (
+                repository.deleteExactCacheForTargetOutcome(
+                    target = target,
+                    cacheRoot = File(binding.rootPath),
+                )
+            ) {
                 DownloadCacheOwnership.ExactCleanupResult.Completed,
                 DownloadCacheOwnership.ExactCleanupResult.Superseded,
                 DownloadCacheOwnership.ExactCleanupResult.Unproven,
@@ -370,12 +431,63 @@ class CleanUpLeftoverDownloads(
                         IllegalStateException("exact cleanup cache deletion is incomplete"),
                     )
             }
-            completed = (completed + targetId).distinct()
+            completed = (completed + binding).distinct()
+            val completedTargetIds = requiredIds.distinct().filter { targetId ->
+                resolvedBindings.filter { it.downloadId == targetId }.all { it in completed }
+            }
             journal = advanceJournal(journal) { existing ->
-                update(existing, completed)
+                update(existing, completed, completedTargetIds)
             }
         }
         return journal
+    }
+
+    /**
+     * Older journals persisted only target ids.  Resolve their roots from the
+     * durable per-operation registry, never from the mutable cache_path when
+     * that root no longer carries an exact marker.  If no exact locator is
+     * available, keep the effect incomplete rather than treating a new root's
+     * absence as completion.
+     */
+    private fun resolveLegacyCacheBindings(
+        current: CleanupEffectJournal,
+        targets: List<DownloadItem>,
+        requiredIds: List<Long>,
+        bindings: List<DownloadCacheOwnership.CacheBinding>,
+        completedBindings: List<DownloadCacheOwnership.CacheBinding>,
+        completedIds: List<Long>,
+        repository: DownloadRepository,
+        update: (
+            CleanupEffectJournal,
+            List<DownloadCacheOwnership.CacheBinding>,
+            List<DownloadCacheOwnership.CacheBinding>,
+        ) -> CleanupEffectJournal,
+    ): CleanupEffectJournal {
+        if (requiredIds.orEmpty().isEmpty() || bindings.orEmpty().isNotEmpty()) return current
+        val targetsById = targets.associateBy { it.id }
+        val resolved = requiredIds.distinct().flatMap { targetId ->
+            val target = targetsById[targetId]
+                ?: throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
+                    IllegalStateException("cleanup cache target is missing from legacy journal"),
+                )
+            repository.knownCacheCleanupBindings(target)
+        }.distinct()
+        if (requiredIds.distinct().any { targetId -> resolved.none { it.downloadId == targetId } }) {
+            throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
+                IllegalStateException("cleanup cache root binding is unavailable for legacy journal"),
+            )
+        }
+        val completed = completedBindings.orEmpty().toMutableList()
+        requiredIds.distinct().filter { it in completedIds.orEmpty() }.forEach { targetId ->
+            val targetBindings = resolved.filter { it.downloadId == targetId }
+            // A legacy completed id was single-root state.  Preserve that
+            // progress only when the durable locator is unambiguous; with
+            // multiple exact roots, re-check each root conservatively.
+            if (targetBindings.size == 1) completed += targetBindings.single()
+        }
+        return advanceJournal(current) { existing ->
+            update(existing, resolved, completed.distinct())
+        }
     }
 
     private fun advanceJournal(
