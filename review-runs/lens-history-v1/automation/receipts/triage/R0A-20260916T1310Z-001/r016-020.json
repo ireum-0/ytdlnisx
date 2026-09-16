@@ -1,0 +1,22 @@
+{
+  "schema_version":"lens-history-v1-triage-receipt-v1",
+  "run_id":"R0A-20260916T1310Z-001",
+  "stage":"REPLAY_001_030",
+  "logical_rank_range":[1,30],
+  "microsegment_rank_range":[16,20],
+  "data_head":"df87d5e39aef74dfff0cb0f3ac6657c6a0bc3c7c",
+  "complete_state_blob":"8309c171d24a292b7ea30ae9e1a7d176601062bb",
+  "governing_pins":{"frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4","frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b","schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96","document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda","verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51","frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"},
+  "materializer_receipt":{"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r016-020.json","blob_sha":"7f0d38723b77f9b660c34035d6738ce32ef5cd08"},
+  "materializer_corrections":[],
+  "exception_queue_blob":"2f181c1bb9108234667cf47c23634526c1b64811",
+  "previous_triage_receipt":{"path":"review-runs/lens-history-v1/automation/receipts/triage/R0A-20260916T1310Z-001/r011-015.json","blob_sha":"PENDING_REFETCH_BINDING"},
+  "source_review":[
+    {"rank":16,"path":"review-runs/checkpoints/2026-09-15T092300Z__a5160ab5__ec1a441c__checkpoint.md","source_blob":"3011c9ef3cc581b0f1617171f77b53144dccf2d5","independent_exception_triggers":[],"disposition":"NO_SEMANTIC_EXCEPTION","human_decision_needed":null},
+    {"rank":17,"path":"review-runs/checkpoints/2026-09-15__a5160ab5__f10-completed-wave-reconciliation.md","source_blob":"10226f179205449d2e44260535cd382546bf7c98","independent_exception_triggers":["RECONCILIATION","MATERIAL_STATUS_DETAIL","NEWLY_CONFIRMED_RESIDUAL_OR_SUBCASE","COUNT_DELTA"],"disposition":"MATERIALIZER_FLAGGED","human_decision_needed":"Preserve the explicit reconciliation: three prior A/B/C residuals are source-level closed, a newly confirmed same-root retry/re-entry residual keeps BUG-CLEANUP-01 OPEN P2, and count delta is explicitly 0. Do not split the new residual into a new blocker root or infer a modern detecting lens."},
+    {"rank":18,"path":"review-runs/checkpoints/2026-09-15T083500Z__a5160ab5__9b0e5360__checkpoint.md","source_blob":"0b2b85e46d23b1ffe9244b7829302ed565a29b67","independent_exception_triggers":[],"disposition":"NO_SEMANTIC_EXCEPTION","human_decision_needed":null},
+    {"rank":19,"path":"review-runs/checkpoints/2026-09-15T083300Z__a5160ab5__eeed0f85__checkpoint.md","source_blob":"ea83caba9d10f585d381a14f778af901983b920f","independent_exception_triggers":[],"disposition":"NO_SEMANTIC_EXCEPTION","human_decision_needed":null},
+    {"rank":20,"path":"review-runs/checkpoints/2026-09-15T082600Z__a5160ab5__519dce9e__checkpoint.md","source_blob":"c8c9e3e2d4b9e8195fd629922ee7371e607cf784","independent_exception_triggers":[],"disposition":"NO_SEMANTIC_EXCEPTION","human_decision_needed":null}
+  ],
+  "summary":{"ranks_reviewed":5,"independent_exception_ranks":[17],"materializer_flagged_exception_ranks":[17],"triage_discovered_missed_exception_ranks":[],"missed_exception_count":0,"unsafe_correction_count":0,"status":"HUMAN_REVIEW_REQUIRED"}
+}
