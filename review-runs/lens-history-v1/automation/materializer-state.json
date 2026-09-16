@@ -1,26 +1,30 @@
 {
   "schema_version":"lens-history-v1-automation-state-v3",
-  "status":"ACTIVE",
+  "status":"COMPLETE",
   "run_id":"R0A-20260916T1310Z-001",
   "started_at":"2026-09-16T13:10:36Z",
-  "resumed_at":"2026-09-16T19:09:06Z",
+  "completed_at":"2026-09-16T19:12:20Z",
   "stage":"REPLAY_001_030",
   "logical_rank_range":[1,30],
   "target_batch_size":30,
   "microsegment_size":5,
-  "next_rank":26,
+  "data_head":"df87d5e39aef74dfff0cb0f3ac6657c6a0bc3c7c",
   "completed_microsegments":[
     {"range":[1,5],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r001-005.json","blob_sha":"3d60e46476f0f5f5c3f5015a21601eec7b2663f9","corrections":[]},
     {"range":[6,10],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r006-010.json","blob_sha":"0c115759ca2b376c63dc62908264c439d1ea110f","corrections":[{"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/corrections/r006-010-c001.json","blob_sha":"66a534434f957cd946c5404d42ff09faf36af48c"}]},
     {"range":[11,15],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r011-015.json","blob_sha":"568f2cf14308a43b439e009bdd4b818a62e28470","corrections":[]},
     {"range":[16,20],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r016-020.json","blob_sha":"7f0d38723b77f9b660c34035d6738ce32ef5cd08","corrections":[]},
-    {"range":[21,25],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r021-025.json","blob_sha":"a1db5c5f9a3f9cf57263fcdcf973ac32e80d957d","corrections":[]}
+    {"range":[21,25],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r021-025.json","blob_sha":"a1db5c5f9a3f9cf57263fcdcf973ac32e80d957d","corrections":[]},
+    {"range":[26,30],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r026-030.json","blob_sha":"aede3c66036a695925cea42da72675aff29d4d74","corrections":[]}
   ],
+  "exception_queue":{"path":"review-runs/lens-history-v1/automation/exceptions/R0A-20260916T1310Z-001.jsonl","blob_sha":"2f181c1bb9108234667cf47c23634526c1b64811","exception_rank_count":18},
+  "validation":{"path":"review-runs/lens-history-v1/automation/validations/R0A-20260916T1310Z-001-replay-001-030.json","blob_sha":"4f85918bb9f4a5b9e67e988334201c089ab4f200","status":"PASS","history_order_mismatches":0,"source_frozen_blob_mismatches":0,"existing_ledger_required_field_mismatches":0,"prohibited_inference_violations":0},
   "start_head":"16e1a5f08488d4fe53c299ea56e63beb169a2ff0",
   "lease_commit":"473a3041d7f069ce7936fd879b5608d65b9b919a",
   "start_progress_blob":"18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
   "governing_pins":{"frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4","frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b","schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96","document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda","verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51","frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"},
-  "resume_safe":true,
-  "stability":{"consecutive_clean_30_materialization_batches":0,"consecutive_clean_40_materialization_batches":0},
-  "reconciliation":"Ranks 1-25 remain sealed by five contiguous immutable receipts plus the bound rank-8 factual exception correction. Resume verification starts at rank 26."
+  "replay_outputs":{"official_rank_records_rewritten":false,"progress_counter_changed":false},
+  "stability":{"consecutive_clean_30_materialization_batches":0,"consecutive_clean_40_materialization_batches":0,"retryable_pause_occurred":true,"adaptive_size_streak_eligible":false},
+  "requires_triage":true,
+  "requires_audit":true
 }
