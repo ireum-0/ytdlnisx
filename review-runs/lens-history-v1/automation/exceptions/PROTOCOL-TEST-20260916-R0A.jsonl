@@ -1,0 +1,8 @@
+{"record_type":"RUN_META","test_mode":true,"run_id":"PROTOCOL-TEST-20260916-R0A","stage":"PROTOCOL_TEST","rank_range":{"first":1,"last":30},"history_order_check":"30/30 MATCH","semantic_exception_completeness":"NOT_CERTIFIED_IN_PROTOCOL_TEST"}
+{"record_type":"EXCEPTION_EXAMPLE","rank":4,"commit":"34506615a286aaeea1dfdafb040dafabcaf410de","trigger":"scope expansion / confirmed subcase / count delta 0","required_action":"human semantic review"}
+{"record_type":"EXCEPTION_EXAMPLE","rank":5,"commit":"eb2dc35fc97e75963b75d63ddb42a6811bf8336f","trigger":"explicit New finding CLEANUP-STALE-DOWNLOAD-ROW-01 P2 OPEN","required_action":"human semantic review"}
+{"record_type":"EXCEPTION_EXAMPLE","rank":6,"commit":"1bddafc57cc15cc68c8f65b4c0ae61fb739b10c5","trigger":"scope addendum / confirmed same-root subcase / count delta 0","required_action":"human semantic review"}
+{"record_type":"EXCEPTION_EXAMPLE","rank":9,"commit":"8151c278e6a6f1c28f47e52db14e6ebbe1faaa55","trigger":"reconciliation","required_action":"human semantic review"}
+{"record_type":"EXCEPTION_EXAMPLE","rank":17,"commit":"ec1a441ccb2f02d7e0b987efec4775e5ed23487c","trigger":"reconciliation","required_action":"human semantic review"}
+{"record_type":"EXCEPTION_EXAMPLE","rank":26,"commit":"9849c65852bb989d451149fa29f926911a699aae","trigger":"reconciliation / residual refinement","required_action":"human semantic review"}
+{"record_type":"EXCEPTION_EXAMPLE","rank":30,"commit":"eba6bc093eec63b989572d5a22d4c7dab1d1dbb7","trigger":"expanded scope / same-root subcases / count delta 0","required_action":"human semantic review"}
