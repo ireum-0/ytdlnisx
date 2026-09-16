@@ -304,6 +304,200 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun rejectedAuthorityCannotBeCollateralPersistedByLaterSuccessfulEffectJournalWrite() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val durableGeneration = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val occurrenceAt = currentScheduledOccurrenceAt()
+        val journal = CleanupEffectJournal(
+            generation = durableGeneration,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+            occurrenceAt = occurrenceAt,
+            tempCleanupRequired = false,
+        )
+
+        // Model a failed DAILY -> WEEKLY commit that is visible in this
+        // process but is not durable across restart.
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        assertFalse(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY))
+        assertEquals(CleanupSchedulePolicy.WEEKLY, preferences.getString("cleanup_leftover_downloads", null))
+
+        // A later legitimate DAILY effect-journal write must rebuild the
+        // critical namespace from the confirmed DAILY snapshot, not from the
+        // contaminated in-process WEEKLY map.
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        assertTrue(CleanupScheduleCoordinator.seedEffectJournalForTesting(context, journal))
+        CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+
+        assertEquals(CleanupSchedulePolicy.DAILY, preferences.getString("cleanup_leftover_downloads", null))
+        assertEquals(
+            durableGeneration,
+            preferences.getString("cleanup_leftover_downloads_generation", null),
+        )
+        assertEquals(
+            occurrenceAt,
+            preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+        )
+    }
+
+    @Test
+    fun rejectedEffectJournalCannotBeCollateralPersistedByLaterAuthorityWrite() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val oldGeneration = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val occurrenceAt = currentScheduledOccurrenceAt()
+        val journal = CleanupEffectJournal(
+            generation = oldGeneration,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+            occurrenceAt = occurrenceAt,
+            tempCleanupRequired = false,
+        )
+
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = { false }
+        assertFalse(CleanupScheduleCoordinator.seedEffectJournalForTesting(context, journal))
+        assertTrue(preferences.getString("cleanup_leftover_downloads_effect_journal", null) != null)
+
+        // Supersession is a successful critical authority write. It must not
+        // carry the rejected in-progress journal into the new generation.
+        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = null
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY))
+        CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+
+        assertEquals(CleanupSchedulePolicy.WEEKLY, preferences.getString("cleanup_leftover_downloads", null))
+        assertNull(preferences.getString("cleanup_leftover_downloads_effect_journal", null))
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_generation", null) != oldGeneration
+        )
+    }
+
+    @Test
+    fun rejectedEffectProgressCannotBeCollateralPersistedByLaterSuccessorWrite() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { _, _, _ ->
+            throw IllegalStateException("scheduler unavailable")
+        }
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val occurrenceAt = currentScheduledOccurrenceAt()
+        val completeJournal = CleanupEffectJournal(
+            generation = generation,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+            occurrenceAt = occurrenceAt,
+            cancelledDeletionComplete = true,
+            cancelledRefreshComplete = true,
+            erroredDeletionComplete = true,
+            erroredRefreshComplete = true,
+            tempCleanupRequired = false,
+        )
+        assertTrue(CleanupScheduleCoordinator.seedEffectJournalForTesting(context, completeJournal))
+
+        // The rejected progress write is visible in this process but remains
+        // outside the confirmed durable image.
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = { false }
+        assertNull(
+            CleanupScheduleCoordinator.updateEffectJournal(
+                context = context,
+                generation = generation,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+                occurrenceAt = occurrenceAt,
+            ) { it.copy(cancelledRefreshComplete = false) }
+        )
+        assertTrue(preferences.getString("cleanup_leftover_downloads_effect_journal", null) != null)
+
+        // Successor publication is a later critical authority write. It must
+        // be based on the confirmed complete journal, not the rejected raw
+        // progress mutation.
+        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = null
+        val expectedSuccessorAt = CleanupSchedulePolicy.nextOccurrence(
+            now = Calendar.getInstance().apply { timeInMillis = occurrenceAt },
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        ).timeInMillis
+        CleanupScheduleCoordinator.scheduleSuccessor(
+            context = context,
+            generation = generation,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+            completedOccurrenceAt = occurrenceAt,
+        )
+        CleanupScheduleCoordinator.resetReplayOwnerForTesting()
+        CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+
+        assertEquals(
+            expectedSuccessorAt,
+            preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+        )
+        assertNull(preferences.getString("cleanup_leftover_downloads_effect_journal", null))
+    }
+
+    @Test
+    fun rejectedSuccessorDebtCannotBeCollateralPersistedByLaterEffectWrite() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val occurrenceAt = currentScheduledOccurrenceAt()
+        val completeJournal = CleanupEffectJournal(
+            generation = generation,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+            occurrenceAt = occurrenceAt,
+            cancelledDeletionComplete = true,
+            cancelledRefreshComplete = true,
+            erroredDeletionComplete = true,
+            erroredRefreshComplete = true,
+            tempCleanupRequired = false,
+        )
+        assertTrue(CleanupScheduleCoordinator.seedEffectJournalForTesting(context, completeJournal))
+
+        // Persisting the exact successor fails after making the rejected
+        // successor visible in this process.
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        assertFalse(
+            CleanupScheduleCoordinator.scheduleSuccessor(
+                context = context,
+                generation = generation,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+                completedOccurrenceAt = occurrenceAt,
+            )
+        )
+        CleanupScheduleCoordinator.resetReplayOwnerForTesting()
+
+        // A successful effect transition for the still-confirmed predecessor
+        // must not carry that rejected successor into the durable image.
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        assertTrue(CleanupScheduleCoordinator.seedEffectJournalForTesting(context, completeJournal))
+        CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+
+        assertEquals(
+            occurrenceAt,
+            preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+        )
+        assertNull(preferences.getString("cleanup_leftover_downloads_active_occurrence_at", null))
+        assertTrue(preferences.getString("cleanup_leftover_downloads_effect_journal", null) != null)
+    }
+
+    @Test
     fun bootstrapReplayIsFencedByDisableAndSupersession() = runBlocking {
         preferences.edit()
             .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
@@ -2103,6 +2297,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = null
         DownloadRepository.cleanupAfterRoomDeletionForTesting = null
         DownloadRepository.exactCacheDeletionForTesting = null
+        DownloadCacheOwnership.fileDeletionForTesting = null
         LowQualityRedownloadLedger.refreshFailureForTesting = null
     }
 

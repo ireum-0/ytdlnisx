@@ -22,6 +22,10 @@ internal object DownloadCacheOwnership {
     private const val ARTIFACT_MANIFEST_HEADER = "ytdlnisx-download-artifacts"
     private const val VERSION = "1"
 
+    /** Failure seam for deterministic retries of exact manifest entries. */
+    @Volatile
+    internal var fileDeletionForTesting: ((File) -> Boolean)? = null
+
     data class OwnedRoot(
         val directory: File,
         val marker: File,
@@ -189,10 +193,11 @@ internal object DownloadCacheOwnership {
      */
     fun hasCleanupResponsibility(cacheRoot: File, item: DownloadItem): Boolean {
         require(item.id > 0L) { "Download cache cleanup requires a persisted id" }
-        val root = cacheRoot.canonicalFile
-        val marker = markerFile(root, item.id).canonicalFile
-        val directory = File(root, item.id.toString()).canonicalFile
-        return marker.exists() || directory.exists()
+        // A numeric directory is only a location.  Journal a mandatory
+        // suffix only when the exact marker currently proves that this
+        // operation can recover it.  Legacy or mismatched remnants remain
+        // preserved but cannot strand the scheduled cleanup occurrence.
+        return isOwned(cacheRoot, item)
     }
 
     /**
@@ -244,8 +249,8 @@ internal object DownloadCacheOwnership {
         }
         if (!isOwned(root, item)) return false
         if (!directory.exists()) {
-            markerFile(root, item.id).delete()
-            return true
+            val marker = markerFile(root, item.id)
+            return marker.delete() || !marker.exists()
         }
         if (!directory.isDirectory) return false
 
@@ -257,23 +262,38 @@ internal object DownloadCacheOwnership {
         if (manifest.isEmpty() && initialChildren.any { it.name != ARTIFACT_MANIFEST_NAME }) {
             return false
         }
+        var deletionFailed = false
         manifest.forEach { relative ->
             val candidate = File(directory, relative).canonicalFile
-            if (!isInside(candidate, directory)) return@forEach
-            if (candidate.isFile) candidate.delete()
+            if (!isInside(candidate, directory)) {
+                deletionFailed = true
+                return@forEach
+            }
+            if (!candidate.exists()) return@forEach
+            val deleted = if (candidate.isFile) {
+                fileDeletionForTesting?.invoke(candidate) ?: candidate.delete()
+            } else {
+                false
+            }
+            if (!deleted) deletionFailed = true
         }
-        artifactManifestFile(root, item.id).delete()
         pruneEmptyDirectories(directory)
+        // Keep both exact recovery carriers on every failure.  In particular,
+        // do not revoke the marker merely because an owned suffix remains.
+        // A later retry can then re-validate the same operation and resume
+        // the frozen manifest without rediscovering targets.
+        if (deletionFailed) return false
         val remaining = directory.listFiles()?.toList() ?: return false
-        if (remaining.isNotEmpty()) {
-            // Revoke the import/cleanup marker when unproven content remains;
-            // preserving the directory is safer than recursive deletion.
-            markerFile(root, item.id).delete()
+        if (remaining.any { it.name != ARTIFACT_MANIFEST_NAME }) return false
+        val manifestFile = artifactManifestFile(root, item.id)
+        if (manifestFile.exists() && !manifestFile.delete() && manifestFile.exists()) {
             return false
         }
+        if (directory.listFiles()?.isNotEmpty() == true) return false
         val deleted = directory.delete()
-        if (deleted || !directory.exists()) markerFile(root, item.id).delete()
-        return deleted || !directory.exists()
+        if (!deleted && directory.exists()) return false
+        val marker = markerFile(root, item.id)
+        return marker.delete() || !marker.exists()
     }
 
     /**

@@ -66,6 +66,108 @@ class DownloadCacheOwnershipTest {
     }
 
     @Test
+    fun failedOwnedFileDeletionRetainsManifestAndMarkerForExactRetry() {
+        val root = Files.createTempDirectory("download-cache-retryable-").toFile()
+        try {
+            val item = item(operationId = "operation-current", executionId = "execution-current")
+            DownloadCacheOwnership.ensureMarker(root, item)
+            val directory = File(root, item.id.toString()).apply { mkdirs() }
+            val first = directory.resolve("first.bin").apply { writeText("first") }
+            val second = directory.resolve("second.bin").apply { writeText("second") }
+            assertTrue(
+                DownloadCacheOwnership.recordArtifacts(
+                    root,
+                    item,
+                    listOf(first.absolutePath, second.absolutePath),
+                )
+            )
+
+            var failSecond = true
+            DownloadCacheOwnership.fileDeletionForTesting = { file ->
+                if (file.name == second.name && failSecond) {
+                    failSecond = false
+                    false
+                } else {
+                    file.delete()
+                }
+            }
+
+            assertFalse(DownloadCacheOwnership.deleteIfOwned(root, item))
+            assertFalse(first.exists())
+            assertTrue(second.isFile)
+            assertTrue(DownloadCacheOwnership.markerFile(root, item.id).isFile)
+            assertTrue(DownloadCacheOwnership.artifactManifestFile(root, item.id).isFile)
+
+            DownloadCacheOwnership.fileDeletionForTesting = null
+            assertTrue(DownloadCacheOwnership.deleteIfOwned(root, item))
+            assertFalse(second.exists())
+            assertFalse(DownloadCacheOwnership.markerFile(root, item.id).exists())
+            assertFalse(DownloadCacheOwnership.artifactManifestFile(root, item.id).exists())
+        } finally {
+            DownloadCacheOwnership.fileDeletionForTesting = null
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun thrownOwnedFileDeletionRetainsExactRecoveryCarrier() {
+        val root = Files.createTempDirectory("download-cache-throwing-").toFile()
+        try {
+            val item = item(operationId = "operation-current", executionId = "execution-current")
+            DownloadCacheOwnership.ensureMarker(root, item)
+            val directory = File(root, item.id.toString()).apply { mkdirs() }
+            val output = directory.resolve("output.bin").apply { writeText("output") }
+            assertTrue(DownloadCacheOwnership.recordArtifacts(root, item, listOf(output.absolutePath)))
+
+            DownloadCacheOwnership.fileDeletionForTesting = {
+                throw IllegalStateException("transient filesystem failure")
+            }
+
+            assertFalse(runCatching { DownloadCacheOwnership.deleteIfOwned(root, item) }.isSuccess)
+            assertTrue(output.isFile)
+            assertTrue(DownloadCacheOwnership.markerFile(root, item.id).isFile)
+            assertTrue(DownloadCacheOwnership.artifactManifestFile(root, item.id).isFile)
+        } finally {
+            DownloadCacheOwnership.fileDeletionForTesting = null
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun legacyNumericDirectoryWithoutMarkerIsNotMandatoryCleanupResponsibility() {
+        val root = Files.createTempDirectory("download-cache-legacy-").toFile()
+        try {
+            val item = item(operationId = "operation-current", executionId = "execution-current")
+            val directory = File(root, item.id.toString()).apply { mkdirs() }
+            val legacy = directory.resolve("legacy.bin").apply { writeText("preserve") }
+
+            assertFalse(DownloadCacheOwnership.hasCleanupResponsibility(root, item))
+            assertFalse(DownloadCacheOwnership.deleteIfOwnedOrAlreadyAbsent(root, item))
+            assertTrue(legacy.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun newerMismatchedMarkerIsNotCapturedAsCurrentCleanupResponsibility() {
+        val root = Files.createTempDirectory("download-cache-newer-owner-").toFile()
+        try {
+            val previous = item(operationId = "operation-previous", executionId = "execution-previous")
+            val current = item(operationId = "operation-current", executionId = "execution-current")
+            val directory = File(root, previous.id.toString()).apply { mkdirs() }
+            DownloadCacheOwnership.ensureMarker(root, previous)
+            directory.resolve("owned-by-previous.bin").writeText("preserve")
+
+            assertFalse(DownloadCacheOwnership.hasCleanupResponsibility(root, current))
+            assertFalse(DownloadCacheOwnership.deleteIfOwnedOrAlreadyAbsent(root, current))
+            assertTrue(directory.resolve("owned-by-previous.bin").isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun markerFromAnotherOperationCannotAuthorizeStaleGenerationDeletion() {
         val root = Files.createTempDirectory("download-cache-stale-").toFile()
         try {
