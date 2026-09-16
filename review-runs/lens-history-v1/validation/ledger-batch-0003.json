@@ -1,0 +1,45 @@
+{
+  "schema_version": "lens-history-v1",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "batch": "review-runs/lens-history-v1/ledger-batches/0003-newest-011-015.jsonl",
+  "inventory_batch": "review-runs/lens-history-v1/inventory-batches/0003-newest-011-015.jsonl",
+  "history_rank_range": [11, 15],
+  "records_checked": 5,
+  "invalid_records": 0,
+  "schema_validation": "PASS",
+  "stored_byte_identity": {
+    "inventory_expected_git_blob_sha": "75aa72e41d5201b742c7bef689a5d3082e7fe40e",
+    "inventory_stored_git_blob_sha": "75aa72e41d5201b742c7bef689a5d3082e7fe40e",
+    "inventory_match": true,
+    "ledger_expected_git_blob_sha": "e0e8af97e3906b91031bee2785adfdff2ae36f48",
+    "ledger_stored_git_blob_sha": "e0e8af97e3906b91031bee2785adfdff2ae36f48",
+    "ledger_match": true
+  },
+  "source_to_frozen_blob_identity": {
+    "records_checked": 5,
+    "matches": 5,
+    "mismatches": 0
+  },
+  "classification_summary": {
+    "LEGACY_AUDIT_LENS": 5,
+    "direct_final": 2,
+    "structural_kind_not_verified": 3,
+    "structured_effectiveness_payloads": 0
+  },
+  "aggregate_effect": {
+    "changes_observed_measured_effectiveness": false,
+    "reason": "batch 0003 contains only legacy audit_lens records and no explicit structured effectiveness payload",
+    "observed_measured_effectiveness_remains": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    }
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED"
+  }
+}
