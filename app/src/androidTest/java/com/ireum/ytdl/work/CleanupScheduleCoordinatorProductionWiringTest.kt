@@ -1780,7 +1780,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         val rootOne = context.cacheDir.resolve("cleanup-prejournal-one-${UUID.randomUUID()}").apply { mkdirs() }
         val rootTwo = context.cacheDir.resolve("cleanup-prejournal-two-${UUID.randomUUID()}").apply { mkdirs() }
         try {
-            DownloadCacheOwnership.prepareAttempt(rootOne, target, context)
+            // Model a carrier created before root binding was introduced;
+            // the real settings-transition capture below must be what makes
+            // this old root discoverable before cache_path changes.
+            DownloadCacheOwnership.prepareAttempt(rootOne, target)
             val directory = File(rootOne, id.toString()).apply { mkdirs() }
             val owned = directory.resolve("owned.bin").apply { writeText("owned") }
             assertTrue(DownloadCacheOwnership.recordArtifacts(rootOne, target, listOf(owned.absolutePath)))
