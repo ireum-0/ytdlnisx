@@ -113,6 +113,50 @@ internal object CleanupScheduleCoordinator {
     private var replayJob: Job? = null
     private var replayDebt: SchedulingDebt? = null
     private var replayBootstrapCadence: String? = null
+    private var replayBootstrapIntent: BootstrapRecoveryIntent? = null
+
+    /**
+     * SharedPreferences.commit() publishes an editor to the in-process map
+     * before it reports whether the disk write succeeded.  Once a critical
+     * commit reports failure, this fence makes all coordinator reads use the
+     * last known durable snapshot instead of that memory-only map.  A later
+     * successful critical commit clears the fence; process restart naturally
+     * discards it and reloads the disk state.
+     */
+    @Volatile
+    private var criticalDurabilityFence: CriticalPreferencesSnapshot? = null
+
+    private data class CriticalPreferencesSnapshot(
+        val values: Map<String, Any?>,
+    ) {
+        fun string(key: String): String? = values[key] as? String
+        fun int(key: String, default: Int): Int = (values[key] as? Int) ?: default
+        fun long(key: String, default: Long): Long = (values[key] as? Long) ?: default
+    }
+
+    private data class BootstrapRecoveryIntent(
+        val cadence: String,
+        val generation: String,
+        val monthlyAnchorDay: Int,
+        val occurrenceAt: Long,
+    )
+
+    private val criticalPreferenceKeys = listOf(
+        PREF_CADENCE,
+        PREF_GENERATION,
+        PREF_MONTHLY_ANCHOR_DAY,
+        PREF_PENDING_GENERATION,
+        PREF_PENDING_CADENCE,
+        PREF_PENDING_ANCHOR_DAY,
+        PREF_PENDING_OCCURRENCE_AT,
+        PREF_ACTIVE_GENERATION,
+        PREF_ACTIVE_CADENCE,
+        PREF_ACTIVE_ANCHOR_DAY,
+        PREF_ACTIVE_OCCURRENCE_AT,
+        PREF_PENDING_EFFECT_PHASE,
+        PREF_ACTIVE_EFFECT_PHASE,
+        PREF_EFFECT_JOURNAL,
+    )
 
     /** Null-default seams used only by deterministic production-wiring tests. */
     @Volatile
@@ -136,6 +180,14 @@ internal object CleanupScheduleCoordinator {
     @Volatile
     internal var effectPhaseCommitOverrideForTesting:
         ((android.content.SharedPreferences.Editor) -> Boolean)? = null
+    /**
+     * Models Android's commit(false) behavior for production-wiring tests:
+     * the editor is applied to the current-process map even though the
+     * durability result remains failure.  The coordinator must fence those
+     * values until a later successful commit or process restart.
+     */
+    @Volatile
+    internal var commitFailureAppliesMemoryForTesting: Boolean = false
     @Volatile
     internal var replayInitialDelayOverrideForTesting: Long? = null
     @Volatile
@@ -226,12 +278,13 @@ internal object CleanupScheduleCoordinator {
                         .putLong(PREF_PENDING_OCCURRENCE_AT, initialOccurrenceAt!!)
                         .putString(PREF_PENDING_EFFECT_PHASE, EFFECT_PHASE_ELIGIBLE)
                 }
-                val authorityCommitted = commitAuthority(authorityEditor)
+                val authorityCommitted = commitAuthority(preferences, authorityEditor)
                 if (!authorityCommitted) return@synchronized false
 
                 // The new generation wins before any old asynchronous owner can
                 // observe or mutate scheduling debt. Stop the superseded process-local
                 // replay owner before replacing/cancelling work.
+                replayBootstrapIntent = null
                 stopReplayOwnerLocked()
 
                 val workManager = workManager(appContext)
@@ -267,7 +320,7 @@ internal object CleanupScheduleCoordinator {
             synchronized(lock) {
                 val appContext = context.applicationContext
                 val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
-                val cadence = preferences.getString(PREF_CADENCE, null)
+                val cadence = criticalString(preferences, PREF_CADENCE)
                 val workManager = workManager(appContext)
 
                 if (!CleanupSchedulePolicy.isEnabled(cadence)) {
@@ -277,16 +330,25 @@ internal object CleanupScheduleCoordinator {
                 }
 
                 val now = currentCalendar()
-                var generation = preferences.getString(PREF_GENERATION, null)
+                var generation = criticalString(preferences, PREF_GENERATION)
                 val anchorDay: Int
                 if (generation.isNullOrBlank()) {
-                    val bootstrappedGeneration = UUID.randomUUID().toString()
-                    val bootstrappedAnchorDay = now.get(Calendar.DAY_OF_MONTH)
-                    val bootstrappedOccurrenceAt = CleanupSchedulePolicy.nextOccurrence(
-                        now = now,
-                        cadence = cadence!!,
-                        monthlyAnchorDay = bootstrappedAnchorDay,
-                    ).timeInMillis
+                    val enabledCadence = requireNotNull(cadence)
+                    val bootstrapIntent = replayBootstrapIntent?.takeIf {
+                        it.cadence == enabledCadence
+                    } ?: BootstrapRecoveryIntent(
+                        cadence = enabledCadence,
+                        generation = UUID.randomUUID().toString(),
+                        monthlyAnchorDay = now.get(Calendar.DAY_OF_MONTH),
+                        occurrenceAt = CleanupSchedulePolicy.nextOccurrence(
+                            now = now,
+                            cadence = enabledCadence,
+                            monthlyAnchorDay = now.get(Calendar.DAY_OF_MONTH),
+                        ).timeInMillis,
+                    )
+                    val bootstrappedGeneration = bootstrapIntent.generation
+                    val bootstrappedAnchorDay = bootstrapIntent.monthlyAnchorDay
+                    val bootstrappedOccurrenceAt = bootstrapIntent.occurrenceAt
                     val bootstrapEditor = preferences.edit()
                         .putString(PREF_GENERATION, bootstrappedGeneration)
                         .putInt(PREF_MONTHLY_ANCHOR_DAY, bootstrappedAnchorDay)
@@ -302,26 +364,33 @@ internal object CleanupScheduleCoordinator {
                         .remove(PREF_ACTIVE_EFFECT_PHASE)
                         .remove(PREF_EFFECT_JOURNAL)
                         .putString(PREF_PENDING_GENERATION, bootstrappedGeneration)
-                        .putString(PREF_PENDING_CADENCE, cadence)
+                        .putString(PREF_PENDING_CADENCE, enabledCadence)
                         .putInt(PREF_PENDING_ANCHOR_DAY, bootstrappedAnchorDay)
                         .putLong(PREF_PENDING_OCCURRENCE_AT, bootstrappedOccurrenceAt)
                         .putString(PREF_PENDING_EFFECT_PHASE, EFFECT_PHASE_ELIGIBLE)
-                    if (!commitAuthority(bootstrapEditor)) {
+                    if (!commitAuthority(preferences, bootstrapEditor)) {
                         // The enabled cadence is legacy durable authority, but
                         // generation/debt publication failed atomically. Keep
                         // a process-owned bootstrap recovery owner so the
                         // running process can retry the same logical
                         // bootstrap without exposing partial authority.
-                        ensureBootstrapReplayOwnerLocked(appContext, cadence)
+                        replayBootstrapIntent = bootstrapIntent
+                        ensureBootstrapReplayOwnerLocked(
+                            context = appContext,
+                            cadence = enabledCadence,
+                            intent = bootstrapIntent,
+                        )
                         return@synchronized
                     }
+                    replayBootstrapIntent = null
                     stopReplayOwnerLocked()
                     generation = bootstrappedGeneration
                     anchorDay = bootstrappedAnchorDay
                 } else {
-                    anchorDay = preferences.getInt(
-                        PREF_MONTHLY_ANCHOR_DAY,
-                        now.get(Calendar.DAY_OF_MONTH),
+                    anchorDay = criticalInt(
+                        preferences = preferences,
+                        key = PREF_MONTHLY_ANCHOR_DAY,
+                        default = now.get(Calendar.DAY_OF_MONTH),
                     )
                 }
                 val currentGeneration = requireNotNull(generation)
@@ -477,7 +546,7 @@ internal object CleanupScheduleCoordinator {
                             }
                             .maxByOrNull { it.occurrenceAt }
                             ?.let { adopted ->
-                                if (commitAuthority(preferences.edit().putActiveDebt(adopted))) {
+                                if (commitAuthority(preferences, preferences.edit().putActiveDebt(adopted))) {
                                     stopReplayOwnerLocked()
                                 } else {
                                     // Without the active marker there is no
@@ -617,8 +686,8 @@ internal object CleanupScheduleCoordinator {
             return false
         }
         val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
-        return preferences.getString(PREF_GENERATION, null) == generation &&
-            preferences.getString(PREF_CADENCE, null) == cadence
+        return criticalString(preferences, PREF_GENERATION) == generation &&
+            criticalString(preferences, PREF_CADENCE) == cadence
     }
 
     internal sealed interface DestructiveEffectResult<out T> {
@@ -681,6 +750,7 @@ internal object CleanupScheduleCoordinator {
                                 !journal.isStructurallyValid() ||
                                 !journal.isComplete)
                         ) {
+                            ensureReplayOwnerLocked(context, ownedOccurrence.debt)
                             DestructiveEffectResult.PhaseUnavailable
                         } else {
                             DestructiveEffectResult.AlreadyConsumed(
@@ -688,7 +758,10 @@ internal object CleanupScheduleCoordinator {
                             )
                         }
                     }
-                    EffectPhase.UNKNOWN -> DestructiveEffectResult.PhaseUnavailable
+                    EffectPhase.UNKNOWN -> {
+                        ensureReplayOwnerLocked(context, ownedOccurrence.debt)
+                        DestructiveEffectResult.PhaseUnavailable
+                    }
                     EffectPhase.ELIGIBLE,
                     EffectPhase.IN_PROGRESS -> {
                         val existingJournal = readEffectJournal(context)
@@ -697,7 +770,10 @@ internal object CleanupScheduleCoordinator {
                                 it.matches(ownedOccurrence.debt) && it.isStructurallyValid()
                             }
                             phase == EffectPhase.IN_PROGRESS -> null
-                            else -> runCatching { prepare() }.getOrElse { failure ->
+                            else -> try {
+                                prepare()
+                            } catch (failure: Exception) {
+                                ensureReplayOwnerLocked(context, ownedOccurrence.debt)
                                 throw failure
                             }
                         }
@@ -705,6 +781,7 @@ internal object CleanupScheduleCoordinator {
                             !journal.matches(ownedOccurrence.debt) ||
                             !journal.isStructurallyValid()
                         ) {
+                            ensureReplayOwnerLocked(context, ownedOccurrence.debt)
                             DestructiveEffectResult.PhaseUnavailable
                         } else if (phase == EffectPhase.IN_PROGRESS && journal.isComplete) {
                             if (commitEffectPhaseForOccurrence(
@@ -720,6 +797,7 @@ internal object CleanupScheduleCoordinator {
                                     recoveryRequired = false,
                                 )
                             } else {
+                                ensureReplayOwnerLocked(context, ownedOccurrence.debt)
                                 DestructiveEffectResult.AlreadyConsumed(
                                     recoveryRequired = true,
                                 )
@@ -739,6 +817,7 @@ internal object CleanupScheduleCoordinator {
                                 )
                             }
                             if (!markedInProgress) {
+                                ensureReplayOwnerLocked(context, ownedOccurrence.debt)
                                 DestructiveEffectResult.PhaseUnavailable
                             } else {
                                 executeJournaledEffect(
@@ -770,8 +849,8 @@ internal object CleanupScheduleCoordinator {
         val appContext = context.applicationContext
         val handle = synchronized(lock) {
             val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
-            val currentGeneration = preferences.getString(PREF_GENERATION, null)
-            val currentCadence = preferences.getString(PREF_CADENCE, null)
+            val currentGeneration = criticalString(preferences, PREF_GENERATION)
+            val currentCadence = criticalString(preferences, PREF_CADENCE)
             if (generation.isNullOrBlank() || generation != currentGeneration || cadence != currentCadence) {
                 return@synchronized null
             }
@@ -917,16 +996,90 @@ internal object CleanupScheduleCoordinator {
         )
     }
 
-    private fun commitAuthority(editor: android.content.SharedPreferences.Editor): Boolean =
-        authorityCommitOverrideForTesting?.invoke(editor) ?: editor.commit()
+    private fun commitAuthority(
+        preferences: android.content.SharedPreferences,
+        editor: android.content.SharedPreferences.Editor,
+    ): Boolean = commitCritical(preferences, editor) { authorityCommitOverrideForTesting?.invoke(it) }
 
-    private fun commitEffectPhase(editor: android.content.SharedPreferences.Editor): Boolean =
-        effectPhaseCommitOverrideForTesting?.invoke(editor) ?: editor.commit()
+    private fun commitEffectPhase(
+        preferences: android.content.SharedPreferences,
+        editor: android.content.SharedPreferences.Editor,
+    ): Boolean = commitCritical(preferences, editor) { effectPhaseCommitOverrideForTesting?.invoke(it) }
+
+    /**
+     * SharedPreferences has no public disk-read API.  A false commit result
+     * is therefore treated as an unconfirmed critical transition: the
+     * current process must use the snapshot taken before the attempted
+     * mutation until a later critical commit succeeds.  This is intentionally
+     * stricter than assuming that the same SharedPreferences instance is a
+     * restart-safe observation.
+     */
+    private fun commitCritical(
+        preferences: android.content.SharedPreferences,
+        editor: android.content.SharedPreferences.Editor,
+        override: (android.content.SharedPreferences.Editor) -> Boolean?,
+    ): Boolean {
+        val durableBefore = criticalSnapshot(preferences) ?: return false
+        val committed = try {
+            override(editor) ?: editor.commit()
+        } catch (failure: Exception) {
+            if (criticalDurabilityFence == null) {
+                criticalDurabilityFence = durableBefore
+            }
+            throw failure
+        }
+        if (!committed && commitFailureAppliesMemoryForTesting) {
+            // Test-only model of Android's memory-visible commit(false)
+            // behavior.  The fence below remains the authority boundary.
+            editor.apply()
+        }
+        if (committed) {
+            criticalDurabilityFence = null
+        } else if (criticalDurabilityFence == null) {
+            criticalDurabilityFence = durableBefore
+        }
+        return committed
+    }
+
+    private fun criticalSnapshot(
+        preferences: android.content.SharedPreferences,
+    ): CriticalPreferencesSnapshot? = criticalDurabilityFence ?: runCatching {
+        val all = preferences.all
+        CriticalPreferencesSnapshot(
+            values = criticalPreferenceKeys.associateWith { key -> all[key] },
+        )
+    }.getOrNull()
+
+    private fun criticalString(
+        preferences: android.content.SharedPreferences,
+        key: String,
+    ): String? {
+        val fence = criticalDurabilityFence
+        return if (fence != null) fence.string(key) else preferences.getString(key, null)
+    }
+
+    private fun criticalInt(
+        preferences: android.content.SharedPreferences,
+        key: String,
+        default: Int,
+    ): Int {
+        val fence = criticalDurabilityFence
+        return if (fence != null) fence.int(key, default) else preferences.getInt(key, default)
+    }
+
+    private fun criticalLong(
+        preferences: android.content.SharedPreferences,
+        key: String,
+        default: Long,
+    ): Long {
+        val fence = criticalDurabilityFence
+        return if (fence != null) fence.long(key, default) else preferences.getLong(key, default)
+    }
 
     private fun persistSchedulingDebtLocked(
         preferences: android.content.SharedPreferences,
         debt: SchedulingDebt,
-    ): Boolean = commitAuthority(preferences.edit().putPendingDebt(debt))
+    ): Boolean = commitAuthority(preferences, preferences.edit().putPendingDebt(debt))
 
     /**
      * Promotes an accepted occurrence into the durable active slot. The
@@ -939,24 +1092,44 @@ internal object CleanupScheduleCoordinator {
     ): Boolean {
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
         if (readActiveSchedulingDebt(preferences) == debt) {
-            stopReplayOwnerLocked()
+            retainRecoveryOwnerAfterPromotionLocked(context, debt)
             return true
         }
         if (readSchedulingDebt(preferences) != debt) return false
         val pendingEffectPhase = readEffectPhase(preferences, EffectOccurrenceSlot.PENDING)
         val committed = commitAuthority(
-            preferences.edit()
+            preferences = preferences,
+            editor = preferences.edit()
                 .removePendingDebt()
                 .putActiveDebt(debt, pendingEffectPhase)
         )
         if (committed) {
-            stopReplayOwnerLocked()
+            retainRecoveryOwnerAfterPromotionLocked(context, debt)
         } else {
             // The pending tuple remains the durable recovery carrier. Do not
             // stop its owner merely because promotion failed.
             ensureReplayOwnerLocked(context, debt)
         }
         return committed
+    }
+
+    /**
+     * A pending-to-active promotion may retire the older enqueue replay owner,
+     * but it must not retire the only owner of an admitted/incomplete effect.
+     * The active slot is the durable occurrence identity after promotion.
+     */
+    private fun retainRecoveryOwnerAfterPromotionLocked(
+        context: Context,
+        debt: SchedulingDebt,
+    ) {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        when {
+            isEffectCompleteForOccurrenceLocked(preferences, debt) ->
+                ensureReplayOwnerLocked(context, successorDebtOf(debt))
+            readEffectPhase(preferences, EffectOccurrenceSlot.ACTIVE) == EffectPhase.ELIGIBLE ->
+                stopReplayOwnerLocked()
+            else -> ensureReplayOwnerLocked(context, debt)
+        }
     }
 
     /**
@@ -991,7 +1164,8 @@ internal object CleanupScheduleCoordinator {
             return true
         }
         return commitAuthority(
-            preferences.edit()
+            preferences = preferences,
+            editor = preferences.edit()
                 .removePendingDebt()
                 .removeActiveDebt()
                 .remove(PREF_EFFECT_JOURNAL)
@@ -1119,6 +1293,7 @@ internal object CleanupScheduleCoordinator {
     private fun ensureBootstrapReplayOwnerLocked(
         context: Context,
         cadence: String,
+        intent: BootstrapRecoveryIntent? = null,
     ): Boolean {
         if (!CleanupSchedulePolicy.isEnabled(cadence)) {
             stopReplayOwnerLocked()
@@ -1126,13 +1301,17 @@ internal object CleanupScheduleCoordinator {
         }
         if (replayJob?.isActive == true &&
             replayDebt == null &&
-            replayBootstrapCadence == cadence
+            replayBootstrapCadence == cadence &&
+            (intent == null || replayBootstrapIntent == intent)
         ) {
             return true
         }
 
         stopReplayOwnerLocked()
         replayBootstrapCadence = cadence
+        replayBootstrapIntent = intent ?: replayBootstrapIntent?.takeIf {
+            it.cadence == cadence
+        }
         replayJob = replayScope.launch {
             var backoff = replayInitialDelayOverrideForTesting ?: REPLAY_INITIAL_DELAY_MS
             val maxBackoff = replayMaxDelayOverrideForTesting ?: REPLAY_MAX_DELAY_MS
@@ -1141,8 +1320,8 @@ internal object CleanupScheduleCoordinator {
                 val stillNeedsBootstrap = synchronized(lock) {
                     val preferences = PreferenceManager
                         .getDefaultSharedPreferences(context.applicationContext)
-                    preferences.getString(PREF_CADENCE, null) == cadence &&
-                        preferences.getString(PREF_GENERATION, null).isNullOrBlank()
+                    criticalString(preferences, PREF_CADENCE) == cadence &&
+                        criticalString(preferences, PREF_GENERATION).isNullOrBlank()
                 }
                 if (!stillNeedsBootstrap) return@launch
 
@@ -1159,8 +1338,8 @@ internal object CleanupScheduleCoordinator {
                 val remainsUnpublished = synchronized(lock) {
                     val preferences = PreferenceManager
                         .getDefaultSharedPreferences(context.applicationContext)
-                    preferences.getString(PREF_CADENCE, null) == cadence &&
-                        preferences.getString(PREF_GENERATION, null).isNullOrBlank()
+                    criticalString(preferences, PREF_CADENCE) == cadence &&
+                        criticalString(preferences, PREF_GENERATION).isNullOrBlank()
                 }
                 if (!remainsUnpublished) return@launch
                 backoff = (backoff * 2L).coerceAtMost(maxBackoff.coerceAtLeast(backoff))
@@ -1238,9 +1417,9 @@ internal object CleanupScheduleCoordinator {
     private fun authorityMatchesDebt(
         preferences: android.content.SharedPreferences,
         debt: SchedulingDebt,
-    ): Boolean = preferences.getString(PREF_GENERATION, null) == debt.generation &&
-        preferences.getString(PREF_CADENCE, null) == debt.cadence &&
-        preferences.getInt(PREF_MONTHLY_ANCHOR_DAY, -1) == debt.monthlyAnchorDay
+    ): Boolean = criticalString(preferences, PREF_GENERATION) == debt.generation &&
+        criticalString(preferences, PREF_CADENCE) == debt.cadence &&
+        criticalInt(preferences, PREF_MONTHLY_ANCHOR_DAY, -1) == debt.monthlyAnchorDay
 
     private fun canUseFallbackDebt(
         preferences: android.content.SharedPreferences,
@@ -1338,7 +1517,7 @@ internal object CleanupScheduleCoordinator {
             EffectOccurrenceSlot.PENDING -> PREF_PENDING_EFFECT_PHASE
             EffectOccurrenceSlot.ACTIVE -> PREF_ACTIVE_EFFECT_PHASE
         }
-        return when (preferences.getString(key, null)) {
+        return when (criticalString(preferences, key)) {
             // Occurrence slots written by this protocol always carry an
             // explicit phase. A missing phase on an older durable slot is
             // not proof that its effect is still eligible, so re-entry must
@@ -1353,7 +1532,7 @@ internal object CleanupScheduleCoordinator {
 
     private fun readEffectJournalRaw(
         preferences: android.content.SharedPreferences,
-    ): String? = preferences.getString(PREF_EFFECT_JOURNAL, null)
+    ): String? = criticalString(preferences, PREF_EFFECT_JOURNAL)
 
     private fun readEffectJournalRaw(context: Context): String? =
         readEffectJournalRaw(
@@ -1406,9 +1585,10 @@ internal object CleanupScheduleCoordinator {
             EffectOccurrenceSlot.PENDING -> PREF_PENDING_EFFECT_PHASE
             EffectOccurrenceSlot.ACTIVE -> PREF_ACTIVE_EFFECT_PHASE
         }
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
         if (!commitEffectPhase(
-                PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
-                    .edit()
+                preferences = preferences,
+                editor = preferences.edit()
                     .putString(phaseKey, EFFECT_PHASE_IN_PROGRESS)
                     .putString(PREF_EFFECT_JOURNAL, gson.toJson(updated))
             )
@@ -1451,6 +1631,7 @@ internal object CleanupScheduleCoordinator {
             } else {
                 // The complete journal remains the exact process-death-safe
                 // carrier even when the final phase write is unavailable.
+                ensureReplayOwnerLocked(context, ownedOccurrence.debt)
                 DestructiveEffectResult.AlreadyConsumed(recoveryRequired = true)
             }
         } catch (cancelled: CancellationException) {
@@ -1495,7 +1676,8 @@ internal object CleanupScheduleCoordinator {
             EffectPhase.CONSUMED -> EFFECT_PHASE_CONSUMED
             EffectPhase.UNKNOWN -> return@synchronized false
         }
-        val editor = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+        val editor = preferences
             .edit()
             .putString(key, storedPhase)
         if (journal != null) {
@@ -1504,7 +1686,7 @@ internal object CleanupScheduleCoordinator {
             }
             editor.putString(PREF_EFFECT_JOURNAL, gson.toJson(journal))
         }
-        commitEffectPhase(editor)
+        commitEffectPhase(preferences, editor)
     }
 
     private fun readDebt(
@@ -1514,10 +1696,10 @@ internal object CleanupScheduleCoordinator {
         anchorKey: String,
         occurrenceKey: String,
     ): SchedulingDebt? {
-        val generation = preferences.getString(generationKey, null) ?: return null
-        val cadence = preferences.getString(cadenceKey, null) ?: return null
-        val anchorDay = preferences.getInt(anchorKey, -1)
-        val occurrenceAt = preferences.getLong(occurrenceKey, -1L)
+        val generation = criticalString(preferences, generationKey) ?: return null
+        val cadence = criticalString(preferences, cadenceKey) ?: return null
+        val anchorDay = criticalInt(preferences, anchorKey, -1)
+        val occurrenceAt = criticalLong(preferences, occurrenceKey, -1L)
         if (!CleanupSchedulePolicy.isEnabled(cadence) || anchorDay < 1 || occurrenceAt <= 0L) {
             return null
         }
@@ -1625,16 +1807,60 @@ internal object CleanupScheduleCoordinator {
 
     private fun retirePendingDebtLocked(preferences: android.content.SharedPreferences): Boolean {
         val retired = commitAuthority(
-            preferences.edit()
+            preferences = preferences,
+            editor = preferences.edit()
                 .removePendingDebt()
                 .removeActiveDebt()
                 .remove(PREF_EFFECT_JOURNAL)
         )
-        if (retired) stopReplayOwnerLocked()
+        if (retired) {
+            replayBootstrapIntent = null
+            stopReplayOwnerLocked()
+        }
         return retired
     }
 
     internal fun resetReplayOwnerForTesting() = synchronized(lock) {
+        stopReplayOwnerLocked()
+    }
+
+    /** Returns the last coordinator-confirmed cadence for the settings UI. */
+    internal fun currentCadenceForSettings(context: Context): String = synchronized(lock) {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+        criticalString(preferences, PREF_CADENCE).orEmpty()
+    }
+
+    /** Models process death for tests by discarding process-local durability fences. */
+    internal fun resetDurabilityFenceForTesting() = synchronized(lock) {
+        criticalDurabilityFence = null
+        replayBootstrapIntent = null
+    }
+
+    /**
+     * Test-only model of a process restart after a critical commit returned
+     * false.  Android reloads the last disk-backed SharedPreferences values in
+     * the new process; this restores the coordinator's captured durable
+     * snapshot and also removes process-local replay ownership.  Production
+     * process death naturally provides the same boundary.
+     */
+    internal fun simulateProcessRestartForTesting(context: Context) = synchronized(lock) {
+        val snapshot = criticalDurabilityFence
+        if (snapshot != null) {
+            val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+            val editor = preferences.edit()
+            criticalPreferenceKeys.forEach { key ->
+                when (val value = snapshot.values[key]) {
+                    null -> editor.remove(key)
+                    is String -> editor.putString(key, value)
+                    is Int -> editor.putInt(key, value)
+                    is Long -> editor.putLong(key, value)
+                    else -> error("unsupported critical preference type for $key")
+                }
+            }
+            check(editor.commit()) { "test restart could not restore durable preferences" }
+        }
+        criticalDurabilityFence = null
+        replayBootstrapIntent = null
         stopReplayOwnerLocked()
     }
 
@@ -1656,7 +1882,8 @@ internal object CleanupScheduleCoordinator {
             EffectOccurrenceSlot.ACTIVE -> PREF_ACTIVE_EFFECT_PHASE
         }
         commitEffectPhase(
-            preferences.edit()
+            preferences = preferences,
+            editor = preferences.edit()
                 .putString(PREF_EFFECT_JOURNAL, gson.toJson(journal))
                 .putString(phaseKey, phase)
         )

@@ -183,6 +183,19 @@ internal object DownloadCacheOwnership {
     }
 
     /**
+     * Captures whether this exact Download had a cache ownership artifact at
+     * journal creation time.  The result is only a responsibility snapshot;
+     * it never authenticates the artifact for a later deletion.
+     */
+    fun hasCleanupResponsibility(cacheRoot: File, item: DownloadItem): Boolean {
+        require(item.id > 0L) { "Download cache cleanup requires a persisted id" }
+        val root = cacheRoot.canonicalFile
+        val marker = markerFile(root, item.id).canonicalFile
+        val directory = File(root, item.id.toString()).canonicalFile
+        return marker.exists() || directory.exists()
+    }
+
+    /**
      * Proves that a numeric cache root is currently owned by the exact live
      * Download execution.  The marker remains the durable identity binding;
      * the process-local registry is the liveness witness used only while the
@@ -261,6 +274,20 @@ internal object DownloadCacheOwnership {
         val deleted = directory.delete()
         if (deleted || !directory.exists()) markerFile(root, item.id).delete()
         return deleted || !directory.exists()
+    }
+
+    /**
+     * Completes a previously journaled cache responsibility when either the
+     * exact ownership marker still proves this operation or the exact cache
+     * root has already disappeared.  A newly-created or mismatched root is
+     * never treated as the old operation's suffix.
+     */
+    fun deleteIfOwnedOrAlreadyAbsent(cacheRoot: File, item: DownloadItem): Boolean {
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
+        val marker = markerFile(root, item.id).canonicalFile
+        val directory = File(root, item.id.toString()).canonicalFile
+        if (!marker.exists() && !directory.exists()) return true
+        return deleteIfOwned(root, item)
     }
 
     /** Record exact current-attempt artifacts for later cleanup/import. */

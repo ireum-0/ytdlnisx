@@ -25,8 +25,14 @@ internal data class CleanupEffectJournal(
     val tempSnapshot: AppCacheExactSnapshot? = null,
     val tempCleanupRequired: Boolean = false,
     val cancelledDeletionComplete: Boolean = false,
+    /** Download ids whose exact cache suffix existed at journal creation. */
+    val cancelledCacheCleanupRequiredIds: List<Long> = emptyList(),
+    /** Exact cache suffixes completed after the Room deletion step. */
+    val cancelledCacheCleanupCompletedIds: List<Long> = emptyList(),
     val cancelledRefreshComplete: Boolean = false,
     val erroredDeletionComplete: Boolean = false,
+    val erroredCacheCleanupRequiredIds: List<Long> = emptyList(),
+    val erroredCacheCleanupCompletedIds: List<Long> = emptyList(),
     val erroredRefreshComplete: Boolean = false,
     val tempCleanupComplete: Boolean = true,
 ) {
@@ -56,6 +62,18 @@ internal data class CleanupEffectJournal(
             erroredTargets.all { it.id >= 0L } &&
             cancelledOperationIds.all(String::isNotBlank) &&
             erroredOperationIds.all(String::isNotBlank) &&
+            cancelledCacheCleanupRequiredIds.all { id ->
+                cancelledTargets.any { it.id == id }
+            } &&
+            cancelledCacheCleanupCompletedIds.all { id ->
+                id in cancelledCacheCleanupRequiredIds
+            } &&
+            erroredCacheCleanupRequiredIds.all { id ->
+                erroredTargets.any { it.id == id }
+            } &&
+            erroredCacheCleanupCompletedIds.all { id ->
+                id in erroredCacheCleanupRequiredIds
+            } &&
             (!tempCleanupRequired || (
                 tempSnapshot != null &&
                     tempSnapshot.category == AppCacheCategory.DOWNLOAD_TEMP &&
@@ -65,8 +83,14 @@ internal data class CleanupEffectJournal(
 
     val isComplete: Boolean
         get() = cancelledDeletionComplete &&
+            cancelledCacheCleanupRequiredIds.all {
+                it in cancelledCacheCleanupCompletedIds
+            } &&
             cancelledRefreshComplete &&
             erroredDeletionComplete &&
+            erroredCacheCleanupRequiredIds.all {
+                it in erroredCacheCleanupCompletedIds
+            } &&
             erroredRefreshComplete &&
             (!tempCleanupRequired || tempCleanupComplete)
 }

@@ -278,7 +278,7 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
             if (!cleanupDisabled) {
                 if (isAdded) {
                     findPreference<ListPreference>("cleanup_leftover_downloads")?.value =
-                        preferences.getString("cleanup_leftover_downloads", null).orEmpty()
+                        CleanupScheduleCoordinator.currentCadenceForSettings(appContext)
                 }
                 return@launch
             }

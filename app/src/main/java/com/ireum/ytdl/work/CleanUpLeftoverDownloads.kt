@@ -10,6 +10,7 @@ import androidx.work.workDataOf
 import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.storage.AppCacheCategory
@@ -248,6 +249,8 @@ class CleanUpLeftoverDownloads(
             erroredTargets = erroredTargets,
             cancelledOperationIds = cancelledTargets.mapNotNull { it.operationId.takeIf(String::isNotBlank) },
             erroredOperationIds = erroredTargets.mapNotNull { it.operationId.takeIf(String::isNotBlank) },
+            cancelledCacheCleanupRequiredIds = repository.exactCacheCleanupRequired(cancelledTargets),
+            erroredCacheCleanupRequiredIds = repository.exactCacheCleanupRequired(erroredTargets),
             tempSnapshot = tempSnapshot,
             tempCleanupRequired = tempCleanupRequired,
             tempCleanupComplete = !tempCleanupRequired,
@@ -284,6 +287,16 @@ class CleanUpLeftoverDownloads(
                 )
             }
         }
+        current = advanceExactCacheCleanup(
+            current = current,
+            targets = current.cancelledTargets,
+            requiredIds = current.cancelledCacheCleanupRequiredIds,
+            completedIds = current.cancelledCacheCleanupCompletedIds,
+            repository = repository,
+            update = { journal, completed ->
+                journal.copy(cancelledCacheCleanupCompletedIds = completed)
+            },
+        )
         if (!current.cancelledRefreshComplete) {
             LowQualityRedownloadLedger.refresh(context, current.cancelledOperationIds)
             current = advanceJournal(current) { it.copy(cancelledRefreshComplete = true) }
@@ -301,6 +314,16 @@ class CleanUpLeftoverDownloads(
                 )
             }
         }
+        current = advanceExactCacheCleanup(
+            current = current,
+            targets = current.erroredTargets,
+            requiredIds = current.erroredCacheCleanupRequiredIds,
+            completedIds = current.erroredCacheCleanupCompletedIds,
+            repository = repository,
+            update = { journal, completed ->
+                journal.copy(erroredCacheCleanupCompletedIds = completed)
+            },
+        )
         if (!current.erroredRefreshComplete) {
             LowQualityRedownloadLedger.refresh(context, current.erroredOperationIds)
             current = advanceJournal(current) { it.copy(erroredRefreshComplete = true) }
@@ -318,6 +341,35 @@ class CleanUpLeftoverDownloads(
             }
             advanceJournal(current) { it.copy(tempCleanupComplete = true) }
         }
+    }
+
+    private fun advanceExactCacheCleanup(
+        current: CleanupEffectJournal,
+        targets: List<DownloadItem>,
+        requiredIds: List<Long>,
+        completedIds: List<Long>,
+        repository: DownloadRepository,
+        update: (CleanupEffectJournal, List<Long>) -> CleanupEffectJournal,
+    ): CleanupEffectJournal {
+        var journal = current
+        var completed = completedIds.distinct()
+        val targetsById = targets.associateBy { it.id }
+        requiredIds.distinct().filterNot { it in completed }.forEach { targetId ->
+            val target = targetsById[targetId]
+                ?: throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
+                    IllegalStateException("cleanup cache target is missing from journal"),
+                )
+            if (!repository.deleteExactCacheForTarget(target)) {
+                throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
+                    IllegalStateException("exact cleanup cache deletion is incomplete"),
+                )
+            }
+            completed = (completed + targetId).distinct()
+            journal = advanceJournal(journal) { existing ->
+                update(existing, completed)
+            }
+        }
+        return journal
     }
 
     private fun advanceJournal(

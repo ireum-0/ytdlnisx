@@ -1,7 +1,6 @@
 package com.ireum.ytdl.ui.more.settings
 
 import android.content.Context
-import androidx.preference.PreferenceManager
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -50,10 +49,8 @@ internal class CleanupSchedulePreferenceController(
             }
 
             if (requestId != latestRequest) return@launch
-            val persistedCadence = PreferenceManager
-                .getDefaultSharedPreferences(appContext)
-                .getString(PREFERENCE_KEY, null)
-                .orEmpty()
+            val persistedCadence = CleanupScheduleCoordinator
+                .currentCadenceForSettings(appContext)
             applyPersistedCadence(persistedCadence)
         }
         return false
@@ -69,9 +66,5 @@ internal class CleanupSchedulePreferenceController(
         latestRequest++
         transitionJob?.cancel()
         transitionJob = null
-    }
-
-    private companion object {
-        const val PREFERENCE_KEY = "cleanup_leftover_downloads"
     }
 }

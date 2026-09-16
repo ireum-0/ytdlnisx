@@ -31,6 +31,8 @@ import com.ireum.ytdl.ui.more.settings.CleanupSchedulePreferenceController
 import com.ireum.ytdl.ui.more.settings.DownloadSettingsFragment
 import com.ireum.ytdl.ui.more.settings.SettingsActivity
 import com.ireum.ytdl.R
+import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import androidx.navigation.fragment.NavHostFragment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -55,6 +57,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Calendar
 import java.util.UUID
+import java.io.File
 
 /**
  * Drives the real coordinator and CleanUpLeftoverDownloads WorkManager path.
@@ -77,8 +80,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         database = DBManager.getInstance(context)
         workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        clearSchedulePreferences()
         clearTestSeams()
+        clearSchedulePreferences()
     }
 
     @After
@@ -220,6 +223,84 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             }
         )
         assertTrue(awaitUnfinishedCount(1))
+    }
+
+    @Test
+    fun memoryVisibleBootstrapFailureIsFencedUntilSameProcessRecovery() = runBlocking {
+        assertTrue(
+            preferences.edit()
+                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+                .remove("cleanup_leftover_downloads_generation")
+                .remove("cleanup_leftover_downloads_anchor_day")
+                .commit()
+        )
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+
+        CleanupScheduleCoordinator.reconcile(context)
+
+        // The editor mutation is visible through Android's in-process map,
+        // but the coordinator must not treat it as durable authority.
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_generation", null) != null
+        )
+        assertEquals(
+            CleanupSchedulePolicy.DAILY,
+            CleanupScheduleCoordinator.currentCadenceForSettings(context),
+        )
+        assertTrue(unfinishedCurrentWork().isEmpty())
+
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                val generation = preferences.getString(
+                    "cleanup_leftover_downloads_generation",
+                    null,
+                )
+                generation != null && (
+                    preferences.getString("cleanup_leftover_downloads_pending_generation", null) ==
+                        generation ||
+                        preferences.getString("cleanup_leftover_downloads_active_generation", null) ==
+                        generation
+                    )
+            }
+        )
+        assertTrue(awaitUnfinishedCount(1))
+    }
+
+    @Test
+    fun memoryOnlyCriticalMutationRestoresLastDurableStateAtProcessRestart() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val durableGeneration = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        assertFalse(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY))
+        assertEquals(
+            CleanupSchedulePolicy.WEEKLY,
+            preferences.getString("cleanup_leftover_downloads", null),
+        )
+        assertEquals(
+            CleanupSchedulePolicy.DAILY,
+            CleanupScheduleCoordinator.currentCadenceForSettings(context),
+        )
+
+        CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+
+        assertEquals(
+            CleanupSchedulePolicy.DAILY,
+            preferences.getString("cleanup_leftover_downloads", null),
+        )
+        assertEquals(
+            durableGeneration,
+            preferences.getString("cleanup_leftover_downloads_generation", null),
+        )
     }
 
     @Test
@@ -1145,6 +1226,109 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun roomCommitBeforeCacheFailureRetainsExactSuffixAfterRowDisappears() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        val firstId = database.downloadDao.insert(cleanupDownload("cache-room-commit"))
+        createdDownloadIds += firstId
+        val first = requireNotNull(database.downloadDao.getNullableDownloadById(firstId))
+        val cacheRoot = File(FileUtil.getCachePath(context))
+        DownloadCacheOwnership.ensureMarker(cacheRoot, first)
+
+        val roomFailureOnce = AtomicBoolean(true)
+        DownloadRepository.cleanupAfterRoomDeletionForTesting = {
+            if (roomFailureOnce.compareAndSet(true, false)) {
+                IllegalStateException("simulated process death after Room commit")
+            } else {
+                null
+            }
+        }
+        val cacheCalls = Collections.synchronizedList(mutableListOf<Long>())
+        DownloadRepository.exactCacheDeletionForTesting = { target ->
+            cacheCalls += target.id
+            DownloadCacheOwnership.deleteIfOwnedOrAlreadyAbsent(cacheRoot, target)
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val occurrenceAt = currentScheduledOccurrenceAt()
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
+
+        assertTrue(awaitDownload(timeoutMs = 10_000L) {
+            database.downloadDao.getNullableDownloadById(firstId) == null
+        })
+        // This row becomes eligible after D1's Room suffix committed. It is
+        // not part of D1's frozen cache responsibility.
+        val secondId = database.downloadDao.insert(cleanupDownload("cache-room-new"))
+        createdDownloadIds += secondId
+        CleanupScheduleCoordinator.resetReplayOwnerForTesting()
+
+        val terminal = awaitWorkById(request.id) { info ->
+            info.state == WorkInfo.State.SUCCEEDED ||
+                info.state == WorkInfo.State.FAILED ||
+                info.state == WorkInfo.State.CANCELLED
+        }
+        assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
+        assertTrue(cacheCalls.contains(firstId))
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getNullableDownloadById(secondId)?.status,
+        )
+    }
+
+    @Test
+    fun failedExactCacheDeletionDoesNotAdvanceJournalOrWidenTargets() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        val firstId = database.downloadDao.insert(cleanupDownload("cache-false"))
+        createdDownloadIds += firstId
+        val first = requireNotNull(database.downloadDao.getNullableDownloadById(firstId))
+        val cacheRoot = File(FileUtil.getCachePath(context))
+        DownloadCacheOwnership.ensureMarker(cacheRoot, first)
+
+        val cacheCalls = Collections.synchronizedList(mutableListOf<Long>())
+        val failOnce = AtomicBoolean(true)
+        DownloadRepository.exactCacheDeletionForTesting = { target ->
+            cacheCalls += target.id
+            if (failOnce.compareAndSet(true, false)) {
+                false
+            } else {
+                DownloadCacheOwnership.deleteIfOwnedOrAlreadyAbsent(cacheRoot, target)
+            }
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val occurrenceAt = currentScheduledOccurrenceAt()
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
+        assertTrue(awaitDownload(timeoutMs = 10_000L) {
+            database.downloadDao.getNullableDownloadById(firstId) == null
+        })
+        val secondId = database.downloadDao.insert(cleanupDownload("cache-false-new"))
+        createdDownloadIds += secondId
+
+        val terminal = awaitWorkById(request.id) { info ->
+            info.state == WorkInfo.State.SUCCEEDED ||
+                info.state == WorkInfo.State.FAILED ||
+                info.state == WorkInfo.State.CANCELLED
+        }
+        assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
+        assertTrue(cacheCalls.count { it == firstId } >= 2)
+        assertEquals(
+            DownloadRepository.Status.Cancelled.name,
+            database.downloadDao.getNullableDownloadById(secondId)?.status,
+        )
+    }
+
+    @Test
     fun refreshFailureResumesFrozenTargetsWithoutWideningToNewlyCancelledRow() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
@@ -1213,6 +1397,48 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         }
         assertTrue(retrying.runAttemptCount >= 1)
         assertEquals(0, cleanupRuns.get())
+
+        val terminal = awaitWorkById(request.id) { info ->
+            info.state == WorkInfo.State.SUCCEEDED ||
+                info.state == WorkInfo.State.FAILED ||
+                info.state == WorkInfo.State.CANCELLED
+        }
+        assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
+        assertEquals(1, cleanupRuns.get())
+    }
+
+    @Test
+    fun memoryVisibleEffectJournalFailureCannotGrantCleanupAuthority() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        val cleanupRuns = AtomicInteger(0)
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
+            cleanupRuns.incrementAndGet()
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null)
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val occurrenceAt = currentScheduledOccurrenceAt()
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+
+        val phaseCommitAttempts = AtomicInteger(0)
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = {
+            phaseCommitAttempts.getAndIncrement() > 0
+        }
+
+        val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
+        val retrying = awaitWorkById(request.id) { info ->
+            info.state == WorkInfo.State.ENQUEUED && info.runAttemptCount >= 1
+        }
+        assertTrue(retrying.runAttemptCount >= 1)
+        assertEquals(0, cleanupRuns.get())
+        assertTrue(
+            preferences.getString("cleanup_leftover_downloads_effect_journal", null) != null
+        )
 
         val terminal = awaitWorkById(request.id) { info ->
             info.state == WorkInfo.State.SUCCEEDED ||
@@ -1868,12 +2094,15 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = null
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
         CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = null
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = false
+        CleanupScheduleCoordinator.resetDurabilityFenceForTesting()
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = null
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = null
         CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = null
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = null
         CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = null
         DownloadRepository.cleanupAfterRoomDeletionForTesting = null
+        DownloadRepository.exactCacheDeletionForTesting = null
         LowQualityRedownloadLedger.refreshFailureForTesting = null
     }
 
@@ -1999,7 +2228,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         true
     }
 
-    private fun cleanupDownload(suffix: String): DownloadItem = DownloadItem(
+    private fun cleanupDownload(
+        suffix: String,
+        executionId: String = "cleanup-execution-$suffix-${UUID.randomUUID()}",
+    ): DownloadItem = DownloadItem(
         id = 0L,
         url = "https://example.com/cleanup/$suffix/${UUID.randomUUID()}",
         title = "cleanup-$suffix",
@@ -2027,6 +2259,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         SaveThumb = false,
         status = DownloadRepository.Status.Cancelled.name,
         downloadStartTime = System.currentTimeMillis(),
+        executionId = executionId,
         logID = null,
         operationId = "cleanup-test-$suffix-${UUID.randomUUID()}",
     )

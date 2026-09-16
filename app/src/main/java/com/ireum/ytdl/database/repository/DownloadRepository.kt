@@ -2949,7 +2949,37 @@ class DownloadRepository(private val database: DBManager) {
      */
     internal suspend fun deleteCancelledExactTargets(
         targets: List<DownloadItem>,
-    ): Set<String> = deleteKnownUserRemoval(targets, Status.Cancelled)
+    ): Set<String> = deleteKnownUserRemoval(
+        items = targets,
+        expectedStatus = Status.Cancelled,
+        deleteCacheAfterRoom = false,
+    )
+
+    /**
+     * Deletes only the exact cache suffixes captured for one cleanup journal.
+     * This is deliberately separate from the Room deletion transaction: the
+     * frozen DownloadItem remains the authority after its row has committed
+     * deletion and is no longer queryable.
+     */
+    internal fun deleteExactCacheForTarget(target: DownloadItem): Boolean {
+        exactCacheDeletionForTesting?.let { return it(target) }
+        val cacheDir = File(FileUtil.getCachePath(App.instance))
+        return runCatching {
+            DownloadCacheOwnership.deleteIfOwnedOrAlreadyAbsent(cacheDir, target)
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Freezes which exact targets had a cache suffix when the cleanup journal
+     * was prepared.  A later pass must not acquire authority merely because a
+     * new numeric cache directory appears for the same Download id.
+     */
+    internal fun exactCacheCleanupRequired(targets: List<DownloadItem>): List<Long> {
+        val cacheDir = File(FileUtil.getCachePath(App.instance))
+        return targets.filter { target ->
+            DownloadCacheOwnership.hasCleanupResponsibility(cacheDir, target)
+        }.map(DownloadItem::id)
+    }
 
     fun getActiveDownloadsCount() : Int {
         return downloadDao.getDownloadsCountByStatus(listOf(Status.Active, Status.PostProcessing).toListString())
@@ -2964,7 +2994,11 @@ class DownloadRepository(private val database: DBManager) {
     /** See [deleteCancelledExactTargets]. */
     internal suspend fun deleteErroredExactTargets(
         targets: List<DownloadItem>,
-    ): Set<String> = deleteKnownUserRemoval(targets, Status.Error)
+    ): Set<String> = deleteKnownUserRemoval(
+        items = targets,
+        expectedStatus = Status.Error,
+        deleteCacheAfterRoom = false,
+    )
 
     suspend fun deleteQueued(): Set<String> =
         deleteKnownUserRemoval(getQueuedDownloads())
@@ -3905,6 +3939,7 @@ class DownloadRepository(private val database: DBManager) {
     private suspend fun deleteKnownUserRemoval(
         items: List<DownloadItem>,
         expectedStatus: Status? = null,
+        deleteCacheAfterRoom: Boolean = true,
     ): Set<String> {
         if (items.isEmpty()) return emptySet()
         val pendingTokensToRelease = linkedSetOf<String>()
@@ -3936,7 +3971,9 @@ class DownloadRepository(private val database: DBManager) {
         if (expectedStatus != null) {
             cleanupAfterRoomDeletionForTesting?.invoke()?.let { throw it }
         }
-        deleteCache(authorizedItems)
+        if (deleteCacheAfterRoom) {
+            deleteCache(authorizedItems)
+        }
         return operationIds
     }
 
@@ -4401,6 +4438,10 @@ class DownloadRepository(private val database: DBManager) {
         /** Test seam after the cleanup Room deletion commits and before cache deletion. */
         @Volatile
         internal var cleanupAfterRoomDeletionForTesting: (() -> Exception?)? = null
+
+        /** Test seam for the exact journaled per-Download cache suffix. */
+        @Volatile
+        internal var exactCacheDeletionForTesting: ((DownloadItem) -> Boolean)? = null
 
         internal fun isLivePendingRemovalToken(token: String): Boolean =
             synchronized(undoAuthorityLock) {
