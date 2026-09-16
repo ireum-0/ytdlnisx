@@ -1,0 +1,22 @@
+{
+  "schema_version":"lens-history-v1-triage-receipt-v1",
+  "run_id":"R0A-20260916T1310Z-001",
+  "stage":"REPLAY_001_030",
+  "logical_rank_range":[1,30],
+  "microsegment_rank_range":[11,15],
+  "data_head":"df87d5e39aef74dfff0cb0f3ac6657c6a0bc3c7c",
+  "complete_state_blob":"8309c171d24a292b7ea30ae9e1a7d176601062bb",
+  "governing_pins":{"frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4","frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b","schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96","document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda","verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51","frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"},
+  "materializer_receipt":{"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r011-015.json","blob_sha":"568f2cf14308a43b439e009bdd4b818a62e28470"},
+  "materializer_corrections":[],
+  "exception_queue_blob":"2f181c1bb9108234667cf47c23634526c1b64811",
+  "previous_triage_receipt":{"path":"review-runs/lens-history-v1/automation/receipts/triage/R0A-20260916T1310Z-001/r006-010.json","blob_sha":"b5207ed70b5a93284f223c2dd5505de82b609047"},
+  "source_review":[
+    {"rank":11,"path":"review-runs/checkpoints/2026-09-15T112400Z__a5160ab5__5adcb36e__checkpoint.md","source_blob":"43dfe87fa75063dffab2fdfe5c9e6df2d4eb3ceb","independent_exception_triggers":[],"disposition":"NO_SEMANTIC_EXCEPTION","human_decision_needed":null},
+    {"rank":12,"path":"review-runs/checkpoints/2026-09-15T103500Z__a5160ab5__86bf6d07__checkpoint.md","source_blob":"732dc3a8880a872a91d066c042a90365fd543470","independent_exception_triggers":["STATUS_LABEL_CONFLICT_CANDIDATE"],"disposition":"MATERIALIZER_FLAGGED","human_decision_needed":"Source labels BUG-CLEANUP-01 SOURCE-SEMANTIC FIXED / execution NOT_VERIFIED while Completed scope and Verdict explicitly state no material status change; preserve the labeling tension without inferring canonical closure or a new lifecycle transition."},
+    {"rank":13,"path":"review-runs/checkpoints/2026-09-15T103100Z__a5160ab5__f17b5290__checkpoint.md","source_blob":"e2800bc84e7b0e0797360a7e3a4122fe5fcfea73","independent_exception_triggers":["STATUS_LABEL_CONFLICT_CANDIDATE"],"disposition":"MATERIALIZER_FLAGGED","human_decision_needed":"Source says no state change found while BUG-CLEANUP-01 remains source-semantic fixed; preserve as contradictory-status-label context only and do not infer a material canonical status transition."},
+    {"rank":14,"path":"review-runs/checkpoints/2026-09-15T093500Z__a5160ab5__471d8430__checkpoint.md","source_blob":"f809d65ad7ba59320c8e1dd7594ac83868273e92","independent_exception_triggers":[],"disposition":"NO_SEMANTIC_EXCEPTION","human_decision_needed":null},
+    {"rank":15,"path":"review-runs/checkpoints/2026-09-15T093300Z__a5160ab5__55b832e3__checkpoint.md","source_blob":"0b2d80b5cab4eb56e7d5aa47ebcd9741b953fca7","independent_exception_triggers":[],"disposition":"NO_SEMANTIC_EXCEPTION","human_decision_needed":null}
+  ],
+  "summary":{"ranks_reviewed":5,"independent_exception_ranks":[12,13],"materializer_flagged_exception_ranks":[12,13],"triage_discovered_missed_exception_ranks":[],"missed_exception_count":0,"unsafe_correction_count":0,"status":"HUMAN_REVIEW_REQUIRED"}
+}
