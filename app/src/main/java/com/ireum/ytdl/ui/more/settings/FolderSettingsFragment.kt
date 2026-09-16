@@ -116,7 +116,9 @@ class FolderSettingsFragment : BaseSettingsFragment() {
             editor.putString("command_path", FileUtil.getDefaultCommandPath()).apply()
         }
         if (preferences.getString("cache_path", "")!!.isEmpty()) {
-            editor.putString("cache_path", FileUtil.getCachePath(requireContext())).apply()
+            if (captureCurrentCacheRootBeforeMutation()) {
+                editor.putString("cache_path", FileUtil.getCachePath(requireContext())).apply()
+            }
         }
 
         if (FileUtil.hasAllFilesAccess()) {
@@ -361,11 +363,21 @@ class FolderSettingsFragment : BaseSettingsFragment() {
 
         findPreference<Preference>("reset_preferences")?.setOnPreferenceClickListener {
             UiUtil.showGenericConfirmDialog(requireContext(), getString(R.string.reset), getString(R.string.reset_preferences_in_screen)) {
-                resetPreferences(editor, R.xml.folders_preference)
-                requireActivity().recreate()
-                val fragmentId = findNavController().currentDestination?.id
-                findNavController().popBackStack(fragmentId!!,true)
-                findNavController().navigate(fragmentId)
+                if (!captureCurrentCacheRootBeforeMutation()) {
+                    Snackbar.make(
+                        requireView(),
+                        getString(R.string.cache_directory_warning),
+                        Snackbar.LENGTH_LONG,
+                    ).show()
+                } else {
+                    resetPreferences(editor, R.xml.folders_preference)
+                    requireActivity().recreate()
+                    val fragmentId = findNavController().currentDestination?.id
+                    if (fragmentId != null) {
+                        findNavController().popBackStack(fragmentId, true)
+                        findNavController().navigate(fragmentId)
+                    }
+                }
             }
             true
         }
@@ -611,25 +623,14 @@ class FolderSettingsFragment : BaseSettingsFragment() {
             ).show()
             return
         }
-        if (requestCode == CACHE_PATH_CODE) {
-            val currentCacheRoot = runCatching {
-                File(FileUtil.getCachePath(requireContext())).canonicalFile
-            }.getOrNull()
-            if (
-                currentCacheRoot == null ||
-                    !DownloadCacheOwnership.captureOwnedRootsForPathTransition(
-                        context = requireContext(),
-                        cacheRoot = currentCacheRoot,
-                    )
-            ) {
-                p?.summary = FileUtil.formatPath(FileUtil.getCachePath(requireContext()))
-                Snackbar.make(
-                    requireView(),
-                    getString(R.string.cache_directory_warning),
-                    Snackbar.LENGTH_LONG
-                ).show()
-                return
-            }
+        if (requestCode == CACHE_PATH_CODE && !captureCurrentCacheRootBeforeMutation()) {
+            p?.summary = FileUtil.formatPath(FileUtil.getCachePath(requireContext()))
+            Snackbar.make(
+                requireView(),
+                getString(R.string.cache_directory_warning),
+                Snackbar.LENGTH_LONG
+            ).show()
+            return
         }
         p!!.summary = FileUtil.formatPath(data.data.toString())
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
@@ -641,6 +642,20 @@ class FolderSettingsFragment : BaseSettingsFragment() {
             CACHE_PATH_CODE -> editor.putString("cache_path", path)
         }
         editor.apply()
+    }
+
+    /**
+     * Register valid carriers at the current effective root before any
+     * production path mutation can make that root undiscoverable.
+     */
+    private fun captureCurrentCacheRootBeforeMutation(): Boolean {
+        val currentCacheRoot = runCatching {
+            File(FileUtil.getCachePath(requireContext())).canonicalFile
+        }.getOrNull() ?: return false
+        return DownloadCacheOwnership.captureOwnedRootsForPathTransition(
+            context = requireContext(),
+            cacheRoot = currentCacheRoot,
+        )
     }
 
     private data class VideoFolderMigrationResult(

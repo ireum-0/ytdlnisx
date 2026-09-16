@@ -29,6 +29,7 @@ import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.ui.more.settings.CleanupSchedulePreferenceController
 import com.ireum.ytdl.ui.more.settings.DownloadSettingsFragment
+import com.ireum.ytdl.ui.more.settings.FolderSettingsFragment
 import com.ireum.ytdl.ui.more.settings.SettingsActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.util.FileUtil
@@ -1808,6 +1809,241 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun folderSettingsResetCapturesPreBindingRootBeforeDefaultingCachePath() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        val id = database.downloadDao.insert(cleanupDownload("cache-root-reset"))
+        createdDownloadIds += id
+        val target = requireNotNull(database.downloadDao.getNullableDownloadById(id))
+        val rootOne = context.cacheDir.resolve("cleanup-reset-one-${UUID.randomUUID()}").apply { mkdirs() }
+        val expectedDefaultRoot = (context.getExternalFilesDir(null) ?: context.cacheDir)
+            .resolve("downloads")
+            .canonicalFile
+        val hadCachePath = legacyPreferences.contains("cache_path")
+        val previousCachePath = legacyPreferences.getString("cache_path", null)
+        try {
+            assertTrue(legacyPreferences.edit().putString("cache_path", rootOne.absolutePath).commit())
+            // This is an existing carrier from before durable root binding.
+            DownloadCacheOwnership.prepareAttempt(rootOne, target)
+            val directory = File(rootOne, id.toString()).apply { mkdirs() }
+            val owned = directory.resolve("owned.bin").apply { writeText("owned") }
+            assertTrue(DownloadCacheOwnership.recordArtifacts(rootOne, target, listOf(owned.absolutePath)))
+
+            val scenario = ActivityScenario.launch(SettingsActivity::class.java)
+            try {
+                scenario.onActivity { activity ->
+                    val navHost = activity.supportFragmentManager
+                        .findFragmentById(R.id.frame_layout) as NavHostFragment
+                    navHost.navController.navigate(R.id.folderSettingsFragment)
+                    navHost.childFragmentManager.executePendingTransactions()
+                    val fragment = navHost.childFragmentManager.primaryNavigationFragment
+                        as FolderSettingsFragment
+                    fragment.findPreference<androidx.preference.Preference>("reset_preferences")
+                        ?.performClick()
+                }
+                onView(withText(R.string.continue_anyway)).perform(click())
+
+                assertTrue(
+                    awaitPreference(timeoutMs = 10_000L) {
+                        val stored = legacyPreferences.getString("cache_path", null).orEmpty()
+                        stored.isNotBlank() && runCatching {
+                            File(stored).canonicalFile == expectedDefaultRoot
+                        }.getOrDefault(false)
+                    }
+                )
+                DownloadCacheOwnership.resetRootBindingProcessStateForTesting()
+
+                val bindings = DownloadRepository(database).exactCacheCleanupBindings(listOf(target))
+                assertEquals(1, bindings.size)
+                assertEquals(rootOne.canonicalFile.absolutePath, bindings.single().rootPath)
+                assertTrue(owned.isFile)
+                assertFalse(File(expectedDefaultRoot, id.toString()).exists())
+
+                assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+                val generation = requireNotNull(
+                    preferences.getString("cleanup_leftover_downloads_generation", null)
+                )
+                val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+                val occurrenceAt = currentScheduledOccurrenceAt()
+                workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+                val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
+                workManager.enqueue(request).result.get(20, TimeUnit.SECONDS)
+                assertEquals(
+                    WorkInfo.State.SUCCEEDED,
+                    awaitWorkById(request.id) { info ->
+                        info.state == WorkInfo.State.SUCCEEDED ||
+                            info.state == WorkInfo.State.FAILED ||
+                            info.state == WorkInfo.State.CANCELLED
+                    }.state,
+                )
+                assertFalse(owned.exists())
+                assertFalse(DownloadCacheOwnership.markerFile(rootOne, id).exists())
+                assertFalse(DownloadCacheOwnership.artifactManifestFile(rootOne, id).exists())
+                assertFalse(File(expectedDefaultRoot, id.toString()).exists())
+            } finally {
+                scenario.close()
+            }
+        } finally {
+            if (hadCachePath) {
+                legacyPreferences.edit().putString("cache_path", previousCachePath).commit()
+            } else {
+                legacyPreferences.edit().remove("cache_path").commit()
+            }
+            rootOne.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun folderSettingsResetPreservesR1ForLegacyJournalAfterRestart() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        val id = database.downloadDao.insert(cleanupDownload("cache-root-reset-legacy"))
+        createdDownloadIds += id
+        val target = requireNotNull(database.downloadDao.getNullableDownloadById(id))
+        val rootOne = context.cacheDir.resolve("cleanup-reset-legacy-one-${UUID.randomUUID()}").apply { mkdirs() }
+        val expectedDefaultRoot = (context.getExternalFilesDir(null) ?: context.cacheDir)
+            .resolve("downloads")
+            .canonicalFile
+        val hadCachePath = legacyPreferences.contains("cache_path")
+        val previousCachePath = legacyPreferences.getString("cache_path", null)
+        try {
+            assertTrue(legacyPreferences.edit().putString("cache_path", rootOne.absolutePath).commit())
+            // The marker predates root-binding registration.  The real Folder
+            // Settings reset must capture this old root before defaulting the
+            // mutable cache_path preference.
+            DownloadCacheOwnership.prepareAttempt(rootOne, target)
+            val directory = File(rootOne, id.toString()).apply { mkdirs() }
+            val owned = directory.resolve("owned.bin").apply { writeText("owned") }
+            assertTrue(
+                DownloadCacheOwnership.recordArtifacts(
+                    rootOne,
+                    target,
+                    listOf(owned.absolutePath),
+                )
+            )
+
+            val scenario = ActivityScenario.launch(SettingsActivity::class.java)
+            try {
+                scenario.onActivity { activity ->
+                    val navHost = activity.supportFragmentManager
+                        .findFragmentById(R.id.frame_layout) as NavHostFragment
+                    navHost.navController.navigate(R.id.folderSettingsFragment)
+                    navHost.childFragmentManager.executePendingTransactions()
+                    val fragment = navHost.childFragmentManager.primaryNavigationFragment
+                        as FolderSettingsFragment
+                    fragment.findPreference<androidx.preference.Preference>("reset_preferences")
+                        ?.performClick()
+                }
+                onView(withText(R.string.continue_anyway)).perform(click())
+                assertTrue(
+                    awaitPreference(timeoutMs = 10_000L) {
+                        val stored = legacyPreferences.getString("cache_path", null).orEmpty()
+                        stored.isNotBlank() && runCatching {
+                            File(stored).canonicalFile == expectedDefaultRoot
+                        }.getOrDefault(false)
+                    }
+                )
+            } finally {
+                scenario.close()
+            }
+
+            assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+            val generation = requireNotNull(
+                preferences.getString("cleanup_leftover_downloads_generation", null),
+            )
+            val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+            val occurrenceAt = currentScheduledOccurrenceAt()
+            workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+
+            // This is the pre-root-binding journal shape: it records only the
+            // target id.  After the reset and a simulated restart, production
+            // legacy resolution must recover R1 from the captured locator.
+            val legacyJournal = CleanupEffectJournal(
+                generation = generation,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+                occurrenceAt = occurrenceAt,
+                cancelledTargets = listOf(target),
+                cancelledCacheCleanupRequiredIds = listOf(id),
+                tempCleanupRequired = false,
+            )
+            assertTrue(
+                CleanupScheduleCoordinator.seedEffectJournalForTesting(
+                    context = context,
+                    journal = legacyJournal,
+                    phase = "eligible",
+                )
+            )
+            CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+            DownloadCacheOwnership.resetRootBindingProcessStateForTesting()
+
+            val knownBindings = DownloadRepository(database).knownCacheCleanupBindings(target)
+            assertEquals(1, knownBindings.size)
+            assertEquals(rootOne.canonicalFile.absolutePath, knownBindings.single().rootPath)
+            assertTrue(owned.isFile)
+            assertFalse(File(expectedDefaultRoot, id.toString()).exists())
+
+            val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
+            val terminal = awaitWorkById(request.id) { info ->
+                info.state == WorkInfo.State.SUCCEEDED ||
+                    info.state == WorkInfo.State.FAILED ||
+                    info.state == WorkInfo.State.CANCELLED
+            }
+            assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
+            assertNull(database.downloadDao.getNullableDownloadById(id))
+            assertFalse(owned.exists())
+            assertFalse(DownloadCacheOwnership.markerFile(rootOne, id).exists())
+            assertFalse(DownloadCacheOwnership.artifactManifestFile(rootOne, id).exists())
+            assertFalse(File(expectedDefaultRoot, id.toString()).exists())
+        } finally {
+            if (hadCachePath) {
+                legacyPreferences.edit().putString("cache_path", previousCachePath).commit()
+            } else {
+                legacyPreferences.edit().remove("cache_path").commit()
+            }
+            rootOne.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun folderSettingsResetRetainsCachePathWhenRootCaptureFails() = runBlocking {
+        val rootOne = context.cacheDir.resolve("cleanup-reset-failure-${UUID.randomUUID()}").apply { mkdirs() }
+        val hadCachePath = legacyPreferences.contains("cache_path")
+        val previousCachePath = legacyPreferences.getString("cache_path", null)
+        try {
+            assertTrue(legacyPreferences.edit().putString("cache_path", rootOne.absolutePath).commit())
+            DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = { _, _ -> false }
+
+            val scenario = ActivityScenario.launch(SettingsActivity::class.java)
+            try {
+                scenario.onActivity { activity ->
+                    val navHost = activity.supportFragmentManager
+                        .findFragmentById(R.id.frame_layout) as NavHostFragment
+                    navHost.navController.navigate(R.id.folderSettingsFragment)
+                    navHost.childFragmentManager.executePendingTransactions()
+                    val fragment = navHost.childFragmentManager.primaryNavigationFragment
+                        as FolderSettingsFragment
+                    fragment.findPreference<androidx.preference.Preference>("reset_preferences")
+                        ?.performClick()
+                }
+                onView(withText(R.string.continue_anyway)).perform(click())
+                assertEquals(
+                    rootOne.absolutePath,
+                    legacyPreferences.getString("cache_path", null),
+                )
+            } finally {
+                scenario.close()
+            }
+        } finally {
+            DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = null
+            if (hadCachePath) {
+                legacyPreferences.edit().putString("cache_path", previousCachePath).commit()
+            } else {
+                legacyPreferences.edit().remove("cache_path").commit()
+            }
+            rootOne.deleteRecursively()
+        }
+    }
+
+    @Test
     fun refreshFailureResumesFrozenTargetsWithoutWideningToNewlyCancelledRow() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
@@ -2619,6 +2855,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         DownloadRepository.cleanupAfterRoomDeletionForTesting = null
         DownloadRepository.exactCacheDeletionForTesting = null
         DownloadCacheOwnership.fileDeletionForTesting = null
+        DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = null
         LowQualityRedownloadLedger.refreshFailureForTesting = null
     }
 

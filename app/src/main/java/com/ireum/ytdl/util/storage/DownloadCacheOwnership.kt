@@ -180,6 +180,10 @@ internal object DownloadCacheOwnership {
     @Volatile
     internal var fileDeletionForTesting: ((File) -> Boolean)? = null
 
+    /** Failure seam for settings-path transition coverage. */
+    @Volatile
+    internal var rootTransitionCaptureOverrideForTesting: ((Context, File) -> Boolean)? = null
+
     data class OwnedRoot(
         val directory: File,
         val marker: File,
@@ -216,6 +220,7 @@ internal object DownloadCacheOwnership {
      */
     fun captureOwnedRootsForPathTransition(context: Context, cacheRoot: File): Boolean =
         synchronized(ownershipLock) {
+            rootTransitionCaptureOverrideForTesting?.let { return@synchronized it(context, cacheRoot) }
             val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return@synchronized false
             ownedMarkerIdentities(root)?.all { identity ->
                 RootBindingStore.bind(
