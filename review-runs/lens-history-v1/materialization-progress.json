@@ -24,10 +24,10 @@
       "value": 8
     },
     "inventory_batches": {
-      "completed": 5,
-      "history_entries_materialized": 25,
-      "newest_history_rank_materialized_through": 25,
-      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0005-newest-021-025.jsonl",
+      "completed": 6,
+      "history_entries_materialized": 30,
+      "newest_history_rank_materialized_through": 30,
+      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0006-newest-026-030.jsonl",
       "batch_0001_checks": {
         "commit_detail_file_binding": "COMPLETE",
         "frozen_tree_presence": "COMPLETE",
@@ -60,13 +60,21 @@
         "source_blob_identity": "COMPLETE",
         "schema_class_assignment": "COMPLETE",
         "source_to_frozen_blob_identity": "5/5 MATCH"
+      },
+      "batch_0006_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "5/5 MATCH",
+        "verified_seed_alignment": "2/2 MATCH"
       }
     },
     "ledger_batches": {
-      "completed": 5,
-      "records_materialized": 25,
-      "newest_history_rank_materialized_through": 25,
-      "latest_batch": "review-runs/lens-history-v1/ledger-batches/0005-newest-021-025.jsonl",
+      "completed": 6,
+      "records_materialized": 30,
+      "newest_history_rank_materialized_through": 30,
+      "latest_batch": "review-runs/lens-history-v1/ledger-batches/0006-newest-026-030.jsonl",
       "cumulative_eligible_structured_finals_materialized": [
         "d8c9e3d94ecaaa6121f9912cab4240375e8b5680",
         "25a554d1768f8d3cdd09a6e384a89d915eeeace4"
@@ -88,9 +96,10 @@
         "review-runs/lens-history-v1/validation/ledger-batches-0001-0002.json",
         "review-runs/lens-history-v1/validation/ledger-batch-0003.json",
         "review-runs/lens-history-v1/validation/ledger-batch-0004.json",
-        "review-runs/lens-history-v1/validation/ledger-batch-0005.json"
+        "review-runs/lens-history-v1/validation/ledger-batch-0005.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0006.json"
       ],
-      "records_checked": 25,
+      "records_checked": 30,
       "invalid_records": 0
     },
     "aggregate_reconciliation": {
@@ -123,7 +132,7 @@
     "document_identity": "review-runs/lens-history-v1/rules/document-identity-v1.md"
   },
   "next_strategy": [
-    "continue bounded history extraction from rank 26 while binding each commit to its exact changed checkpoint path",
+    "continue bounded history extraction from rank 31 while binding each commit to its exact changed checkpoint path",
     "verify each candidate path exists in the frozen checkpoint tree and record its frozen blob identity",
     "deduplicate exact checkpoint document paths rather than assuming one commit equals one file",
     "materialize one lens-history-v1 ledger record per frozen checkpoint document",
