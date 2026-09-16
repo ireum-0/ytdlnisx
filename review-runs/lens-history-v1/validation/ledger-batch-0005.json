@@ -1,0 +1,78 @@
+{
+  "schema_version": "lens-history-v1",
+  "validation_kind": "ledger_batch_validation",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "batch": {
+    "inventory": "review-runs/lens-history-v1/inventory-batches/0005-newest-021-025.jsonl",
+    "ledger": "review-runs/lens-history-v1/ledger-batches/0005-newest-021-025.jsonl",
+    "history_rank_from_newest": {
+      "first": 21,
+      "last": 25
+    },
+    "records": 5
+  },
+  "byte_identity": {
+    "inventory_git_blob_sha": {
+      "expected": "88652c6f8b171972e9fbda30d7b11e3d195a156b",
+      "stored": "88652c6f8b171972e9fbda30d7b11e3d195a156b",
+      "status": "MATCH"
+    },
+    "ledger_git_blob_sha": {
+      "expected": "b74a9e5ab9d7a25559e8dde0d69803687bd5217d",
+      "stored": "b74a9e5ab9d7a25559e8dde0d69803687bd5217d",
+      "status": "MATCH"
+    }
+  },
+  "source_provenance": {
+    "commit_detail_file_binding": "5/5 COMPLETE",
+    "frozen_tree_presence": "5/5 COMPLETE",
+    "source_to_frozen_blob_identity": "5/5 MATCH"
+  },
+  "schema_validation": {
+    "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "validator": "Draft 2020-12",
+    "records_checked": 5,
+    "valid_records": 5,
+    "invalid_records": 0,
+    "status": "PASS"
+  },
+  "classification_summary": {
+    "UNINSTRUMENTED": 0,
+    "LEGACY_AUDIT_LENS": 5,
+    "STRUCTURED_PROVISIONAL": 0,
+    "STRUCTURED_FINAL": 0,
+    "explicit_final_records": 2,
+    "kind_not_verified_records": 3
+  },
+  "implementation_sha_summary": {
+    "a5160ab51dbe3c6f8d5f87853c4e4037469b9684": 3,
+    "2bcffa78116aa086c645f029f8abeaef0d51b659": 2
+  },
+  "aggregate_reconciliation": {
+    "cumulative_eligible_structured_finals_in_batch": 0,
+    "aggregate_delta": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 0,
+      "rejected_candidates_with_proof": 0,
+      "not_verified_candidates": 0,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 0
+    },
+    "observed_measured_effectiveness_after_batch": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "status": "UNCHANGED_PASS"
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  }
+}
