@@ -1,9 +1,9 @@
 {
   "schema_version": "lens-history-v1-automation-state-v3",
-  "status": "PAUSED_RETRYABLE",
+  "status": "ACTIVE",
   "run_id": "R0A-20260916T1310Z-001",
   "started_at": "2026-09-16T13:10:36Z",
-  "resumed_at": "2026-09-16T14:40:00Z",
+  "resumed_at": "2026-09-16T15:13:02Z",
   "stage": "REPLAY_001_030",
   "logical_rank_range": [1, 30],
   "target_batch_size": 30,
@@ -24,11 +24,8 @@
     "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
     "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
   },
-  "pause_class": "TIME_BUDGET",
+  "pause_class": null,
   "resume_safe": true,
-  "stability": {
-    "consecutive_clean_30_materialization_batches": 0,
-    "consecutive_clean_40_materialization_batches": 0
-  },
-  "reconciliation": "Protocol test certified ranks 1-10 through two immutable receipts. Full structured-payload verification discovered one factual exception-trigger omission at rank 8; it was preserved by append-only correction r006-010-c001 without changing classification or existing-ledger replay comparison. Resume from rank 11 after validating base receipts and correction chain."
+  "stability": {"consecutive_clean_30_materialization_batches":0,"consecutive_clean_40_materialization_batches":0},
+  "reconciliation": "Resumed from certified rank 10 after re-fetching both base receipts, bound correction, governing pins, and rank 11 source/frozen transport evidence."
 }
