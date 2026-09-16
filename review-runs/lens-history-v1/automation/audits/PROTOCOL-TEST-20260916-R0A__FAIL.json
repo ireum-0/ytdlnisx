@@ -1,0 +1,10 @@
+{
+  "test_mode": true,
+  "run_id": "PROTOCOL-TEST-20260916-R0A",
+  "audited_data_head": "77e6f68a97ca5c24ca28a102eac5e934786fec2a",
+  "complete_state_blob_sha": "a177e147c2c14f173f70304aa4a68c68a1e1979a",
+  "triage_marker_blob_sha": "fa6d642bc4bb1fb107e4b02686d35e30b34e8e11",
+  "stage": "PROTOCOL_TEST",
+  "failure_reason": "Synthetic audit failure used only to verify that FAIL does not unlock the next Materializer run.",
+  "status": "FAIL"
+}
