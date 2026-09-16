@@ -1,21 +1,12 @@
 {
   "protocol": "lens-history-v1-automation-test",
   "test_mode": true,
-  "state": "COMPLETE",
-  "run_id": "PROTOCOL-TEST-20260916-R0A",
-  "stage": "PROTOCOL_TEST",
-  "rank_range": {"first": 1, "last": 30},
-  "data_head": "77e6f68a97ca5c24ca28a102eac5e934786fec2a",
-  "produced": [
-    {"path":"review-runs/lens-history-v1/automation/corpus-shards/history-001-030.test.jsonl","blob_sha":"e503c43764cc2ab57e87f2b477b69624653ae86c"},
-    {"path":"review-runs/lens-history-v1/automation/exceptions/PROTOCOL-TEST-20260916-R0A.jsonl","blob_sha":"22292f699ed37edaf3998e82847a34cca2c7ed1b"}
-  ],
-  "validation": {
-    "state_chain_before_complete": "PASS",
-    "history_order": "30/30 MATCH",
-    "data_semantics_certified": false,
-    "reason": "Protocol test branch verifies synchronization and transport behavior only; it does not certify R0A semantic replay."
-  },
-  "requires_triage": true,
-  "requires_audit": true
+  "state": "RUNNING",
+  "run_id": "PROTOCOL-TEST-20260916-NEXT",
+  "started_at": "2026-09-16T12:51:00Z",
+  "stage": "PROTOCOL_TEST_NEXT_STAGE",
+  "start_head": "287e8de13a137ed0f7043db5870eac11890868a6",
+  "predecessor_run_id": "PROTOCOL-TEST-20260916-R0A",
+  "predecessor_audit_status": "PASS",
+  "note": "Test branch only. Demonstrates PASS marker unlocks the next Materializer lease."
 }
