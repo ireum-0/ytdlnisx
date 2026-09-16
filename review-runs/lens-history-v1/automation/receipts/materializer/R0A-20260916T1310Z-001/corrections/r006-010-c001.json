@@ -1,0 +1,24 @@
+{
+  "schema_version": "lens-history-v1-materializer-receipt-correction-v1",
+  "run_id": "R0A-20260916T1310Z-001",
+  "target_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r006-010.json",
+    "blob_sha": "0c115759ca2b376c63dc62908264c439d1ea110f"
+  },
+  "correction_id": "r006-010-c001",
+  "correction_scope": "FACTUAL_EXCEPTION_TRIGGER_ONLY",
+  "affects_deterministic_classification": false,
+  "affects_existing_ledger_replay_comparison": false,
+  "rank": 8,
+  "history_commit": "4d1f937c90d19234b57496c6d2288323fe2d9e4a",
+  "checkpoint_path": "review-runs/checkpoints/2026-09-15T122700Z__a5160ab5__8151c278__checkpoint.md",
+  "source_blob": "5353cb18603fd49ea57711b22d51d311e6fcaf83",
+  "add_exception_trigger": "STATUS_LABEL_CONFLICT_CANDIDATE",
+  "evidence": "The provisional checkpoint labels BUG-CLEANUP-01 as SOURCE-SEMANTIC FIXED / execution NOT_VERIFIED while the same structured provisional effectiveness records existing_finding_status_changes=0. Preserve for independent Triage; do not alter the existing ledger record or infer a canonical status change.",
+  "reason": "Detected during post-receipt full structured-payload verification. The immutable base receipt omitted this factual semantic-exception candidate.",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda"
+  }
+}
