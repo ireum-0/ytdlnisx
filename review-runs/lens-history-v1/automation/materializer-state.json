@@ -1,12 +1,21 @@
 {
   "protocol": "lens-history-v1-automation-test",
   "test_mode": true,
-  "state": "RUNNING",
+  "state": "COMPLETE",
   "run_id": "PROTOCOL-TEST-20260916-R0A",
-  "started_at": "2026-09-16T12:40:00Z",
   "stage": "PROTOCOL_TEST",
-  "planned_rank_range": {"first": 1, "last": 30},
-  "start_head": "16e1a5f08488d4fe53c299ea56e63beb169a2ff0",
-  "start_progress_blob": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
-  "note": "Test branch only. This state must not certify replay/materialization data."
+  "rank_range": {"first": 1, "last": 30},
+  "data_head": "77e6f68a97ca5c24ca28a102eac5e934786fec2a",
+  "produced": [
+    {"path":"review-runs/lens-history-v1/automation/corpus-shards/history-001-030.test.jsonl","blob_sha":"e503c43764cc2ab57e87f2b477b69624653ae86c"},
+    {"path":"review-runs/lens-history-v1/automation/exceptions/PROTOCOL-TEST-20260916-R0A.jsonl","blob_sha":"22292f699ed37edaf3998e82847a34cca2c7ed1b"}
+  ],
+  "validation": {
+    "state_chain_before_complete": "PASS",
+    "history_order": "30/30 MATCH",
+    "data_semantics_certified": false,
+    "reason": "Protocol test branch verifies synchronization and transport behavior only; it does not certify R0A semantic replay."
+  },
+  "requires_triage": true,
+  "requires_audit": true
 }
