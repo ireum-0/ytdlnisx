@@ -1,0 +1,26 @@
+{
+  "test_mode": true,
+  "run_id": "PROTOCOL-TEST-20260916-R0A",
+  "audited_data_head": "77e6f68a97ca5c24ca28a102eac5e934786fec2a",
+  "complete_state_blob_sha": "a177e147c2c14f173f70304aa4a68c68a1e1979a",
+  "triage_marker": {
+    "path": "review-runs/lens-history-v1/automation/triage/PROTOCOL-TEST-20260916-R0A.json",
+    "blob_sha": "fa6d642bc4bb1fb107e4b02686d35e30b34e8e11"
+  },
+  "stage": "PROTOCOL_TEST",
+  "rank_range": {"first": 1, "last": 30},
+  "checks": {
+    "running_lease_parent_chain": "PASS",
+    "data_write_parent_chain": "PASS",
+    "complete_state_parent_equals_data_head": "PASS",
+    "complete_state_only_changed_state_file": "PASS",
+    "triage_parent_equals_complete_state_commit": "PASS",
+    "triage_only_changed_triage_marker": "PASS",
+    "history_transport_per_page_1": "30/30 MATCH",
+    "bulk_transport_truncation_fail_closed": "PASS"
+  },
+  "triage_status": "HUMAN_REVIEW_REQUIRED",
+  "semantic_replay_certified": false,
+  "certification_scope": "PASS applies only to automation synchronization/transport protocol on the isolated test branch. It does not certify R0A semantic replay or unlock the live branch.",
+  "status": "PASS"
+}
