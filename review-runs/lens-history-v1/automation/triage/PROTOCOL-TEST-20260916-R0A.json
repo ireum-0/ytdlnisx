@@ -1,0 +1,26 @@
+{
+  "test_mode": true,
+  "run_id": "PROTOCOL-TEST-20260916-R0A",
+  "data_head": "77e6f68a97ca5c24ca28a102eac5e934786fec2a",
+  "complete_state_blob_sha": "a177e147c2c14f173f70304aa4a68c68a1e1979a",
+  "stage": "PROTOCOL_TEST",
+  "rank_range": {"first": 1, "last": 30},
+  "census_shard": {
+    "path": "review-runs/lens-history-v1/automation/corpus-shards/history-001-030.test.jsonl",
+    "blob_sha": "e503c43764cc2ab57e87f2b477b69624653ae86c"
+  },
+  "materializer_exception_records": 7,
+  "independently_detected_exception_records_in_test_scope": 7,
+  "missed_exception_records_in_test_scope": 0,
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "certification_scope": "Protocol synchronization test only; semantic exception completeness for R0A is not certified.",
+  "packets": [
+    {"rank":4,"kind":"scope expansion / subcase","source":"MATERIALIZER_FLAGGED"},
+    {"rank":5,"kind":"explicit NEW P2 finding","source":"MATERIALIZER_FLAGGED"},
+    {"rank":6,"kind":"scope addendum / same-root subcase","source":"MATERIALIZER_FLAGGED"},
+    {"rank":9,"kind":"reconciliation","source":"MATERIALIZER_FLAGGED"},
+    {"rank":17,"kind":"reconciliation","source":"MATERIALIZER_FLAGGED"},
+    {"rank":26,"kind":"reconciliation / residual refinement","source":"MATERIALIZER_FLAGGED"},
+    {"rank":30,"kind":"expanded scope / same-root subcases","source":"MATERIALIZER_FLAGGED"}
+  ]
+}
