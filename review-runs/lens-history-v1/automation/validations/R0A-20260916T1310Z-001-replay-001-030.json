@@ -1,0 +1,23 @@
+{
+  "schema_version":"lens-history-v1-replay-validation-v1",
+  "run_id":"R0A-20260916T1310Z-001",
+  "stage":"REPLAY_001_030",
+  "logical_rank_range":[1,30],
+  "frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "governing_pins":{"schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96","document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda","verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51","frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c","start_progress_blob_sha":"18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8"},
+  "materializer_receipts":[
+    {"range":[1,5],"blob_sha":"3d60e46476f0f5f5c3f5015a21601eec7b2663f9"},
+    {"range":[6,10],"blob_sha":"0c115759ca2b376c63dc62908264c439d1ea110f"},
+    {"range":[11,15],"blob_sha":"568f2cf14308a43b439e009bdd4b818a62e28470"},
+    {"range":[16,20],"blob_sha":"7f0d38723b77f9b660c34035d6738ce32ef5cd08"},
+    {"range":[21,25],"blob_sha":"a1db5c5f9a3f9cf57263fcdcf973ac32e80d957d"},
+    {"range":[26,30],"blob_sha":"aede3c66036a695925cea42da72675aff29d4d74"}
+  ],
+  "corrections":[{"id":"r006-010-c001","blob_sha":"66a534434f957cd946c5404d42ff09faf36af48c","scope":"FACTUAL_EXCEPTION_TRIGGER_ONLY","affects_deterministic_classification":false,"affects_existing_ledger_replay_comparison":false}],
+  "existing_ledger_blobs":["b7abe6abed33787a778ccaf8560aaa657641995b","21b461d87bacd1b993f88b5d689282e449bec74f","e0e8af97e3906b91031bee2785adfdff2ae36f48","34fc97a57d4fd0c1be83dd1d004a6c3179238cf0","b74a9e5ab9d7a25559e8dde0d69803687bd5217d","cd0daf0899457e1260c285531542d3e4b1df4848"],
+  "checks":{"rank_continuity_1_30":true,"history_order_mismatches":0,"file_enumeration_unclosed":0,"source_frozen_blob_mismatches":0,"schema_class_mismatches":0,"checkpoint_kind_mismatches":0,"effectiveness_eligibility_mismatches":0,"existing_ledger_required_field_mismatches":0,"prohibited_inference_violations":0,"official_rank_records_rewritten":false,"progress_counter_changed":false},
+  "counts":{"ranks":30,"base_receipts":6,"valid_corrections":1,"factual_exception_ranks":18},
+  "status":"PASS",
+  "requires_semantic_triage":true,
+  "requires_independent_audit":true
+}
