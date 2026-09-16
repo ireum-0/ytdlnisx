@@ -1,0 +1,12 @@
+{
+  "protocol": "lens-history-v1-automation-test",
+  "test_mode": true,
+  "state": "RUNNING",
+  "run_id": "PROTOCOL-TEST-20260916-R0A",
+  "started_at": "2026-09-16T12:40:00Z",
+  "stage": "PROTOCOL_TEST",
+  "planned_rank_range": {"first": 1, "last": 30},
+  "start_head": "16e1a5f08488d4fe53c299ea56e63beb169a2ff0",
+  "start_progress_blob": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "note": "Test branch only. This state must not certify replay/materialization data."
+}
