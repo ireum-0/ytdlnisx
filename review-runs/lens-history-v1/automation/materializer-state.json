@@ -1,10 +1,17 @@
 {
-  "schema_version": "lens-history-v1-automation-state-v1",
-  "status": "RUNNING",
+  "schema_version": "lens-history-v1-automation-state-v2",
+  "status": "PAUSED_RETRYABLE",
   "run_id": "R0A-20260916T1310Z-001",
   "started_at": "2026-09-16T13:10:36Z",
   "stage": "REPLAY_001_030",
-  "planned_rank_range": [1, 30],
+  "logical_rank_range": [1, 30],
+  "microsegment_size": 5,
+  "next_rank": 1,
+  "completed_microsegments": [],
   "start_head": "16e1a5f08488d4fe53c299ea56e63beb169a2ff0",
-  "start_progress_blob": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8"
+  "lease_commit": "473a3041d7f069ce7936fd879b5608d65b9b919a",
+  "start_progress_blob": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "pause_class": "NO_DATA_WRITTEN",
+  "resume_safe": true,
+  "reconciliation": "Only the lease commit exists; no corpus shard, receipt, exception, triage, audit, inventory, ledger, validation, or progress artifact was written by this run. Resume from rank 1."
 }
