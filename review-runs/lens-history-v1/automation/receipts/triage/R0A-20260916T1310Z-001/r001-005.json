@@ -1,0 +1,22 @@
+{
+  "schema_version":"lens-history-v1-triage-receipt-v1",
+  "run_id":"R0A-20260916T1310Z-001",
+  "stage":"REPLAY_001_030",
+  "logical_rank_range":[1,30],
+  "microsegment_rank_range":[1,5],
+  "data_head":"df87d5e39aef74dfff0cb0f3ac6657c6a0bc3c7c",
+  "complete_state_blob":"8309c171d24a292b7ea30ae9e1a7d176601062bb",
+  "governing_pins":{"frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4","frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b","schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96","document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda","verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51","frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"},
+  "materializer_receipt":{"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r001-005.json","blob_sha":"3d60e46476f0f5f5c3f5015a21601eec7b2663f9"},
+  "materializer_corrections":[],
+  "exception_queue_blob":"2f181c1bb9108234667cf47c23634526c1b64811",
+  "previous_triage_receipt":null,
+  "source_review":[
+    {"rank":1,"path":"review-runs/checkpoints/2026-09-15T133900Z__a67cb4ff__9218b8d2__final-checkpoint.md","source_blob":"f8b581783d16c38cce64c62b8762368601cea007","independent_exception_triggers":[],"note":"Existing OPEN roots/residual and explicit no-material-status-change are ordinary carried-forward evidence; no independent semantic exception trigger."},
+    {"rank":2,"path":"review-runs/checkpoints/2026-09-15T133500Z__a67cb4ff__8269471a__intermediate.md","source_blob":"b60b1e05239f936f5007a2e86e50c79bab8bae26","independent_exception_triggers":[],"note":"Existing BUG-CLEANUP-01 remains OPEN and no new root/status change/subcase is confirmed; no exception trigger."},
+    {"rank":3,"path":"review-runs/checkpoints/2026-09-15T132456Z__a67cb4ff__34506615__bootstrap.md","source_blob":"52b88fb7b6dc0768c7d636bd74738303c2da4139","independent_exception_triggers":[],"note":"Bootstrap records provisional review scope only; no new finding/status/count/checklist exception."},
+    {"rank":4,"path":"review-runs/checkpoints/2026-09-15__a5160ab5__cleanup-stale-row-recovery-debt-addendum.md","source_blob":"693f7c026001393b2fe10e0689128a4c546b929f","independent_exception_triggers":["ADDENDUM","SCOPE_EXPANSION","CONFIRMED_SUBCASE","COUNT_DELTA"],"disposition":"MATERIALIZER_FLAGGED","human_decision_needed":"Preserve same-root/count-delta-zero addendum semantics; do not auto-promote to a new root or status change."},
+    {"rank":5,"path":"review-runs/checkpoints/2026-09-15__a5160ab5__cleanup-stale-row-authority.md","source_blob":"b1be3da70899d561352b070f3ab9dc68b337a1a8","independent_exception_triggers":["NEW_FINDING","COUNT_DELTA"],"disposition":"MATERIALIZER_FLAGGED","human_decision_needed":"Preserve explicit new P2 root and +1 P2 count event as semantic-review evidence; do not infer later lifecycle from chronology."}
+  ],
+  "summary":{"ranks_reviewed":5,"independent_exception_ranks":[4,5],"materializer_flagged_exception_ranks":[4,5],"triage_discovered_missed_exception_ranks":[],"missed_exception_count":0,"unsafe_correction_count":0,"status":"HUMAN_REVIEW_REQUIRED"}
+}
