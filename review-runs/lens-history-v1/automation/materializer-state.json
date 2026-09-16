@@ -1,9 +1,9 @@
 {
   "schema_version":"lens-history-v1-automation-state-v3",
-  "status":"PAUSED_RETRYABLE",
+  "status":"ACTIVE",
   "run_id":"R0A-20260916T1310Z-001",
   "started_at":"2026-09-16T13:10:36Z",
-  "resumed_at":"2026-09-16T15:13:02Z",
+  "resumed_at":"2026-09-16T17:10:38Z",
   "stage":"REPLAY_001_030",
   "logical_rank_range":[1,30],
   "target_batch_size":30,
@@ -18,8 +18,7 @@
   "lease_commit":"473a3041d7f069ce7936fd879b5608d65b9b919a",
   "start_progress_blob":"18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
   "governing_pins":{"frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4","frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b","schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96","document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda","verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51","frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"},
-  "pause_class":"TIME_BUDGET",
   "resume_safe":true,
   "stability":{"consecutive_clean_30_materialization_batches":0,"consecutive_clean_40_materialization_batches":0},
-  "reconciliation":"Ranks 1-15 are sealed by three contiguous immutable base receipts plus the bound rank-8 factual exception correction. Ranks 11-15 replay matched existing ledger required fields with zero mismatch; resume from rank 16."
+  "reconciliation":"Ranks 1-15 remain sealed; resumed from rank 16 after re-verifying latest receipt, bound correction, governing pins, branch head, and source/frozen provenance prerequisites."
 }
