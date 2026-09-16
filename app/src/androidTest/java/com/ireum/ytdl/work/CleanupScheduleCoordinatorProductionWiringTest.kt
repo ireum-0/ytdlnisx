@@ -69,6 +69,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     private lateinit var context: Context
     private lateinit var workManager: WorkManager
     private lateinit var preferences: android.content.SharedPreferences
+    private lateinit var legacyPreferences: android.content.SharedPreferences
     private lateinit var database: DBManager
     private val createdDownloadIds = Collections.synchronizedList(mutableListOf<Long>())
     private val controlledOperations = Collections.synchronizedList(mutableListOf<ControlledOperation>())
@@ -79,7 +80,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         workManager = WorkManager.getInstance(context)
         database = DBManager.getInstance(context)
         workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
-        preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        preferences = CleanupScheduleCoordinator.criticalPreferencesForTesting(context)
+        legacyPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         clearTestSeams()
         clearSchedulePreferences()
     }
@@ -146,30 +148,82 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
-    fun startupMissingGenerationCommitFailureDoesNotPublishNewAuthorityOrDebt() = runBlocking {
+    fun legacyCriticalStateMigratesWithoutReplacingExactOccurrenceState() = runBlocking {
+        val generation = "legacy-generation"
+        val anchorDay = 31
+        val occurrenceAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(2)
         assertTrue(
-            preferences.edit()
+            legacyPreferences.edit()
                 .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
-                .remove("cleanup_leftover_downloads_generation")
-                .remove("cleanup_leftover_downloads_anchor_day")
-                .remove("cleanup_leftover_downloads_pending_generation")
-                .remove("cleanup_leftover_downloads_pending_cadence")
-                .remove("cleanup_leftover_downloads_pending_anchor_day")
-                .remove("cleanup_leftover_downloads_pending_occurrence_at")
-                .remove("cleanup_leftover_downloads_active_generation")
-                .remove("cleanup_leftover_downloads_active_cadence")
-                .remove("cleanup_leftover_downloads_active_anchor_day")
-                .remove("cleanup_leftover_downloads_active_occurrence_at")
-                .commit()
+                .putString("cleanup_leftover_downloads_generation", generation)
+                .putInt("cleanup_leftover_downloads_anchor_day", anchorDay)
+                .putString("cleanup_leftover_downloads_pending_generation", generation)
+                .putString("cleanup_leftover_downloads_pending_cadence", CleanupSchedulePolicy.DAILY)
+                .putInt("cleanup_leftover_downloads_pending_anchor_day", anchorDay)
+                .putLong("cleanup_leftover_downloads_pending_occurrence_at", occurrenceAt)
+                .putString("cleanup_leftover_downloads_pending_effect_phase", "in_progress")
+                .putString("cleanup_leftover_downloads_effect_journal", "legacy-exact-journal")
+                .commit(),
         )
-        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
 
         CleanupScheduleCoordinator.reconcile(context)
 
         assertEquals(
-            CleanupSchedulePolicy.DAILY,
-            preferences.getString("cleanup_leftover_downloads", null),
+            generation,
+            preferences.getString("cleanup_leftover_downloads_generation", null),
         )
+        assertEquals(
+            occurrenceAt,
+            preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+        )
+        assertEquals(
+            "legacy-exact-journal",
+            preferences.getString("cleanup_leftover_downloads_effect_journal", null),
+        )
+        assertEquals(1, preferences.getInt("cleanup_leftover_downloads_critical_store_version", -1))
+    }
+
+    @Test
+    fun failedCriticalStoreMigrationKeepsLegacyStateForRestartRecovery() = runBlocking {
+        val generation = "legacy-generation-for-restart"
+        assertTrue(
+            legacyPreferences.edit()
+                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+                .putString("cleanup_leftover_downloads_generation", generation)
+                .putInt("cleanup_leftover_downloads_anchor_day", 12)
+                .commit(),
+        )
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+
+        CleanupScheduleCoordinator.reconcile(context)
+
+        assertNull(preferences.getString("cleanup_leftover_downloads_critical_store_version", null))
+        assertEquals(
+            generation,
+            legacyPreferences.getString("cleanup_leftover_downloads_generation", null),
+        )
+
+        CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = false
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        CleanupScheduleCoordinator.reconcile(context)
+
+        assertEquals(
+            generation,
+            preferences.getString("cleanup_leftover_downloads_generation", null),
+        )
+        assertEquals(1, preferences.getInt("cleanup_leftover_downloads_critical_store_version", -1))
+    }
+
+    @Test
+    fun startupMissingGenerationCommitFailureDoesNotPublishNewAuthorityOrDebt() = runBlocking {
+        seedInitializedScheduleWithMissingGeneration()
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+
+        CleanupScheduleCoordinator.reconcile(context)
+
+        assertEquals(CleanupSchedulePolicy.DAILY, preferences.getString("cleanup_leftover_downloads", null))
         assertNull(preferences.getString("cleanup_leftover_downloads_generation", null))
         assertNull(
             preferences.getString("cleanup_leftover_downloads_pending_generation", null)
@@ -179,21 +233,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
     @Test
     fun startupMissingGenerationCommitFailureRetainsCurrentProcessBootstrapOwner() = runBlocking {
-        assertTrue(
-            preferences.edit()
-                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
-                .remove("cleanup_leftover_downloads_generation")
-                .remove("cleanup_leftover_downloads_anchor_day")
-                .remove("cleanup_leftover_downloads_pending_generation")
-                .remove("cleanup_leftover_downloads_pending_cadence")
-                .remove("cleanup_leftover_downloads_pending_anchor_day")
-                .remove("cleanup_leftover_downloads_pending_occurrence_at")
-                .remove("cleanup_leftover_downloads_active_generation")
-                .remove("cleanup_leftover_downloads_active_cadence")
-                .remove("cleanup_leftover_downloads_active_anchor_day")
-                .remove("cleanup_leftover_downloads_active_occurrence_at")
-                .commit()
-        )
+        seedInitializedScheduleWithMissingGeneration()
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
@@ -227,13 +267,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
     @Test
     fun memoryVisibleBootstrapFailureIsFencedUntilSameProcessRecovery() = runBlocking {
-        assertTrue(
-            preferences.edit()
-                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
-                .remove("cleanup_leftover_downloads_generation")
-                .remove("cleanup_leftover_downloads_anchor_day")
-                .commit()
-        )
+        seedInitializedScheduleWithMissingGeneration()
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
@@ -304,6 +338,40 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun rejectedCriticalAuthorityCannotBePersistedByUnrelatedDefaultPreferenceWrite() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val durableGeneration = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null),
+        )
+
+        CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        assertFalse(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY))
+        assertEquals(
+            CleanupSchedulePolicy.WEEKLY,
+            preferences.getString("cleanup_leftover_downloads", null),
+        )
+
+        // This write targets the legacy/default settings container.  It must
+        // not be able to flush rejected cleanup authority because the
+        // coordinator's critical namespace is now a separate store.
+        assertTrue(
+            legacyPreferences.edit()
+                .putString("schedule_start", "23:00")
+                .commit(),
+        )
+        CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+
+        assertEquals(CleanupSchedulePolicy.DAILY, preferences.getString("cleanup_leftover_downloads", null))
+        assertEquals(
+            durableGeneration,
+            preferences.getString("cleanup_leftover_downloads_generation", null),
+        )
+        assertEquals("23:00", legacyPreferences.getString("schedule_start", null))
+    }
+
+    @Test
     fun rejectedAuthorityCannotBeCollateralPersistedByLaterSuccessfulEffectJournalWrite() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
@@ -326,6 +394,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
         assertFalse(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY))
         assertEquals(CleanupSchedulePolicy.WEEKLY, preferences.getString("cleanup_leftover_downloads", null))
+        assertTrue(legacyPreferences.edit().putString("schedule_start", "22:00").commit())
 
         // A later legitimate DAILY effect-journal write must rebuild the
         // critical namespace from the confirmed DAILY snapshot, not from the
@@ -366,6 +435,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = { false }
         assertFalse(CleanupScheduleCoordinator.seedEffectJournalForTesting(context, journal))
         assertTrue(preferences.getString("cleanup_leftover_downloads_effect_journal", null) != null)
+        assertTrue(legacyPreferences.edit().putString("schedule_end", "06:00").commit())
 
         // Supersession is a successful critical authority write. It must not
         // carry the rejected in-progress journal into the new generation.
@@ -419,6 +489,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             ) { it.copy(cancelledRefreshComplete = false) }
         )
         assertTrue(preferences.getString("cleanup_leftover_downloads_effect_journal", null) != null)
+        assertTrue(legacyPreferences.edit().putString("download_archive_path", "/archive").commit())
 
         // Successor publication is a later critical authority write. It must
         // be based on the confirmed complete journal, not the rejected raw
@@ -483,6 +554,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         )
         CleanupScheduleCoordinator.resetReplayOwnerForTesting()
 
+        assertTrue(legacyPreferences.edit().putString("schedule_start", "21:00").commit())
+
         // A successful effect transition for the still-confirmed predecessor
         // must not carry that rejected successor into the durable image.
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
@@ -499,11 +572,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
     @Test
     fun bootstrapReplayIsFencedByDisableAndSupersession() = runBlocking {
-        preferences.edit()
-            .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
-            .remove("cleanup_leftover_downloads_generation")
-            .remove("cleanup_leftover_downloads_anchor_day")
-            .commit()
+        seedInitializedScheduleWithMissingGeneration()
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
@@ -515,11 +584,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         assertNull(preferences.getString("cleanup_leftover_downloads_pending_generation", null))
         assertNull(preferences.getString("cleanup_leftover_downloads_active_generation", null))
 
-        preferences.edit()
-            .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
-            .remove("cleanup_leftover_downloads_generation")
-            .remove("cleanup_leftover_downloads_anchor_day")
-            .commit()
+        preferences.edit().clear().commit()
+        seedInitializedScheduleWithMissingGeneration()
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
         CleanupScheduleCoordinator.reconcile(context)
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
@@ -538,13 +604,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
     @Test
     fun startupMissingGenerationCommitsDebtBeforeEnqueueAttempt() = runBlocking {
-        assertTrue(
-            preferences.edit()
-                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
-                .remove("cleanup_leftover_downloads_generation")
-                .remove("cleanup_leftover_downloads_anchor_day")
-                .commit()
-        )
+        seedInitializedScheduleWithMissingGeneration()
         val operation = ControlledOperation().also { controlledOperations += it }
         var enqueueSawMatchingDebt = false
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { editor ->
@@ -596,13 +656,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
     @Test
     fun startupMissingGenerationEnqueueFailureReplaysInProcess() = runBlocking {
-        assertTrue(
-            preferences.edit()
-                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
-                .remove("cleanup_leftover_downloads_generation")
-                .remove("cleanup_leftover_downloads_anchor_day")
-                .commit()
-        )
+        seedInitializedScheduleWithMissingGeneration()
         val enqueueCalls = AtomicInteger(0)
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 25L
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 100L
@@ -1523,6 +1577,85 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun realCacheHelperPartialFailureRetainsExactCarrierAcrossRecovery() = runBlocking {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        val id = database.downloadDao.insert(cleanupDownload("cache-real-helper"))
+        createdDownloadIds += id
+        val target = requireNotNull(database.downloadDao.getNullableDownloadById(id))
+        val cacheRoot = File(FileUtil.getCachePath(context))
+        val directory = File(cacheRoot, id.toString()).apply { mkdirs() }
+        DownloadCacheOwnership.ensureMarker(cacheRoot, target)
+        val first = directory.resolve("first.bin").apply { writeText("first") }
+        val second = directory.resolve("second.bin").apply { writeText("second") }
+        assertTrue(
+            DownloadCacheOwnership.recordArtifacts(
+                cacheRoot,
+                target,
+                listOf(first.absolutePath, second.absolutePath),
+            )
+        )
+
+        val secondDeletionEntered = CountDownLatch(1)
+        val releaseSecondDeletion = CountDownLatch(1)
+        val failSecondOnce = AtomicBoolean(true)
+        DownloadCacheOwnership.fileDeletionForTesting = { file ->
+            if (file.name == second.name && failSecondOnce.compareAndSet(true, false)) {
+                secondDeletionEntered.countDown()
+                check(releaseSecondDeletion.await(10, TimeUnit.SECONDS)) {
+                    "cache deletion failure seam was not released"
+                }
+                false
+            } else {
+                file.delete()
+            }
+        }
+
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(
+            preferences.getString("cleanup_leftover_downloads_generation", null),
+        )
+        val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        val occurrenceAt = currentScheduledOccurrenceAt()
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
+
+        assertTrue(awaitDownload(timeoutMs = 10_000L) {
+            database.downloadDao.getNullableDownloadById(id) == null
+        })
+        assertTrue(secondDeletionEntered.await(10, TimeUnit.SECONDS))
+        assertFalse(first.exists())
+        assertTrue(second.isFile)
+        assertTrue(DownloadCacheOwnership.markerFile(cacheRoot, id).isFile)
+        assertTrue(DownloadCacheOwnership.artifactManifestFile(cacheRoot, id).isFile)
+
+        // Drop process-local replay state while the worker is still in the
+        // failed real helper call. Durable journal and exact filesystem
+        // carrier must be sufficient for the retry that follows.
+        CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+        releaseSecondDeletion.countDown()
+        DownloadCacheOwnership.fileDeletionForTesting = null
+
+        val terminal = awaitWorkById(request.id) { info ->
+            info.state == WorkInfo.State.SUCCEEDED ||
+                info.state == WorkInfo.State.FAILED ||
+                info.state == WorkInfo.State.CANCELLED
+        }
+        assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
+        assertFalse(second.exists())
+        assertFalse(DownloadCacheOwnership.markerFile(cacheRoot, id).exists())
+        assertFalse(DownloadCacheOwnership.artifactManifestFile(cacheRoot, id).exists())
+        assertEquals(1, unfinishedCurrentWork().size)
+        val infos = workManager.getWorkInfosForUniqueWork(
+            CleanupScheduleCoordinator.WORK_NAME,
+        ).get(20, TimeUnit.SECONDS)
+        assertEquals(
+            1,
+            infos.count { it.tags.contains(occurrenceTag(generation, occurrenceAt)) },
+        )
+    }
+
+    @Test
     fun refreshFailureResumesFrozenTargetsWithoutWideningToNewlyCancelledRow() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
@@ -1833,7 +1966,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun settingsCommitFailureLeavesPreviousDurableCadenceVisible() = runBlocking {
         assertTrue(
-            preferences.edit()
+            legacyPreferences.edit()
                 .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
                 .commit()
         )
@@ -1918,7 +2051,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     fun rapidSettingsRequestsLeaveLatestCadenceAuthoritative() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         assertTrue(
-            preferences.edit()
+            legacyPreferences.edit()
                 .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
                 .commit()
         )
@@ -2261,6 +2394,9 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
     private fun clearSchedulePreferences() {
         preferences.edit()
+            .clear()
+            .commit()
+        legacyPreferences.edit()
             .remove("cleanup_leftover_downloads")
             .remove("cleanup_leftover_downloads_generation")
             .remove("cleanup_leftover_downloads_anchor_day")
@@ -2276,6 +2412,39 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             .remove("cleanup_leftover_downloads_active_effect_phase")
             .remove("cleanup_leftover_downloads_effect_journal")
             .commit()
+    }
+
+    /**
+     * Bootstraps the dedicated critical store once, then leaves an enabled
+     * schedule with no generation so tests exercise the bootstrap write rather
+     * than accidentally failing at legacy-store migration first.
+     */
+    private suspend fun seedInitializedScheduleWithMissingGeneration() {
+        assertTrue(
+            legacyPreferences.edit()
+                .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+                .commit(),
+        )
+        CleanupScheduleCoordinator.reconcile(context)
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        assertTrue(
+            preferences.edit()
+                .remove("cleanup_leftover_downloads_generation")
+                .remove("cleanup_leftover_downloads_anchor_day")
+                .remove("cleanup_leftover_downloads_pending_generation")
+                .remove("cleanup_leftover_downloads_pending_cadence")
+                .remove("cleanup_leftover_downloads_pending_anchor_day")
+                .remove("cleanup_leftover_downloads_pending_occurrence_at")
+                .remove("cleanup_leftover_downloads_pending_effect_phase")
+                .remove("cleanup_leftover_downloads_active_generation")
+                .remove("cleanup_leftover_downloads_active_cadence")
+                .remove("cleanup_leftover_downloads_active_anchor_day")
+                .remove("cleanup_leftover_downloads_active_occurrence_at")
+                .remove("cleanup_leftover_downloads_active_effect_phase")
+                .remove("cleanup_leftover_downloads_effect_journal")
+                .commit(),
+        )
+        CleanupScheduleCoordinator.resetReplayOwnerForTesting()
     }
 
     private fun clearTestSeams() {

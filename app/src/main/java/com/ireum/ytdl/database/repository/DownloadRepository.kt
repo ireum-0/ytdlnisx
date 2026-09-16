@@ -2961,13 +2961,24 @@ class DownloadRepository(private val database: DBManager) {
      * frozen DownloadItem remains the authority after its row has committed
      * deletion and is no longer queryable.
      */
-    internal fun deleteExactCacheForTarget(target: DownloadItem): Boolean {
-        exactCacheDeletionForTesting?.let { return it(target) }
+    internal fun deleteExactCacheForTargetOutcome(
+        target: DownloadItem,
+    ): DownloadCacheOwnership.ExactCleanupResult {
+        exactCacheDeletionForTesting?.let {
+            return if (it(target)) {
+                DownloadCacheOwnership.ExactCleanupResult.Completed
+            } else {
+                DownloadCacheOwnership.ExactCleanupResult.RetryableFailure
+            }
+        }
         val cacheDir = File(FileUtil.getCachePath(App.instance))
         return runCatching {
-            DownloadCacheOwnership.deleteIfOwnedOrAlreadyAbsent(cacheDir, target)
-        }.getOrDefault(false)
+            DownloadCacheOwnership.deleteIfOwnedOrAlreadyAbsentResult(cacheDir, target)
+        }.getOrDefault(DownloadCacheOwnership.ExactCleanupResult.RetryableFailure)
     }
+
+    internal fun deleteExactCacheForTarget(target: DownloadItem): Boolean =
+        deleteExactCacheForTargetOutcome(target) == DownloadCacheOwnership.ExactCleanupResult.Completed
 
     /**
      * Freezes which exact targets had a cache suffix when the cleanup journal

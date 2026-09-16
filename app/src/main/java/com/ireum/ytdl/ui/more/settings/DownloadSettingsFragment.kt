@@ -69,6 +69,8 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
 
         val cleanupLeftoverDownloads = findPreference<ListPreference>("cleanup_leftover_downloads")
         cleanupLeftoverDownloads?.let { cleanupPreference ->
+            cleanupPreference.value =
+                CleanupScheduleCoordinator.currentCadenceForSettings(requireContext())
             val transitionController = CleanupSchedulePreferenceController(
                 context = requireContext(),
                 scope = lifecycleScope,

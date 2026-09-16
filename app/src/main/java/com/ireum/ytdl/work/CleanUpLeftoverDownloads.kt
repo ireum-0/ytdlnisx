@@ -15,6 +15,7 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.storage.AppCacheCategory
 import com.ireum.ytdl.util.storage.AppCacheManager
+import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.CancellationException
 import java.util.Calendar
@@ -359,10 +360,15 @@ class CleanUpLeftoverDownloads(
                 ?: throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
                     IllegalStateException("cleanup cache target is missing from journal"),
                 )
-            if (!repository.deleteExactCacheForTarget(target)) {
-                throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
-                    IllegalStateException("exact cleanup cache deletion is incomplete"),
-                )
+            when (repository.deleteExactCacheForTargetOutcome(target)) {
+                DownloadCacheOwnership.ExactCleanupResult.Completed,
+                DownloadCacheOwnership.ExactCleanupResult.Superseded,
+                DownloadCacheOwnership.ExactCleanupResult.Unproven,
+                -> Unit
+                DownloadCacheOwnership.ExactCleanupResult.RetryableFailure ->
+                    throw CleanupScheduleCoordinator.EffectPhaseRecoveryRequired(
+                        IllegalStateException("exact cleanup cache deletion is incomplete"),
+                    )
             }
             completed = (completed + targetId).distinct()
             journal = advanceJournal(journal) { existing ->

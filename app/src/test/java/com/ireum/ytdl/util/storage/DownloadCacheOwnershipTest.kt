@@ -6,6 +6,7 @@ import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -66,6 +67,81 @@ class DownloadCacheOwnershipTest {
     }
 
     @Test
+    fun completedManifestRetiresExactCarrierWithoutDeletingUnknownSibling() {
+        val root = Files.createTempDirectory("download-cache-unknown-sibling-").toFile()
+        try {
+            val item = item(operationId = "operation-current", executionId = "execution-current")
+            DownloadCacheOwnership.ensureMarker(root, item)
+            val directory = File(root, item.id.toString()).apply { mkdirs() }
+            val owned = directory.resolve("owned.bin").apply { writeText("owned") }
+            val unknown = directory.resolve("unknown.bin").apply { writeText("keep") }
+            assertTrue(DownloadCacheOwnership.recordArtifacts(root, item, listOf(owned.absolutePath)))
+
+            assertEquals(
+                DownloadCacheOwnership.ExactCleanupResult.Unproven,
+                DownloadCacheOwnership.deleteIfOwnedResult(root, item),
+            )
+            assertFalse(owned.exists())
+            assertTrue(unknown.isFile)
+            assertFalse(DownloadCacheOwnership.markerFile(root, item.id).exists())
+            assertFalse(DownloadCacheOwnership.artifactManifestFile(root, item.id).exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun exactMarkerWithoutUsableManifestIsUnprovenAndPreserved() {
+        val root = Files.createTempDirectory("download-cache-unproven-manifest-").toFile()
+        try {
+            val item = item(operationId = "operation-current", executionId = "execution-current")
+            DownloadCacheOwnership.ensureMarker(root, item)
+            val directory = File(root, item.id.toString()).apply { mkdirs() }
+            val unknown = directory.resolve("unknown.bin").apply { writeText("keep") }
+            DownloadCacheOwnership.artifactManifestFile(root, item.id).writeText("malformed")
+
+            assertEquals(
+                DownloadCacheOwnership.ExactCleanupResult.Unproven,
+                DownloadCacheOwnership.deleteIfOwnedResult(root, item),
+            )
+            assertTrue(unknown.isFile)
+            assertTrue(DownloadCacheOwnership.markerFile(root, item.id).isFile)
+            assertTrue(DownloadCacheOwnership.artifactManifestFile(root, item.id).isFile)
+            assertFalse(DownloadCacheOwnership.hasCleanupResponsibility(root, item))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun validReplacementOwnerSupersedesFrozenOldCleanupWithoutMutation() {
+        val root = Files.createTempDirectory("download-cache-replaced-owner-").toFile()
+        try {
+            val old = item(operationId = "operation-old", executionId = "execution-old")
+            val newer = item(operationId = "operation-new", executionId = "execution-new")
+            DownloadCacheOwnership.ensureMarker(root, old)
+            val directory = File(root, old.id.toString()).apply { mkdirs() }
+            val oldFile = directory.resolve("old.bin").apply { writeText("old") }
+            assertTrue(DownloadCacheOwnership.recordArtifacts(root, old, listOf(oldFile.absolutePath)))
+
+            // Model a valid ownership handoff after D1 captured its old
+            // carrier. The old operation must recognize positive replacement
+            // evidence, not retry forever and not touch the new owner's root.
+            DownloadCacheOwnership.markerFile(root, old.id).writeText(
+                DownloadCacheOwnership.markerText(newer),
+            )
+            assertEquals(
+                DownloadCacheOwnership.ExactCleanupResult.Superseded,
+                DownloadCacheOwnership.deleteIfOwnedResult(root, old),
+            )
+            assertTrue(oldFile.isFile)
+            assertTrue(DownloadCacheOwnership.markerFile(root, old.id).readText().contains("operation-new"))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun failedOwnedFileDeletionRetainsManifestAndMarkerForExactRetry() {
         val root = Files.createTempDirectory("download-cache-retryable-").toFile()
         try {
@@ -92,14 +168,20 @@ class DownloadCacheOwnershipTest {
                 }
             }
 
-            assertFalse(DownloadCacheOwnership.deleteIfOwned(root, item))
+            assertEquals(
+                DownloadCacheOwnership.ExactCleanupResult.RetryableFailure,
+                DownloadCacheOwnership.deleteIfOwnedResult(root, item),
+            )
             assertFalse(first.exists())
             assertTrue(second.isFile)
             assertTrue(DownloadCacheOwnership.markerFile(root, item.id).isFile)
             assertTrue(DownloadCacheOwnership.artifactManifestFile(root, item.id).isFile)
 
             DownloadCacheOwnership.fileDeletionForTesting = null
-            assertTrue(DownloadCacheOwnership.deleteIfOwned(root, item))
+            assertEquals(
+                DownloadCacheOwnership.ExactCleanupResult.Completed,
+                DownloadCacheOwnership.deleteIfOwnedResult(root, item),
+            )
             assertFalse(second.exists())
             assertFalse(DownloadCacheOwnership.markerFile(root, item.id).exists())
             assertFalse(DownloadCacheOwnership.artifactManifestFile(root, item.id).exists())

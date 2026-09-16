@@ -21,6 +21,29 @@ internal object DownloadCacheOwnership {
     private const val ARTIFACT_MANIFEST_NAME = ".ytdlnisx-download-artifacts.txt"
     private const val ARTIFACT_MANIFEST_HEADER = "ytdlnisx-download-artifacts"
     private const val VERSION = "1"
+    private val ownershipLock = Any()
+
+    /** Semantic outcome of an exact frozen-cache cleanup attempt. */
+    sealed interface ExactCleanupResult {
+        data object Completed : ExactCleanupResult
+        data object RetryableFailure : ExactCleanupResult
+        data object Superseded : ExactCleanupResult
+        data object Unproven : ExactCleanupResult
+    }
+
+    private enum class OwnershipState {
+        EXACT,
+        REPLACED,
+        UNPROVEN,
+        ABSENT,
+    }
+
+    private sealed interface ManifestInspection {
+        data object Missing : ManifestInspection
+        data object Invalid : ManifestInspection
+        data object Unreadable : ManifestInspection
+        data class Valid(val entries: List<String>) : ManifestInspection
+    }
 
     /** Failure seam for deterministic retries of exact manifest entries. */
     @Volatile
@@ -45,7 +68,7 @@ internal object DownloadCacheOwnership {
             "executionId=${item.executionId}\n"
 
     /** Establish/update the marker for a claimed operation before native I/O. */
-    fun ensureMarker(cacheRoot: File, item: DownloadItem): File {
+    fun ensureMarker(cacheRoot: File, item: DownloadItem): File = synchronized(ownershipLock) {
         require(item.id > 0L) { "Download cache ownership requires a persisted id" }
         require(item.operationId.isNotBlank()) { "Download cache ownership requires an operation id" }
         require(item.executionId.isNotBlank()) { "Download cache ownership requires an execution id" }
@@ -118,7 +141,7 @@ internal object DownloadCacheOwnership {
         if (!marker.isFile) {
             throw IllegalStateException("Download cache ownership marker was not created")
         }
-        return marker
+        marker
     }
 
     /**
@@ -126,7 +149,7 @@ internal object DownloadCacheOwnership {
      * children.  Existing files must be listed in the prior operation's exact
      * artifact manifest; otherwise the caller fails closed.
      */
-    fun prepareAttempt(cacheRoot: File, item: DownloadItem): File {
+    fun prepareAttempt(cacheRoot: File, item: DownloadItem): File = synchronized(ownershipLock) {
         val root = cacheRoot.canonicalFile
         val marker = ensureMarker(root, item)
         val directory = File(root, item.id.toString()).canonicalFile
@@ -170,20 +193,14 @@ internal object DownloadCacheOwnership {
             throw IllegalStateException("Could not create Download cache directory: ${directory.absolutePath}")
         }
         if (!marker.isFile) throw IllegalStateException("Download cache ownership marker disappeared")
-        return directory
+        directory
     }
 
     /** True only for a marker bound to this Download operation. */
-    fun isOwned(cacheRoot: File, item: DownloadItem): Boolean {
+    fun isOwned(cacheRoot: File, item: DownloadItem): Boolean = synchronized(ownershipLock) {
         if (item.id <= 0L || item.operationId.isBlank()) return false
         val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
-        val marker = markerFile(root, item.id).canonicalFile
-        val fields = runCatching { if (marker.isFile) parse(marker.readText()) else emptyMap() }
-            .getOrDefault(emptyMap())
-        return fields["version"] == VERSION &&
-            fields["downloadId"]?.toLongOrNull() == item.id &&
-            fields["operationId"] == item.operationId &&
-            fields["executionId"] == item.executionId
+        ownershipState(root, item) == OwnershipState.EXACT
     }
 
     /**
@@ -191,13 +208,29 @@ internal object DownloadCacheOwnership {
      * journal creation time.  The result is only a responsibility snapshot;
      * it never authenticates the artifact for a later deletion.
      */
-    fun hasCleanupResponsibility(cacheRoot: File, item: DownloadItem): Boolean {
+    fun hasCleanupResponsibility(cacheRoot: File, item: DownloadItem): Boolean = synchronized(ownershipLock) {
         require(item.id > 0L) { "Download cache cleanup requires a persisted id" }
         // A numeric directory is only a location.  Journal a mandatory
         // suffix only when the exact marker currently proves that this
         // operation can recover it.  Legacy or mismatched remnants remain
         // preserved but cannot strand the scheduled cleanup occurrence.
-        return isOwned(cacheRoot, item)
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return@synchronized false
+        if (ownershipState(root, item) != OwnershipState.EXACT) return@synchronized false
+        val directory = File(root, item.id.toString()).canonicalFile
+        if (!directory.exists()) return@synchronized true
+        if (!directory.isDirectory || directory.parentFile?.canonicalFile != root) {
+            return@synchronized false
+        }
+        val files = listDescendantFiles(directory) ?: return@synchronized false
+        val manifest = when (val inspection = inspectArtifactManifest(root, item)) {
+            ManifestInspection.Missing -> emptyList()
+            ManifestInspection.Invalid,
+            ManifestInspection.Unreadable,
+            -> return@synchronized false
+            is ManifestInspection.Valid -> inspection.entries
+        }
+        val validated = validatedManifestEntries(directory, manifest) ?: return@synchronized false
+        files.all { it in validated }
     }
 
     /**
@@ -240,60 +273,147 @@ internal object DownloadCacheOwnership {
                 DownloadWorkerExecutionOwners.isOwnedBy(downloadId, executionId))
     }
 
-    /** Delete one exact numeric staging root only when its marker proves ownership. */
-    fun deleteIfOwned(cacheRoot: File, item: DownloadItem): Boolean {
-        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
+    /**
+     * Delete one exact numeric staging root and retain the semantic outcome.
+     * Boolean compatibility wrappers intentionally expose only [Completed]
+     * so ordinary producer cleanup remains conservative.
+     */
+    fun deleteIfOwned(cacheRoot: File, item: DownloadItem): Boolean =
+        deleteIfOwnedResult(cacheRoot, item) == ExactCleanupResult.Completed
+
+    fun deleteIfOwnedResult(
+        cacheRoot: File,
+        item: DownloadItem,
+    ): ExactCleanupResult = synchronized(ownershipLock) {
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull()
+            ?: return@synchronized ExactCleanupResult.Unproven
         val directory = File(root, item.id.toString()).canonicalFile
         if (directory.parentFile?.canonicalFile != root || directory.name != item.id.toString()) {
-            return false
+            return@synchronized ExactCleanupResult.Unproven
         }
-        if (!isOwned(root, item)) return false
+        when (ownershipState(root, item)) {
+            OwnershipState.ABSENT -> return@synchronized ExactCleanupResult.Completed
+            OwnershipState.REPLACED -> return@synchronized ExactCleanupResult.Superseded
+            OwnershipState.UNPROVEN -> return@synchronized ExactCleanupResult.Unproven
+            OwnershipState.EXACT -> Unit
+        }
+        val marker = markerFile(root, item.id).canonicalFile
         if (!directory.exists()) {
-            val marker = markerFile(root, item.id)
-            return marker.delete() || !marker.exists()
+            if (ownershipState(root, item) != OwnershipState.EXACT) {
+                return@synchronized classifyOwnership(root, item)
+            }
+            return@synchronized if (marker.delete() || !marker.exists()) {
+                ExactCleanupResult.Completed
+            } else {
+                ExactCleanupResult.RetryableFailure
+            }
         }
-        if (!directory.isDirectory) return false
+        if (!directory.isDirectory) return@synchronized ExactCleanupResult.Unproven
 
-        // A marker proves the operation root, not every child that happens to
-        // be below it.  Delete only paths recorded by the current operation's
-        // exact artifact manifest; unknown/stale children remain untouched.
-        val initialChildren = directory.listFiles()?.toList() ?: return false
-        val manifest = readArtifactManifest(root, item) ?: return false
-        if (manifest.isEmpty() && initialChildren.any { it.name != ARTIFACT_MANIFEST_NAME }) {
-            return false
+        // A marker proves the operation root, not every child below it.
+        // Exact manifest entries are the only deletable children.  Missing or
+        // malformed metadata is preserved as unproven content rather than
+        // converted into an infinite retry obligation.
+        val inspection = inspectArtifactManifest(root, item)
+        val manifest = when (inspection) {
+            ManifestInspection.Missing -> emptyList()
+            ManifestInspection.Invalid -> return@synchronized ExactCleanupResult.Unproven
+            ManifestInspection.Unreadable -> return@synchronized ExactCleanupResult.RetryableFailure
+            is ManifestInspection.Valid -> inspection.entries
         }
-        var deletionFailed = false
-        manifest.forEach { relative ->
+        val validatedManifest = validatedManifestEntries(directory, manifest)
+            ?: return@synchronized ExactCleanupResult.Unproven
+        val initialFiles = listDescendantFiles(directory)
+            ?: return@synchronized ExactCleanupResult.Unproven
+        if (manifest.isEmpty() && initialFiles.isNotEmpty()) {
+            return@synchronized ExactCleanupResult.Unproven
+        }
+
+        validatedManifest.forEach { relative ->
+            when (ownershipState(root, item)) {
+                OwnershipState.EXACT -> Unit
+                OwnershipState.REPLACED -> return@synchronized ExactCleanupResult.Superseded
+                OwnershipState.UNPROVEN -> return@synchronized ExactCleanupResult.Unproven
+                OwnershipState.ABSENT -> return@synchronized ExactCleanupResult.Completed
+            }
             val candidate = File(directory, relative).canonicalFile
-            if (!isInside(candidate, directory)) {
-                deletionFailed = true
-                return@forEach
+            if (!isInside(candidate, directory) || candidate == directory) {
+                return@synchronized ExactCleanupResult.Unproven
             }
             if (!candidate.exists()) return@forEach
-            val deleted = if (candidate.isFile) {
-                fileDeletionForTesting?.invoke(candidate) ?: candidate.delete()
-            } else {
-                false
+            if (!candidate.isFile) return@synchronized ExactCleanupResult.Unproven
+            // Revalidate exact ownership immediately before this filesystem
+            // mutation. The process lock serializes this app's owner rotation;
+            // the re-read also protects against an external owner change.
+            val deleted = fileDeletionForTesting?.invoke(candidate) ?: candidate.delete()
+            if (!deleted) return@synchronized ExactCleanupResult.RetryableFailure
+        }
+
+        val remainingFiles = listDescendantFiles(directory)
+            ?: return@synchronized ExactCleanupResult.Unproven
+        val unknownFiles = remainingFiles.filter { it !in validatedManifest }
+        val manifestFile = artifactManifestFile(root, item.id).canonicalFile
+        if (unknownFiles.isNotEmpty()) {
+            // All exact entries are complete, but an unproven sibling remains.
+            // Retire only this operation's manifest and marker; never delete
+            // or recursively inspect the sibling as if it were ours.
+            when (ownershipState(root, item)) {
+                OwnershipState.EXACT -> Unit
+                OwnershipState.REPLACED -> return@synchronized ExactCleanupResult.Superseded
+                OwnershipState.UNPROVEN -> return@synchronized ExactCleanupResult.Unproven
+                OwnershipState.ABSENT -> return@synchronized ExactCleanupResult.Completed
             }
-            if (!deleted) deletionFailed = true
+            if (manifestFile.exists() && !manifestFile.delete() && manifestFile.exists()) {
+                return@synchronized ExactCleanupResult.RetryableFailure
+            }
+            if (ownershipState(root, item) != OwnershipState.EXACT) {
+                return@synchronized classifyOwnership(root, item)
+            }
+            return@synchronized if (marker.delete() || !marker.exists()) {
+                ExactCleanupResult.Unproven
+            } else {
+                ExactCleanupResult.RetryableFailure
+            }
+        }
+
+        if (manifestFile.exists()) {
+            when (ownershipState(root, item)) {
+                OwnershipState.EXACT -> Unit
+                OwnershipState.REPLACED -> return@synchronized ExactCleanupResult.Superseded
+                OwnershipState.UNPROVEN -> return@synchronized ExactCleanupResult.Unproven
+                OwnershipState.ABSENT -> return@synchronized ExactCleanupResult.Completed
+            }
+            if (!manifestFile.delete() && manifestFile.exists()) {
+                return@synchronized ExactCleanupResult.RetryableFailure
+            }
         }
         pruneEmptyDirectories(directory)
-        // Keep both exact recovery carriers on every failure.  In particular,
-        // do not revoke the marker merely because an owned suffix remains.
-        // A later retry can then re-validate the same operation and resume
-        // the frozen manifest without rediscovering targets.
-        if (deletionFailed) return false
-        val remaining = directory.listFiles()?.toList() ?: return false
-        if (remaining.any { it.name != ARTIFACT_MANIFEST_NAME }) return false
-        val manifestFile = artifactManifestFile(root, item.id)
-        if (manifestFile.exists() && !manifestFile.delete() && manifestFile.exists()) {
-            return false
+        val remainingChildren = directory.listFiles()?.toList()
+            ?: return@synchronized ExactCleanupResult.Unproven
+        if (remainingChildren.isNotEmpty()) {
+            // A child appeared after the exact manifest was consumed. It is no
+            // longer proven to belong to this operation, so preserve it and
+            // retire only the old marker.
+            if (ownershipState(root, item) != OwnershipState.EXACT) {
+                return@synchronized classifyOwnership(root, item)
+            }
+            return@synchronized if (marker.delete() || !marker.exists()) {
+                ExactCleanupResult.Unproven
+            } else {
+                ExactCleanupResult.RetryableFailure
+            }
         }
-        if (directory.listFiles()?.isNotEmpty() == true) return false
-        val deleted = directory.delete()
-        if (!deleted && directory.exists()) return false
-        val marker = markerFile(root, item.id)
-        return marker.delete() || !marker.exists()
+        if (!directory.delete() && directory.exists()) {
+            return@synchronized ExactCleanupResult.RetryableFailure
+        }
+        if (ownershipState(root, item) != OwnershipState.EXACT) {
+            return@synchronized classifyOwnership(root, item)
+        }
+        if (marker.delete() || !marker.exists()) {
+            ExactCleanupResult.Completed
+        } else {
+            ExactCleanupResult.RetryableFailure
+        }
     }
 
     /**
@@ -302,16 +422,24 @@ internal object DownloadCacheOwnership {
      * root has already disappeared.  A newly-created or mismatched root is
      * never treated as the old operation's suffix.
      */
-    fun deleteIfOwnedOrAlreadyAbsent(cacheRoot: File, item: DownloadItem): Boolean {
-        val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
+    fun deleteIfOwnedOrAlreadyAbsent(cacheRoot: File, item: DownloadItem): Boolean =
+        deleteIfOwnedOrAlreadyAbsentResult(cacheRoot, item) == ExactCleanupResult.Completed
+
+    fun deleteIfOwnedOrAlreadyAbsentResult(
+        cacheRoot: File,
+        item: DownloadItem,
+    ): ExactCleanupResult = synchronized(ownershipLock) {
+        val root = runCatching { cacheRoot.canonicalFile }.getOrNull()
+            ?: return@synchronized ExactCleanupResult.Unproven
         val marker = markerFile(root, item.id).canonicalFile
         val directory = File(root, item.id.toString()).canonicalFile
-        if (!marker.exists() && !directory.exists()) return true
-        return deleteIfOwned(root, item)
+        if (!marker.exists() && !directory.exists()) ExactCleanupResult.Completed
+        else deleteIfOwnedResult(root, item)
     }
 
     /** Record exact current-attempt artifacts for later cleanup/import. */
-    fun recordArtifacts(cacheRoot: File, item: DownloadItem, files: Iterable<String>): Boolean {
+    fun recordArtifacts(cacheRoot: File, item: DownloadItem, files: Iterable<String>): Boolean =
+        synchronized(ownershipLock) {
         if (!isOwned(cacheRoot, item)) return false
         val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
         val directory = File(root, item.id.toString()).canonicalFile
@@ -328,7 +456,7 @@ internal object DownloadCacheOwnership {
         }.filter { it.isNotBlank() && it != ARTIFACT_MANIFEST_NAME }
             .toSortedSet()
         if (entries.isEmpty()) return false
-        return runCatching {
+        runCatching {
             artifactManifestFile(root, item.id).writeText(
                 buildString {
                     append(ARTIFACT_MANIFEST_HEADER)
@@ -354,7 +482,7 @@ internal object DownloadCacheOwnership {
             )
             artifactManifestFile(root, item.id).isFile
         }.getOrDefault(false)
-    }
+        }
 
     /**
      * Retire the current-attempt manifest after all of its exact sources have
@@ -362,7 +490,8 @@ internal object DownloadCacheOwnership {
      * ownership marker remains at the cache root; unknown files below the
      * numeric directory are therefore still preserved if they exist.
      */
-    fun removeArtifactManifest(cacheRoot: File, item: DownloadItem): Boolean {
+    fun removeArtifactManifest(cacheRoot: File, item: DownloadItem): Boolean =
+        synchronized(ownershipLock) {
         val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
         if (!isOwned(root, item)) return false
         val manifest = artifactManifestFile(root, item.id)
@@ -373,8 +502,8 @@ internal object DownloadCacheOwnership {
                 directory.delete()
             }
         }
-        return removed
-    }
+        removed
+        }
 
     /**
      * Retire a prior execution's empty cache carrier after its exact
@@ -401,7 +530,7 @@ internal object DownloadCacheOwnership {
         downloadId: Long,
         operationId: String,
         executionId: String,
-    ): Boolean {
+    ): Boolean = synchronized(ownershipLock) {
         if (downloadId <= 0L || operationId.isBlank() || executionId.isBlank()) return false
         val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
         val marker = markerFile(root, downloadId).canonicalFile
@@ -441,7 +570,7 @@ internal object DownloadCacheOwnership {
         }
         if (directory.listFiles()?.isNotEmpty() == true) return false
         if (!directory.delete() && directory.exists()) return false
-        return marker.delete() || !marker.exists()
+        marker.delete() || !marker.exists()
     }
 
     /**
@@ -457,7 +586,7 @@ internal object DownloadCacheOwnership {
         downloadId: Long,
         operationId: String,
         executionId: String,
-    ): Boolean {
+    ): Boolean = synchronized(ownershipLock) {
         if (downloadId <= 0L || operationId.isBlank() || executionId.isBlank()) return false
         val root = runCatching { cacheRoot.canonicalFile }.getOrNull() ?: return false
         val marker = markerFile(root, downloadId).canonicalFile
@@ -491,7 +620,7 @@ internal object DownloadCacheOwnership {
             }
             if (!moved || !destination.isDirectory || directory.exists()) return false
         }
-        return marker.delete() || !marker.exists()
+        marker.delete() || !marker.exists()
     }
 
     fun listArtifactFiles(root: OwnedRoot): List<File> {
@@ -542,6 +671,124 @@ internal object DownloadCacheOwnership {
             .orEmpty()
     }
 
+    private fun ownershipState(root: File, item: DownloadItem): OwnershipState {
+        val marker = markerFile(root, item.id).canonicalFile
+        val directory = File(root, item.id.toString()).canonicalFile
+        if (!marker.exists()) {
+            return if (directory.exists()) OwnershipState.UNPROVEN else OwnershipState.ABSENT
+        }
+        if (!marker.isFile) return OwnershipState.UNPROVEN
+        val fields = runCatching { parse(marker.readText()) }.getOrNull()
+            ?: return OwnershipState.UNPROVEN
+        if (
+            fields["version"] != VERSION ||
+            fields["downloadId"]?.toLongOrNull() != item.id
+        ) {
+            return OwnershipState.UNPROVEN
+        }
+        val operationId = fields["operationId"].orEmpty()
+        val executionId = fields["executionId"].orEmpty()
+        if (operationId.isBlank() || executionId.isBlank()) return OwnershipState.UNPROVEN
+        return if (operationId == item.operationId && executionId == item.executionId) {
+            OwnershipState.EXACT
+        } else {
+            // A valid marker for the same Download but another operation is
+            // positive evidence that the frozen old responsibility has been
+            // replaced. It is not treated like malformed/unproven metadata.
+            OwnershipState.REPLACED
+        }
+    }
+
+    private fun classifyOwnership(root: File, item: DownloadItem): ExactCleanupResult =
+        when (ownershipState(root, item)) {
+            OwnershipState.EXACT -> ExactCleanupResult.RetryableFailure
+            OwnershipState.REPLACED -> ExactCleanupResult.Superseded
+            OwnershipState.UNPROVEN -> ExactCleanupResult.Unproven
+            OwnershipState.ABSENT -> ExactCleanupResult.Completed
+        }
+
+    private fun inspectArtifactManifest(
+        root: File,
+        item: DownloadItem,
+    ): ManifestInspection {
+        val file = artifactManifestFile(root, item.id)
+        if (!file.isFile) return ManifestInspection.Missing
+        val lines = try {
+            file.readLines()
+        } catch (_: Exception) {
+            return ManifestInspection.Unreadable
+        }
+        if (lines.firstOrNull()?.trim() != ARTIFACT_MANIFEST_HEADER) {
+            return ManifestInspection.Invalid
+        }
+        val header = lines.drop(1).takeWhile { it.trim() != "files:" }.mapNotNull { line ->
+            val separator = line.indexOf('=')
+            if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1)
+        }.toMap()
+        if (
+            header["version"] != VERSION ||
+            header["downloadId"]?.toLongOrNull() != item.id ||
+            header["operationId"] != item.operationId ||
+            header["executionId"] != item.executionId ||
+            !lines.drop(1).any { it.trim() == "files:" }
+        ) {
+            return ManifestInspection.Invalid
+        }
+        return ManifestInspection.Valid(
+            lines.dropWhile { it.trim() != "files:" }
+                .drop(1)
+                .filter(String::isNotEmpty)
+                .distinct(),
+        )
+    }
+
+    private fun validatedManifestEntries(
+        directory: File,
+        entries: List<String>,
+    ): Set<String>? {
+        val manifestPath = directory.resolve(ARTIFACT_MANIFEST_NAME).canonicalFile
+        return entries.map { relative ->
+            if (relative.isBlank()) return null
+            val candidate = runCatching { File(directory, relative).canonicalFile }.getOrNull()
+                ?: return null
+            if (
+                candidate == directory ||
+                candidate == manifestPath ||
+                !isInside(candidate, directory)
+            ) {
+                return null
+            }
+            relative
+        }.toSet()
+    }
+
+    /** Lists only descendant files, preserving exact relative manifest paths. */
+    private fun listDescendantFiles(directory: File): Set<String>? {
+        fun visit(current: File): Set<String>? {
+            val children = current.listFiles() ?: return null
+            val result = linkedSetOf<String>()
+            children.forEach { child ->
+                val canonical = runCatching { child.canonicalFile }.getOrNull()
+                    ?: return null
+                if (!isInside(canonical, directory)) return null
+                when {
+                    current == directory &&
+                        child.name == ARTIFACT_MANIFEST_NAME &&
+                        child.isFile -> Unit
+                    child.isDirectory -> {
+                        result += visit(child) ?: return null
+                    }
+                    child.isFile -> {
+                        result += canonical.relativeTo(directory).invariantSeparatorsPath
+                    }
+                    else -> return null
+                }
+            }
+            return result
+        }
+        return visit(directory)
+    }
+
     private fun readArtifactManifest(root: File, item: DownloadItem): List<String>? =
         readArtifactManifest(root, item.id, item.operationId, item.executionId)
 
@@ -576,8 +823,7 @@ internal object DownloadCacheOwnership {
         }
         return lines.dropWhile { it.trim() != "files:" }
             .drop(1)
-            .map(String::trim)
-            .filter(String::isNotBlank)
+            .filter(String::isNotEmpty)
             .distinct()
     }
 
