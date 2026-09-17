@@ -1,0 +1,36 @@
+{
+  "schema_version":"lens-history-v1-triage-final-v1",
+  "run_id":"R0A-20260916T1310Z-001",
+  "stage":"REPLAY_001_030",
+  "logical_rank_range":[1,30],
+  "data_head":"df87d5e39aef74dfff0cb0f3ac6657c6a0bc3c7c",
+  "complete_state_blob":"8309c171d24a292b7ea30ae9e1a7d176601062bb",
+  "governing_pins":{"frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4","frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b","schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96","document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda","verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51","frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"},
+  "materializer_receipts":["3d60e46476f0f5f5c3f5015a21601eec7b2663f9","0c115759ca2b376c63dc62908264c439d1ea110f","568f2cf14308a43b439e009bdd4b818a62e28470","7f0d38723b77f9b660c34035d6738ce32ef5cd08","a1db5c5f9a3f9cf57263fcdcf973ac32e80d957d","aede3c66036a695925cea42da72675aff29d4d74"],
+  "materializer_corrections":[{"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/corrections/r006-010-c001.json","blob_sha":"66a534434f957cd946c5404d42ff09faf36af48c"}],
+  "triage_receipts":[
+    {"range":[1,5],"blob_sha":"26c4994c47362b8717071083268eaffc58a01f3a"},
+    {"range":[6,10],"blob_sha":"b5207ed70b5a93284f223c2dd5505de82b609047"},
+    {"range":[11,15],"blob_sha":"dd722b92776a5e1796754a0d9374057981920159"},
+    {"range":[16,20],"blob_sha":"b50a6857ff39e0057feca35fb09d1e9c4e5558ae"},
+    {"range":[21,25],"blob_sha":"0679541755b703c5c0f4719f2a3318944022812d"},
+    {"range":[26,30],"blob_sha":"eeff619694c7d467ccbb16674cc08733de3dbc34"}
+  ],
+  "triage_corrections":[{"path":"review-runs/lens-history-v1/automation/receipts/triage/R0A-20260916T1310Z-001/corrections/r016-020-c001.json","blob_sha":"aa38a262c5e44f91218b33bec5f1ced643ae1240","effect":"CHAIN_METADATA_ONLY","effective_previous_blob":"dd722b92776a5e1796754a0d9374057981920159"}],
+  "exception_queue_blob":"2f181c1bb9108234667cf47c23634526c1b64811",
+  "materializer_exception_rank_count":18,
+  "independent_exception_ranks":[4,5,6,7,8,9,10,12,13,17,21,22,25,26,27,28,29,30],
+  "independent_exception_rank_count":18,
+  "triage_discovered_missed_exception_ranks":[],
+  "missed_exception_count":0,
+  "unsafe_materializer_correction_count":0,
+  "unsafe_triage_correction_count":0,
+  "human_review_packets":[
+    {"topic":"same-root residual/addendum/reconciliation/scope-expansion semantics","ranks":[4,6,9,17,25,26,30],"required_decision":"Preserve explicit same-root/count/status semantics without creating new blocker roots or modern lens attribution unless direct evidence establishes them."},
+    {"topic":"status-label tension: SOURCE-SEMANTIC FIXED or material-status wording versus execution NOT_VERIFIED/canonical OPEN/no structured status-change","ranks":[7,8,10,12,13,21,22,27,28,29],"required_decision":"Preserve direct wording and chronology without converting prose into structured historical status-change metrics."},
+    {"topic":"explicit new finding/count event","ranks":[5],"required_decision":"Preserve the directly recorded new P2 root/count event; do not infer later lifecycle from chronology."}
+  ],
+  "chain_validation":{"base_receipts_contiguous_1_30":true,"triage_correction_applied":true,"unresolved_placeholders_remaining":false},
+  "status":"HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit":true
+}
