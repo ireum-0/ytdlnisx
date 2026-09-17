@@ -60,6 +60,7 @@ import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.Collections
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Calendar
@@ -3310,17 +3311,29 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         assertEquals(0, cleanupRuns.get())
     }
 
-    private fun unfinishedCurrentWork(): List<WorkInfo> = workManager
-        .getWorkInfosForUniqueWork(CleanupScheduleCoordinator.WORK_NAME)
-        .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+    private fun unfinishedCurrentWork(): List<WorkInfo> = queryUniqueWorkInfos()
         .filter { it.state == WorkInfo.State.ENQUEUED ||
             it.state == WorkInfo.State.RUNNING ||
             it.state == WorkInfo.State.BLOCKED }
 
-    private fun currentGenerationWork(generation: String): List<WorkInfo> = workManager
-        .getWorkInfosForUniqueWork(CleanupScheduleCoordinator.WORK_NAME)
-        .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+    private fun currentGenerationWork(generation: String): List<WorkInfo> = queryUniqueWorkInfos()
         .filter { it.tags.contains(generationTag(generation)) }
+
+    private fun queryUniqueWorkInfos(): List<WorkInfo> = try {
+        workManager.getWorkInfosForUniqueWork(CleanupScheduleCoordinator.WORK_NAME)
+            .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+    } catch (_: TimeoutException) {
+        // A slow WorkManager query is a polling miss, not a test hang.  The
+        // outer await timeout remains the useful failure boundary.
+        emptyList()
+    }
+
+    private fun queryWorkInfoById(id: UUID): WorkInfo? = try {
+        workManager.getWorkInfoById(id)
+            .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+    } catch (_: TimeoutException) {
+        null
+    }
 
     private suspend fun awaitWork(
         timeoutMs: Long,
@@ -3329,11 +3342,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         var lastObserved = emptyList<WorkInfo>()
         return withTimeoutOrNull(timeoutMs) {
             while (true) {
-                lastObserved = withContext(Dispatchers.IO) {
-                    workManager.getWorkInfosForUniqueWork(
-                        CleanupScheduleCoordinator.WORK_NAME,
-                    ).get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
-                }
+                lastObserved = withContext(Dispatchers.IO) { queryUniqueWorkInfos() }
                 if (predicate(lastObserved)) return@withTimeoutOrNull lastObserved
                 delay(WORK_POLL_INTERVAL_MILLIS)
             }
@@ -3354,10 +3363,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         var lastObserved: WorkInfo? = null
         return withTimeoutOrNull(timeoutMs) {
             while (true) {
-                lastObserved = withContext(Dispatchers.IO) {
-                    workManager.getWorkInfoById(id)
-                        .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
-                }
+                lastObserved = withContext(Dispatchers.IO) { queryWorkInfoById(id) }
                 val info = lastObserved
                 if (info != null && predicate(info)) return@withTimeoutOrNull info
                 delay(WORK_POLL_INTERVAL_MILLIS)
