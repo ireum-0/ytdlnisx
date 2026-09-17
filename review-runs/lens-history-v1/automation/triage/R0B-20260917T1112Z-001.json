@@ -1,0 +1,36 @@
+{
+  "schema_version":"lens-history-v1-triage-final-v1",
+  "run_id":"R0B-20260917T1112Z-001",
+  "stage":"REPLAY_031_060",
+  "logical_rank_range":[31,60],
+  "data_head":"c751910bb2a5253f4fa630c2236508db8309ad38",
+  "complete_state_blob":"96440309799d4a37a07601d2cbc7efd07f1dd8a7",
+  "governing_pins":{"frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4","frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b","schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96","document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda","verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51","frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"},
+  "materializer_receipts":["1148bd8fe3b1c22ff4bdb57ba0ed3cc3a89c17ec","c82625113a8e1d26d6e9288545573d2b81edca01","6531a52d70c3d3b35ae71374f4e77c92798c3926","7acbe4e998cc11cbf46c20e5a3fa52cb2494fae5","42f9dd6aeba921956d18ab3f0f909aa258378192","1863ce1c85c043a1d90f06289420b96d08f33915"],
+  "materializer_corrections":[],
+  "triage_receipts":[
+    {"range":[31,35],"blob_sha":"68c08929791983ba74e93b8003e4f45b48183f79"},
+    {"range":[36,40],"blob_sha":"eac8f0492e1b75fdadc1ea4b87b7e99d1af01f75"},
+    {"range":[41,45],"blob_sha":"32a0e064e6fee41201042057795bed66d999ba86"},
+    {"range":[46,50],"blob_sha":"8569fafeaccd5222bce336014995666cce2cb606"},
+    {"range":[51,55],"blob_sha":"251ba1cb9af7d130162fda63d203a6dddeb6d717"},
+    {"range":[56,60],"blob_sha":"5d3dfd75ef615aa28e8d268ee17afee72283832b"}
+  ],
+  "triage_corrections":[],
+  "exception_queue_blob":"989cabcaa128c96ce4602ee4366dbe3c664d2622",
+  "materializer_exception_rank_count":8,
+  "independent_exception_ranks":[35,36,44,45,47,48,52,60],
+  "independent_exception_rank_count":8,
+  "triage_discovered_missed_exception_ranks":[],
+  "missed_exception_count":0,
+  "unsafe_materializer_correction_count":0,
+  "unsafe_triage_correction_count":0,
+  "human_review_packets":[
+    {"topic":"ambiguous structural checkpoint kind","ranks":[35,36,44,45,52,60],"required_decision":"Preserve NOT_VERIFIED structural kind; do not infer FINAL/INTERMEDIATE/BOOTSTRAP from filename, commit message, chronology, review-progress prose, or absence of a final marker."},
+    {"topic":"F10 reconciliation and same-root residual semantics","ranks":[47],"required_decision":"Preserve that ordinary A/B/C/D subcases were materially corrected while BUG-CLEANUP-01 remains OPEN/P2 on same-root durability frontiers; do not infer closure, a new root, or modern lens attribution."},
+    {"topic":"explicit new finding/count/checklist-gap event","ranks":[48],"required_decision":"Preserve HISTORY-CONTENT-AUTHORITY-ALIAS-01 as explicit NEW/P2/OPEN, the P2 count increase and repository-wide identity-propagation checklist gap; do not infer later lifecycle or modern detecting lens."}
+  ],
+  "chain_validation":{"base_receipts_contiguous_31_60":true,"triage_correction_applied":false,"unresolved_placeholders_remaining":false},
+  "status":"HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit":true
+}
