@@ -1,6 +1,6 @@
 {
   "schema_version": "lens-history-v1-automation-state-v3",
-  "status": "ACTIVE",
+  "status": "PAUSED_RETRYABLE",
   "run_id": "R0B-20260917T1112Z-001",
   "started_at": "2026-09-17T11:12:24Z",
   "stage": "REPLAY_031_060",
@@ -29,6 +29,9 @@
   "completed_microsegments": [],
   "corrections": [],
   "next_rank": 31,
+  "pause_class": "TIME_BUDGET",
+  "resume_safe": true,
+  "pause_note": "R0B was safely acquired after exact R0A remediation certification verification. No five-rank microsegment was completed or written in this invocation; resume from rank 31 and re-fetch all rank/source/frozen evidence before sealing the first receipt.",
   "replay_outputs": {
     "official_rank_records_rewritten": false,
     "progress_counter_changed": false
@@ -36,6 +39,7 @@
   "stability": {
     "consecutive_clean_30_materialization_batches": 0,
     "consecutive_clean_40_materialization_batches": 0,
+    "retryable_pause_occurred": true,
     "adaptive_size_streak_eligible": false
   },
   "requires_triage": false,
