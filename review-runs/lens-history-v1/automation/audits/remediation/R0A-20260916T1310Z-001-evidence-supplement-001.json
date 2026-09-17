@@ -1,0 +1,58 @@
+{
+  "schema_version": "lens-history-v1-audit-evidence-supplement-v1",
+  "run_id": "R0A-20260916T1310Z-001",
+  "status": "EVIDENCE_SUPPLEMENT_ONLY",
+  "changes_verdict": false,
+  "changes_unlock_authority": false,
+  "purpose": "Make the replacement ranks 21-30 re-audit evidence self-contained for fields that were independently checked but summarized rather than recorded row-by-row in the replacement receipts.",
+  "authoritative_certification": {
+    "path": "review-runs/lens-history-v1/automation/audits/remediation/R0A-20260916T1310Z-001-reaudit-001.json",
+    "blob_sha": "47d4933d0c9851a0a43352743a975431ac92f991",
+    "commit_sha": "4dbb880f964809b1342f348c2f3039882bcb0c5b",
+    "status": "PASS",
+    "certification_role": "SUPERSEDING_REAUDIT"
+  },
+  "authoritative_materializer_state": {
+    "blob_sha": "8309c171d24a292b7ea30ae9e1a7d176601062bb",
+    "data_head": "df87d5e39aef74dfff0cb0f3ac6657c6a0bc3c7c",
+    "start_progress_blob_sha": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8"
+  },
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "replacement_receipts": [
+    {"range":[21,25],"path":"review-runs/lens-history-v1/automation/receipts/auditor-remediation/R0A-20260916T1310Z-001/r021-025-reaudit-001.json","blob_sha":"643fafd92fb50c6c1d13d19bd3ffd443f95bb082"},
+    {"range":[26,30],"path":"review-runs/lens-history-v1/automation/receipts/auditor-remediation/R0A-20260916T1310Z-001/r026-030-reaudit-001.json","blob_sha":"d121a3b7f2e2505a7b08dd2f8bc17f9b78280652"}
+  ],
+  "ledger_bindings": [
+    {"range":[21,25],"path":"review-runs/lens-history-v1/ledger-batches/0005-newest-021-025.jsonl","blob_sha":"b74a9e5ab9d7a25559e8dde0d69803687bd5217d"},
+    {"range":[26,30],"path":"review-runs/lens-history-v1/ledger-batches/0006-newest-026-030.jsonl","blob_sha":"cd0daf0899457e1260c285531542d3e4b1df4848"}
+  ],
+  "records": [
+    {"rank":21,"ledger_record_position":1,"implementation_sha":{"state":"DIRECT","value":"a5160ab51dbe3c6f8d5f87853c4e4037469b9684"},"raw_audit_lens":{"state":"DIRECT","value":"persistence / first-write failure / recovery / process-death"},"primary_deep_lens":{"state":"NOT_VERIFIED","reason":"legacy audit_lens is not mapped to modern L1-L6"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED","reason":"legacy checkpoint does not contain structured modern lens coverage"},"finding_attribution":{},"required_fields_agree":true},
+    {"rank":22,"ledger_record_position":2,"implementation_sha":{"state":"DIRECT","value":"a5160ab51dbe3c6f8d5f87853c4e4037469b9684"},"raw_audit_lens":{"state":"DIRECT","value":"persistence / first-write failure / recovery / process-death"},"primary_deep_lens":{"state":"NOT_VERIFIED","reason":"legacy audit_lens is not mapped to modern L1-L6"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED","reason":"legacy checkpoint does not contain structured modern lens coverage"},"finding_attribution":{},"required_fields_agree":true},
+    {"rank":23,"ledger_record_position":3,"implementation_sha":{"state":"DIRECT","value":"a5160ab51dbe3c6f8d5f87853c4e4037469b9684"},"raw_audit_lens":{"state":"DIRECT","value":"persistence / first-write failure / recovery / process-death (new implementation SHA; lens baseline begins at 1)"},"primary_deep_lens":{"state":"NOT_VERIFIED","reason":"legacy audit_lens is not mapped to modern L1-L6"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED","reason":"legacy checkpoint does not contain structured modern lens coverage"},"finding_attribution":{},"required_fields_agree":true},
+    {"rank":24,"ledger_record_position":4,"implementation_sha":{"state":"DIRECT","value":"2bcffa78116aa086c645f029f8abeaef0d51b659"},"raw_audit_lens":{"state":"DIRECT","value":"identity / equality / provenance / namespace normalization"},"primary_deep_lens":{"state":"NOT_VERIFIED","reason":"legacy audit_lens is not mapped to modern L1-L6"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED","reason":"legacy checkpoint does not contain structured modern lens coverage"},"finding_attribution":{},"required_fields_agree":true},
+    {"rank":25,"ledger_record_position":5,"implementation_sha":{"state":"DIRECT","value":"2bcffa78116aa086c645f029f8abeaef0d51b659"},"raw_audit_lens":{"state":"DIRECT","value":"identity / equality / provenance / namespace normalization"},"primary_deep_lens":{"state":"NOT_VERIFIED","reason":"legacy audit_lens is not mapped to modern L1-L6"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED","reason":"legacy checkpoint does not contain structured modern lens coverage"},"finding_attribution":{},"required_fields_agree":true},
+    {"rank":26,"ledger_record_position":1,"implementation_sha":{"state":"DIRECT","value":"2bcffa78116aa086c645f029f8abeaef0d51b659"},"raw_audit_lens":{"state":"NOT_VERIFIED"},"primary_deep_lens":{"state":"NOT_VERIFIED"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED"},"finding_attribution":{"finding_id":{"state":"DIRECT","value":"BUG-CLEANUP-01"},"finding_disposition":{"state":"DIRECT","value":"OPEN P2 / NOT_CLEAN"},"finding_relation":{"state":"DIRECT","value":"D1/D2 durability/ownership subcases source-level closed, but same-root residuals A/B/C remain; count delta 0"},"modern_primary_detecting_lens":{"state":"NOT_VERIFIED"}},"required_fields_agree":true},
+    {"rank":27,"ledger_record_position":2,"implementation_sha":{"state":"DIRECT","value":"2bcffa78116aa086c645f029f8abeaef0d51b659"},"raw_audit_lens":{"state":"DIRECT","value":"persistence / first-write failure / recovery / process-death"},"primary_deep_lens":{"state":"NOT_VERIFIED"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED"},"finding_attribution":{},"required_fields_agree":true},
+    {"rank":28,"ledger_record_position":3,"implementation_sha":{"state":"DIRECT","value":"2bcffa78116aa086c645f029f8abeaef0d51b659"},"raw_audit_lens":{"state":"DIRECT","value":"persistence / first-write failure / recovery / process-death"},"primary_deep_lens":{"state":"NOT_VERIFIED","reason":"legacy audit_lens is not mapped to modern L1-L6"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED","reason":"legacy checkpoint does not contain structured modern lens coverage"},"finding_attribution":{},"required_fields_agree":true},
+    {"rank":29,"ledger_record_position":4,"implementation_sha":{"state":"DIRECT","value":"2bcffa78116aa086c645f029f8abeaef0d51b659"},"raw_audit_lens":{"state":"DIRECT","value":"persistence / first-write failure / recovery / process-death"},"primary_deep_lens":{"state":"NOT_VERIFIED"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED"},"finding_attribution":{},"required_fields_agree":true},
+    {"rank":30,"ledger_record_position":5,"implementation_sha":{"state":"DIRECT","value":"c4f630a8699662ebc07d94caa006d70b9779091d"},"raw_audit_lens":{"state":"NOT_VERIFIED"},"primary_deep_lens":{"state":"NOT_VERIFIED"},"lens_selection_reason":{"state":"NOT_VERIFIED"},"lens_coverage_current_sha":{"state":"NOT_VERIFIED"},"finding_attribution":{"finding_id":{"state":"DIRECT","value":"BUG-CLEANUP-01"},"finding_disposition":{"state":"DIRECT","value":"P2 / OPEN"},"finding_relation":{"state":"DIRECT","value":"three additional same-root blocker-relevant subcases confirmed; count delta 0"},"modern_primary_detecting_lens":{"state":"NOT_VERIFIED"}},"required_fields_agree":true}
+  ],
+  "comparison_summary": {
+    "records_supplemented": 10,
+    "implementation_sha_mismatches": 0,
+    "raw_audit_lens_mismatches": 0,
+    "modern_lens_field_mismatches": 0,
+    "finding_attribution_mismatches": 0,
+    "ledger_position_mismatches": 0,
+    "verdict_change": false,
+    "unlock_change": false
+  }
+}
