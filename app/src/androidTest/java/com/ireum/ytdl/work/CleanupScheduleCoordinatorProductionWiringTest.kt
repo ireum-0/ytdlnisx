@@ -99,6 +99,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         preferences = CleanupScheduleCoordinator.criticalPreferencesForTesting(context)
         legacyPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         clearTestSeams()
+        assertTrue(CleanupScheduleCoordinator.configure(context, null))
+        awaitMainLooperIdle()
         DownloadCacheOwnership.clearRootBindingsForTesting(context)
         clearSchedulePreferences()
     }
@@ -107,6 +109,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     fun tearDown() = runBlocking {
         cancelAllWorkAndAwaitIdle()
         clearTestSeams()
+        assertTrue(CleanupScheduleCoordinator.configure(context, null))
+        awaitMainLooperIdle()
         DownloadCacheOwnership.clearRootBindingsForTesting(context)
         if (createdDownloadIds.isNotEmpty()) {
             DownloadRepository(database).deleteAllWithIDs(createdDownloadIds.toList())
@@ -3367,6 +3371,14 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             )
         }
         workManager.pruneWork().result.get(20, TimeUnit.SECONDS)
+    }
+
+    private fun awaitMainLooperIdle() {
+        val idle = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post { idle.countDown() }
+        check(idle.await(20, TimeUnit.SECONDS)) {
+            "Timed out waiting for the Android main looper to drain"
+        }
     }
 
     private suspend fun awaitWork(
