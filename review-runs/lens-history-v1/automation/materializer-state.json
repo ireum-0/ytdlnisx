@@ -43,13 +43,18 @@
       "range": [31, 35],
       "path": "review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r031-035.json",
       "blob_sha": "1148bd8fe3b1c22ff4bdb57ba0ed3cc3a89c17ec"
+    },
+    {
+      "range": [36, 40],
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r036-040.json",
+      "blob_sha": "c82625113a8e1d26d6e9288545573d2b81edca01"
     }
   ],
   "corrections": [],
-  "next_rank": 36,
+  "next_rank": 41,
   "pause_class": "TIME_BUDGET",
   "resume_safe": true,
-  "pause_note": "R0B ranks 31-35 are sealed by contiguous one-rank receipts and aggregate receipt r031-035. Resume from effective next rank 36 after re-fetching current state, aggregate, migration binding, and the first uncovered rank evidence.",
+  "pause_note": "R0B ranks 31-40 are sealed by contiguous one-rank receipts and authoritative aggregate receipts r031-035 and r036-040. Resume from effective next rank 41 after re-fetching current state, latest aggregate, migration binding, and first uncovered rank evidence.",
   "replay_outputs": {
     "official_rank_records_rewritten": false,
     "progress_counter_changed": false
