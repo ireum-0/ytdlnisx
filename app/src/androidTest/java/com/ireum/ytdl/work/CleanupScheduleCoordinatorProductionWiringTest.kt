@@ -91,11 +91,11 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     private val controlledOperations = Collections.synchronizedList(mutableListOf<ControlledOperation>())
 
     @Before
-    fun setUp() {
+    fun setUp() = runBlocking {
         context = ApplicationProvider.getApplicationContext()
         workManager = WorkManager.getInstance(context)
         database = DBManager.getInstance(context)
-        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        cancelAllWorkAndAwaitIdle()
         preferences = CleanupScheduleCoordinator.criticalPreferencesForTesting(context)
         legacyPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         clearTestSeams()
@@ -104,14 +104,12 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @After
-    fun tearDown() {
-        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+    fun tearDown() = runBlocking {
+        cancelAllWorkAndAwaitIdle()
         clearTestSeams()
         DownloadCacheOwnership.clearRootBindingsForTesting(context)
         if (createdDownloadIds.isNotEmpty()) {
-            runBlocking {
-                DownloadRepository(database).deleteAllWithIDs(createdDownloadIds.toList())
-            }
+            DownloadRepository(database).deleteAllWithIDs(createdDownloadIds.toList())
             createdDownloadIds.clear()
         }
         clearSchedulePreferences()
@@ -3333,6 +3331,41 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
     } catch (_: TimeoutException) {
         null
+    }
+
+    private suspend fun cancelAllWorkAndAwaitIdle() {
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        var lastObserved = emptyList<WorkInfo>()
+        val settled = withTimeoutOrNull(WORKER_WAIT_TIMEOUT_MILLIS) {
+            while (true) {
+                lastObserved = withContext(Dispatchers.IO) {
+                    try {
+                        workManager.getWorkInfosByTag(CleanupScheduleCoordinator.TAG)
+                            .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+                    } catch (_: TimeoutException) {
+                        emptyList()
+                    }
+                }
+                if (lastObserved.none { info ->
+                        info.state == WorkInfo.State.ENQUEUED ||
+                            info.state == WorkInfo.State.RUNNING ||
+                            info.state == WorkInfo.State.BLOCKED
+                    }
+                ) {
+                    return@withTimeoutOrNull true
+                }
+                delay(WORK_POLL_INTERVAL_MILLIS)
+            }
+            error("unreachable")
+        } ?: false
+        if (!settled) {
+            throw AssertionError(
+                "Timed out waiting for canceled cleanup work; last observed=" +
+                    lastObserved.joinToString { info ->
+                        "${info.id}:${info.state}/attempt=${info.runAttemptCount}"
+                    },
+            )
+        }
     }
 
     private suspend fun awaitWork(
