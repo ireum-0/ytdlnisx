@@ -1,0 +1,28 @@
+{
+  "schema_version":"lens-history-v1-triage-receipt-correction-v1",
+  "run_id":"R0A-20260916T1310Z-001",
+  "stage":"REPLAY_001_030",
+  "logical_rank_range":[1,30],
+  "target_receipt":{
+    "path":"review-runs/lens-history-v1/automation/receipts/triage/R0A-20260916T1310Z-001/r016-020.json",
+    "blob_sha":"b50a6857ff39e0057feca35fb09d1e9c4e5558ae"
+  },
+  "field_correction":{
+    "field":"previous_triage_receipt.blob_sha",
+    "recorded_value":"PENDING_REFETCH_BINDING",
+    "correct_value":"dd722b92776a5e1796754a0d9374057981920159",
+    "correct_path":"review-runs/lens-history-v1/automation/receipts/triage/R0A-20260916T1310Z-001/r011-015.json"
+  },
+  "verification":{
+    "preceding_receipt_refetched":true,
+    "preceding_receipt_blob_sha":"dd722b92776a5e1796754a0d9374057981920159",
+    "target_receipt_semantic_content_changed":false,
+    "exception_detection_changed":false,
+    "missed_exception_count_changed":false,
+    "unsafe_correction_count_changed":false,
+    "affects_semantic_review":false,
+    "affects_materializer_output":false,
+    "affects_replay_validation":false
+  },
+  "reason":"Append-only repair of an unresolved receipt-chain placeholder. The immutable r016-020 receipt is preserved; consumers must apply this correction when validating Triage ancestry and resume state."
+}
