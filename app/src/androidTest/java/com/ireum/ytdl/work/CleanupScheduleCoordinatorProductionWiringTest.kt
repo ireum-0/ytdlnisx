@@ -44,8 +44,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -70,6 +73,14 @@ import java.io.File
  */
 @RunWith(AndroidJUnit4::class)
 class CleanupScheduleCoordinatorProductionWiringTest {
+    private companion object {
+        // WorkManager clamps retry backoff to this minimum on Android.
+        const val WORK_MANAGER_MIN_BACKOFF_MILLIS = 10_000L
+        const val WORK_MANAGER_QUERY_TIMEOUT_MILLIS = 1_000L
+        const val WORK_POLL_INTERVAL_MILLIS = 50L
+        const val WORKER_WAIT_TIMEOUT_MILLIS = 90_000L
+    }
+
     private lateinit var context: Context
     private lateinit var workManager: WorkManager
     private lateinit var preferences: android.content.SharedPreferences
@@ -957,7 +968,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         }
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(1)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val cleanupRuns = AtomicInteger(0)
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             cleanupRuns.incrementAndGet()
@@ -1545,7 +1557,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun bareInProgressPhaseWithoutJournalFailsClosedAndDoesNotPublishSuccessor() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val cleanupRuns = AtomicInteger(0)
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             cleanupRuns.incrementAndGet()
@@ -1595,7 +1608,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun roomDeletionFailureResumesFrozenTargetsWithoutWideningToNewlyCancelledRow() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val firstId = database.downloadDao.insert(cleanupDownload("first"))
         createdDownloadIds += firstId
         val failureOnce = AtomicBoolean(true)
@@ -1637,7 +1651,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun roomCommitBeforeCacheFailureRetainsExactSuffixAfterRowDisappears() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val firstId = database.downloadDao.insert(cleanupDownload("cache-room-commit"))
         createdDownloadIds += firstId
         val first = requireNotNull(database.downloadDao.getNullableDownloadById(firstId))
@@ -1692,7 +1707,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun failedExactCacheDeletionDoesNotAdvanceJournalOrWidenTargets() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val firstId = database.downloadDao.insert(cleanupDownload("cache-false"))
         createdDownloadIds += firstId
         val first = requireNotNull(database.downloadDao.getNullableDownloadById(firstId))
@@ -1740,7 +1756,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun realCacheHelperPartialFailureRetainsExactCarrierAcrossRecovery() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val id = database.downloadDao.insert(cleanupDownload("cache-real-helper"))
         createdDownloadIds += id
         val target = requireNotNull(database.downloadDao.getNullableDownloadById(id))
@@ -1819,7 +1836,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun cleanupJournalReusesFrozenRootAfterCachePathRebindAndRestart() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val id = database.downloadDao.insert(cleanupDownload("cache-root-rebind"))
         createdDownloadIds += id
         val target = requireNotNull(database.downloadDao.getNullableDownloadById(id))
@@ -1863,7 +1881,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             val occurrenceAt = currentScheduledOccurrenceAt()
             workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
             val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
-            workManager.enqueue(request).result.get(20, TimeUnit.SECONDS)
 
             assertTrue(awaitDownload(timeoutMs = 10_000L) {
                 database.downloadDao.getNullableDownloadById(id) == null
@@ -2010,7 +2027,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 val occurrenceAt = currentScheduledOccurrenceAt()
                 workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
                 val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
-                workManager.enqueue(request).result.get(20, TimeUnit.SECONDS)
                 assertEquals(
                     WorkInfo.State.SUCCEEDED,
                     awaitWorkById(request.id) { info ->
@@ -2252,7 +2268,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun refreshFailureResumesFrozenTargetsWithoutWideningToNewlyCancelledRow() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val firstId = database.downloadDao.insert(cleanupDownload("refresh-first"))
         createdDownloadIds += firstId
         val failureOnce = AtomicBoolean(true)
@@ -2294,7 +2311,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun effectPhasePublicationFailureDoesNotRunCleanupBeforeRetry() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val cleanupRuns = AtomicInteger(0)
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             cleanupRuns.incrementAndGet()
@@ -2331,7 +2349,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     @Test
     fun memoryVisibleEffectJournalFailureCannotGrantCleanupAuthority() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val cleanupRuns = AtomicInteger(0)
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             cleanupRuns.incrementAndGet()
@@ -2374,6 +2393,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     fun retryDoesNotPublishSuccessorBeforeCleanupEventuallySucceeds() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val attempts = AtomicInteger(0)
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             if (attempts.getAndIncrement() == 0) {
@@ -2414,7 +2435,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         val reconfigure = async(Dispatchers.Default) {
             CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY)
         }
-        Thread.sleep(100L)
+        delay(100L)
         assertFalse(reconfigure.isCompleted)
         release.countDown()
         assertTrue(reconfigure.await())
@@ -2448,7 +2469,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         val disable = async(Dispatchers.Default) {
             CleanupScheduleCoordinator.configure(context, null)
         }
-        Thread.sleep(100L)
+        delay(100L)
         assertFalse(disable.isCompleted)
         release.countDown()
         assertTrue(disable.await())
@@ -2684,6 +2705,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     fun finalCleanupFailurePreservesFutureOccurrenceAndReportsFailure() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val attempts = AtomicInteger(0)
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             attempts.incrementAndGet()
@@ -2711,7 +2734,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = 10L
         CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting = 20L
-        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
+        CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
+            WORK_MANAGER_MIN_BACKOFF_MILLIS
         val cleanupRuns = AtomicInteger(0)
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             cleanupRuns.incrementAndGet()
@@ -3288,48 +3312,71 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
     private fun unfinishedCurrentWork(): List<WorkInfo> = workManager
         .getWorkInfosForUniqueWork(CleanupScheduleCoordinator.WORK_NAME)
-        .get(20, TimeUnit.SECONDS)
+        .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
         .filter { it.state == WorkInfo.State.ENQUEUED ||
             it.state == WorkInfo.State.RUNNING ||
             it.state == WorkInfo.State.BLOCKED }
 
     private fun currentGenerationWork(generation: String): List<WorkInfo> = workManager
         .getWorkInfosForUniqueWork(CleanupScheduleCoordinator.WORK_NAME)
-        .get(20, TimeUnit.SECONDS)
+        .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
         .filter { it.tags.contains(generationTag(generation)) }
 
     private suspend fun awaitWork(
         timeoutMs: Long,
         predicate: (List<WorkInfo>) -> Boolean,
-    ): List<WorkInfo> = withTimeout(timeoutMs) {
-        while (true) {
-            val infos = workManager.getWorkInfosForUniqueWork(
-                CleanupScheduleCoordinator.WORK_NAME
-            ).get(20, TimeUnit.SECONDS)
-            if (predicate(infos)) return@withTimeout infos
-            Thread.sleep(50L)
-        }
-        error("unreachable")
+    ): List<WorkInfo> {
+        var lastObserved = emptyList<WorkInfo>()
+        return withTimeoutOrNull(timeoutMs) {
+            while (true) {
+                lastObserved = withContext(Dispatchers.IO) {
+                    workManager.getWorkInfosForUniqueWork(
+                        CleanupScheduleCoordinator.WORK_NAME,
+                    ).get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+                }
+                if (predicate(lastObserved)) return@withTimeoutOrNull lastObserved
+                delay(WORK_POLL_INTERVAL_MILLIS)
+            }
+            error("unreachable")
+        } ?: throw AssertionError(
+            "Timed out after ${timeoutMs}ms waiting for cleanup work; " +
+                "last observed=" + lastObserved.joinToString { info ->
+                    "${info.id}:${info.state}/attempt=${info.runAttemptCount}"
+                },
+        )
     }
 
     private suspend fun awaitWorkById(
         id: UUID,
+        timeoutMs: Long = WORKER_WAIT_TIMEOUT_MILLIS,
         predicate: (WorkInfo) -> Boolean,
-    ): WorkInfo = withTimeout(30_000L) {
-        while (true) {
-            val info = workManager.getWorkInfoById(id).get(20, TimeUnit.SECONDS)
-            if (info != null && predicate(info)) return@withTimeout info
-            Thread.sleep(50L)
-        }
-        error("unreachable")
+    ): WorkInfo {
+        var lastObserved: WorkInfo? = null
+        return withTimeoutOrNull(timeoutMs) {
+            while (true) {
+                lastObserved = withContext(Dispatchers.IO) {
+                    workManager.getWorkInfoById(id)
+                        .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+                }
+                val info = lastObserved
+                if (info != null && predicate(info)) return@withTimeoutOrNull info
+                delay(WORK_POLL_INTERVAL_MILLIS)
+            }
+            error("unreachable")
+        } ?: throw AssertionError(
+            "Timed out after ${timeoutMs}ms waiting for WorkManager request $id; " +
+                "last observed=" + (lastObserved?.let { info ->
+                    "${info.state}/attempt=${info.runAttemptCount}"
+                } ?: "<no WorkInfo row>"),
+        )
     }
 
-    private suspend fun awaitUnfinishedCount(
-        expected: Int,
-        timeoutMs: Long = 10_000L,
-    ): Boolean {
-        awaitWork(timeoutMs) { unfinishedCurrentWork().size == expected }
-        return true
+    private suspend fun awaitDownload(
+        timeoutMs: Long,
+        predicate: () -> Boolean,
+    ): Boolean = withTimeout(timeoutMs) {
+        while (!predicate()) delay(WORK_POLL_INTERVAL_MILLIS)
+        true
     }
 
     private fun currentScheduledOccurrenceAt(): Long {
@@ -3343,12 +3390,12 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         }
     }
 
-    private suspend fun awaitDownload(
-        timeoutMs: Long,
-        predicate: () -> Boolean,
-    ): Boolean = withTimeout(timeoutMs) {
-        while (!predicate()) Thread.sleep(50L)
-        true
+    private suspend fun awaitUnfinishedCount(
+        expected: Int,
+        timeoutMs: Long = 10_000L,
+    ): Boolean {
+        awaitWork(timeoutMs) { unfinishedCurrentWork().size == expected }
+        return true
     }
 
     private fun cleanupDownload(
@@ -3402,24 +3449,32 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         generation: String,
         monthlyAnchorDay: Int,
         occurrenceAt: Long,
-    ) = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>()
-        .setInputData(
-            workDataOf(
-                CleanupScheduleCoordinator.INPUT_GENERATION to generation,
-                CleanupScheduleCoordinator.INPUT_CADENCE to CleanupSchedulePolicy.DAILY,
-                CleanupScheduleCoordinator.INPUT_MONTHLY_ANCHOR_DAY to monthlyAnchorDay,
-                CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT to occurrenceAt,
+    ): androidx.work.OneTimeWorkRequest {
+        val request = OneTimeWorkRequestBuilder<CleanUpLeftoverDownloads>()
+            .setInputData(
+                workDataOf(
+                    CleanupScheduleCoordinator.INPUT_GENERATION to generation,
+                    CleanupScheduleCoordinator.INPUT_CADENCE to CleanupSchedulePolicy.DAILY,
+                    CleanupScheduleCoordinator.INPUT_MONTHLY_ANCHOR_DAY to monthlyAnchorDay,
+                    CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT to occurrenceAt,
+                )
             )
-        )
-        .setBackoffCriteria(BackoffPolicy.LINEAR, 10L, TimeUnit.MILLISECONDS)
-        .build()
+            .setBackoffCriteria(
+                BackoffPolicy.LINEAR,
+                WORK_MANAGER_MIN_BACKOFF_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
+            .build()
+        workManager.enqueue(request).result.get(20, TimeUnit.SECONDS)
+        return request
+    }
 
     private suspend fun awaitPreference(
         timeoutMs: Long,
         predicate: () -> Boolean,
     ): Boolean = withTimeout(timeoutMs) {
         while (!predicate()) {
-            Thread.sleep(25L)
+            delay(25L)
         }
         true
     }
