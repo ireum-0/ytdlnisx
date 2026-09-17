@@ -2619,6 +2619,12 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
     @Test
     fun enabledAuthorityAndInitialDebtCommitBeforeEnqueueAttempt() = runBlocking {
+        // Teardown clears the dedicated store so migration tests start from a
+        // clean legacy state.  Establish that store outside this test's
+        // measured authority transition; otherwise the first counted commit
+        // is the one-time empty-store initialization rather than configure's
+        // atomic authority publication.
+        assertTrue(CleanupScheduleCoordinator.configure(context, null))
         val operation = ControlledOperation().also { controlledOperations += it }
         val authorityCommits = AtomicInteger(0)
         var enqueueSawMatchingDebt = false
