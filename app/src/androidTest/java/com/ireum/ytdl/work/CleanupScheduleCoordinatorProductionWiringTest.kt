@@ -3002,9 +3002,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         try {
             assertTrue(legacyPreferences.edit().putString("cache_path", rootOne.absolutePath).commit())
 
-            // This carrier intentionally predates RootBindingStore.  The
-            // restore boundary must capture it before a merge/reset can make
-            // the current preference point elsewhere.
+            // This carrier intentionally predates RootBindingStore. Generic
+            // settings restore must leave it unregistered because cache_path
+            // is destination-local; discovery later must use the current
+            // root's exact marker and manifest.
             DownloadCacheOwnership.prepareAttempt(rootOne, target)
             val owned = File(rootOne, id.toString()).resolve("owned.bin")
                 .apply {
@@ -3012,18 +3013,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     writeText("owned")
                 }
             assertTrue(DownloadCacheOwnership.recordArtifacts(rootOne, target, listOf(owned.absolutePath)))
-
-            // Model the supported Folder-settings transition that first
-            // registers a pre-binding carrier. Generic settings restore must
-            // not need to repeat this capture when cache_path is
-            // destination-local and remains unchanged.
-            assertTrue(
-                DownloadCacheOwnership.captureOwnedRootsForPathTransition(
-                    context = context,
-                    cacheRoot = rootOne,
-                )
-            )
-            DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = { _, _ -> false }
 
             assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
             val generation = requireNotNull(
@@ -3062,6 +3051,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 )
                 add(BackupSettingsItem("settings_restore_marker", "portable", "String"))
             }
+            DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = { _, _ -> false }
             assertTrue(
                 SettingsViewModel(context as android.app.Application).restoreData(
                     RestoreAppDataItem(settings = importedSettings),
@@ -3084,6 +3074,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             )
             assertFalse(File(rootTwo, id.toString()).exists())
 
+            // Any RootBindingStore entry would make this test pass for the
+            // wrong reason. Generic restore must also succeed with the real
+            // transition-capture seam forced to fail.
+            DownloadCacheOwnership.clearRootBindingsForTesting(context)
             DownloadCacheOwnership.resetRootBindingProcessStateForTesting()
             val captured = DownloadRepository(database).exactCacheCleanupBindings(listOf(target))
             assertEquals(1, captured.size)
