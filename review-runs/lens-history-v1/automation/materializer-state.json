@@ -38,12 +38,18 @@
     "r0b_microsegments_completed_before_migration": 0,
     "next_rank_unchanged": 31
   },
-  "completed_microsegments": [],
+  "completed_microsegments": [
+    {
+      "range": [31, 35],
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r031-035.json",
+      "blob_sha": "1148bd8fe3b1c22ff4bdb57ba0ed3cc3a89c17ec"
+    }
+  ],
   "corrections": [],
-  "next_rank": 31,
+  "next_rank": 36,
   "pause_class": "TIME_BUDGET",
   "resume_safe": true,
-  "pause_note": "R0B remains safely paused before rank 31. R0A evidence completeness was strengthened by an append-only supplement after R0B acquisition but before any R0B microsegment was written. Re-fetch the supplement, previous certification, governing pins, and rank/source/frozen evidence before sealing r031-035.",
+  "pause_note": "R0B ranks 31-35 are sealed by contiguous one-rank receipts and aggregate receipt r031-035. Resume from effective next rank 36 after re-fetching current state, aggregate, migration binding, and the first uncovered rank evidence.",
   "replay_outputs": {
     "official_rank_records_rewritten": false,
     "progress_counter_changed": false
