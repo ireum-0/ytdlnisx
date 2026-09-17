@@ -26,9 +26,17 @@
     "status":"PASS",
     "unlock_allowed":true
   },
-  "completed_microsegments":[],
+  "completed_microsegments":[
+    {"range":[61,65],"path":"review-runs/lens-history-v1/automation/receipts/materializer/M01-20260917T2345Z-001/r061-065.json","blob_sha":"e4b84c25cba7700f259d877a178797af5ea42cea","corrections":[]}
+  ],
+  "rank_evidence_provenance":{
+    "completed_rank_range":[61,65],
+    "receipt_count":5,
+    "last_rank_receipt":{"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r065.json","blob_sha":"5b6b36a9b40bec4a422bd867c059df16506a9cc1"}
+  },
   "corrections":[],
-  "next_rank":61,
+  "next_rank":66,
+  "in_progress_exception_ranks":[61,65],
   "materialization_outputs":{
     "official_inventory_written":false,
     "official_ledger_written":false,
