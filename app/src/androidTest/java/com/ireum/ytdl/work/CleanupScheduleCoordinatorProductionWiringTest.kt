@@ -1849,8 +1849,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         val rootTwo = context.cacheDir.resolve("cleanup-root-two-${UUID.randomUUID()}").apply { mkdirs() }
         val hadCachePath = legacyPreferences.contains("cache_path")
         val previousCachePath = legacyPreferences.getString("cache_path", null)
-        val releaseSecondDeletion = CountDownLatch(1)
-        val secondDeletionEntered = CountDownLatch(1)
         val failSecondOnce = AtomicBoolean(true)
         try {
             assertTrue(legacyPreferences.edit().putString("cache_path", rootOne.absolutePath).commit())
@@ -1867,10 +1865,9 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             )
             DownloadCacheOwnership.fileDeletionForTesting = { file ->
                 if (file.name == second.name && failSecondOnce.compareAndSet(true, false)) {
-                    secondDeletionEntered.countDown()
-                    check(releaseSecondDeletion.await(10, TimeUnit.SECONDS)) {
-                        "root-rebind cache failure seam was not released"
-                    }
+                    // Return while the ownership lock is still held.  The
+                    // test observes the resulting WorkManager retry before
+                    // taking the same lock for the root transition.
                     false
                 } else {
                     file.delete()
@@ -1889,9 +1886,14 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             assertTrue(awaitDownload(timeoutMs = 10_000L) {
                 database.downloadDao.getNullableDownloadById(id) == null
             })
-            assertTrue(secondDeletionEntered.await(10, TimeUnit.SECONDS))
+            val retrying = awaitWorkById(request.id) { info ->
+                info.state == WorkInfo.State.ENQUEUED && info.runAttemptCount >= 1
+            }
+            assertTrue(retrying.runAttemptCount >= 1)
             assertFalse(first.exists())
             assertTrue(second.exists())
+            assertTrue(DownloadCacheOwnership.markerFile(rootOne, id).isFile)
+            assertTrue(DownloadCacheOwnership.artifactManifestFile(rootOne, id).isFile)
 
             // Model the real settings transition: valid old-root carriers are
             // registered before the mutable cache_path preference changes.
@@ -1905,7 +1907,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
             DownloadCacheOwnership.resetRootBindingProcessStateForTesting()
             DownloadCacheOwnership.fileDeletionForTesting = null
-            releaseSecondDeletion.countDown()
 
             val terminal = awaitWorkById(request.id) { info ->
                 info.state == WorkInfo.State.SUCCEEDED ||
@@ -1926,7 +1927,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 },
             )
         } finally {
-            releaseSecondDeletion.countDown()
             DownloadCacheOwnership.fileDeletionForTesting = null
             if (hadCachePath) {
                 legacyPreferences.edit().putString("cache_path", previousCachePath).commit()
