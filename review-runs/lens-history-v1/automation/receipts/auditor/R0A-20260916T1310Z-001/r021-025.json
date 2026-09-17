@@ -1,0 +1,64 @@
+{
+  "run_id": "R0A-20260916T1310Z-001",
+  "logical_range": {"start_rank": 1, "end_rank": 30},
+  "segment": {"start_rank": 21, "end_rank": 25},
+  "audit_mode": "independent_lossless_recomputation",
+  "result": "PASS",
+  "governing_pins": {
+    "frozen_snapshot": "review/lens-history-v1-frozen",
+    "schema_blob": "ba914e493a1c65e88bb5fb84ed9218db2ad00c87",
+    "document_identity_rule_blob": "b9fb36ffec5fb69d0e2306e3de8f9c9557357f5c",
+    "verified_seed_blob": "84b1f5d6e9248b4d63e96c7c15b4e57c55319b57",
+    "frozen_manifest_blob": "e90fc6cf4f5639273306c75229583e73b488b339"
+  },
+  "materializer": {
+    "data_head": "18497619dbaf3f4b8282e2f86b22aab5ec74e61e",
+    "complete_state_blob": "9c5fb335e1b6cb20e20dc6849c53b76d26d3987c",
+    "compared_receipt": "review-runs/lens-history-v1/automation/receipts/materializer/R0A-20260916T1310Z-001/r021-025.json",
+    "corrections_applied": []
+  },
+  "triage": {
+    "compared_receipt": "review-runs/lens-history-v1/automation/receipts/triage/R0A-20260916T1310Z-001/r021-025.json",
+    "corrections_applied": [],
+    "final_marker_path": "review-runs/lens-history-v1/automation/triage/R0A-20260916T1310Z-001.json",
+    "final_marker_blob": "480c8323500d528ca0a8c97ea1f98a5e37d43275"
+  },
+  "previous_auditor_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/auditor/R0A-20260916T1310Z-001/r016-020.json",
+    "blob_sha": "e4fcd5b62fb7bd5d1fbac62e957e2c4fc3d02419"
+  },
+  "independent_checks": {
+    "history_order": "PASS",
+    "changed_file_enumeration_closed_by_explicit_empty_page": "PASS",
+    "checkpoint_path_status_binding": "PASS",
+    "source_frozen_identity": "PASS",
+    "direct_implementation_provenance": "PASS",
+    "schema_class": "PASS",
+    "checkpoint_kind": "PASS",
+    "effectiveness_eligibility": "PASS",
+    "structured_lens_effectiveness": "PASS",
+    "seed_rule_use": "PASS",
+    "prohibited_inferences": "PASS",
+    "replay_required_fields": "PASS",
+    "exception_completeness": "PASS"
+  },
+  "ranks": [21,22,23,24,25],
+  "counts": {
+    "ranks_checked": 5,
+    "history_mismatches": 0,
+    "file_enumeration_mismatches": 0,
+    "source_frozen_mismatches": 0,
+    "classification_mismatches": 0,
+    "provenance_mismatches": 0,
+    "effectiveness_mismatches": 0,
+    "replay_mismatches": 0,
+    "prohibited_inference_violations": 0,
+    "triage_discovered_missed_exceptions": 0,
+    "auditor_only_missed_exceptions": 0
+  },
+  "exception_review": {
+    "status": "PASS",
+    "note": "All meaningful semantic triggers observed in ranks 21-25 are preserved in effective Materializer evidence or Triage; no new missed exception was found. HUMAN_REVIEW_REQUIRED preservation remains conservative and does not assert unsupported deterministic status changes."
+  },
+  "note": "Independent five-rank crash-recovery receipt. No production/application source, official materialization, Materializer/Triage artifact, exception queue, or state was modified."
+}
