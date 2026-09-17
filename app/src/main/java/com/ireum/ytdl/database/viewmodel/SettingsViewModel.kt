@@ -58,7 +58,6 @@ import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.NotificationUtil
-import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.util.download.DownloadIssueCode
@@ -458,14 +457,11 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         var customThumbnailStaging: RestoredCustomThumbnailStaging? = null
         val result = kotlin.runCatching {
             val settings = data.settings
-            val preservedCachePath = if (settings != null) {
-                check(
-                    DownloadCacheOwnership.captureEffectiveRootBeforePreferenceMutation(
-                        context.applicationContext,
-                    )
-                ) {
-                    "Could not durably capture the current cache root before settings restore"
-                }
+            val preservedCachePath = if (resetData && settings != null) {
+                // cache_path is destination-local. Generic settings restore
+                // filters imported cache_path values and therefore cannot
+                // change the effective root; only a reset needs to carry the
+                // existing value through its clear/replay transaction.
                 PreferenceManager.getDefaultSharedPreferences(context)
                     .getString("cache_path", null)
             } else {

@@ -2212,7 +2212,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
-    fun settingsRestoreRefusesMergeAndResetWhenCacheRootCaptureFails() = runBlocking {
+    fun settingsRestoreDoesNotRequireCacheRootCaptureForDestinationLocalPath() = runBlocking {
         val rootOne = context.cacheDir.resolve("settings-restore-capture-failure-${UUID.randomUUID()}")
             .apply { mkdirs() }
         val originalPreferences = snapshotPreferences(legacyPreferences)
@@ -2220,7 +2220,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             assertTrue(legacyPreferences.edit().putString("cache_path", rootOne.absolutePath).commit())
             DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = { _, _ -> false }
 
-            assertFalse(
+            assertTrue(
                 SettingsViewModel(context as android.app.Application).restoreData(
                     RestoreAppDataItem(
                         settings = listOf(BackupSettingsItem("settings_restore_merge", "no", "String")),
@@ -2229,9 +2229,9 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 )
             )
             assertEquals(rootOne.absolutePath, legacyPreferences.getString("cache_path", null))
-            assertFalse(legacyPreferences.contains("settings_restore_merge"))
+            assertEquals("no", legacyPreferences.getString("settings_restore_merge", null))
 
-            assertFalse(
+            assertTrue(
                 SettingsViewModel(context as android.app.Application).restoreData(
                     RestoreAppDataItem(
                         settings = listOf(BackupSettingsItem("settings_restore_reset", "no", "String")),
@@ -2241,7 +2241,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 )
             )
             assertEquals(rootOne.absolutePath, legacyPreferences.getString("cache_path", null))
-            assertFalse(legacyPreferences.contains("settings_restore_reset"))
+            assertEquals("no", legacyPreferences.getString("settings_restore_reset", null))
         } finally {
             DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = null
             restorePreferences(legacyPreferences, originalPreferences)
@@ -3013,6 +3013,18 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 }
             assertTrue(DownloadCacheOwnership.recordArtifacts(rootOne, target, listOf(owned.absolutePath)))
 
+            // Model the supported Folder-settings transition that first
+            // registers a pre-binding carrier. Generic settings restore must
+            // not need to repeat this capture when cache_path is
+            // destination-local and remains unchanged.
+            assertTrue(
+                DownloadCacheOwnership.captureOwnedRootsForPathTransition(
+                    context = context,
+                    cacheRoot = rootOne,
+                )
+            )
+            DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = { _, _ -> false }
+
             assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
             val generation = requireNotNull(
                 preferences.getString("cleanup_leftover_downloads_generation", null),
@@ -3113,6 +3125,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             )
             assertEquals("portable", legacyPreferences.getString("settings_restore_marker", null))
         } finally {
+            DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = null
             restorePreferences(legacyPreferences, originalPreferences)
             rootOne.deleteRecursively()
             rootTwo.deleteRecursively()
