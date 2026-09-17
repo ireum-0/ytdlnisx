@@ -3363,9 +3363,10 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 "Timed out waiting for canceled cleanup work; last observed=" +
                     lastObserved.joinToString { info ->
                         "${info.id}:${info.state}/attempt=${info.runAttemptCount}"
-                    },
+                },
             )
         }
+        workManager.pruneWork().result.get(20, TimeUnit.SECONDS)
     }
 
     private suspend fun awaitWork(
