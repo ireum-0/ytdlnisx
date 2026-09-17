@@ -1,0 +1,9 @@
+{"type":"RUN_META","run_id":"R0B-20260917T1112Z-001","stage":"REPLAY_031_060","logical_rank_range":[31,60],"frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4","receipt_count":6,"correction_count":0,"exception_rank_count":8}
+{"rank":35,"receipt":"r031-035.json","triggers":["AMBIGUOUS_KIND"]}
+{"rank":36,"receipt":"r036-040.json","triggers":["AMBIGUOUS_KIND"]}
+{"rank":44,"receipt":"r041-045.json","triggers":["AMBIGUOUS_KIND"]}
+{"rank":45,"receipt":"r041-045.json","triggers":["AMBIGUOUS_KIND"]}
+{"rank":47,"receipt":"r046-050.json","triggers":["SUBSTANTIVE_FINDING_ATTRIBUTION"]}
+{"rank":48,"receipt":"r046-050.json","triggers":["NEW_FINDING_AND_CHECKLIST_GAP"]}
+{"rank":52,"receipt":"r051-055.json","triggers":["AMBIGUOUS_KIND"]}
+{"rank":60,"receipt":"r056-060.json","triggers":["AMBIGUOUS_KIND"]}
