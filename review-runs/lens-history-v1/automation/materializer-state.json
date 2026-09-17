@@ -26,12 +26,24 @@
     "status": "PASS",
     "unlock_allowed": true
   },
+  "pre_segment_evidence_migration": {
+    "status": "COMPLETE",
+    "reason": "R0A superseding re-audit was substantively correct, but replacement receipts summarized some required ledger fields rather than recording them row-by-row. An append-only evidence supplement was added before any R0B microsegment was sealed.",
+    "supplement_path": "review-runs/lens-history-v1/automation/audits/remediation/R0A-20260916T1310Z-001-evidence-supplement-001.json",
+    "supplement_blob_sha": "fd1caa22bd03f44be62186ac59ae56cea0662b60",
+    "supplement_commit_sha": "651e1bfee139110f556726ce8165f96db0b06055",
+    "migration_parent_head": "bf48cd36fe313e5c1f0271c85fa878941940e269",
+    "authoritative_certification_unchanged": true,
+    "unlock_authority_unchanged": true,
+    "r0b_microsegments_completed_before_migration": 0,
+    "next_rank_unchanged": 31
+  },
   "completed_microsegments": [],
   "corrections": [],
   "next_rank": 31,
   "pause_class": "TIME_BUDGET",
   "resume_safe": true,
-  "pause_note": "R0B was safely acquired after exact R0A remediation certification verification. No five-rank microsegment was completed or written in this invocation; resume from rank 31 and re-fetch all rank/source/frozen evidence before sealing the first receipt.",
+  "pause_note": "R0B remains safely paused before rank 31. R0A evidence completeness was strengthened by an append-only supplement after R0B acquisition but before any R0B microsegment was written. Re-fetch the supplement, previous certification, governing pins, and rank/source/frozen evidence before sealing r031-035.",
   "replay_outputs": {
     "official_rank_records_rewritten": false,
     "progress_counter_changed": false
