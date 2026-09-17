@@ -2749,37 +2749,51 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         val cleanupRuns = AtomicInteger(0)
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             cleanupRuns.incrementAndGet()
+            // The initial occurrence must run promptly, but the replay path
+            // rebuilds D2 with the initial-delay seam.  Hold D2 queued after
+            // D1 has executed so this test can observe the handoff-pending
+            // predecessor and the exact successor together.
+            CleanupScheduleCoordinator.initialDelayOverrideForTesting =
+                TimeUnit.DAYS.toMillis(2)
         }
         val successorEnqueueAttempts = AtomicInteger(0)
+        val enqueueCalls = AtomicInteger(0)
+        val initialRequestIds = Collections.synchronizedList(mutableListOf<UUID>())
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
+            if (enqueueCalls.getAndIncrement() == 0) {
+                // Keep the initial request on the real WorkManager path while
+                // installing the successor failure seam before D1 can run.
+                initialRequestIds += request.id
+                workManager.enqueueUniqueWork(name, policy, request)
+            } else if (
+                successorEnqueueAttempts.getAndIncrement() <
+                    CleanUpLeftoverDownloads.MAX_ATTEMPTS
+            ) {
+                throw IllegalStateException("successor enqueue failure")
+            } else {
+                workManager.enqueueUniqueWork(name, policy, request)
+            }
+        }
 
         assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
         val generation = requireNotNull(
             preferences.getString("cleanup_leftover_downloads_generation", null)
         )
-        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
-            if (successorEnqueueAttempts.getAndIncrement() < CleanUpLeftoverDownloads.MAX_ATTEMPTS) {
-                throw IllegalStateException("successor enqueue failure")
-            }
-            workManager.enqueueUniqueWork(name, policy, request)
+        val initialRequestId = synchronized(initialRequestIds) { initialRequestIds.single() }
+        val initialResult = awaitWorkById(initialRequestId) { info ->
+            info.state == WorkInfo.State.SUCCEEDED &&
+                info.outputData.getBoolean("cleanup_schedule_handoff_pending", false)
         }
         val infos = awaitWork(timeoutMs = 60_000L) { current ->
             current.any { info ->
-                info.state == WorkInfo.State.SUCCEEDED &&
-                    info.tags.contains(generationTag(generation)) &&
-                    info.outputData.getBoolean("cleanup_schedule_handoff_pending", false)
-            } && current.any { info ->
                 info.state == WorkInfo.State.ENQUEUED &&
                     info.tags.contains(generationTag(generation)) &&
                     info.tags.any { tag ->
                         tag.startsWith("${CleanupScheduleCoordinator.TAG}_occurrence_")
-                    }
+                }
             }
         }
-
-        assertTrue(infos.any { info ->
-            info.state == WorkInfo.State.SUCCEEDED &&
-                info.outputData.getBoolean("cleanup_schedule_handoff_pending", false)
-        })
+        assertTrue(initialResult.outputData.getBoolean("cleanup_schedule_handoff_pending", false))
         assertEquals(1, cleanupRuns.get())
         assertTrue(successorEnqueueAttempts.get() > CleanUpLeftoverDownloads.MAX_ATTEMPTS)
         assertTrue(
