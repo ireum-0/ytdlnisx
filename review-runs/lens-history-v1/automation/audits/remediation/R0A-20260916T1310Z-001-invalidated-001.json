@@ -1,0 +1,56 @@
+{
+  "schema_version": "lens-history-v1-audit-remediation-v1",
+  "run_id": "R0A-20260916T1310Z-001",
+  "status": "INVALIDATED",
+  "reason": "The original ranks 21-25 and 26-30 Auditor receipts and the canonical final PASS do not bind the immutable R0A Materializer state and do not form a valid previous-receipt blob chain.",
+  "authoritative_materializer_state": {
+    "path": "review-runs/lens-history-v1/automation/materializer-state.json",
+    "blob_sha": "8309c171d24a292b7ea30ae9e1a7d176601062bb",
+    "data_head": "df87d5e39aef74dfff0cb0f3ac6657c6a0bc3c7c",
+    "governing_pins": {
+      "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+      "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+      "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+      "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+      "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+      "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c",
+      "start_progress_blob_sha": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8"
+    }
+  },
+  "last_valid_auditor_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/auditor/R0A-20260916T1310Z-001/r016-020.json",
+    "blob_sha": "0d78227bf1f555202cb077c797ebbdd9469ad791"
+  },
+  "invalid_artifacts": [
+    {
+      "path": "review-runs/lens-history-v1/automation/receipts/auditor/R0A-20260916T1310Z-001/r021-025.json",
+      "blob_sha": "ea9a43279db32150262e1624baad32b2b9fc9cd4",
+      "defects": [
+        "wrong data_head",
+        "wrong complete_state_blob",
+        "wrong schema/rule/seed/manifest governing pins",
+        "previous_auditor_receipt.blob_sha does not equal the actual r016-020 blob"
+      ]
+    },
+    {
+      "path": "review-runs/lens-history-v1/automation/receipts/auditor/R0A-20260916T1310Z-001/r026-030.json",
+      "blob_sha": "fd4f4eda7bb3a1391ec83a930143d1041e0d3b81",
+      "defects": [
+        "wrong data_head",
+        "wrong complete_state_blob",
+        "wrong schema/rule/seed/manifest governing pins",
+        "previous_auditor_receipt.blob_sha does not equal the actual r021-025 blob"
+      ]
+    },
+    {
+      "path": "review-runs/lens-history-v1/automation/audits/R0A-20260916T1310Z-001.json",
+      "blob_sha": "2cc8048a24c2591accdcce45fa7b7bc2f60d422f",
+      "defects": [
+        "final PASS binds the wrong data_head/state/pins",
+        "final PASS relies on the two invalid Auditor receipts"
+      ]
+    }
+  ],
+  "unlock_allowed_from_invalid_artifacts": false,
+  "preservation": "All invalid artifacts remain append-only historical evidence and are not overwritten or deleted. A new independent re-audit must supersede them before R0B may start."
+}
