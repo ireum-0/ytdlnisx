@@ -109,6 +109,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     fun tearDown() = runBlocking {
         cancelAllWorkAndAwaitIdle()
         clearTestSeams()
+        failOutstandingControlledOperations()
         assertTrue(CleanupScheduleCoordinator.configure(context, null))
         awaitMainLooperIdle()
         DownloadCacheOwnership.clearRootBindingsForTesting(context)
@@ -3381,6 +3382,12 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         }
     }
 
+    private fun failOutstandingControlledOperations() {
+        controlledOperations.forEach { operation ->
+            operation.failIfPending()
+        }
+    }
+
     private suspend fun awaitWork(
         timeoutMs: Long,
         predicate: (List<WorkInfo>) -> Boolean,
@@ -3556,6 +3563,12 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         fun fail(error: Throwable) {
             state.postValue(Operation.State.FAILURE(error))
             result.setException(error)
+        }
+
+        fun failIfPending() {
+            if (!result.isDone) {
+                fail(IllegalStateException("instrumentation test teardown"))
+            }
         }
     }
 }
