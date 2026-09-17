@@ -1,0 +1,117 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "R0B-20260917T1112Z-001",
+  "stage": "REPLAY_031_060",
+  "logical_rank_range": [31, 60],
+  "rank": 48,
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "pre_segment_evidence_migration": {
+    "supplement_path": "review-runs/lens-history-v1/automation/audits/remediation/R0A-20260916T1310Z-001-evidence-supplement-001.json",
+    "supplement_blob_sha": "fd1caa22bd03f44be62186ac59ae56cea0662b60",
+    "supplement_commit_sha": "651e1bfee139110f556726ce8165f96db0b06055",
+    "authoritative_certification_unchanged": true,
+    "unlock_authority_unchanged": true
+  },
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/R0B-20260917T1112Z-001/r047.json",
+    "blob_sha": "522ce8ba70e8a88df5ccba74dde17129e1276bdf"
+  },
+  "history": {
+    "commit_sha": "cf6feaebcf4a98a0585f06eb70c68296a188e130",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=48"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [1, 2],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-14T225300Z__c4f630a8__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "2b00a7a3e772b3fb6cfc554fc92eb914e14c6917",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "2b00a7a3e772b3fb6cfc554fc92eb914e14c6917",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-14T225300Z__c4f630a8__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "2b00a7a3e772b3fb6cfc554fc92eb914e14c6917",
+    "frozen_blob_sha": "2b00a7a3e772b3fb6cfc554fc92eb914e14c6917",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "c4f630a8699662ebc07d94caa006d70b9779091d",
+      "evidence": "explicit `Frozen implementation SHA` field in exact source blob"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "explicit `Phase: final pre-verdict` field in exact source blob"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit"
+    },
+    "raw_audit_lens": {"state": "NOT_VERIFIED"},
+    "primary_deep_lens": {"state": "NOT_VERIFIED"},
+    "lens_selection_reason": {"state": "NOT_VERIFIED"},
+    "lens_coverage_current_sha": {"state": "NOT_VERIFIED"},
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {"state": "DIRECT", "value": "HISTORY-CONTENT-AUTHORITY-ALIAS-01"},
+      "finding_disposition": {"state": "DIRECT", "value": "NEW / P2 / OPEN"},
+      "finding_relation": {"state": "DIRECT", "value": "provider-authority lowercasing widens destructive content-document identity and can allow one canonical deletion outcome to authorize removal of records from exact-distinct provider authority namespaces"},
+      "checklist_gap": {"state": "DIRECT", "value": "v6 did not explicitly require repository-wide propagation after establishing an unsafe identity transformation under upstream namespace equality"},
+      "modern_primary_detecting_lens": {"state": "NOT_VERIFIED"}
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "NEW_FINDING",
+      "finding_id": "HISTORY-CONTENT-AUTHORITY-ALIAS-01",
+      "disposition": "NEW / P2 / OPEN"
+    },
+    {
+      "type": "CHECKLIST_GAP",
+      "finding_id": "HISTORY-CONTENT-AUTHORITY-ALIAS-01",
+      "evidence": "v6 did not explicitly require repository-wide propagation after establishing an unsafe identity transformation under upstream namespace equality"
+    }
+  ],
+  "replay": {
+    "ledger_path": "review-runs/lens-history-v1/ledger-batches/0008-newest-041-050.jsonl",
+    "ledger_blob_sha": "7bc7cde925bf8a53552ceb65e9f38de0f1829733",
+    "ledger_record_position": 8,
+    "comparison": {
+      "history_commit": true,
+      "checkpoint_path": true,
+      "checkpoint_kind": true,
+      "implementation_sha": true,
+      "schema_class": true,
+      "raw_audit_lens": true,
+      "primary_deep_lens": true,
+      "lens_selection_reason": true,
+      "lens_coverage_current_sha": true,
+      "effectiveness_eligibility": true,
+      "effectiveness": true,
+      "finding_attribution": true,
+      "required_fields_agree": true
+    }
+  }
+}
