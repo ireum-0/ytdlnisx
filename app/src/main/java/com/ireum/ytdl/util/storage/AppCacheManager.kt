@@ -199,15 +199,16 @@ class AppCacheManager(private val context: Context) {
         }
 
     /**
-     * Deletes only the exact files captured by [snapshot].  The current
-     * category root must still resolve to the captured canonical path, and
-     * live-owned entries remain protected by the normal maintenance gate.
+     * Deletes only the exact files captured by [snapshot].  DOWNLOAD_TEMP
+     * snapshots resolve their own canonical root so a later cache_path change
+     * cannot redirect the operation to a different root.  Live-owned entries
+     * remain protected by the normal maintenance gate.
      */
     suspend fun deleteExact(snapshot: AppCacheExactSnapshot): AppCacheDeletionResult =
         CacheMaintenanceAuthority.withMaintenanceWindow {
-            val target = targets()[snapshot.category]
+            val target = targetForExactSnapshot(snapshot)
             val root = target?.let { runCatching { it.root.canonicalFile }.getOrNull() }
-            if (target == null || !target.available || root == null || root.path != snapshot.rootPath) {
+            if (target == null || !target.available || root == null) {
                 return@withMaintenanceWindow AppCacheDeletionResult(
                     requestedCategories = setOf(snapshot.category),
                     deletedBytes = 0L,
@@ -280,12 +281,43 @@ class AppCacheManager(private val context: Context) {
         return false
     }
 
+    /**
+     * Resolves a journaled snapshot without using mutable cache_path for the
+     * DOWNLOAD_TEMP category.  The persisted root is still independently
+     * constrained to the same application-owned boundary used by targets().
+     */
+    private fun targetForExactSnapshot(snapshot: AppCacheExactSnapshot): Target? {
+        val root = runCatching { File(snapshot.rootPath).canonicalFile }.getOrNull()
+            ?: return null
+        if (!root.isAbsolute || root.path != snapshot.rootPath) return null
+
+        if (snapshot.category == AppCacheCategory.DOWNLOAD_TEMP) {
+            if (!AppOwnedPathPolicy.isWithin(root, applicationOwnedRoots())) return null
+            return Target(
+                category = AppCacheCategory.DOWNLOAD_TEMP,
+                root = root,
+                exclusions = listOf(
+                    File(root, "TERMINAL"),
+                    File(root, "Logs"),
+                ),
+                available = true,
+            )
+        }
+
+        val current = targets()[snapshot.category] ?: return null
+        if (!current.available) return null
+        val currentRoot = runCatching { current.root.canonicalFile }.getOrNull() ?: return null
+        return current.takeIf { currentRoot.path == root.path }
+    }
+
+    private fun applicationOwnedRoots(): List<File> = listOfNotNull(
+        context.cacheDir,
+        context.externalCacheDir,
+        context.getExternalFilesDir(null)
+    )
+
     private fun targets(): Map<AppCacheCategory, Target> {
-        val ownershipRoots = listOfNotNull(
-            context.cacheDir,
-            context.externalCacheDir,
-            context.getExternalFilesDir(null)
-        )
+        val ownershipRoots = applicationOwnedRoots()
         val appCache = context.cacheDir
         val externalCache = context.externalCacheDir
         val downloadTemp = File(FileUtil.getCachePath(context))

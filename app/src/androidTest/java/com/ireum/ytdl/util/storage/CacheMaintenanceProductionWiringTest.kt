@@ -158,6 +158,50 @@ class CacheMaintenanceProductionWiringTest {
         }
     }
 
+    @Test
+    fun exactDownloadTempSnapshotUsesFrozenRootAfterCachePathRebind() = runBlocking {
+        val externalFiles = requireNotNull(context.getExternalFilesDir(null))
+        val rootOne = File(externalFiles, "snapshot-root-one-${UUID.randomUUID()}").apply { mkdirs() }
+        val rootTwo = File(externalFiles, "snapshot-root-two-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            assertTrue(preferences.edit().putString("cache_path", rootOne.absolutePath).commit())
+            val exact = File(rootOne, "exact.bin").apply { writeText("r1-exact") }
+            val changed = File(rootOne, "changed.bin").apply { writeText("r1-before") }
+            val terminalExcluded = File(rootOne, "TERMINAL/protected.bin").apply {
+                parentFile?.mkdirs()
+                writeText("terminal")
+            }
+            val logsExcluded = File(rootOne, "Logs/protected.log").apply {
+                parentFile?.mkdirs()
+                writeText("logs")
+            }
+            val snapshot = requireNotNull(
+                AppCacheManager(context).snapshotExact(AppCacheCategory.DOWNLOAD_TEMP),
+            )
+            assertEquals(rootOne.canonicalPath, snapshot.rootPath)
+            assertTrue(snapshot.files.any { it.relativePath == exact.name })
+            assertTrue(snapshot.files.any { it.relativePath == changed.name })
+
+            changed.writeText("r1-replaced-with-a-different-size")
+            assertTrue(preferences.edit().putString("cache_path", rootTwo.absolutePath).commit())
+            val rootTwoSentinel = File(rootTwo, "new-root.bin").apply { writeText("r2") }
+
+            val result = AppCacheManager(context).deleteExact(snapshot)
+
+            assertFalse(exact.exists())
+            assertTrue(changed.isFile)
+            assertTrue(terminalExcluded.isFile)
+            assertTrue(logsExcluded.isFile)
+            assertTrue(rootTwoSentinel.isFile)
+            assertTrue(result.deletedFiles >= 1)
+            assertTrue(result.failedEntries >= 1)
+            assertFalse(result.isComplete)
+        } finally {
+            rootOne.deleteRecursively()
+            rootTwo.deleteRecursively()
+        }
+    }
+
     private fun item() = DownloadItem(
         id = System.nanoTime(),
         url = "https://example.com/cache-maintenance",

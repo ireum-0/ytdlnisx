@@ -1904,6 +1904,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 )
             )
             assertTrue(legacyPreferences.edit().putString("cache_path", rootTwo.absolutePath).commit())
+            val rootTwoSentinel = rootTwo.resolve("new-temp.bin").apply { writeText("new-root") }
             CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
             DownloadCacheOwnership.resetRootBindingProcessStateForTesting()
             DownloadCacheOwnership.fileDeletionForTesting = null
@@ -1917,6 +1918,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             assertFalse(second.exists())
             assertFalse(DownloadCacheOwnership.markerFile(rootOne, id).exists())
             assertFalse(DownloadCacheOwnership.artifactManifestFile(rootOne, id).exists())
+            assertTrue(rootTwoSentinel.isFile)
             assertFalse(File(rootTwo, id.toString()).exists())
             assertEquals(
                 1,
