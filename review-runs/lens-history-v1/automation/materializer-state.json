@@ -39,42 +39,19 @@
     "next_rank_unchanged": 31
   },
   "completed_microsegments": [
-    {
-      "range": [31, 35],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r031-035.json",
-      "blob_sha": "1148bd8fe3b1c22ff4bdb57ba0ed3cc3a89c17ec"
-    },
-    {
-      "range": [36, 40],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r036-040.json",
-      "blob_sha": "c82625113a8e1d26d6e9288545573d2b81edca01"
-    },
-    {
-      "range": [41, 45],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r041-045.json",
-      "blob_sha": "6531a52d70c3d3b35ae71374f4e77c92798c3926"
-    },
-    {
-      "range": [46, 50],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r046-050.json",
-      "blob_sha": "7acbe4e998cc11cbf46c20e5a3fa52cb2494fae5"
-    }
+    {"range":[31,35],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r031-035.json","blob_sha":"1148bd8fe3b1c22ff4bdb57ba0ed3cc3a89c17ec"},
+    {"range":[36,40],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r036-040.json","blob_sha":"c82625113a8e1d26d6e9288545573d2b81edca01"},
+    {"range":[41,45],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r041-045.json","blob_sha":"6531a52d70c3d3b35ae71374f4e77c92798c3926"},
+    {"range":[46,50],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r046-050.json","blob_sha":"7acbe4e998cc11cbf46c20e5a3fa52cb2494fae5"},
+    {"range":[51,55],"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r051-055.json","blob_sha":"42f9dd6aeba921956d18ab3f0f909aa258378192"}
   ],
   "corrections": [],
-  "next_rank": 51,
+  "next_rank": 56,
   "pause_class": "TIME_BUDGET",
   "resume_safe": true,
-  "pause_note": "R0B ranks 31-50 are sealed by contiguous one-rank receipts and authoritative aggregate receipts through r046-050. Resume from effective next rank 51 after re-fetching current state, latest aggregate, migration binding, and first uncovered rank evidence.",
-  "replay_outputs": {
-    "official_rank_records_rewritten": false,
-    "progress_counter_changed": false
-  },
-  "stability": {
-    "consecutive_clean_30_materialization_batches": 0,
-    "consecutive_clean_40_materialization_batches": 0,
-    "retryable_pause_occurred": true,
-    "adaptive_size_streak_eligible": false
-  },
+  "pause_note": "R0B ranks 31-55 are sealed by contiguous one-rank receipts and authoritative aggregate receipts through r051-055. Resume from effective next rank 56 after re-fetching current state, latest aggregate, migration binding, and first uncovered rank evidence.",
+  "replay_outputs": {"official_rank_records_rewritten": false,"progress_counter_changed": false},
+  "stability": {"consecutive_clean_30_materialization_batches":0,"consecutive_clean_40_materialization_batches":0,"retryable_pause_occurred":true,"adaptive_size_streak_eligible":false},
   "requires_triage": false,
   "requires_audit": false
 }
