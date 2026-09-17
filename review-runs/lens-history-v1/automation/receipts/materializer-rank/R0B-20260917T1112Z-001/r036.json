@@ -1,0 +1,103 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "R0B-20260917T1112Z-001",
+  "stage": "REPLAY_031_060",
+  "logical_rank_range": [31, 60],
+  "rank": 36,
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "pre_segment_evidence_migration": {
+    "supplement_path": "review-runs/lens-history-v1/automation/audits/remediation/R0A-20260916T1310Z-001-evidence-supplement-001.json",
+    "supplement_blob_sha": "fd1caa22bd03f44be62186ac59ae56cea0662b60",
+    "supplement_commit_sha": "651e1bfee139110f556726ce8165f96db0b06055",
+    "authoritative_certification_unchanged": true,
+    "unlock_authority_unchanged": true
+  },
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/R0B-20260917T1112Z-001/r035.json",
+    "blob_sha": "ffac1868c08eff7a9ecff53783c6ff1bdfbce0e5"
+  },
+  "history": {
+    "commit_sha": "a4c46cdea3a5dd335c4b16c6b3b8d50758748503",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=36"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [1, 2],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-15T032700Z__c4f630a8__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "fa86e38b5c8ca4bfa7aef756e475231bfe187f06",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "fa86e38b5c8ca4bfa7aef756e475231bfe187f06",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-15T032700Z__c4f630a8__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "fa86e38b5c8ca4bfa7aef756e475231bfe187f06",
+    "frozen_blob_sha": "fa86e38b5c8ca4bfa7aef756e475231bfe187f06",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "c4f630a8699662ebc07d94caa006d70b9779091d",
+      "evidence": "explicit `Exact implementation SHA` field in exact source blob"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "source identifies a checkpoint but does not explicitly establish its structural kind; lens-history-v1/document-identity-v1 does not derive kind from chronology, commit message, or absence of a FINAL marker"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "uninstrumented checkpoint has no structured effectiveness payload and its structural final/intermediate kind is not explicitly established"
+    },
+    "raw_audit_lens": {"state": "NOT_VERIFIED"},
+    "primary_deep_lens": {"state": "NOT_VERIFIED"},
+    "lens_selection_reason": {"state": "NOT_VERIFIED"},
+    "lens_coverage_current_sha": {"state": "NOT_VERIFIED"},
+    "effectiveness": {},
+    "finding_attribution": {}
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "checkpoint has completed/provisional/remaining review sections but no explicit structural FINAL/INTERMEDIATE/BOOTSTRAP kind"
+    }
+  ],
+  "replay": {
+    "ledger_path": "review-runs/lens-history-v1/ledger-batches/0007-newest-031-040.jsonl",
+    "ledger_blob_sha": "1aa409e7f22351b8491c704ae451618ee5fe23c3",
+    "ledger_record_position": 6,
+    "comparison": {
+      "history_commit": true,
+      "checkpoint_path": true,
+      "checkpoint_kind": true,
+      "implementation_sha": true,
+      "schema_class": true,
+      "raw_audit_lens": true,
+      "primary_deep_lens": true,
+      "lens_selection_reason": true,
+      "lens_coverage_current_sha": true,
+      "effectiveness_eligibility": true,
+      "effectiveness": true,
+      "finding_attribution": true,
+      "required_fields_agree": true
+    }
+  }
+}
