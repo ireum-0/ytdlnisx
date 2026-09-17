@@ -1,0 +1,22 @@
+{
+  "schema_version":"lens-history-v1-triage-receipt-v1",
+  "run_id":"R0B-20260917T1112Z-001",
+  "stage":"REPLAY_031_060",
+  "logical_rank_range":[31,60],
+  "microsegment_rank_range":[56,60],
+  "data_head":"c751910bb2a5253f4fa630c2236508db8309ad38",
+  "complete_state_blob":"96440309799d4a37a07601d2cbc7efd07f1dd8a7",
+  "governing_pins":{"frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4","frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b","schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96","document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda","verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51","frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"},
+  "materializer_receipt":{"path":"review-runs/lens-history-v1/automation/receipts/materializer/R0B-20260917T1112Z-001/r056-060.json","blob_sha":"1863ce1c85c043a1d90f06289420b96d08f33915"},
+  "materializer_corrections":[],
+  "exception_queue_blob":"989cabcaa128c96ce4602ee4366dbe3c664d2622",
+  "previous_triage_receipt":{"path":"review-runs/lens-history-v1/automation/receipts/triage/R0B-20260917T1112Z-001/r051-055.json","blob_sha":"251ba1cb9af7d130162fda63d203a6dddeb6d717"},
+  "source_review":[
+    {"rank":56,"path":"review-runs/checkpoints/2026-09-14T184500Z__c4f630a8__checkpoint.md","source_blob":"3083a0dfddfaa20a698770d9f9d0759d475eceb5","independent_exception_triggers":[],"note":"Explicit final pre-verdict; no new P0/P1/P2 finding and no material canonical OPEN/CLOSED state change."},
+    {"rank":57,"path":"review-runs/checkpoints/2026-09-14T183600Z__c4f630a8__checkpoint.md","source_blob":"c9b531cc53a5d807fb36629eea18318075a13263","independent_exception_triggers":[],"note":"Explicit semantic intermediate; existing F10/Observe findings remain OPEN and no new finding/status change is identified."},
+    {"rank":58,"path":"review-runs/checkpoints/2026-09-14T182400Z__c4f630a8__checkpoint.md","source_blob":"3b382f2dfa2782cc7d7b5aeb2fd3e08c2307e44b","independent_exception_triggers":[],"note":"Explicit bootstrap; carry-forward baseline only and no new finding asserted."},
+    {"rank":59,"path":"review-runs/checkpoints/2026-09-14T173610Z__c4f630a8__checkpoint.md","source_blob":"6b7f5d846cb3734e077c4847d577661e5b93be9d","independent_exception_triggers":[],"note":"Document explicitly identifies final pre-verdict checkpoint; no new canonical finding or OPEN/CLOSED transition."},
+    {"rank":60,"path":"review-runs/checkpoints/2026-09-14T173210Z__c4f630a8__checkpoint.md","source_blob":"6826c1f179b45c0bcc10db070d9b4304265e58b5","independent_exception_triggers":["AMBIGUOUS_KIND"],"disposition":"MATERIALIZER_FLAGGED","human_decision_needed":"Preserve structural kind as NOT_VERIFIED; generic checkpoint title and review-progress sections do not establish FINAL/INTERMEDIATE/BOOTSTRAP."}
+  ],
+  "summary":{"ranks_reviewed":5,"independent_exception_ranks":[60],"materializer_flagged_exception_ranks":[60],"triage_discovered_missed_exception_ranks":[],"missed_exception_count":0,"unsafe_correction_count":0,"status":"HUMAN_REVIEW_REQUIRED"}
+}
