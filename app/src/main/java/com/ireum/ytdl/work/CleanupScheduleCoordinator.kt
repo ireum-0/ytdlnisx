@@ -699,6 +699,34 @@ internal object CleanupScheduleCoordinator {
         isCurrentOccurrenceLocked(context, generation, cadence)
     }
 
+    /**
+     * Protects the legacy cleanup namespace before a generic settings reset
+     * can clear the default preference file.  Reset is allowed to proceed
+     * only after the dedicated critical store has durably accepted the exact
+     * legacy image; otherwise the migration owner remains responsible and
+     * the caller must leave the default file untouched.
+     */
+    internal suspend fun prepareForSettingsReset(context: Context): Boolean =
+        destructiveEffectMutex.withLock {
+            synchronized(lock) {
+                val appContext = context.applicationContext
+                val preferences = criticalPreferencesOrNull(appContext)
+                if (preferences == null || !criticalStoreIsInitialized(preferences)) {
+                    ensureCriticalStoreReplayOwnerLocked(appContext)
+                    return@synchronized false
+                }
+                syncCadenceMirror(
+                    context = appContext,
+                    cadence = criticalString(preferences, PREF_CADENCE).orEmpty(),
+                )
+                true
+            }
+        }
+
+    /** Canonical coordinator-owned namespace used by backup/restore filters. */
+    internal fun isCoordinatorOwnedPreferenceKey(key: String): Boolean =
+        key in criticalPreferenceKeys
+
     private fun isCurrentOccurrenceLocked(
         context: Context,
         generation: String?,

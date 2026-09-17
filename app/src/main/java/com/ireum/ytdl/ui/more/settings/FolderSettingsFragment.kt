@@ -649,13 +649,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
      * production path mutation can make that root undiscoverable.
      */
     private fun captureCurrentCacheRootBeforeMutation(): Boolean {
-        val currentCacheRoot = runCatching {
-            File(FileUtil.getCachePath(requireContext())).canonicalFile
-        }.getOrNull() ?: return false
-        return DownloadCacheOwnership.captureOwnedRootsForPathTransition(
-            context = requireContext(),
-            cacheRoot = currentCacheRoot,
-        )
+        return DownloadCacheOwnership.captureEffectiveRootBeforePreferenceMutation(requireContext())
     }
 
     private data class VideoFolderMigrationResult(

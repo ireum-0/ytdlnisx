@@ -25,6 +25,23 @@ import java.io.File
 class BackupPreferenceProductionWiringTest {
     private lateinit var context: Context
     private lateinit var preferences: android.content.SharedPreferences
+    private val coordinatorKeys = setOf(
+        "cleanup_leftover_downloads",
+        "cleanup_leftover_downloads_generation",
+        "cleanup_leftover_downloads_anchor_day",
+        "cleanup_leftover_downloads_pending_generation",
+        "cleanup_leftover_downloads_pending_cadence",
+        "cleanup_leftover_downloads_pending_anchor_day",
+        "cleanup_leftover_downloads_pending_occurrence_at",
+        "cleanup_leftover_downloads_active_generation",
+        "cleanup_leftover_downloads_active_cadence",
+        "cleanup_leftover_downloads_active_anchor_day",
+        "cleanup_leftover_downloads_active_occurrence_at",
+        "cleanup_leftover_downloads_pending_effect_phase",
+        "cleanup_leftover_downloads_active_effect_phase",
+        "cleanup_leftover_downloads_effect_journal",
+        "cleanup_leftover_downloads_critical_store_version",
+    )
     private val keys = setOf(
         "f7_string",
         "f7_boolean",
@@ -41,7 +58,7 @@ class BackupPreferenceProductionWiringTest {
         "player_playback_position_f7",
         "cache_path",
         "backup_path",
-    )
+    ) + coordinatorKeys
     private val originalValues = mutableMapOf<String, Any?>()
     private var publishedBackup: String? = null
 
@@ -52,23 +69,9 @@ class BackupPreferenceProductionWiringTest {
         keys.forEach { key ->
             originalValues[key] = preferences.all[key]
         }
-        preferences.edit()
-            .remove("f7_string")
-            .remove("f7_boolean")
-            .remove("f7_int")
-            .remove("f7_long")
-            .remove("f7_float")
-            .remove("f7_string_set")
-            .remove("f7_bad_int")
-            .remove("f7_bad_boolean")
-            .remove("f7_bad_set")
-            .remove("f7_unknown")
-            .remove("app_language")
-            .remove("history_visible_child_youtuber_groups")
-            .remove("player_playback_position_f7")
-            .remove("cache_path")
-            .remove("backup_path")
-            .commit()
+        preferences.edit().also { editor ->
+            keys.forEach { key -> editor.remove(key) }
+        }.commit()
     }
 
     @After
@@ -155,6 +158,37 @@ class BackupPreferenceProductionWiringTest {
         assertEquals(3.25f, preferences.getFloat("f7_float", 0f), 0f)
         assertEquals(setOf("alpha", "beta"), preferences.getStringSet("f7_string_set", emptySet()))
         assertFalse(preferences.contains("app_language"))
+    }
+
+    @Test
+    fun backupExcludesDestinationLocalCacheAndCleanupCoordinatorAuthority() = runBlocking {
+        preferences.edit()
+            .putString("cache_path", context.cacheDir.resolve("source-cache").absolutePath)
+            .putString("cleanup_leftover_downloads", "daily")
+            .putString("cleanup_leftover_downloads_generation", "source-generation")
+            .putInt("cleanup_leftover_downloads_anchor_day", 31)
+            .putString("cleanup_leftover_downloads_pending_generation", "source-generation")
+            .putString("cleanup_leftover_downloads_pending_cadence", "daily")
+            .putInt("cleanup_leftover_downloads_pending_anchor_day", 31)
+            .putLong("cleanup_leftover_downloads_pending_occurrence_at", 42L)
+            .putString("cleanup_leftover_downloads_pending_effect_phase", "eligible")
+            .putString("cleanup_leftover_downloads_effect_journal", "source-journal")
+            .putInt("cleanup_leftover_downloads_critical_store_version", 1)
+            .commit()
+
+        val result = SettingsViewModel(context as android.app.Application)
+            .backup(listOf("settings"))
+        assertTrue(result.isSuccess)
+        publishedBackup = result.getOrThrow()
+        val items = Gson().fromJson(
+            JsonParser.parseString(File(publishedBackup!!).readText())
+                .asJsonObject
+                .getAsJsonArray("settings"),
+            Array<BackupSettingsItem>::class.java,
+        ).toList()
+
+        val excluded = coordinatorKeys + "cache_path"
+        assertTrue(items.none { it.key in excluded })
     }
 
     @Test

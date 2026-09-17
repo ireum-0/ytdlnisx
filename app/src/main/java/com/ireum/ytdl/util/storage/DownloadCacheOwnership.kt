@@ -2,6 +2,7 @@ package com.ireum.ytdl.util.storage
 
 import android.content.Context
 import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import java.io.File
 import java.nio.file.Files
@@ -230,6 +231,20 @@ internal object DownloadCacheOwnership {
                 )
             } ?: false
         }
+
+    /**
+     * Shared production boundary for any mutation that can make the current
+     * effective cache root undiscoverable, including settings restore.
+     */
+    fun captureEffectiveRootBeforePreferenceMutation(context: Context): Boolean {
+        val currentCacheRoot = runCatching {
+            File(FileUtil.getCachePath(context)).canonicalFile
+        }.getOrNull() ?: return false
+        return captureOwnedRootsForPathTransition(
+            context = context,
+            cacheRoot = currentCacheRoot,
+        )
+    }
 
     private fun ownedMarkerIdentities(root: File): List<CacheOwnerIdentity>? {
         if (!root.exists()) return emptyList()

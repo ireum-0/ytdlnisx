@@ -58,7 +58,9 @@ import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
+import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
 import com.google.gson.Gson
@@ -455,6 +457,28 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     suspend fun restoreData(data: RestoreAppDataItem, context: Context, resetData: Boolean = false) : Boolean {
         var customThumbnailStaging: RestoredCustomThumbnailStaging? = null
         val result = kotlin.runCatching {
+            val settings = data.settings
+            val preservedCachePath = if (settings != null) {
+                check(
+                    DownloadCacheOwnership.captureEffectiveRootBeforePreferenceMutation(
+                        context.applicationContext,
+                    )
+                ) {
+                    "Could not durably capture the current cache root before settings restore"
+                }
+                PreferenceManager.getDefaultSharedPreferences(context)
+                    .getString("cache_path", null)
+            } else {
+                null
+            }
+            val coordinatorCadenceForReset = if (resetData && settings != null) {
+                check(CleanupScheduleCoordinator.prepareForSettingsReset(context)) {
+                    "Cleanup authority migration is not durably complete"
+                }
+                CleanupScheduleCoordinator.currentCadenceForSettings(context)
+            } else {
+                null
+            }
             customThumbnailStaging = restoreCustomThumbnails(data.customThumbnails)
             val restoredCustomThumbByOldHistoryId = customThumbnailStaging!!.byOldHistoryId
             val resetAutomaticRules =
@@ -468,10 +492,20 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                 }
             }
 
-            data.settings?.apply {
+            settings?.apply {
                 val prefs = this
                 PreferenceManager.getDefaultSharedPreferences(context).edit(commit = true){
-                    if (resetData) clear()
+                    if (resetData) {
+                        clear()
+                        // cache_path is destination-local and must survive a
+                        // generic reset after its old root was captured.
+                        preservedCachePath?.let { putString("cache_path", it) }
+                        // The dedicated coordinator store is authoritative;
+                        // retain only its confirmed cadence as a UI mirror.
+                        coordinatorCadenceForReset?.let {
+                            putString("cleanup_leftover_downloads", it)
+                        }
+                    }
                     prefs.forEach {
                         val key = it.key
                         if (!BackupSettingsUtil.isPortablePreferenceKey(key)) return@forEach

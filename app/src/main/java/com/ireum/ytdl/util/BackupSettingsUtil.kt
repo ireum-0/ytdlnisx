@@ -8,6 +8,7 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.SearchHistoryRepository
+import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.database.dao.KeywordGroupDao
 import com.ireum.ytdl.database.dao.YoutuberGroupDao
 import com.ireum.ytdl.database.dao.YoutuberMetaDao
@@ -21,6 +22,9 @@ import kotlinx.coroutines.withContext
 object BackupSettingsUtil {
     private val nonPortablePreferenceKeys = setOf(
         "app_language",
+        // Cache roots are destination-local.  A raw path or SAF-backed value
+        // from another installation is not portable native-cache authority.
+        "cache_path",
         // Re-emitted by the youtuber-data payload where old group IDs can be
         // explicitly remapped to destination group IDs.
         "history_visible_child_youtuber_groups",
@@ -29,6 +33,7 @@ object BackupSettingsUtil {
 
     internal fun isPortablePreferenceKey(key: String): Boolean =
         key !in nonPortablePreferenceKeys &&
+            !CleanupScheduleCoordinator.isCoordinatorOwnedPreferenceKey(key) &&
             !key.startsWith(PLAYBACK_POSITION_CACHE_PREFIX)
 
     /**

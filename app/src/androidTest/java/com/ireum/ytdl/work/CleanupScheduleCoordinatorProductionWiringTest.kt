@@ -22,11 +22,14 @@ import androidx.work.workDataOf
 import com.google.common.util.concurrent.ListenableFuture
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.AudioPreferences
+import com.ireum.ytdl.database.models.BackupSettingsItem
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
+import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.viewmodel.SettingsViewModel
 import com.ireum.ytdl.ui.more.settings.CleanupSchedulePreferenceController
 import com.ireum.ytdl.ui.more.settings.DownloadSettingsFragment
 import com.ireum.ytdl.ui.more.settings.FolderSettingsFragment
@@ -231,6 +234,147 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             preferences.getString("cleanup_leftover_downloads_generation", null),
         )
         assertEquals(1, preferences.getInt("cleanup_leftover_downloads_critical_store_version", -1))
+    }
+
+    @Test
+    fun failedCriticalMigrationThenMergeRestoreCannotImportCleanupAuthority() = runBlocking {
+        val generation = "destination-generation-merge"
+        val occurrenceAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(2)
+        val originalPreferences = snapshotPreferences(legacyPreferences)
+        try {
+            assertTrue(
+                legacyPreferences.edit()
+                    .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+                    .putString("cleanup_leftover_downloads_generation", generation)
+                    .putInt("cleanup_leftover_downloads_anchor_day", 17)
+                    .putString("cleanup_leftover_downloads_pending_generation", generation)
+                    .putString("cleanup_leftover_downloads_pending_cadence", CleanupSchedulePolicy.DAILY)
+                    .putInt("cleanup_leftover_downloads_pending_anchor_day", 17)
+                    .putLong("cleanup_leftover_downloads_pending_occurrence_at", occurrenceAt)
+                    .putString("cleanup_leftover_downloads_pending_effect_phase", "eligible")
+                    .putString("cleanup_leftover_downloads_effect_journal", "destination-journal")
+                    .commit(),
+            )
+            CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+            CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+            CleanupScheduleCoordinator.reconcile(context)
+
+            assertEquals(
+                1,
+                preferences.getInt("cleanup_leftover_downloads_critical_store_version", -1),
+            )
+            assertTrue(
+                SettingsViewModel(context as android.app.Application).restoreData(
+                    RestoreAppDataItem(
+                        settings = listOf(
+                            BackupSettingsItem(
+                                "cleanup_leftover_downloads",
+                                CleanupSchedulePolicy.WEEKLY,
+                                "String",
+                            ),
+                            BackupSettingsItem(
+                                "cleanup_leftover_downloads_generation",
+                                "imported-generation",
+                                "String",
+                            ),
+                            BackupSettingsItem("f10_restore_merge", "ok", "String"),
+                        ),
+                    ),
+                    context,
+                ),
+            )
+            assertEquals(generation, legacyPreferences.getString("cleanup_leftover_downloads_generation", null))
+            assertEquals(CleanupSchedulePolicy.DAILY, legacyPreferences.getString("cleanup_leftover_downloads", null))
+            assertEquals("ok", legacyPreferences.getString("f10_restore_merge", null))
+
+            // The rejected dedicated-store image is process-visible only;
+            // restart must restore the last confirmed image before retrying
+            // migration from the untouched destination legacy namespace.
+            CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+            CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = false
+            CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+            CleanupScheduleCoordinator.reconcile(context)
+
+            assertEquals(generation, preferences.getString("cleanup_leftover_downloads_generation", null))
+            assertEquals(
+                occurrenceAt,
+                preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+            )
+            assertEquals("destination-journal", preferences.getString("cleanup_leftover_downloads_effect_journal", null))
+            assertEquals(
+                CleanupSchedulePolicy.DAILY,
+                CleanupScheduleCoordinator.currentCadenceForSettings(context),
+            )
+        } finally {
+            restorePreferences(legacyPreferences, originalPreferences)
+        }
+    }
+
+    @Test
+    fun failedCriticalMigrationThenResetRestoreCannotClearCleanupAuthority() = runBlocking {
+        val generation = "destination-generation-reset"
+        val occurrenceAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(2)
+        val originalPreferences = snapshotPreferences(legacyPreferences)
+        try {
+            assertTrue(
+                legacyPreferences.edit()
+                    .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
+                    .putString("cleanup_leftover_downloads_generation", generation)
+                    .putInt("cleanup_leftover_downloads_anchor_day", 19)
+                    .putString("cleanup_leftover_downloads_pending_generation", generation)
+                    .putString("cleanup_leftover_downloads_pending_cadence", CleanupSchedulePolicy.DAILY)
+                    .putInt("cleanup_leftover_downloads_pending_anchor_day", 19)
+                    .putLong("cleanup_leftover_downloads_pending_occurrence_at", occurrenceAt)
+                    .putString("cleanup_leftover_downloads_pending_effect_phase", "eligible")
+                    .putString("cleanup_leftover_downloads_effect_journal", "destination-reset-journal")
+                    .commit(),
+            )
+            CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
+            CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+            CleanupScheduleCoordinator.reconcile(context)
+
+            assertFalse(
+                SettingsViewModel(context as android.app.Application).restoreData(
+                    RestoreAppDataItem(
+                        settings = listOf(
+                            BackupSettingsItem(
+                                "cleanup_leftover_downloads",
+                                CleanupSchedulePolicy.WEEKLY,
+                                "String",
+                            ),
+                            BackupSettingsItem(
+                                "cleanup_leftover_downloads_generation",
+                                "imported-reset-generation",
+                                "String",
+                            ),
+                            BackupSettingsItem("f10_restore_reset", "must-not-apply", "String"),
+                        ),
+                    ),
+                    context,
+                    resetData = true,
+                ),
+            )
+            assertEquals(generation, legacyPreferences.getString("cleanup_leftover_downloads_generation", null))
+            assertEquals(CleanupSchedulePolicy.DAILY, legacyPreferences.getString("cleanup_leftover_downloads", null))
+            assertFalse(legacyPreferences.contains("f10_restore_reset"))
+
+            CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+            CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = false
+            CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+            CleanupScheduleCoordinator.reconcile(context)
+
+            assertEquals(generation, preferences.getString("cleanup_leftover_downloads_generation", null))
+            assertEquals(
+                occurrenceAt,
+                preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+            )
+            assertEquals(
+                "destination-reset-journal",
+                preferences.getString("cleanup_leftover_downloads_effect_journal", null),
+            )
+        } finally {
+            restorePreferences(legacyPreferences, originalPreferences)
+        }
     }
 
     @Test
@@ -2044,6 +2188,68 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
+    fun settingsMergeRestorePreservesPreBindingRootAndLegacyJournalAfterRestart() = runBlocking {
+        assertSettingsRestorePreservesPreBindingRoot(
+            resetData = false,
+            includeImportedCachePath = true,
+        )
+    }
+
+    @Test
+    fun settingsResetRestorePreservesPreBindingRootAndLegacyJournalAfterRestart() = runBlocking {
+        assertSettingsRestorePreservesPreBindingRoot(
+            resetData = true,
+            includeImportedCachePath = true,
+        )
+    }
+
+    @Test
+    fun settingsResetWithoutCachePathPreservesPreBindingRootAndLegacyJournal() = runBlocking {
+        assertSettingsRestorePreservesPreBindingRoot(
+            resetData = true,
+            includeImportedCachePath = false,
+        )
+    }
+
+    @Test
+    fun settingsRestoreRefusesMergeAndResetWhenCacheRootCaptureFails() = runBlocking {
+        val rootOne = context.cacheDir.resolve("settings-restore-capture-failure-${UUID.randomUUID()}")
+            .apply { mkdirs() }
+        val originalPreferences = snapshotPreferences(legacyPreferences)
+        try {
+            assertTrue(legacyPreferences.edit().putString("cache_path", rootOne.absolutePath).commit())
+            DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = { _, _ -> false }
+
+            assertFalse(
+                SettingsViewModel(context as android.app.Application).restoreData(
+                    RestoreAppDataItem(
+                        settings = listOf(BackupSettingsItem("settings_restore_merge", "no", "String")),
+                    ),
+                    context,
+                )
+            )
+            assertEquals(rootOne.absolutePath, legacyPreferences.getString("cache_path", null))
+            assertFalse(legacyPreferences.contains("settings_restore_merge"))
+
+            assertFalse(
+                SettingsViewModel(context as android.app.Application).restoreData(
+                    RestoreAppDataItem(
+                        settings = listOf(BackupSettingsItem("settings_restore_reset", "no", "String")),
+                    ),
+                    context,
+                    resetData = true,
+                )
+            )
+            assertEquals(rootOne.absolutePath, legacyPreferences.getString("cache_path", null))
+            assertFalse(legacyPreferences.contains("settings_restore_reset"))
+        } finally {
+            DownloadCacheOwnership.rootTransitionCaptureOverrideForTesting = null
+            restorePreferences(legacyPreferences, originalPreferences)
+            rootOne.deleteRecursively()
+        }
+    }
+
+    @Test
     fun refreshFailureResumesFrozenTargetsWithoutWideningToNewlyCancelledRow() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting = 10L
@@ -2778,6 +2984,163 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
             }
         )
+    }
+
+    private suspend fun assertSettingsRestorePreservesPreBindingRoot(
+        resetData: Boolean,
+        includeImportedCachePath: Boolean,
+    ) {
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
+        val id = database.downloadDao.insert(cleanupDownload("settings-restore-cache-root"))
+        createdDownloadIds += id
+        val target = requireNotNull(database.downloadDao.getNullableDownloadById(id))
+        val rootOne = context.cacheDir.resolve("settings-restore-root-one-${UUID.randomUUID()}")
+            .apply { mkdirs() }
+        val rootTwo = context.cacheDir.resolve("settings-restore-root-two-${UUID.randomUUID()}")
+            .apply { mkdirs() }
+        val originalPreferences = snapshotPreferences(legacyPreferences)
+        try {
+            assertTrue(legacyPreferences.edit().putString("cache_path", rootOne.absolutePath).commit())
+
+            // This carrier intentionally predates RootBindingStore.  The
+            // restore boundary must capture it before a merge/reset can make
+            // the current preference point elsewhere.
+            DownloadCacheOwnership.prepareAttempt(rootOne, target)
+            val owned = File(rootOne, id.toString()).resolve("owned.bin")
+                .apply {
+                    parentFile?.mkdirs()
+                    writeText("owned")
+                }
+            assertTrue(DownloadCacheOwnership.recordArtifacts(rootOne, target, listOf(owned.absolutePath)))
+
+            assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+            val generation = requireNotNull(
+                preferences.getString("cleanup_leftover_downloads_generation", null),
+            )
+            val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+            val occurrenceAt = currentScheduledOccurrenceAt()
+            workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+            val legacyJournal = CleanupEffectJournal(
+                generation = generation,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+                occurrenceAt = occurrenceAt,
+                cancelledTargets = listOf(target),
+                cancelledCacheCleanupRequiredIds = listOf(id),
+                tempCleanupRequired = false,
+            )
+            assertTrue(
+                CleanupScheduleCoordinator.seedEffectJournalForTesting(
+                    context = context,
+                    journal = legacyJournal,
+                    phase = "eligible",
+                )
+            )
+
+            val importedSettings = buildList {
+                if (includeImportedCachePath) {
+                    add(BackupSettingsItem("cache_path", rootTwo.absolutePath, "String"))
+                }
+                add(
+                    BackupSettingsItem(
+                        "cleanup_leftover_downloads",
+                        CleanupSchedulePolicy.WEEKLY,
+                        "String",
+                    )
+                )
+                add(BackupSettingsItem("settings_restore_marker", "portable", "String"))
+            }
+            assertTrue(
+                SettingsViewModel(context as android.app.Application).restoreData(
+                    RestoreAppDataItem(settings = importedSettings),
+                    context,
+                    resetData = resetData,
+                )
+            )
+            assertEquals(
+                rootOne.canonicalFile.absolutePath,
+                File(FileUtil.getCachePath(context)).canonicalFile.absolutePath,
+            )
+            assertEquals(
+                rootOne.canonicalFile.absolutePath,
+                File(requireNotNull(legacyPreferences.getString("cache_path", null)))
+                    .canonicalFile.absolutePath,
+            )
+            assertEquals(
+                CleanupSchedulePolicy.DAILY,
+                CleanupScheduleCoordinator.currentCadenceForSettings(context),
+            )
+            assertFalse(File(rootTwo, id.toString()).exists())
+
+            DownloadCacheOwnership.resetRootBindingProcessStateForTesting()
+            val captured = DownloadRepository(database).exactCacheCleanupBindings(listOf(target))
+            assertEquals(1, captured.size)
+            assertEquals(rootOne.canonicalFile.absolutePath, captured.single().rootPath)
+
+            // Drop process-local bindings and replay state while retaining
+            // the exact durable journal/root carrier.
+            CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+            DownloadCacheOwnership.resetRootBindingProcessStateForTesting()
+            val recovered = DownloadRepository(database).knownCacheCleanupBindings(target)
+            assertEquals(1, recovered.size)
+            assertEquals(rootOne.canonicalFile.absolutePath, recovered.single().rootPath)
+
+            val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
+            val terminal = awaitWorkById(request.id) { info ->
+                info.state == WorkInfo.State.SUCCEEDED ||
+                    info.state == WorkInfo.State.FAILED ||
+                    info.state == WorkInfo.State.CANCELLED
+            }
+            assertEquals(WorkInfo.State.SUCCEEDED, terminal.state)
+            assertNull(database.downloadDao.getNullableDownloadById(id))
+            assertFalse(owned.exists())
+            assertFalse(DownloadCacheOwnership.markerFile(rootOne, id).exists())
+            assertFalse(DownloadCacheOwnership.artifactManifestFile(rootOne, id).exists())
+            assertFalse(File(rootTwo, id.toString()).exists())
+
+            val expectedSuccessorAt = CleanupSchedulePolicy.nextOccurrence(
+                now = Calendar.getInstance().apply { timeInMillis = occurrenceAt },
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+            ).timeInMillis
+            assertTrue(
+                awaitPreference(timeoutMs = 5_000L) {
+                    preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L) ==
+                        expectedSuccessorAt ||
+                        preferences.getLong("cleanup_leftover_downloads_active_occurrence_at", -1L) ==
+                        expectedSuccessorAt
+                }
+            )
+            assertEquals("portable", legacyPreferences.getString("settings_restore_marker", null))
+        } finally {
+            restorePreferences(legacyPreferences, originalPreferences)
+            rootOne.deleteRecursively()
+            rootTwo.deleteRecursively()
+        }
+    }
+
+    private fun snapshotPreferences(
+        preferences: android.content.SharedPreferences,
+    ): Map<String, Any?> = preferences.all.mapValues { (_, value) ->
+        if (value is Set<*>) value.toSet() else value
+    }
+
+    private fun restorePreferences(
+        preferences: android.content.SharedPreferences,
+        values: Map<String, Any?>,
+    ) {
+        val editor = preferences.edit().clear()
+        values.forEach { (key, value) ->
+            when (value) {
+                is String -> editor.putString(key, value)
+                is Boolean -> editor.putBoolean(key, value)
+                is Int -> editor.putInt(key, value)
+                is Long -> editor.putLong(key, value)
+                is Float -> editor.putFloat(key, value)
+                is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+            }
+        }
+        assertTrue(editor.commit())
     }
 
     private fun clearSchedulePreferences() {

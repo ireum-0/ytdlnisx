@@ -4,6 +4,7 @@ import com.ireum.ytdl.database.dao.KeywordGroupDao
 import com.ireum.ytdl.database.models.KeywordGroup
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.lang.reflect.Proxy
@@ -39,6 +40,35 @@ class BackupSettingsUtilTest {
         assertTrue(result.isSuccess)
         assertEquals(1, result.getOrThrow().size())
         assertEquals(7L, result.getOrThrow()[0].asJsonObject.get("id").asLong)
+    }
+
+    @Test
+    fun cachePathAndCleanupCoordinatorNamespaceAreNotPortable() {
+        val coordinatorKeys = listOf(
+            "cleanup_leftover_downloads",
+            "cleanup_leftover_downloads_generation",
+            "cleanup_leftover_downloads_anchor_day",
+            "cleanup_leftover_downloads_pending_generation",
+            "cleanup_leftover_downloads_pending_cadence",
+            "cleanup_leftover_downloads_pending_anchor_day",
+            "cleanup_leftover_downloads_pending_occurrence_at",
+            "cleanup_leftover_downloads_active_generation",
+            "cleanup_leftover_downloads_active_cadence",
+            "cleanup_leftover_downloads_active_anchor_day",
+            "cleanup_leftover_downloads_active_occurrence_at",
+            "cleanup_leftover_downloads_pending_effect_phase",
+            "cleanup_leftover_downloads_active_effect_phase",
+            "cleanup_leftover_downloads_effect_journal",
+            "cleanup_leftover_downloads_critical_store_version",
+        )
+
+        assertFalse(BackupSettingsUtil.isPortablePreferenceKey("cache_path"))
+        coordinatorKeys.forEach { key ->
+            assertFalse(
+                "coordinator key must remain destination-local: $key",
+                BackupSettingsUtil.isPortablePreferenceKey(key),
+            )
+        }
     }
 
     @Test(expected = IllegalStateException::class)
