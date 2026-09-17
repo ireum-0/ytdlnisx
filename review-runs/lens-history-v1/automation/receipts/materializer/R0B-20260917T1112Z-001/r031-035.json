@@ -1,0 +1,51 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "R0B-20260917T1112Z-001",
+  "stage": "REPLAY_031_060",
+  "logical_rank_range": [31, 60],
+  "segment_range": [31, 35],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "pre_segment_evidence_migration": {
+    "supplement_path": "review-runs/lens-history-v1/automation/audits/remediation/R0A-20260916T1310Z-001-evidence-supplement-001.json",
+    "supplement_blob_sha": "fd1caa22bd03f44be62186ac59ae56cea0662b60",
+    "supplement_commit_sha": "651e1bfee139110f556726ce8165f96db0b06055",
+    "authoritative_certification_unchanged": true,
+    "unlock_authority_unchanged": true
+  },
+  "previous_aggregate_receipt": null,
+  "rank_receipts": [
+    {"rank":31,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/R0B-20260917T1112Z-001/r031.json","blob_sha":"bd8e40f95d30d377e562424fcfcfb37f75b58c82"},
+    {"rank":32,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/R0B-20260917T1112Z-001/r032.json","blob_sha":"d1abd55f25288482ca8ed953bf83ccbe601ad510"},
+    {"rank":33,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/R0B-20260917T1112Z-001/r033.json","blob_sha":"009e99eb25a7febc394e48061ba3a1e6b25e02d9"},
+    {"rank":34,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/R0B-20260917T1112Z-001/r034.json","blob_sha":"f1116f173d31d54431c55a4197331118f0f400a2"},
+    {"rank":35,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/R0B-20260917T1112Z-001/r035.json","blob_sha":"ffac1868c08eff7a9ecff53783c6ff1bdfbce0e5"}
+  ],
+  "segment_exception_summary": {
+    "exception_count": 1,
+    "ranks": [35],
+    "triggers": [
+      {"rank":35,"type":"AMBIGUOUS_KIND","source_blob_sha":"17711781dd034f0a65cc9a93cfe422efa66fb526"}
+    ]
+  },
+  "replay_comparison_summary": {
+    "rank_receipts_checked": 5,
+    "required_fields_agree_count": 5,
+    "required_fields_mismatch_count": 0,
+    "history_binding_mismatches": 0,
+    "source_frozen_identity_mismatches": 0,
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches": 0,
+    "structured_field_mismatches": 0,
+    "ledger_blob_sha": "1aa409e7f22351b8491c704ae451618ee5fe23c3",
+    "ledger_record_positions": [1,2,3,4,5]
+  }
+}
