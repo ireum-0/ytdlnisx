@@ -1,0 +1,43 @@
+{
+  "schema_version":"lens-history-v1-materializer-segment-receipt-v2",
+  "run_id":"M01-20260917T2345Z-001",
+  "stage":"MATERIALIZE_061_090",
+  "logical_rank_range":[61,90],
+  "segment_range":[61,65],
+  "governing_pins":{
+    "frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob":"18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "previous_aggregate_receipt":null,
+  "rank_receipts":[
+    {"rank":61,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r061.json","blob_sha":"f77a09ac09ae40286cb830a28a29121d561c83c2"},
+    {"rank":62,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r062.json","blob_sha":"038dcbfb410f46355bd7eced8b1ab6df82412c98"},
+    {"rank":63,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r063.json","blob_sha":"6f02d5494cffdf74a4fbeee611047598f9676f02"},
+    {"rank":64,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r064.json","blob_sha":"03da06188f40b8727d488c879f93e0048e677320"},
+    {"rank":65,"path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r065.json","blob_sha":"5b6b36a9b40bec4a422bd867c059df16506a9cc1"}
+  ],
+  "segment_exception_summary":{
+    "exception_rank_count":2,
+    "ranks":[61,65],
+    "triggers":[
+      {"rank":61,"type":"AMBIGUOUS_KIND","source_blob_sha":"17b45f31c5838419ef35e4472441b7aebd07ed7d"},
+      {"rank":65,"type":"IMPLEMENTATION_TRANSITION_BOUNDARY","source_blob_sha":"604a421fe641ef587c9b92877571cfc861f91cd3"},
+      {"rank":65,"type":"SUBSTANTIVE_RESIDUAL_OR_SUBCASES","finding_id":"BUG-CLEANUP-01","source_blob_sha":"604a421fe641ef587c9b92877571cfc861f91cd3"},
+      {"rank":65,"type":"NOT_VERIFIED_SEMANTIC_CANDIDATE","source_blob_sha":"604a421fe641ef587c9b92877571cfc861f91cd3"}
+    ]
+  },
+  "materialization_summary":{
+    "rank_receipts_checked":5,
+    "history_bindings_complete":5,
+    "changed_file_enumeration_closed":5,
+    "source_frozen_identity_matches":5,
+    "source_frozen_identity_mismatches":0,
+    "official_outputs_deferred":true,
+    "official_outputs_rule":"inventory/ledger/validation/progress are written only after full logical range 61-90 is receipted"
+  }
+}
