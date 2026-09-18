@@ -24,10 +24,10 @@
       "value": 8
     },
     "inventory_batches": {
-      "completed": 15,
-      "history_entries_materialized": 120,
-      "newest_history_rank_materialized_through": 120,
-      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0015-newest-111-120.jsonl",
+      "completed": 18,
+      "history_entries_materialized": 150,
+      "newest_history_rank_materialized_through": 150,
+      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0018-newest-141-150.jsonl",
       "batch_0001_checks": {
         "commit_detail_file_binding": "COMPLETE",
         "frozen_tree_presence": "COMPLETE",
@@ -147,13 +147,40 @@
         "source_to_frozen_blob_identity": "10/10 MATCH",
         "internal_partition_validation": "111-115 PASS; 116-120 PASS",
         "substantive_provenance": "implementation transition at rank 119, LocalAdd/Keyword status semantics, rejected-candidate proof, same-root residuals, and ambiguous/provisional states preserved without unsupported closure"
+      },
+      "batch_0016_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "121-125 PASS; 126-130 PASS",
+        "substantive_provenance": "F10/F16/F17/F21 status/reconciliation and ambiguous/provisional states preserved without modern-lens inference"
+      },
+      "batch_0017_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "131-135 PASS; 136-140 PASS",
+        "substantive_provenance": "F16/F17 closure, F10 persistence-failure reconciliation, explicit stage markers, and fail-closed generic checkpoint kinds preserved"
+      },
+      "batch_0018_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "141-145 PASS; 146-150 PASS",
+        "substantive_provenance": "source-semantic status transitions remain distinct from canonical closure; generic checkpoint kinds remain NOT_VERIFIED when positive identity is absent"
       }
     },
     "ledger_batches": {
-      "completed": 15,
-      "records_materialized": 120,
-      "newest_history_rank_materialized_through": 120,
-      "latest_batch": "review-runs/lens-history-v1/ledger-batches/0015-newest-111-120.jsonl",
+      "completed": 18,
+      "records_materialized": 150,
+      "newest_history_rank_materialized_through": 150,
+      "latest_batch": "review-runs/lens-history-v1/ledger-batches/0018-newest-141-150.jsonl",
       "cumulative_eligible_structured_finals_materialized": [
         "d8c9e3d94ecaaa6121f9912cab4240375e8b5680",
         "25a554d1768f8d3cdd09a6e384a89d915eeeace4"
@@ -185,9 +212,12 @@
         "review-runs/lens-history-v1/validation/ledger-batch-0012.json",
         "review-runs/lens-history-v1/validation/ledger-batch-0013.json",
         "review-runs/lens-history-v1/validation/ledger-batch-0014.json",
-        "review-runs/lens-history-v1/validation/ledger-batch-0015.json"
+        "review-runs/lens-history-v1/validation/ledger-batch-0015.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0016.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0017.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0018.json"
       ],
-      "records_checked": 120,
+      "records_checked": 150,
       "invalid_records": 0
     },
     "aggregate_reconciliation": {
@@ -220,7 +250,7 @@
     "document_identity": "review-runs/lens-history-v1/rules/document-identity-v1.md"
   },
   "next_strategy": [
-    "continue bounded history extraction from rank 121 in 10-entry batches, with internal 5+5 validation, while binding each commit to its exact changed checkpoint path",
+    "continue bounded history extraction from rank 151 in 10-entry batches, with internal 5+5 validation, while binding each commit to its exact changed checkpoint path",
     "verify each candidate path exists in the frozen checkpoint tree and record its frozen blob identity",
     "deduplicate exact checkpoint document paths rather than assuming one commit equals one file",
     "materialize one lens-history-v1 ledger record per frozen checkpoint document",
