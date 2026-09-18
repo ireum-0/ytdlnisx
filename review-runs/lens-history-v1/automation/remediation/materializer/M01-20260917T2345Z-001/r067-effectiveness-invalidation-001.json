@@ -1,0 +1,64 @@
+{
+  "schema_version":"lens-history-v1-materializer-field-invalidation-v1",
+  "run_id":"M01-20260917T2345Z-001",
+  "rank":67,
+  "status":"FIELD_INVALIDATED",
+  "remediation_protocol":{
+    "path":"review-runs/lens-history-v1/automation/remediation/materializer-remediation-v1.md",
+    "blob_sha":"cbb53fda36b75fffbb438d641df722ed90fcb87b"
+  },
+  "hold_state":{
+    "path":"review-runs/lens-history-v1/automation/materializer-state.json",
+    "blob_sha":"def09ef1dc0712b1350b82b9c3418eec56f4710e",
+    "commit_sha":"29927fc4c79cb5bccd62b019e25d355f008d3be8",
+    "hold_class":"DETERMINISTIC_CLASSIFICATION_MISMATCH"
+  },
+  "target_rank_receipt":{
+    "path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r067.json",
+    "blob_sha":"f04543a60b3867bc44488a05e3236da6ca5d704c"
+  },
+  "target_aggregate":{
+    "path":"review-runs/lens-history-v1/automation/receipts/materializer/M01-20260917T2345Z-001/r066-070.json",
+    "blob_sha":"9ba8f98100c3a3db5f6b21733c2ff0f0c475f9ce"
+  },
+  "source_evidence":{
+    "history_commit_sha":"2e8cf9a940461f94245b40b8e77cf2675e708263",
+    "path":"review-runs/checkpoints/2026-09-14T152300Z__55e54888__checkpoint.md",
+    "source_blob_sha":"1c1541ddd52baa0bbf13504c4586540dca313f09",
+    "frozen_blob_sha":"1c1541ddd52baa0bbf13504c4586540dca313f09",
+    "source_frozen_match":true,
+    "explicit_bootstrap_evidence":"Confirmed fixed invariants: none newly claimed at bootstrap."
+  },
+  "field_invalidation":{
+    "field":"checkpoint.effectiveness_eligibility",
+    "recorded_value":{
+      "state":"NOT_VERIFIED",
+      "value":"NOT_VERIFIED",
+      "reason":"BOOTSTRAP is not eligible for cumulative effectiveness and no explicit effectiveness payload exists"
+    },
+    "deterministic_expected_value":{
+      "state":"NOT_APPLICABLE",
+      "reason":"bootstrap checkpoint excluded from cumulative effectiveness"
+    },
+    "basis":[
+      "lens-history-v1 README field policy: cumulative contribution of bootstrap/intermediate records is NOT_APPLICABLE",
+      "the source explicitly establishes BOOTSTRAP",
+      "PASS-audited R0B bootstrap receipts r033/r051/r055/r058 all use NOT_APPLICABLE for effectiveness_eligibility"
+    ]
+  },
+  "preservation":{
+    "all_non_target_rank_receipt_fields_remain_authoritative":true,
+    "original_rank_receipt_remains_immutable_ancestry_anchor":true,
+    "original_aggregate_remains_immutable_ancestry_anchor":true,
+    "changes_history":false,
+    "changes_source_frozen_binding":false,
+    "changes_implementation_provenance":false,
+    "changes_checkpoint_kind":false,
+    "changes_lens_attribution":false,
+    "changes_effectiveness_metrics":false,
+    "changes_finding_attribution":false,
+    "changes_exception_detection":false
+  },
+  "unlock_allowed":false,
+  "reason":"Only checkpoint.effectiveness_eligibility is invalidated. A separately sealed replacement overlay and effective aggregate overlay are required before HOLD may be released."
+}
