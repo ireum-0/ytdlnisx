@@ -1,0 +1,125 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M01-20260917T2345Z-001",
+  "stage": "MATERIALIZE_061_090",
+  "logical_rank_range": [
+    61,
+    90
+  ],
+  "microsegment_rank_range": [
+    86,
+    90
+  ],
+  "data_head": "99259f31aad624d6764c47b7dba541c9a392bee5",
+  "complete_state_blob": "172a50084ff3021bf61848352de4d80f1c44112b",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M01-20260917T2345Z-001/r086-090.json",
+    "blob_sha": "d68ce2e29a4d392b0852f2a653298e4debdf7eb1"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "9ec1347416ac09fb59d9eafec3628e68ac777f6f",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M01-20260917T2345Z-001/r081-085.json",
+    "blob_sha": "dc00692d4222f58436e8b7f859742a17f137ba9d"
+  },
+  "applicable_prior_triage_corrections": [
+    {
+      "path": "review-runs/lens-history-v1/automation/receipts/triage/M01-20260917T2345Z-001/corrections/r061-065-c001.json",
+      "blob_sha": "ab3fc8b6eca04a4388d7ceba6b8773d28f9a9793"
+    }
+  ],
+  "source_review": [
+    {
+      "rank": 86,
+      "path": "review-runs/checkpoints/2026-09-14__0968c7dd__f10-completed-wave-reconciliation.md",
+      "source_blob": "345ac9e2a781fcd3999513ce488ef4a57c85518e",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve F10 completed-wave reconciliation: prior main-thread/stale-effect subcases closed, authority-commit to new-debt-persistence failure frontier remains under the same BUG-CLEANUP-01 root, count delta 0."
+    },
+    {
+      "rank": 87,
+      "path": "review-runs/checkpoints/2026-09-14T114015Z__09058d57__checkpoint.md",
+      "source_blob": "1fe8905d227f4e7a3e2e39b07283610be78bccf0",
+      "independent_exception_triggers": [
+        "EXPLICIT_NEW_FINDING",
+        "CHECKLIST_GAP_OR_CHANGE",
+        "CONTRADICTORY_STATUS_LABELING",
+        "PROVISIONAL_COUNTS"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve CLEANUP-MAIN-THREAD-BLOCK-01 as explicit NEW P1 with runtime manifestation NOT_VERIFIED, preserve the explicit checklist gap/change proposal, and preserve F10/F20 SOURCE-SEMANTIC FIXED versus execution/canonical-closure withheld without converting prose into modern numeric lens effectiveness."
+    },
+    {
+      "rank": 88,
+      "path": "review-runs/checkpoints/2026-09-14__09058d57__completed-review-fix-wave-verdict.md",
+      "source_blob": "29ea79f970cf4de87ff860b592b2ca26697cfff1",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve completed F10/F20 reconciliation: stale-effect subcase closes while a fix-induced main-thread consumer regression appears within F10 review scope, F20 substring-precheck same-root residual remains, and both net deltas are 0."
+    },
+    {
+      "rank": 89,
+      "path": "review-runs/checkpoints/2026-09-14__09058d57__f20-review-fix-reconciliation.md",
+      "source_blob": "da57adb7a447e90ebe8f3cc0f92ffb03105b5a7d",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve closed opaque-ID/tree-prefix subcase, still-open same-root substring downloadPath precheck residual, and net F20 count delta 0."
+    },
+    {
+      "rank": 90,
+      "path": "review-runs/checkpoints/2026-09-14T113120Z__09058d57__checkpoint.md",
+      "source_blob": "464da85622445105b27a8c8d231dba359061bdcf",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic structural kind as NOT_VERIFIED, carry-forward counts as provisional, and F10/F20 source-semantic fixed status with canonical closure withheld pending actual execution evidence."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      86,
+      87,
+      88,
+      89,
+      90
+    ],
+    "materializer_flagged_exception_ranks": [
+      86,
+      87,
+      88,
+      89,
+      90
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
