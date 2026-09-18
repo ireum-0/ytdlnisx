@@ -3171,14 +3171,19 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
         val cleanupStarted = CountDownLatch(1)
         val releaseCleanup = CountDownLatch(1)
+        val cleanupExited = CountDownLatch(1)
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             cleanupStarted.countDown()
-            check(releaseCleanup.await(10, TimeUnit.SECONDS)) {
-                "cleanup effect did not release"
+            try {
+                check(releaseCleanup.await(WORKER_WAIT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
+                    "cleanup effect did not release"
+                }
+            } finally {
+                cleanupExited.countDown()
             }
         }
         assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
-        assertTrue(cleanupStarted.await(10, TimeUnit.SECONDS))
+        assertTrue(cleanupStarted.await(WORKER_WAIT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS))
 
         val scenario = ActivityScenario.launch(SettingsActivity::class.java)
         try {
@@ -3194,18 +3199,40 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             }
             onView(withText(R.string.continue_anyway)).perform(click())
 
+            val releaseSignaledBeforeAssertion =
+                releaseCleanup.await(0, TimeUnit.MILLISECONDS)
+            val cleanupExitedBeforeAssertion =
+                cleanupExited.await(0, TimeUnit.MILLISECONDS)
+            val dedicatedCadenceBeforeRelease =
+                preferences.getString("cleanup_leftover_downloads", null)
+            val coordinatorCadenceBeforeRelease =
+                CleanupScheduleCoordinator.currentCadenceForSettings(context)
+            check(!releaseSignaledBeforeAssertion) {
+                "cleanup release was signaled before pre-release assertion; " +
+                    "dedicatedCadence=$dedicatedCadenceBeforeRelease, " +
+                    "coordinatorCadence=$coordinatorCadenceBeforeRelease"
+            }
+            check(!cleanupExitedBeforeAssertion) {
+                "cleanup exited before pre-release assertion; " +
+                    "dedicatedCadence=$dedicatedCadenceBeforeRelease, " +
+                    "coordinatorCadence=$coordinatorCadenceBeforeRelease"
+            }
+
             // The reset request is asynchronous.  Its initiating UI callback
             // returns while the admitted cleanup still owns the effect gate.
-            assertEquals(
-                CleanupSchedulePolicy.DAILY,
-                preferences.getString("cleanup_leftover_downloads", null),
-            )
+            assertEquals(CleanupSchedulePolicy.DAILY, dedicatedCadenceBeforeRelease)
+            assertEquals(CleanupSchedulePolicy.DAILY, coordinatorCadenceBeforeRelease)
             releaseCleanup.countDown()
             assertTrue(
-                awaitPreference(timeoutMs = 10_000L) {
+                "cleanup effect did not exit after release",
+                cleanupExited.await(WORKER_WAIT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS),
+            )
+            assertTrue(
+                awaitPreference(timeoutMs = WORKER_WAIT_TIMEOUT_MILLIS) {
                     preferences.getString("cleanup_leftover_downloads", null).orEmpty().isEmpty()
                 }
             )
+            assertEquals("", CleanupScheduleCoordinator.currentCadenceForSettings(context))
             assertNull(preferences.getString("cleanup_leftover_downloads_pending_generation", null))
             assertNull(preferences.getString("cleanup_leftover_downloads_active_generation", null))
         } finally {
