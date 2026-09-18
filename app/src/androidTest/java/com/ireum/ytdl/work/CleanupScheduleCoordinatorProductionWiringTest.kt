@@ -1192,13 +1192,98 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             preferences.getString("cleanup_leftover_downloads_generation", null)
         )
         val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
-        assertEquals(1, unfinishedCurrentWork().size)
         val predecessorAt = CleanupSchedulePolicy.nextOccurrence(
             now = scheduleNow,
             cadence = CleanupSchedulePolicy.DAILY,
             monthlyAnchorDay = anchorDay,
         ).timeInMillis
-        markCurrentEffectConsumed(predecessorAt)
+        val expectedSuccessorAt = expectedSuccessorOccurrenceAt(
+            predecessorOccurrenceAt = predecessorAt,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+        )
+
+        fun slotPrefix(slot: String): String = "cleanup_leftover_downloads_$slot"
+
+        fun slotIsOccupied(slot: String): Boolean {
+            val prefix = slotPrefix(slot)
+            return preferences.getString("${prefix}_generation", null) != null ||
+                preferences.getString("${prefix}_cadence", null) != null ||
+                preferences.getInt("${prefix}_anchor_day", -1) != -1 ||
+                preferences.getLong("${prefix}_occurrence_at", -1L) != -1L
+        }
+
+        fun slotMatches(slot: String, occurrenceAt: Long): Boolean {
+            val prefix = slotPrefix(slot)
+            return preferences.getString("${prefix}_generation", null) == generation &&
+                preferences.getString("${prefix}_cadence", null) == CleanupSchedulePolicy.DAILY &&
+                preferences.getInt("${prefix}_anchor_day", -1) == anchorDay &&
+                preferences.getLong("${prefix}_occurrence_at", -1L) == occurrenceAt
+        }
+
+        fun exactD1Slot(requireConsumed: Boolean = false): String? {
+            val pendingOccupied = slotIsOccupied("pending")
+            val activeOccupied = slotIsOccupied("active")
+            if (pendingOccupied && activeOccupied) {
+                throw AssertionError(
+                    "conflicting pending/active D1 ownership: ${durableSchedulingState()}",
+                )
+            }
+            val slot = when {
+                slotMatches("pending", predecessorAt) -> "pending"
+                slotMatches("active", predecessorAt) -> "active"
+                else -> null
+            }
+            if (requireConsumed && slot != null) {
+                assertEquals(
+                    "consumed",
+                    preferences.getString("${slotPrefix(slot)}_effect_phase", null),
+                )
+            }
+            return slot
+        }
+
+        assertTrue(
+            awaitPreference(timeoutMs = 5_000L) {
+                exactD1Slot() != null
+            },
+        )
+        val d1SlotBeforeFailure = exactD1Slot() ?: error(
+            "missing exact D1 carrier before successor persistence failure: " +
+                durableSchedulingState(),
+        )
+        val predecessorTag = occurrenceTag(generation, predecessorAt)
+        val predecessorWork = awaitWork(timeoutMs = 5_000L) { infos ->
+            infos.count { info ->
+                (info.state == WorkInfo.State.ENQUEUED ||
+                    info.state == WorkInfo.State.RUNNING ||
+                    info.state == WorkInfo.State.BLOCKED) &&
+                    info.tags.contains(predecessorTag)
+            } == 1
+        }.first { info ->
+            (info.state == WorkInfo.State.ENQUEUED ||
+                info.state == WorkInfo.State.RUNNING ||
+                info.state == WorkInfo.State.BLOCKED) &&
+                info.tags.contains(predecessorTag)
+        }
+        val d1PrefixBeforeFailure = slotPrefix(d1SlotBeforeFailure)
+        assertEquals(
+            generation,
+            preferences.getString("${d1PrefixBeforeFailure}_generation", null),
+        )
+        assertEquals(
+            predecessorAt,
+            preferences.getLong("${d1PrefixBeforeFailure}_occurrence_at", -1L),
+        )
+        assertTrue(
+            preferences.edit()
+                .putString("${d1PrefixBeforeFailure}_effect_phase", "consumed")
+                .commit(),
+        )
+        assertEquals(
+            "consumed",
+            preferences.getString("${d1PrefixBeforeFailure}_effect_phase", null),
+        )
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
 
         assertFalse(
@@ -1210,18 +1295,77 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 completedOccurrenceAt = predecessorAt,
             )
         )
-        assertNull(
-            preferences.getString("cleanup_leftover_downloads_pending_generation", null)
+        assertFalse(slotMatches("pending", expectedSuccessorAt))
+        assertFalse(slotMatches("active", expectedSuccessorAt))
+        val d1SlotAfterFailure = exactD1Slot(requireConsumed = true) ?: error(
+            "exact D1 responsibility disappeared after failed D2 persistence: " +
+                durableSchedulingState(),
+        )
+        assertEquals(
+            generation,
+            preferences.getString("${slotPrefix(d1SlotAfterFailure)}_generation", null),
+        )
+        assertEquals(
+            CleanupSchedulePolicy.DAILY,
+            preferences.getString("${slotPrefix(d1SlotAfterFailure)}_cadence", null),
+        )
+        assertEquals(
+            anchorDay,
+            preferences.getInt("${slotPrefix(d1SlotAfterFailure)}_anchor_day", -1),
+        )
+        assertEquals(
+            predecessorAt,
+            preferences.getLong("${slotPrefix(d1SlotAfterFailure)}_occurrence_at", -1L),
         )
 
-        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
-        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
-        assertTrue(
-            awaitPreference(timeoutMs = 5_000L) {
-                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == null
+        workManager.cancelWorkById(predecessorWork.id).result.get(20, TimeUnit.SECONDS)
+        val predecessorTerminal = awaitWorkById(predecessorWork.id) { info ->
+            info.state == WorkInfo.State.CANCELLED ||
+                info.state == WorkInfo.State.FAILED ||
+                info.state == WorkInfo.State.SUCCEEDED
+        }
+        assertEquals(WorkInfo.State.CANCELLED, predecessorTerminal.state)
+        awaitWork(timeoutMs = 10_000L) { infos ->
+            infos.none { info ->
+                (info.state == WorkInfo.State.ENQUEUED ||
+                    info.state == WorkInfo.State.RUNNING ||
+                    info.state == WorkInfo.State.BLOCKED) &&
+                info.tags.contains(predecessorTag)
             }
+        }
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
+        val successorWork = awaitExactSuccessor(
+            generation = generation,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+            predecessorOccurrenceAt = predecessorAt,
+            timeoutMs = 10_000L,
         )
-        assertEquals(1, unfinishedCurrentWork().size)
+        assertTrue(successorWork.tags.contains(occurrenceTag(generation, expectedSuccessorAt)))
+        assertEquals(
+            expectedSuccessorAt,
+            successorWork.inputData.getLong(
+                CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT,
+                -1L,
+            ),
+        )
+        assertFalse(successorWork.tags.contains(predecessorTag))
+
+        val finalPendingD2 = slotMatches("pending", expectedSuccessorAt)
+        val finalActiveD2 = slotMatches("active", expectedSuccessorAt)
+        assertTrue(finalPendingD2.xor(finalActiveD2))
+        assertFalse(slotMatches("pending", predecessorAt))
+        assertFalse(slotMatches("active", predecessorAt))
+        val liveCurrent = queryUniqueWorkInfos().filter { info ->
+            (info.state == WorkInfo.State.ENQUEUED ||
+                info.state == WorkInfo.State.RUNNING ||
+                info.state == WorkInfo.State.BLOCKED) &&
+                info.tags.contains(generationTag(generation)) &&
+                info.tags.contains(cadenceTag(CleanupSchedulePolicy.DAILY))
+        }
+        assertEquals(1, liveCurrent.size)
+        assertTrue(liveCurrent.single().tags.contains(occurrenceTag(generation, expectedSuccessorAt)))
+        assertTrue(liveCurrent.none { info -> info.tags.contains(predecessorTag) })
     }
 
     @Test
