@@ -2230,7 +2230,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
             val scenario = ActivityScenario.launch(SettingsActivity::class.java)
             try {
-                awaitSettingsUiReady(scenario)
                 scenario.onActivity { activity ->
                     val navHost = activity.supportFragmentManager
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -2327,7 +2326,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
             val scenario = ActivityScenario.launch(SettingsActivity::class.java)
             try {
-                awaitSettingsUiReady(scenario)
                 scenario.onActivity { activity ->
                     val navHost = activity.supportFragmentManager
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -2425,7 +2423,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
             val scenario = ActivityScenario.launch(SettingsActivity::class.java)
             try {
-                awaitSettingsUiReady(scenario)
                 scenario.onActivity { activity ->
                     val navHost = activity.supportFragmentManager
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -3291,7 +3288,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         val scenario = ActivityScenario.launch(SettingsActivity::class.java)
         try {
-            awaitSettingsUiReady(scenario)
             scenario.onActivity { activity ->
                 val navHost = activity.supportFragmentManager
                     .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -3343,7 +3339,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         val scenario = ActivityScenario.launch(SettingsActivity::class.java)
         try {
-            awaitSettingsUiReady(scenario)
             scenario.onActivity { activity ->
                 val navHost = activity.supportFragmentManager
                     .findFragmentById(R.id.frame_layout) as NavHostFragment
