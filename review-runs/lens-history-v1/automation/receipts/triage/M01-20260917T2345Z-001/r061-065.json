@@ -1,0 +1,91 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M01-20260917T2345Z-001",
+  "stage": "MATERIALIZE_061_090",
+  "logical_rank_range": [
+    61,
+    90
+  ],
+  "microsegment_rank_range": [
+    61,
+    65
+  ],
+  "data_head": "99259f31aad624d6764c47b7dba541c9a392bee5",
+  "complete_state_blob": "172a50084ff3021bf61848352de4d80f1c44112b",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M01-20260917T2345Z-001/r061-065.json",
+    "blob_sha": "e4b84c25cba7700f259d877a178797af5ea42cea"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "9ec1347416ac09fb59d9eafec3628e68ac777f6f",
+  "previous_triage_receipt": null,
+  "source_review": [
+    {
+      "rank": 61,
+      "path": "review-runs/checkpoints/2026-09-14T172410Z__c4f630a8__checkpoint.md",
+      "source_blob": "17b45f31c5838419ef35e4472441b7aebd07ed7d",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve structural kind as NOT_VERIFIED; the source is a generic checkpoint and commit-message `bootstrap` is not structural evidence."
+    },
+    {
+      "rank": 62,
+      "path": "review-runs/checkpoints/2026-09-14T164620Z__c4f630a8__checkpoint.md",
+      "source_blob": "a089e27f025cc485045486cedd34a5edb6a9c7fa",
+      "independent_exception_triggers": [],
+      "note": "Explicit final pre-verdict phase. Existing BUG-CLEANUP-01 and BUG-OBSERVE-HANDOFF-01 remain OPEN; the described first-debt/process-death residual is carried as the existing same-root issue rather than a newly introduced semantic event."
+    },
+    {
+      "rank": 63,
+      "path": "review-runs/checkpoints/2026-09-14T163720Z__c4f630a8699662ebc07d94caa006d70b9779091d__checkpoint.md",
+      "source_blob": "43875e5d81f16a329575dd39f6029d6e05f2aee3",
+      "independent_exception_triggers": [],
+      "note": "Explicit semantic intermediate. It continues the existing F10 first-debt/process-death candidate and explicitly states it remains within BUG-CLEANUP-01, not a new finding."
+    },
+    {
+      "rank": 64,
+      "path": "review-runs/checkpoints/2026-09-14T162420Z__c4f630a8__checkpoint.md",
+      "source_blob": "205d1d702d3e55778cb0a2dcaf7a102a00c1a697",
+      "independent_exception_triggers": [],
+      "note": "Explicit bootstrap. Counts and open questions are carry-forward/provisional only; no newly resolved or newly opened semantic event is asserted."
+    },
+    {
+      "rank": 65,
+      "path": "review-runs/checkpoints/2026-09-14T154200Z__55e54888__checkpoint.md",
+      "source_blob": "604a421fe641ef587c9b92877571cfc861f91cd3",
+      "independent_exception_triggers": [
+        "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATE"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the 55e54888 implementation transition, four same-root BUG-CLEANUP-01 recovery subcases, and the History-deletion authority-lowercasing concern as NOT_VERIFIED for independent root/count/material destructive outcome."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      61,
+      65
+    ],
+    "materializer_flagged_exception_ranks": [
+      61,
+      65
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
