@@ -96,25 +96,16 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         context = ApplicationProvider.getApplicationContext()
         workManager = WorkManager.getInstance(context)
         database = DBManager.getInstance(context)
-        cancelAllWorkAndAwaitIdle()
         preferences = CleanupScheduleCoordinator.criticalPreferencesForTesting(context)
         legacyPreferences = PreferenceManager.getDefaultSharedPreferences(context)
-        clearTestSeams()
-        assertTrue(CleanupScheduleCoordinator.configure(context, null))
-        awaitMainLooperIdle()
-        awaitCleanupCancellationQuiescence()
+        disableCleanupAuthorityBeforeWorkDrain()
         DownloadCacheOwnership.clearRootBindingsForTesting(context)
         clearSchedulePreferences()
     }
 
     @After
     fun tearDown() = runBlocking {
-        cancelAllWorkAndAwaitIdle()
-        clearTestSeams()
-        failOutstandingControlledOperations()
-        assertTrue(CleanupScheduleCoordinator.configure(context, null))
-        awaitMainLooperIdle()
-        awaitCleanupCancellationQuiescence()
+        disableCleanupAuthorityBeforeWorkDrain()
         DownloadCacheOwnership.clearRootBindingsForTesting(context)
         if (createdDownloadIds.isNotEmpty()) {
             DownloadRepository(database).deleteAllWithIDs(createdDownloadIds.toList())
@@ -3876,6 +3867,23 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             .get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
     } catch (_: TimeoutException) {
         null
+    }
+
+    private suspend fun disableCleanupAuthorityBeforeWorkDrain() {
+        // Controlled enqueue operations and fault seams must be resolved before
+        // the real disable transition, otherwise configure(null) can be
+        // prevented from revoking the authority that is allowed to recreate
+        // cleanup work.
+        failOutstandingControlledOperations()
+        clearTestSeams()
+        assertTrue(CleanupScheduleCoordinator.configure(context, null))
+        awaitMainLooperIdle()
+
+        // Only after replay ownership and durable cleanup authority are
+        // revoked is it safe to cancel and drain WorkManager. This preserves
+        // diagnostics until the actor that could recreate work is stopped.
+        cancelAllWorkAndAwaitIdle()
+        awaitCleanupCancellationQuiescence()
     }
 
     private suspend fun awaitCleanupCancellationQuiescence() {
