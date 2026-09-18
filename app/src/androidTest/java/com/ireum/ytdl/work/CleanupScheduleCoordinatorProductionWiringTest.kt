@@ -101,6 +101,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         clearTestSeams()
         assertTrue(CleanupScheduleCoordinator.configure(context, null))
         awaitMainLooperIdle()
+        awaitCleanupCancellationQuiescence()
         DownloadCacheOwnership.clearRootBindingsForTesting(context)
         clearSchedulePreferences()
     }
@@ -112,6 +113,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         failOutstandingControlledOperations()
         assertTrue(CleanupScheduleCoordinator.configure(context, null))
         awaitMainLooperIdle()
+        awaitCleanupCancellationQuiescence()
         DownloadCacheOwnership.clearRootBindingsForTesting(context)
         if (createdDownloadIds.isNotEmpty()) {
             DownloadRepository(database).deleteAllWithIDs(createdDownloadIds.toList())
@@ -1778,15 +1780,12 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             )
         )
 
-        val secondDeletionEntered = CountDownLatch(1)
-        val releaseSecondDeletion = CountDownLatch(1)
         val failSecondOnce = AtomicBoolean(true)
         DownloadCacheOwnership.fileDeletionForTesting = { file ->
             if (file.name == second.name && failSecondOnce.compareAndSet(true, false)) {
-                secondDeletionEntered.countDown()
-                check(releaseSecondDeletion.await(10, TimeUnit.SECONDS)) {
-                    "cache deletion failure seam was not released"
-                }
+                // Return immediately so the worker releases ownershipLock
+                // before the test observes the retry boundary and performs
+                // the independent cache-root transition.
                 false
             } else {
                 file.delete()
@@ -1805,17 +1804,19 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         assertTrue(awaitDownload(timeoutMs = 10_000L) {
             database.downloadDao.getNullableDownloadById(id) == null
         })
-        assertTrue(secondDeletionEntered.await(10, TimeUnit.SECONDS))
+        val retrying = awaitWorkById(request.id) { info ->
+            info.state == WorkInfo.State.ENQUEUED && info.runAttemptCount >= 1
+        }
+        assertTrue(retrying.runAttemptCount >= 1)
         assertFalse(first.exists())
         assertTrue(second.isFile)
         assertTrue(DownloadCacheOwnership.markerFile(cacheRoot, id).isFile)
         assertTrue(DownloadCacheOwnership.artifactManifestFile(cacheRoot, id).isFile)
 
-        // Drop process-local replay state while the worker is still in the
-        // failed real helper call. Durable journal and exact filesystem
-        // carrier must be sufficient for the retry that follows.
+        // Drop process-local replay state after the first attempt has entered
+        // retry. Durable journal and exact filesystem carrier must be
+        // sufficient for the retry that follows.
         CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
-        releaseSecondDeletion.countDown()
         DownloadCacheOwnership.fileDeletionForTesting = null
 
         val terminal = awaitWorkById(request.id) { info ->
@@ -1827,14 +1828,20 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         assertFalse(second.exists())
         assertFalse(DownloadCacheOwnership.markerFile(cacheRoot, id).exists())
         assertFalse(DownloadCacheOwnership.artifactManifestFile(cacheRoot, id).exists())
-        assertEquals(1, unfinishedCurrentWork().size)
-        val infos = workManager.getWorkInfosForUniqueWork(
-            CleanupScheduleCoordinator.WORK_NAME,
-        ).get(20, TimeUnit.SECONDS)
-        assertEquals(
-            1,
-            infos.count { it.tags.contains(occurrenceTag(generation, occurrenceAt)) },
+        val successor = awaitExactSuccessor(
+            generation = generation,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+            predecessorOccurrenceAt = occurrenceAt,
         )
+        assertEquals(WorkInfo.State.ENQUEUED, successor.state)
+        val unfinished = unfinishedCurrentWork()
+        assertEquals(
+            "expected one logical successor: ${describeWorkInfos(unfinished)}",
+            1,
+            unfinished.size,
+        )
+        assertEquals(successor.id, unfinished.single().id)
     }
 
     @Test
@@ -1920,13 +1927,25 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             assertFalse(DownloadCacheOwnership.artifactManifestFile(rootOne, id).exists())
             assertTrue(rootTwoSentinel.isFile)
             assertFalse(File(rootTwo, id.toString()).exists())
-            assertEquals(
-                1,
-                workManager.getWorkInfosForUniqueWork(
-                    CleanupScheduleCoordinator.WORK_NAME,
-                ).get(20, TimeUnit.SECONDS).count {
-                    it.tags.contains(occurrenceTag(generation, occurrenceAt))
-                },
+            val successor = awaitExactSuccessor(
+                generation = generation,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+                predecessorOccurrenceAt = occurrenceAt,
+            )
+            assertEquals(WorkInfo.State.ENQUEUED, successor.state)
+            assertTrue(
+                "expected successor debt to match WorkManager successor: ${durableSchedulingState()}",
+                hasDurableScheduledOccurrence(
+                    generation = generation,
+                    cadence = CleanupSchedulePolicy.DAILY,
+                    monthlyAnchorDay = anchorDay,
+                    occurrenceAt = expectedSuccessorOccurrenceAt(
+                        predecessorOccurrenceAt = occurrenceAt,
+                        cadence = CleanupSchedulePolicy.DAILY,
+                        monthlyAnchorDay = anchorDay,
+                    ),
+                ),
             )
         } finally {
             DownloadCacheOwnership.fileDeletionForTesting = null
@@ -3360,8 +3379,25 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         null
     }
 
+    private suspend fun awaitCleanupCancellationQuiescence() {
+        // configure(null) deliberately exposes no synchronous cancellation
+        // handle. WorkManager serializes operations on its task executor, so
+        // this later bounded tag cancellation fences the cancellation queued
+        // by configure(null) before the next test can create tagged cleanup
+        // work.
+        workManager.cancelAllWorkByTag(CleanupScheduleCoordinator.TAG)
+            .result.get(20, TimeUnit.SECONDS)
+        awaitTaggedCleanupWorkIdle()
+        workManager.pruneWork().result.get(20, TimeUnit.SECONDS)
+    }
+
     private suspend fun cancelAllWorkAndAwaitIdle() {
         workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        awaitTaggedCleanupWorkIdle()
+        workManager.pruneWork().result.get(20, TimeUnit.SECONDS)
+    }
+
+    private suspend fun awaitTaggedCleanupWorkIdle() {
         var lastObserved = emptyList<WorkInfo>()
         val settled = withTimeoutOrNull(WORKER_WAIT_TIMEOUT_MILLIS) {
             while (true) {
@@ -3393,7 +3429,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 },
             )
         }
-        workManager.pruneWork().result.get(20, TimeUnit.SECONDS)
     }
 
     private fun awaitMainLooperIdle() {
@@ -3449,6 +3484,102 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 "last observed=" + (lastObserved?.let { info ->
                     "${info.state}/attempt=${info.runAttemptCount}"
                 } ?: "<no WorkInfo row>"),
+        )
+    }
+
+    private fun expectedSuccessorOccurrenceAt(
+        predecessorOccurrenceAt: Long,
+        cadence: String,
+        monthlyAnchorDay: Int,
+    ): Long = CleanupSchedulePolicy.nextOccurrence(
+        now = Calendar.getInstance().apply { timeInMillis = predecessorOccurrenceAt },
+        cadence = cadence,
+        monthlyAnchorDay = monthlyAnchorDay,
+    ).timeInMillis
+
+    private fun hasDurableScheduledOccurrence(
+        generation: String,
+        cadence: String,
+        monthlyAnchorDay: Int,
+        occurrenceAt: Long,
+    ): Boolean {
+        fun matches(prefix: String): Boolean =
+            preferences.getString("${prefix}_generation", null) == generation &&
+                preferences.getString("${prefix}_cadence", null) == cadence &&
+                preferences.getInt("${prefix}_anchor_day", -1) == monthlyAnchorDay &&
+                preferences.getLong("${prefix}_occurrence_at", -1L) == occurrenceAt
+
+        return matches("cleanup_leftover_downloads_pending") ||
+            matches("cleanup_leftover_downloads_active")
+    }
+
+    private fun durableSchedulingState(): String =
+        "pending=(" +
+            preferences.getString("cleanup_leftover_downloads_pending_generation", null) + "," +
+            preferences.getString("cleanup_leftover_downloads_pending_cadence", null) + "," +
+            preferences.getInt("cleanup_leftover_downloads_pending_anchor_day", -1) + "," +
+            preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L) +
+            "), active=(" +
+            preferences.getString("cleanup_leftover_downloads_active_generation", null) + "," +
+            preferences.getString("cleanup_leftover_downloads_active_cadence", null) + "," +
+            preferences.getInt("cleanup_leftover_downloads_active_anchor_day", -1) + "," +
+            preferences.getLong("cleanup_leftover_downloads_active_occurrence_at", -1L) +
+            ")"
+
+    private fun describeWorkInfos(infos: List<WorkInfo>): String =
+        infos.joinToString(prefix = "[", postfix = "]") { info ->
+            "${info.id}:${info.state}/attempt=${info.runAttemptCount}/tags=${info.tags.sorted()}"
+        }
+
+    private suspend fun awaitExactSuccessor(
+        generation: String,
+        cadence: String,
+        monthlyAnchorDay: Int,
+        predecessorOccurrenceAt: Long,
+        timeoutMs: Long = WORKER_WAIT_TIMEOUT_MILLIS,
+    ): WorkInfo {
+        val expectedSuccessorAt = expectedSuccessorOccurrenceAt(
+            predecessorOccurrenceAt = predecessorOccurrenceAt,
+            cadence = cadence,
+            monthlyAnchorDay = monthlyAnchorDay,
+        )
+        val expectedTag = occurrenceTag(generation, expectedSuccessorAt)
+        var lastObserved = emptyList<WorkInfo>()
+        val found = withTimeoutOrNull(timeoutMs) {
+            while (true) {
+                lastObserved = withContext(Dispatchers.IO) { queryUniqueWorkInfos() }
+                val exact = lastObserved.filter { it.tags.contains(expectedTag) }
+                val live = exact.filter {
+                    it.state != WorkInfo.State.CANCELLED &&
+                        it.state != WorkInfo.State.FAILED
+                }
+                if (live.size > 1) {
+                    throw AssertionError(
+                        "duplicate live cleanup successors for $expectedTag; " +
+                            "predecessor=$predecessorOccurrenceAt; " +
+                            "durable=${durableSchedulingState()}; " +
+                            "uniqueWork=${describeWorkInfos(lastObserved)}",
+                    )
+                }
+                if (live.size == 1 && hasDurableScheduledOccurrence(
+                        generation = generation,
+                        cadence = cadence,
+                        monthlyAnchorDay = monthlyAnchorDay,
+                        occurrenceAt = expectedSuccessorAt,
+                    )
+                ) {
+                    return@withTimeoutOrNull live.single()
+                }
+                delay(WORK_POLL_INTERVAL_MILLIS)
+            }
+            error("unreachable")
+        }
+        return found ?: throw AssertionError(
+            "Timed out after ${timeoutMs}ms waiting for exact successor; " +
+                "predecessor=$predecessorOccurrenceAt; expected=$expectedSuccessorAt; " +
+                "generation=$generation; cadence=$cadence; anchor=$monthlyAnchorDay; " +
+                "durable=${durableSchedulingState()}; " +
+                "uniqueWork=${describeWorkInfos(lastObserved)}",
         )
     }
 
