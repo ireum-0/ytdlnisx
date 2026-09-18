@@ -1,0 +1,146 @@
+{
+  "schema_version": "lens-history-v1-materialization-validation-v1",
+  "run_id": "M01-20260917T2345Z-001",
+  "stage": "MATERIALIZE_061_090",
+  "logical_rank_range": [
+    61,
+    90
+  ],
+  "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "governing_pins": {
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c",
+    "start_progress_blob_sha": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8"
+  },
+  "rank_evidence_state": {
+    "path": "review-runs/lens-history-v1/automation/materializer-state.json",
+    "blob_sha": "f2d417b7c86b13fbebc85c80a4edef78de853163",
+    "commit_sha": "8b6ec9d6921e21732b85df8f098065aa215b475a"
+  },
+  "materializer_receipts": [
+    {
+      "range": [
+        61,
+        65
+      ],
+      "blob_sha": "e4b84c25cba7700f259d877a178797af5ea42cea"
+    },
+    {
+      "range": [
+        66,
+        70
+      ],
+      "blob_sha": "9ba8f98100c3a3db5f6b21733c2ff0f0c475f9ce"
+    },
+    {
+      "range": [
+        71,
+        75
+      ],
+      "blob_sha": "159abbc893c32f8bc5ace95b9d825934ce761b9f"
+    },
+    {
+      "range": [
+        76,
+        80
+      ],
+      "blob_sha": "4774f61489e9dd47728b01b637d61fa9e73a2e55"
+    },
+    {
+      "range": [
+        81,
+        85
+      ],
+      "blob_sha": "05424b913553f51c7e4d1a38c859afa908d2fe45"
+    },
+    {
+      "range": [
+        86,
+        90
+      ],
+      "blob_sha": "d68ce2e29a4d392b0852f2a653298e4debdf7eb1"
+    }
+  ],
+  "materializer_remediation": {
+    "protocol_blob_sha": "cbb53fda36b75fffbb438d641df722ed90fcb87b",
+    "invalidation_blob_sha": "9bc66232e9cee8908d522ddb6d08310e488184ce",
+    "replacement_blob_sha": "43b372f6d0dd6f028a99f75f839de62a020efc08",
+    "effective_aggregate_overlay_blob_sha": "d2a8cf74c691f6d754e03efe08757ba97ecc257f",
+    "target_rank": 67,
+    "field": "checkpoint.effectiveness_eligibility",
+    "original_ancestry_preserved": true,
+    "semantic_effective_value": {
+      "state": "NOT_APPLICABLE",
+      "reason": "bootstrap checkpoint excluded from cumulative effectiveness"
+    }
+  },
+  "official_output_batches": [
+    {
+      "range": [
+        61,
+        70
+      ],
+      "inventory_blob_sha": "9e035b177127855ef748f9131892237bf2226a2b",
+      "ledger_blob_sha": "5fead1ccb7e4f6c64ae7386f4490bc78a1d8f627",
+      "validation_blob_sha": "1b4ae1f56749d684fc6bab0af6ef58bf71285944"
+    },
+    {
+      "range": [
+        71,
+        80
+      ],
+      "inventory_blob_sha": "5d850984c058f786a928e955c569ec2fcfa3f92f",
+      "ledger_blob_sha": "10c3707cf6a2bbfdc1614a7c96a0bca8e0c0ca86",
+      "validation_blob_sha": "72efe24c4496c26c7b2d9f1782cce10b818fdfac"
+    },
+    {
+      "range": [
+        81,
+        90
+      ],
+      "inventory_blob_sha": "b430be9f60627bf7fb872de992b2d267be3ffead",
+      "ledger_blob_sha": "eb42c592a99ea10a68f72b9a806b4001d22cb1ca",
+      "validation_blob_sha": "36b42360ebe5bd0a6064ba536f7497b0875a6cfd"
+    }
+  ],
+  "exception_queue": {
+    "path": "review-runs/lens-history-v1/automation/exceptions/M01-20260917T2345Z-001.jsonl",
+    "blob_sha": "9ec1347416ac09fb59d9eafec3628e68ac777f6f",
+    "factual_exception_ranks": 26
+  },
+  "checks": {
+    "rank_continuity_61_90": true,
+    "one_rank_receipt_count": 30,
+    "aggregate_receipt_count": 6,
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches_after_effective_remediation": 0,
+    "official_ledger_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0,
+    "official_output_batches_written_only_after_rank_61_90_evidence_complete": true,
+    "original_immutable_receipts_rewritten": false,
+    "original_immutable_aggregates_rewritten": false,
+    "progress_counter_changed_at_validation_time": false
+  },
+  "counts": {
+    "ranks": 30,
+    "base_receipts": 6,
+    "valid_materializer_remediations": 1,
+    "official_output_batches": 3,
+    "factual_exception_ranks": 26
+  },
+  "aggregate_result": {
+    "cumulative_eligible_structured_finals_in_range": 0,
+    "observed_measured_effectiveness_changed": false,
+    "historical_total_effectiveness": "NOT_VERIFIED"
+  },
+  "status": "PASS",
+  "requires_semantic_triage": true,
+  "requires_independent_audit": true
+}
