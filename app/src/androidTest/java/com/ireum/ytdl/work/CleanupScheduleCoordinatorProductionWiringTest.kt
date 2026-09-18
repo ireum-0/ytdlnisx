@@ -2942,7 +2942,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     info.state == WorkInfo.State.SUCCEEDED
             }
             assertEquals(WorkInfo.State.FAILED, terminal.state)
-            assertEquals(CleanUpLeftoverDownloads.MAX_ATTEMPTS - 1, terminal.runAttemptCount)
+            assertEquals(CleanUpLeftoverDownloads.MAX_ATTEMPTS, terminal.runAttemptCount)
             assertEquals(CleanUpLeftoverDownloads.MAX_ATTEMPTS, attempts.get())
             assertTrue(terminal.outputData.getBoolean("cleanup_schedule_failure", false))
             assertTrue(terminal.outputData.getBoolean("cleanup_failure", false))
