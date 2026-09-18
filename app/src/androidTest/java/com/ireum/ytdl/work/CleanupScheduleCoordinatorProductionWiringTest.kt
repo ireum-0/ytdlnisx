@@ -1271,10 +1271,23 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             predecessorAt,
             preferences.getLong("${d1PrefixBeforeFailure}_occurrence_at", -1L),
         )
+        val completeJournal = CleanupEffectJournal(
+            generation = generation,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+            occurrenceAt = predecessorAt,
+            cancelledDeletionComplete = true,
+            cancelledRefreshComplete = true,
+            erroredDeletionComplete = true,
+            erroredRefreshComplete = true,
+            tempCleanupRequired = false,
+        )
         assertTrue(
-            preferences.edit()
-                .putString("${d1PrefixBeforeFailure}_effect_phase", "consumed")
-                .commit(),
+            CleanupScheduleCoordinator.seedEffectJournalForTesting(
+                context = context,
+                journal = completeJournal,
+                phase = "consumed",
+            ),
         )
         assertEquals(
             "consumed",
