@@ -1,0 +1,123 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M03-20260918T1507Z-001",
+  "stage": "MATERIALIZE_121_150",
+  "logical_rank_range": [
+    121,
+    150
+  ],
+  "microsegment_rank_range": [
+    146,
+    150
+  ],
+  "data_head": "4a8010b3a3ce12c48cd4ad09bfe2949bceed58e1",
+  "complete_state_blob": "fad41c56a65064ccb21bece23d05c8e84a51ad37",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M03-20260918T1507Z-001/r146-150.json",
+    "blob_sha": "d493474e9c5a6307c39ef288026f964d499d1706"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "3d8712ce1e266234cbed13dfe88361aa8bd37bac",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M03-20260918T1507Z-001/r141-145.json",
+    "blob_sha": "b6f7abefb46803b1177ecfb3aea3e8e6f8c40c2c"
+  },
+  "source_review": [
+    {
+      "rank": 146,
+      "path": "review-runs/checkpoints/2026-09-13T182814Z__f6e7cf72__checkpoint.md",
+      "source_blob": "37beb1fff8fab6ec7e28067958da781a8cb5c6b2",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve explicit final checkpoint, provisional P0 2 / P1 0 / P2 23, source-semantic FIXED/execution NOT_VERIFIED status for F10/F16/F17, Observe P0 OPEN, and the explicit no-new-status/count-change result."
+    },
+    {
+      "rank": 147,
+      "path": "review-runs/checkpoints/2026-09-13T182750Z__f6e7cf72__checkpoint.md",
+      "source_blob": "d29ead8bcf49c30a66793b6c63a1803c521d4e16",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic kind as NOT_VERIFIED, provisional blocker counts, source-semantic-fixed but execution-NOT_VERIFIED F10/F16/F17 states, and Observe P0 OPEN without inferring canonical closure."
+    },
+    {
+      "rank": 148,
+      "path": "review-runs/checkpoints/2026-09-13T182300Z__f6e7cf72__checkpoint.md",
+      "source_blob": "a04925b3915c44abcc9f603d9eeace44d714e47e",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic structural kind as NOT_VERIFIED and carry-forward P0 2 / P1 0 / P2 23 only as provisional context; F10/F16/F17, Observe, and an additional persistence/handoff path remain revalidation candidates."
+    },
+    {
+      "rank": 149,
+      "path": "review-runs/checkpoints/2026-09-13T173412Z__f6e7cf72__checkpoint.md",
+      "source_blob": "6e580ff86e78c73b7b765d63c3402126354a34a1",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "MATERIAL_STATUS_TRANSITION_OR_REPLACEMENT",
+        "CONTRADICTORY_STATUS_LABELING",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the explicit source-level advance of BUG-CLEANUP-01, BUG-DATE-02, and BUG-HISTORY-01 to SOURCE-SEMANTIC FIXED / execution NOT_VERIFIED while keeping all three canonical OPEN under the execution gate; Observe remains P0 OPEN."
+    },
+    {
+      "rank": 150,
+      "path": "review-runs/checkpoints/2026-09-13T173005Z__f6e7cf72__checkpoint.md",
+      "source_blob": "8b707e36c5540313186fbdbf8ac1767c54db23b7",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "MATERIAL_STATUS_TRANSITION_OR_REPLACEMENT",
+        "CONTRADICTORY_STATUS_LABELING",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic kind as NOT_VERIFIED despite substantive reconciliation content, retain source-level reclassification of the three P2 findings without canonical closure, and keep Observe/History-Undo consumer-effect/execution candidates unresolved."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      146,
+      147,
+      148,
+      149,
+      150
+    ],
+    "materializer_flagged_exception_ranks": [
+      146,
+      147,
+      148,
+      149,
+      150
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
