@@ -1241,13 +1241,29 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         assertTrue(
             awaitPreference(timeoutMs = 5_000L) {
-                exactD1Slot() != null
+                preferences.getString(
+                    "cleanup_leftover_downloads_pending_generation",
+                    null,
+                ) == null &&
+                    preferences.getString(
+                        "cleanup_leftover_downloads_active_generation",
+                        null,
+                    ) == generation &&
+                    preferences.getString(
+                        "cleanup_leftover_downloads_active_cadence",
+                        null,
+                    ) == CleanupSchedulePolicy.DAILY &&
+                    preferences.getInt(
+                        "cleanup_leftover_downloads_active_anchor_day",
+                        -1,
+                    ) == anchorDay &&
+                    preferences.getLong(
+                        "cleanup_leftover_downloads_active_occurrence_at",
+                        -1L,
+                    ) == predecessorAt
             },
         )
-        val d1SlotBeforeFailure = exactD1Slot() ?: error(
-            "missing exact D1 carrier before successor persistence failure: " +
-                durableSchedulingState(),
-        )
+        awaitMainLooperIdle()
         val predecessorTag = occurrenceTag(generation, predecessorAt)
         val predecessorWork = awaitWork(timeoutMs = 5_000L) { infos ->
             infos.count { info ->
@@ -1262,6 +1278,11 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 info.state == WorkInfo.State.BLOCKED) &&
                 info.tags.contains(predecessorTag)
         }
+        val d1SlotBeforeFailure = exactD1Slot() ?: error(
+            "missing exact D1 carrier after acceptance quiescence: " +
+                durableSchedulingState(),
+        )
+        assertEquals("active", d1SlotBeforeFailure)
         val d1PrefixBeforeFailure = slotPrefix(d1SlotBeforeFailure)
         assertEquals(
             generation,
