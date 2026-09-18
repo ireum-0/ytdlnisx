@@ -1,0 +1,32 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-correction-v1",
+  "run_id": "M01-20260917T2345Z-001",
+  "stage": "MATERIALIZE_061_090",
+  "logical_rank_range": [
+    61,
+    90
+  ],
+  "target_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M01-20260917T2345Z-001/r061-065.json",
+    "blob_sha": "81d479136bc64cc73ac992c9356758fc01ee2bb2"
+  },
+  "field_correction": {
+    "field": "source_review[2].path",
+    "recorded_value": "review-runs/checkpoints/2026-09-14T163720Z__c4f630a8699662ebc07d94caa006d70b9779091d__checkpoint.md",
+    "correct_value": "review-runs/checkpoints/2026-09-14T163720Z__c4f630a8__checkpoint.md",
+    "correct_path": "review-runs/checkpoints/2026-09-14T163720Z__c4f630a8__checkpoint.md"
+  },
+  "verification": {
+    "source_refetched": true,
+    "source_commit_sha": "043b2ce9b9e011947b6ab3afa8101ac8278d5de0",
+    "source_blob_sha": "43875e5d81f16a329575dd39f6029d6e05f2aee3",
+    "target_receipt_semantic_content_changed": false,
+    "exception_detection_changed": false,
+    "missed_exception_count_changed": false,
+    "unsafe_correction_count_changed": false,
+    "affects_semantic_review": false,
+    "affects_materializer_output": false,
+    "affects_materialization_validation": false
+  },
+  "reason": "Append-only repair of a source path metadata typo. The immutable r061-065 receipt is preserved; semantic review, exception detection, Materializer data, and validation results are unchanged."
+}
