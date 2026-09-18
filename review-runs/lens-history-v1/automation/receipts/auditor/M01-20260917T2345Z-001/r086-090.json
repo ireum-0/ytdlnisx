@@ -1,0 +1,614 @@
+{
+  "schema_version": "lens-history-v1-auditor-receipt-v2",
+  "run_id": "M01-20260917T2345Z-001",
+  "stage": "MATERIALIZE_061_090",
+  "logical_rank_range": [
+    61,
+    90
+  ],
+  "microsegment_rank_range": [
+    86,
+    90
+  ],
+  "complete_state_blob": "172a50084ff3021bf61848352de4d80f1c44112b",
+  "data_head": "99259f31aad624d6764c47b7dba541c9a392bee5",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "final_triage": {
+    "path": "review-runs/lens-history-v1/automation/triage/M01-20260917T2345Z-001.json",
+    "blob_sha": "ccf702f2c8ddd43569d9033efb3af691e7b5e88a"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M01-20260917T2345Z-001/r086-090.json",
+    "blob_sha": "d68ce2e29a4d392b0852f2a653298e4debdf7eb1"
+  },
+  "materializer_remediations": [],
+  "triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M01-20260917T2345Z-001/r086-090.json",
+    "blob_sha": "a27d03e281e3eddc852cb79585342cbafb24db62"
+  },
+  "triage_corrections": [
+    {
+      "path": "review-runs/lens-history-v1/automation/receipts/triage/M01-20260917T2345Z-001/corrections/r061-065-c001.json",
+      "blob_sha": "ab3fc8b6eca04a4388d7ceba6b8773d28f9a9793",
+      "validated": true,
+      "semantic_results_changed": false
+    }
+  ],
+  "ledger": {
+    "path": "review-runs/lens-history-v1/ledger-batches/0012-newest-081-090.jsonl",
+    "blob_sha": "eb42c592a99ea10a68f72b9a806b4001d22cb1ca"
+  },
+  "official_validation": {
+    "path": "review-runs/lens-history-v1/validation/ledger-batch-0012.json",
+    "blob_sha": "36b42360ebe5bd0a6064ba536f7497b0875a6cfd",
+    "status": "PASS"
+  },
+  "previous_auditor_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/auditor/M01-20260917T2345Z-001/r081-085.json",
+    "blob_sha": "867aafb63005c1d0ce7684926873d3c798db90a7"
+  },
+  "rows": [
+    {
+      "rank": 86,
+      "history_commit": "034a2c7450f8af9c1c535e705578c8e259ff1818",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14__0968c7dd__f10-completed-wave-reconciliation.md",
+        "status": "added",
+        "source_blob": "345ac9e2a781fcd3999513ce488ef4a57c85518e",
+        "frozen_blob": "345ac9e2a781fcd3999513ce488ef4a57c85518e",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "0968c7dda0bb0673ca055156f760e64e4fc6b446"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "DERIVABLE",
+        "value": "SUBSTANTIVE_NON_FINAL",
+        "rule": "lens-history-v1/document-identity-v1"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_APPLICABLE",
+        "reason": "SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness by document-identity-v1"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 6,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-CLEANUP-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "P2 / NOT_CLEAN / same existing root / count delta 0"
+        },
+        "finding_relation": {
+          "state": "DIRECT",
+          "value": "stale destructive-effect and synchronous-UI residuals closed, but enabled authority can persist while new scheduling-debt publication fails before enqueue/replay ownership"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "RECONCILIATION_OR_SCOPE_EXPANSION",
+          "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+          "COUNT_RECONCILIATION"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 87,
+      "history_commit": "ea3ea5954b7f0a92e94444a90130ba80b9bd77a9",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14T114015Z__09058d57__checkpoint.md",
+        "status": "added",
+        "source_blob": "1fe8905d227f4e7a3e2e39b07283610be78bccf0",
+        "frozen_blob": "1fe8905d227f4e7a3e2e39b07283610be78bccf0",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "09058d574d19d211cd0db36cbf47726bb8fa7dc5"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "DIRECT",
+        "value": "FINAL"
+      },
+      "effectiveness_eligibility": {
+        "state": "DERIVABLE",
+        "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+        "rule": "lens-history-v1/final-only-explicit"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 7,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "findings": [
+          {
+            "finding_id": {
+              "state": "DIRECT",
+              "value": "CLEANUP-MAIN-THREAD-BLOCK-01"
+            },
+            "finding_disposition": {
+              "state": "DIRECT",
+              "value": "NEW P1; source path/blocking dependency confirmed; runtime manifestation NOT_VERIFIED"
+            },
+            "finding_relation": {
+              "state": "DIRECT",
+              "value": "synchronous settings listener can wait through runBlocking on destructiveEffectMutex held across cleanup work"
+            }
+          },
+          {
+            "finding_id": {
+              "state": "DIRECT",
+              "value": "BUG-OBSERVE-HANDOFF-01"
+            },
+            "finding_disposition": {
+              "state": "DIRECT",
+              "value": "EXISTING P0 / OPEN"
+            },
+            "finding_relation": {
+              "state": "DIRECT",
+              "value": "ordinary initial/successor work lacks exact generation/config token and confirmed-handoff-equivalent stale rejection"
+            }
+          },
+          {
+            "finding_id": {
+              "state": "DIRECT",
+              "value": "BUG-CLEANUP-01"
+            },
+            "finding_disposition": {
+              "state": "DIRECT",
+              "value": "SOURCE-SEMANTIC FIXED; execution NOT_VERIFIED; canonical closure not promoted"
+            },
+            "finding_relation": {
+              "state": "DIRECT",
+              "value": "source-semantic closure explicitly separated from execution/canonical closure"
+            }
+          },
+          {
+            "finding_id": {
+              "state": "DIRECT",
+              "value": "BUG-LOCALADD-01"
+            },
+            "finding_disposition": {
+              "state": "DIRECT",
+              "value": "SOURCE-SEMANTIC FIXED; execution NOT_VERIFIED; canonical closure not promoted"
+            },
+            "finding_relation": {
+              "state": "DIRECT",
+              "value": "source-semantic closure explicitly separated from execution/canonical closure"
+            }
+          }
+        ],
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "EXPLICIT_NEW_FINDING",
+          "CHECKLIST_GAP_OR_CHANGE",
+          "CONTRADICTORY_STATUS_LABELING",
+          "PROVISIONAL_COUNTS"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true,
+        "checklist_gap_preserved": true,
+        "numeric_lens_effectiveness_inferred": false
+      }
+    },
+    {
+      "rank": 88,
+      "history_commit": "c5d12aae606a4ef2c173b491eafdc0ecc6fa5a20",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14__09058d57__completed-review-fix-wave-verdict.md",
+        "status": "added",
+        "source_blob": "29ea79f970cf4de87ff860b592b2ca26697cfff1",
+        "frozen_blob": "29ea79f970cf4de87ff860b592b2ca26697cfff1",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "09058d574d19d211cd0db36cbf47726bb8fa7dc5"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "DIRECT",
+        "value": "FINAL"
+      },
+      "effectiveness_eligibility": {
+        "state": "DERIVABLE",
+        "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+        "rule": "lens-history-v1/final-only-explicit"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 8,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "findings": [
+          {
+            "finding_id": {
+              "state": "DIRECT",
+              "value": "BUG-CLEANUP-01"
+            },
+            "finding_disposition": {
+              "state": "DIRECT",
+              "value": "F10 NOT_CLEAN"
+            },
+            "finding_relation": {
+              "state": "DIRECT",
+              "value": "prior stale destructive-effect subcase closes; fix-induced synchronous main-thread consumer P2 opens within F10 review scope; net delta 0"
+            }
+          },
+          {
+            "finding_id": {
+              "state": "DIRECT",
+              "value": "BUG-LOCALADD-01"
+            },
+            "finding_disposition": {
+              "state": "DIRECT",
+              "value": "OPEN / NOT_CLEAN"
+            },
+            "finding_relation": {
+              "state": "DIRECT",
+              "value": "opaque-ID prefix/tree subcase closes; substring-LIKE suppressing precheck remains another same-root consumer subcase; net delta 0"
+            }
+          }
+        ],
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "RECONCILIATION_OR_SCOPE_EXPANSION",
+          "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+          "COUNT_RECONCILIATION"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 89,
+      "history_commit": "ca969cae42a3f0596d7e43b752802ff007f0cd7e",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14__09058d57__f20-review-fix-reconciliation.md",
+        "status": "added",
+        "source_blob": "da57adb7a447e90ebe8f3cc0f92ffb03105b5a7d",
+        "frozen_blob": "da57adb7a447e90ebe8f3cc0f92ffb03105b5a7d",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "09058d574d19d211cd0db36cbf47726bb8fa7dc5"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "DERIVABLE",
+        "value": "SUBSTANTIVE_NON_FINAL",
+        "rule": "lens-history-v1/document-identity-v1"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_APPLICABLE",
+        "reason": "SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness by document-identity-v1"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 9,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-LOCALADD-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "OPEN / NOT_CLEAN / P2 / same existing root / net count delta 0"
+        },
+        "finding_relation": {
+          "state": "DIRECT",
+          "value": "opaque document-ID/tree-prefix collision subcase closed; substring-LIKE downloadPath suppressing precheck remains another same-root production consumer subcase"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "RECONCILIATION_OR_SCOPE_EXPANSION",
+          "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+          "COUNT_RECONCILIATION"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 90,
+      "history_commit": "c8bfcfa4904b7bbfae44bdd33b00c7019a2f898f",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14T113120Z__09058d57__checkpoint.md",
+        "status": "added",
+        "source_blob": "464da85622445105b27a8c8d231dba359061bdcf",
+        "frozen_blob": "464da85622445105b27a8c8d231dba359061bdcf",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "09058d574d19d211cd0db36cbf47726bb8fa7dc5"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "generic checkpoint with final pre-verdict checkpoint still in remaining review scope; chronology/commit message prohibited"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "structural kind is NOT_VERIFIED and no explicit effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 10,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "findings": [
+          {
+            "finding_id": {
+              "state": "DIRECT",
+              "value": "BUG-OBSERVE-HANDOFF-01"
+            },
+            "finding_disposition": {
+              "state": "DIRECT",
+              "value": "source-confirmed OPEN"
+            },
+            "finding_relation": {
+              "state": "DIRECT",
+              "value": "ordinary initial/successor WorkRequests carry only source ID; exact config-fingerprint rejection applies only when handoff fingerprint is present"
+            }
+          },
+          {
+            "finding_id": {
+              "state": "DIRECT",
+              "value": "BUG-CLEANUP-01"
+            },
+            "finding_disposition": {
+              "state": "DIRECT",
+              "value": "source-semantic fixed; canonical closure not yet asserted because required actual execution evidence is absent"
+            }
+          },
+          {
+            "finding_id": {
+              "state": "DIRECT",
+              "value": "BUG-LOCALADD-01"
+            },
+            "finding_disposition": {
+              "state": "DIRECT",
+              "value": "source-semantic fixed; canonical closure not yet asserted because required actual execution evidence is absent"
+            }
+          }
+        ],
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "AMBIGUOUS_KIND",
+          "PROVISIONAL_COUNTS",
+          "CONTRADICTORY_STATUS_LABELING",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    }
+  ],
+  "summary": {
+    "ranks_audited": 5,
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "replay_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0,
+    "expected_exception_ranks": [
+      86,
+      87,
+      88,
+      89,
+      90
+    ],
+    "independently_observed_exception_ranks": [
+      86,
+      87,
+      88,
+      89,
+      90
+    ],
+    "missed_exception_count": 0,
+    "status": "PASS"
+  }
+}
