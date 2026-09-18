@@ -2236,10 +2236,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     navHost.navController.navigate(R.id.folderSettingsFragment)
                     navHost.childFragmentManager.executePendingTransactions()
                 }
-                awaitSettingsUiReady(
-                    scenario,
-                    destinationId = R.id.folderSettingsFragment,
-                )
                 scenario.onActivity { activity ->
                     val navHost = activity.supportFragmentManager
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -2340,10 +2336,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     navHost.navController.navigate(R.id.folderSettingsFragment)
                     navHost.childFragmentManager.executePendingTransactions()
                 }
-                awaitSettingsUiReady(
-                    scenario,
-                    destinationId = R.id.folderSettingsFragment,
-                )
                 scenario.onActivity { activity ->
                     val navHost = activity.supportFragmentManager
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -2445,10 +2437,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     navHost.navController.navigate(R.id.folderSettingsFragment)
                     navHost.childFragmentManager.executePendingTransactions()
                 }
-                awaitSettingsUiReady(
-                    scenario,
-                    destinationId = R.id.folderSettingsFragment,
-                )
                 scenario.onActivity { activity ->
                     val navHost = activity.supportFragmentManager
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -3318,10 +3306,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 navHost.navController.navigate(R.id.downloadSettingsFragment)
                 navHost.childFragmentManager.executePendingTransactions()
             }
-            awaitSettingsUiReady(
-                scenario,
-                destinationId = R.id.downloadSettingsFragment,
-            )
             scenario.onActivity { activity ->
                 val navHost = activity.supportFragmentManager
                     .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -3377,10 +3361,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 navHost.navController.navigate(R.id.downloadSettingsFragment)
                 navHost.childFragmentManager.executePendingTransactions()
             }
-            awaitSettingsUiReady(
-                scenario,
-                destinationId = R.id.downloadSettingsFragment,
-            )
             scenario.onActivity { activity ->
                 val navHost = activity.supportFragmentManager
                     .findFragmentById(R.id.frame_layout) as NavHostFragment
