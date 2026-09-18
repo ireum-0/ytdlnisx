@@ -1,0 +1,119 @@
+{
+  "schema_version":"lens-history-v1-materializer-rank-receipt-v1",
+  "run_id":"M01-20260917T2345Z-001",
+  "stage":"MATERIALIZE_061_090",
+  "logical_rank_range":[61,90],
+  "rank":71,
+  "materializer_state_blob":"1ec31076b8be849fb6759ecd0a2c979ab4d9dd75",
+  "governing_pins":{
+    "frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob":"18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "previous_rank_receipt":{
+    "path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r070.json",
+    "blob_sha":"2f2973cd58fef1af503e91dd5fee19605ed1e27b"
+  },
+  "history":{
+    "commit_sha":"c844cee44aca0e1c781fafbe9f1d05d238e8ca4a",
+    "resolution":"exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=71"
+  },
+  "changed_file_enumeration":{
+    "per_page":1,
+    "pages_checked":[1,2],
+    "closure_page":2,
+    "closure_proof":"files: []",
+    "complete":true,
+    "files":[{
+      "file_page":1,
+      "path":"review-runs/checkpoints/2026-09-14__55e54888__completed-wave-verdict.md",
+      "status":"added",
+      "source_blob_sha":"8d981e480c364f6224a6fdb2ca5f19f65c08dc3b",
+      "checkpoint_path":true,
+      "frozen_presence":true,
+      "frozen_blob_sha":"8d981e480c364f6224a6fdb2ca5f19f65c08dc3b",
+      "source_frozen_match":true
+    }]
+  },
+  "checkpoint":{
+    "path":"review-runs/checkpoints/2026-09-14__55e54888__completed-wave-verdict.md",
+    "status":"added",
+    "source_blob_sha":"8d981e480c364f6224a6fdb2ca5f19f65c08dc3b",
+    "frozen_blob_sha":"8d981e480c364f6224a6fdb2ca5f19f65c08dc3b",
+    "source_frozen_match":true,
+    "implementation_sha":{
+      "state":"DIRECT",
+      "value":"55e54888a0e03c17a4cbdb51817d3ad4336107f4",
+      "evidence":"explicit Exact implementation HEAD"
+    },
+    "schema_class":"UNINSTRUMENTED",
+    "kind":{
+      "state":"DIRECT",
+      "value":"FINAL",
+      "rule":"explicit document identity",
+      "reason":"the exact source title identifies a completed-wave independent verdict and the body explicitly records Verdict and Overall outcomes for the reviewed wave",
+      "evidence":"title: Completed-wave independent verdict at 55e54888; fields: Verdict: NOT_CLEAN and Overall: NOT_CLEAN"
+    },
+    "effectiveness_eligibility":{
+      "state":"DERIVABLE",
+      "value":"NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule":"lens-history-v1/final-only-explicit",
+      "reason":"FINAL is established and the source contains no explicit structured effectiveness payload"
+    },
+    "raw_audit_lens":{"state":"NOT_VERIFIED"},
+    "primary_deep_lens":{"state":"NOT_VERIFIED"},
+    "lens_selection_reason":{"state":"NOT_VERIFIED"},
+    "lens_coverage_current_sha":{"state":"NOT_VERIFIED"},
+    "effectiveness":{},
+    "finding_attribution":{
+      "findings":[
+        {
+          "finding_id":{"state":"DIRECT","value":"BUG-CLEANUP-01"},
+          "finding_disposition":{"state":"DIRECT","value":"P2 / OPEN"},
+          "finding_relation":{"state":"DIRECT","value":"another same-root pre-debt failure frontier confirmed; count delta 0"}
+        },
+        {
+          "finding_id":{"state":"DIRECT","value":"BUG-LOCALADD-01"},
+          "finding_disposition":{"state":"DIRECT","value":"SOURCE-FIXED / EXECUTION-NOT-VERIFIED; existing P2 retained"},
+          "finding_relation":{"state":"DIRECT","value":"no source residual confirmed, but execution evidence absent so canonical closure is withheld"}
+        }
+      ],
+      "modern_primary_detecting_lens":{"state":"NOT_VERIFIED"}
+    },
+    "not_verified_candidates":{
+      "state":"DIRECT",
+      "items":[
+        "HistoryFileDeletion.kt authority-lowercasing deletion observation requires canonical-root reconciliation before any count or promotion"
+      ]
+    }
+  },
+  "factual_exception_triggers":[
+    {
+      "type":"SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id":"BUG-CLEANUP-01",
+      "evidence":"full-scope review explicitly confirms another same-root pre-debt failure frontier while BUG-CLEANUP-01 remains OPEN P2"
+    },
+    {
+      "type":"COUNT_RECONCILIATION",
+      "finding_id":"BUG-CLEANUP-01",
+      "evidence":"source explicitly records F10 delta 0 and overall P2 count 20 despite the newly confirmed same-root frontier"
+    },
+    {
+      "type":"CONTRADICTORY_STATUS_LABELING",
+      "finding_id":"BUG-LOCALADD-01",
+      "evidence":"source explicitly labels the finding SOURCE-FIXED / EXECUTION-NOT-VERIFIED while retaining the existing P2 and count delta 0; preserve for semantic review without resolving canonical status"
+    },
+    {
+      "type":"NOT_VERIFIED_SEMANTIC_CANDIDATE",
+      "evidence":"HistoryFileDeletion.kt authority-normalization observation is retained as a candidate requiring root reconciliation and is not counted as a new blocker"
+    }
+  ],
+  "materialization":{
+    "replay_comparison":{"state":"NOT_APPLICABLE","reason":"new materialization range"},
+    "official_outputs_deferred":true
+  }
+}
