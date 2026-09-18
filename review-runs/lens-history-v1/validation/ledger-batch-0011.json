@@ -1,0 +1,105 @@
+{
+  "schema_version": "lens-history-v1",
+  "validation_kind": "ledger_batch_validation",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "batch": {
+    "inventory": "review-runs/lens-history-v1/inventory-batches/0011-newest-071-080.jsonl",
+    "ledger": "review-runs/lens-history-v1/ledger-batches/0011-newest-071-080.jsonl",
+    "history_rank_from_newest": {
+      "first": 71,
+      "last": 80
+    },
+    "records": 10,
+    "internal_partitions": [
+      {
+        "first": 71,
+        "last": 75,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      },
+      {
+        "first": 76,
+        "last": 80,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      }
+    ]
+  },
+  "byte_identity": {
+    "inventory_git_blob_sha": {
+      "expected": "5d850984c058f786a928e955c569ec2fcfa3f92f",
+      "stored": "5d850984c058f786a928e955c569ec2fcfa3f92f",
+      "status": "MATCH"
+    },
+    "ledger_git_blob_sha": {
+      "expected": "10c3707cf6a2bbfdc1614a7c96a0bca8e0c0ca86",
+      "stored": "10c3707cf6a2bbfdc1614a7c96a0bca8e0c0ca86",
+      "status": "MATCH"
+    }
+  },
+  "source_provenance": {
+    "commit_detail_file_binding": "10/10 COMPLETE",
+    "frozen_tree_presence": "10/10 COMPLETE",
+    "source_to_frozen_blob_identity": "10/10 MATCH"
+  },
+  "schema_validation": {
+    "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "validator": "Draft 2020-12",
+    "records_checked": 10,
+    "valid_records": 10,
+    "invalid_records": 0,
+    "status": "PASS"
+  },
+  "classification_summary": {
+    "UNINSTRUMENTED": 10,
+    "LEGACY_AUDIT_LENS": 0,
+    "STRUCTURED_PROVISIONAL": 0,
+    "STRUCTURED_FINAL": 0,
+    "explicit_final_records": 3,
+    "explicit_intermediate_records": 0,
+    "verified_bootstrap_records": 1,
+    "substantive_non_final_records": 4,
+    "kind_not_verified_records": 2
+  },
+  "implementation_sha_summary": {
+    "55e54888a0e03c17a4cbdb51817d3ad4336107f4": 7,
+    "558d692dc95557080abe32eeedb51574b982aa01": 3
+  },
+  "materializer_remediation_context": {
+    "effective_aggregate_overlay_blob_sha": "d2a8cf74c691f6d754e03efe08757ba97ecc257f",
+    "applies_to_prior_segment": [
+      66,
+      70
+    ],
+    "original_ancestry_preserved": true
+  },
+  "aggregate_reconciliation": {
+    "cumulative_eligible_structured_finals_in_batch": 0,
+    "aggregate_delta": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 0,
+      "rejected_candidates_with_proof": 0,
+      "not_verified_candidates": 0,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 0
+    },
+    "observed_measured_effectiveness_after_batch": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "status": "UNCHANGED_PASS"
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  }
+}
