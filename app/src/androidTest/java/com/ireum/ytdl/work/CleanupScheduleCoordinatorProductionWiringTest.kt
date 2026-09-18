@@ -2618,6 +2618,16 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
                 .commit()
         )
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        assertEquals(
+            CleanupSchedulePolicy.DAILY,
+            preferences.getString("cleanup_leftover_downloads", null),
+        )
+        assertEquals(
+            CleanupSchedulePolicy.DAILY,
+            CleanupScheduleCoordinator.currentCadenceForSettings(context),
+        )
         CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
 
         val applied = Collections.synchronizedList(mutableListOf<String>())
