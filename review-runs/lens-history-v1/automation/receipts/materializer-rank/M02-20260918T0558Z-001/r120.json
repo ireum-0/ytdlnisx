@@ -1,0 +1,167 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M02-20260918T0558Z-001",
+  "stage": "MATERIALIZE_091_120",
+  "logical_rank_range": [
+    91,
+    120
+  ],
+  "rank": 120,
+  "materializer_state_blob": "b29fdd5ec061b0e85d4025c305a61a9253d6f54a",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4858e924ca5ca5ac3dd14b26d17b10499edcdef7",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M02-20260918T0558Z-001/r119.json",
+    "blob_sha": "d71eda62eca2777035b759d5ac8d5295f0e02196"
+  },
+  "history": {
+    "commit_sha": "a458d3d7e5de1d1cbcad01d27e88d0a8acd0a651",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=120"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-14T012851Z__b9341032__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "19b5eb9109f2702b74df399680f9db83f45db750",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "19b5eb9109f2702b74df399680f9db83f45db750",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-14T012851Z__b9341032__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "19b5eb9109f2702b74df399680f9db83f45db750",
+    "frozen_blob_sha": "19b5eb9109f2702b74df399680f9db83f45db750",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "b9341032c80fba0ce612adffae85b54c00cfbdeb",
+      "evidence": "explicit Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "value": "NOT_VERIFIED",
+      "rule": "fail-closed structural-kind rule",
+      "reason": "the source is a generic Independent correctness review checkpoint and explicitly leaves a final pre-verdict checkpoint in remaining scope; commit message `semantic` is not structural evidence"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "value": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-KEYWORD-02"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "source-semantic FIXED; canonical closure pending exact-candidate execution evidence"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "current rule/video-match authority is used for RULE-derived state while exact-SHA execution remains NOT_VERIFIED"
+          }
+        },
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-CLEANUP-01"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "source-confirmed OPEN"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "worker authority is checked before cleanup but not held through destructive effect"
+          }
+        },
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-OBSERVE-HANDOFF-01"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "existing P0 revalidation pending"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "ordinary scheduling/generation fence remains to be traced before final verdict"
+          }
+        }
+      ],
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint source does not positively establish FINAL/INTERMEDIATE/BOOTSTRAP and a final pre-verdict checkpoint remains future scope"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source records Provisional severity counts P0 2 / P1 0 / P2 21"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly says canonical count unchanged provisionally"
+    },
+    {
+      "type": "CONTRADICTORY_STATUS_LABELING",
+      "finding_id": "BUG-KEYWORD-02",
+      "evidence": "source says BUG-KEYWORD-02 is source-semantically fixed while canonical closure remains pending exact-candidate execution evidence"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "existing BUG-OBSERVE-HANDOFF-01 P0 ordinary scheduling/generation fence is explicitly left for revalidation before final verdict"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
