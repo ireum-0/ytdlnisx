@@ -1,0 +1,123 @@
+{
+  "schema_version":"lens-history-v1-materializer-rank-receipt-v1",
+  "run_id":"M01-20260917T2345Z-001",
+  "stage":"MATERIALIZE_061_090",
+  "logical_rank_range":[61,90],
+  "rank":84,
+  "materializer_state_blob":"ebbd3a63125fc39c1023bdbe7b9324a2631e06b9",
+  "governing_pins":{
+    "frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob":"18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "applicable_materializer_remediations":[
+    {
+      "effective_aggregate_path":"review-runs/lens-history-v1/automation/remediation/materializer/M01-20260917T2345Z-001/r066-070-effective-001.json",
+      "effective_aggregate_blob_sha":"d2a8cf74c691f6d754e03efe08757ba97ecc257f"
+    }
+  ],
+  "previous_rank_receipt":{
+    "path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r083.json",
+    "blob_sha":"9ea08fb067f19bd03c3040138bd60017e0193559"
+  },
+  "history":{
+    "commit_sha":"0a190ff9a5173f8057c49a66078876ceee0601fc",
+    "resolution":"exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=84"
+  },
+  "changed_file_enumeration":{
+    "per_page":1,
+    "pages_checked":[1,2],
+    "closure_page":2,
+    "closure_proof":"files: []",
+    "complete":true,
+    "files":[{
+      "file_page":1,
+      "path":"review-runs/checkpoints/2026-09-14__0968c7dd__completed-review-fix-wave-verdict.md",
+      "status":"added",
+      "source_blob_sha":"b32b4b37c0563a73e690ced9e03f81648bbe03d0",
+      "checkpoint_path":true,
+      "frozen_presence":true,
+      "frozen_blob_sha":"b32b4b37c0563a73e690ced9e03f81648bbe03d0",
+      "source_frozen_match":true
+    }]
+  },
+  "checkpoint":{
+    "path":"review-runs/checkpoints/2026-09-14__0968c7dd__completed-review-fix-wave-verdict.md",
+    "status":"added",
+    "source_blob_sha":"b32b4b37c0563a73e690ced9e03f81648bbe03d0",
+    "frozen_blob_sha":"b32b4b37c0563a73e690ced9e03f81648bbe03d0",
+    "source_frozen_match":true,
+    "implementation_sha":{
+      "state":"DIRECT",
+      "value":"0968c7dda0bb0673ca055156f760e64e4fc6b446",
+      "evidence":"explicit Final reviewed implementation HEAD"
+    },
+    "schema_class":"UNINSTRUMENTED",
+    "kind":{
+      "state":"DIRECT",
+      "value":"FINAL",
+      "rule":"explicit document identity",
+      "reason":"the exact source title identifies a completed F10/F20 review-fix wave verdict and explicitly records Overall verdict",
+      "evidence":"title: Completed F10/F20 review-fix wave verdict at 0968c7dd; Overall verdict: NOT_CLEAN"
+    },
+    "effectiveness_eligibility":{
+      "state":"DERIVABLE",
+      "value":"NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule":"lens-history-v1/final-only-explicit",
+      "reason":"FINAL is established and the source contains no explicit structured effectiveness payload"
+    },
+    "raw_audit_lens":{"state":"NOT_VERIFIED"},
+    "primary_deep_lens":{"state":"NOT_VERIFIED"},
+    "lens_selection_reason":{"state":"NOT_VERIFIED"},
+    "lens_coverage_current_sha":{"state":"NOT_VERIFIED"},
+    "effectiveness":{},
+    "finding_attribution":{
+      "findings":[
+        {
+          "finding_id":{"state":"DIRECT","value":"BUG-CLEANUP-01"},
+          "finding_disposition":{"state":"DIRECT","value":"OPEN P2"},
+          "finding_relation":{"state":"DIRECT","value":"enabled authority can persist while later scheduling-debt persistence fails before enqueue/replay owner; same root; delta 0"}
+        },
+        {
+          "finding_id":{"state":"DIRECT","value":"BUG-LOCALADD-01"},
+          "finding_disposition":{"state":"DIRECT","value":"OPEN P2"},
+          "finding_relation":{"state":"DIRECT","value":"provider document ID trim normalization can collapse distinct opaque IDs; same root; delta 0"}
+        }
+      ],
+      "modern_primary_detecting_lens":{"state":"NOT_VERIFIED"}
+    },
+    "execution_evidence":{
+      "state":"DIRECT",
+      "value":"INDEPENDENT EXECUTION: NOT EXECUTED",
+      "detail":"implementation-reported compile/check passes are implementation evidence only; focused runtime/device tests were not executed and GitHub exposes no combined status contexts for the exact SHA"
+    }
+  },
+  "factual_exception_triggers":[
+    {
+      "type":"SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id":"BUG-CLEANUP-01",
+      "evidence":"source explicitly retains the enabled-authority-to-scheduling-debt persistence failure frontier under the same F10 root"
+    },
+    {
+      "type":"SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id":"BUG-LOCALADD-01",
+      "evidence":"source explicitly retains exact opaque provider document-ID normalization collision under the same F20 root"
+    },
+    {
+      "type":"COUNT_RECONCILIATION",
+      "evidence":"source explicitly records F10 delta 0, F20 delta 0, and P0 2 / P1 0 / P2 20 before and after the wave"
+    },
+    {
+      "type":"RECONCILIATION_OR_SCOPE_EXPANSION",
+      "evidence":"source explicitly constrains the next authorized review-fix wave to F10 and F20 and blocks unrelated work from that wave"
+    }
+  ],
+  "materialization":{
+    "replay_comparison":{"state":"NOT_APPLICABLE","reason":"new materialization range"},
+    "official_outputs_deferred":true
+  }
+}
