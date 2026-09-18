@@ -1,0 +1,182 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M02-20260918T0558Z-001",
+  "stage": "MATERIALIZE_091_120",
+  "logical_rank_range": [
+    91,
+    120
+  ],
+  "segment_range": [
+    106,
+    110
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4858e924ca5ca5ac3dd14b26d17b10499edcdef7",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M02-20260918T0558Z-001/r101-105.json",
+    "blob_sha": "63b57e9d25bc7ff21efa25fd883cd3b8a0f0f992"
+  },
+  "rank_receipts": [
+    {
+      "rank": 106,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M02-20260918T0558Z-001/r106.json",
+      "blob_sha": "40fcf60361f87ee150d34d59f665fec03a6ef33e"
+    },
+    {
+      "rank": 107,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M02-20260918T0558Z-001/r107.json",
+      "blob_sha": "78a4f855f02f2bfe8856019a7aab023edf7d67cd"
+    },
+    {
+      "rank": 108,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M02-20260918T0558Z-001/r108.json",
+      "blob_sha": "0c2b4f43a519fbbcc0df5025bbebe723c880cc7b"
+    },
+    {
+      "rank": 109,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M02-20260918T0558Z-001/r109.json",
+      "blob_sha": "3f4f2aa826e6bbad72845629e31ec1221c3637cf"
+    },
+    {
+      "rank": 110,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M02-20260918T0558Z-001/r110.json",
+      "blob_sha": "b695acc53bb69e73dc11ac3531a85b5dc807f876"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      106,
+      107,
+      108,
+      109,
+      110
+    ],
+    "triggers": [
+      {
+        "rank": 106,
+        "type": "AMBIGUOUS_KIND",
+        "source_blob_sha": "a6a066268ef8592b8b5bcf7203b6df6da4ac029a"
+      },
+      {
+        "rank": 106,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "a6a066268ef8592b8b5bcf7203b6df6da4ac029a"
+      },
+      {
+        "rank": 106,
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "source_blob_sha": "a6a066268ef8592b8b5bcf7203b6df6da4ac029a"
+      },
+      {
+        "rank": 106,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "a6a066268ef8592b8b5bcf7203b6df6da4ac029a"
+      },
+      {
+        "rank": 107,
+        "type": "MATERIAL_STATUS_TRANSITION_OR_REPLACEMENT",
+        "finding_id": "BUG-LOCALADD-01",
+        "source_blob_sha": "de0449d6fb1f66623c3291b4ec3ae998f4c23674"
+      },
+      {
+        "rank": 107,
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-01",
+        "source_blob_sha": "de0449d6fb1f66623c3291b4ec3ae998f4c23674"
+      },
+      {
+        "rank": 107,
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LOCALADD-01",
+        "source_blob_sha": "de0449d6fb1f66623c3291b4ec3ae998f4c23674"
+      },
+      {
+        "rank": 107,
+        "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-LOCALADD-01",
+        "source_blob_sha": "de0449d6fb1f66623c3291b4ec3ae998f4c23674"
+      },
+      {
+        "rank": 108,
+        "type": "AMBIGUOUS_KIND",
+        "source_blob_sha": "0f01156a32fd603a29cf305ce926275e8811434f"
+      },
+      {
+        "rank": 108,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "0f01156a32fd603a29cf305ce926275e8811434f"
+      },
+      {
+        "rank": 108,
+        "type": "MATERIAL_STATUS_TRANSITION_OR_REPLACEMENT",
+        "finding_id": "BUG-LOCALADD-01",
+        "source_blob_sha": "0f01156a32fd603a29cf305ce926275e8811434f"
+      },
+      {
+        "rank": 108,
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-01",
+        "source_blob_sha": "0f01156a32fd603a29cf305ce926275e8811434f"
+      },
+      {
+        "rank": 108,
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LOCALADD-01",
+        "source_blob_sha": "0f01156a32fd603a29cf305ce926275e8811434f"
+      },
+      {
+        "rank": 109,
+        "type": "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "source_blob_sha": "22e6e9b3d5f682cda47897436f3614cc8c883ff9"
+      },
+      {
+        "rank": 109,
+        "type": "AMBIGUOUS_KIND",
+        "source_blob_sha": "22e6e9b3d5f682cda47897436f3614cc8c883ff9"
+      },
+      {
+        "rank": 109,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "22e6e9b3d5f682cda47897436f3614cc8c883ff9"
+      },
+      {
+        "rank": 109,
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "source_blob_sha": "22e6e9b3d5f682cda47897436f3614cc8c883ff9"
+      },
+      {
+        "rank": 109,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "22e6e9b3d5f682cda47897436f3614cc8c883ff9"
+      },
+      {
+        "rank": 110,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "cce280496e3518b815f921669591a70ea6291ae8"
+      },
+      {
+        "rank": 110,
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-01",
+        "source_blob_sha": "cce280496e3518b815f921669591a70ea6291ae8"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 91-120 is receipted"
+  }
+}
