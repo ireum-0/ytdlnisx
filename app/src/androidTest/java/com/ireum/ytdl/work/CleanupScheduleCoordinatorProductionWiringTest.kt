@@ -1,5 +1,6 @@
 package com.ireum.ytdl.work
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -3940,6 +3941,9 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         destinationId: Int? = null,
         dialogTextResId: Int? = null,
     ) {
+        var lastActivityWindowFocus = false
+        var lastAccessibilityWindows = ""
+        var lastDialogNodeCount = 0
         val ready = withTimeoutOrNull(SETTINGS_UI_READY_TIMEOUT_MILLIS) {
             var ready = false
             while (!ready) {
@@ -3956,19 +3960,36 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                                     activity.window.decorView.isShown &&
                                     (dialogTextResId != null ||
                                         activity.window.decorView.hasWindowFocus())
+                            lastActivityWindowFocus = activity.window.decorView.hasWindowFocus()
                             currentDestination = navHost?.navController?.currentDestination?.id
                         }
                     }
                 }
 
-                val focusedWindow = focusedApplicationWindow()
+                val accessibilityWindows = accessibilityWindows()
+                lastAccessibilityWindows = accessibilityWindows
+                    .joinToString { window ->
+                        "type=${window.type},active=${window.isActive},focused=${window.isFocused}," +
+                            "package=${runCatching { window.root?.packageName?.toString() }
+                                .getOrNull()}"
+                    }
+                val focusedWindow = accessibilityWindows.firstOrNull { window ->
+                    window.isFocused && runCatching {
+                        window.root?.packageName?.toString() == context.packageName
+                    }.getOrDefault(false)
+                }
                 val destinationReady = destinationId == null || currentDestination == destinationId
-                val dialogReady = dialogTextResId == null || focusedWindow?.root
-                    ?.findAccessibilityNodeInfosByText(
-                        context.getString(dialogTextResId),
-                    )
-                    .orEmpty()
-                    .any { node -> node.isVisibleToUser }
+                val dialogNodes = if (dialogTextResId == null) {
+                    emptyList()
+                } else {
+                    focusedWindow?.root
+                        ?.findAccessibilityNodeInfosByText(context.getString(dialogTextResId))
+                        .orEmpty()
+                }
+                lastDialogNodeCount = dialogNodes.size
+                val dialogReady = dialogTextResId == null || dialogNodes.any { node ->
+                    node.isVisibleToUser
+                }
 
                 ready = activityReady && focusedWindow != null && destinationReady && dialogReady
                 if (!ready) {
@@ -3983,18 +4004,24 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             val state = runCatching { scenario.state }.getOrNull()
             throw AssertionError(
                 "Timed out waiting for focused SettingsActivity UI: " +
-                    "state=$state, destination=$destinationId, dialogTextResId=$dialogTextResId",
+                    "state=$state, destination=$destinationId, dialogTextResId=$dialogTextResId, " +
+                    "activityWindowFocus=$lastActivityWindowFocus, " +
+                    "dialogNodeCount=$lastDialogNodeCount, " +
+                    "accessibilityWindows=$lastAccessibilityWindows",
             )
         }
     }
 
-    private fun focusedApplicationWindow(): AccessibilityWindowInfo? =
-        InstrumentationRegistry.getInstrumentation().uiAutomation.windows
-            .firstOrNull { window ->
-                window.isFocused && runCatching {
-                    window.root?.packageName?.toString() == context.packageName
-                }.getOrDefault(false)
-            }
+    private fun accessibilityWindows(): List<AccessibilityWindowInfo> {
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        val serviceInfo = automation.serviceInfo
+        if (serviceInfo.flags and AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS == 0) {
+            serviceInfo.flags = serviceInfo.flags or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            automation.serviceInfo = serviceInfo
+        }
+        return automation.windows
+    }
 
     private suspend fun awaitCleanupCancellationQuiescence() {
         // configure(null) deliberately exposes no synchronous cancellation
