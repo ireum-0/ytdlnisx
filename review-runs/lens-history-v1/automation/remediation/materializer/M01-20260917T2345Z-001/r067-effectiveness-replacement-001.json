@@ -1,0 +1,44 @@
+{
+  "schema_version":"lens-history-v1-materializer-field-replacement-v1",
+  "run_id":"M01-20260917T2345Z-001",
+  "rank":67,
+  "status":"FIELD_REPLACEMENT",
+  "remediation_protocol":{
+    "path":"review-runs/lens-history-v1/automation/remediation/materializer-remediation-v1.md",
+    "blob_sha":"cbb53fda36b75fffbb438d641df722ed90fcb87b"
+  },
+  "invalidation":{
+    "path":"review-runs/lens-history-v1/automation/remediation/materializer/M01-20260917T2345Z-001/r067-effectiveness-invalidation-001.json",
+    "blob_sha":"9bc66232e9cee8908d522ddb6d08310e488184ce"
+  },
+  "target_rank_receipt":{
+    "path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r067.json",
+    "blob_sha":"f04543a60b3867bc44488a05e3236da6ca5d704c"
+  },
+  "replacement":{
+    "field":"checkpoint.effectiveness_eligibility",
+    "value":{
+      "state":"NOT_APPLICABLE",
+      "reason":"bootstrap checkpoint excluded from cumulative effectiveness"
+    }
+  },
+  "verification":{
+    "source_path":"review-runs/checkpoints/2026-09-14T152300Z__55e54888__checkpoint.md",
+    "source_blob_sha":"1c1541ddd52baa0bbf13504c4586540dca313f09",
+    "frozen_blob_sha":"1c1541ddd52baa0bbf13504c4586540dca313f09",
+    "source_frozen_match":true,
+    "checkpoint_kind_state":"DIRECT",
+    "checkpoint_kind_value":"BOOTSTRAP",
+    "bootstrap_evidence":"Confirmed fixed invariants: none newly claimed at bootstrap.",
+    "deterministic_rule":"lens-history-v1 README: cumulative contribution of bootstrap/intermediate records is NOT_APPLICABLE"
+  },
+  "changes_history":false,
+  "changes_source_frozen_binding":false,
+  "changes_implementation_provenance":false,
+  "changes_checkpoint_kind":false,
+  "changes_lens_attribution":false,
+  "changes_effectiveness_metrics":false,
+  "changes_finding_attribution":false,
+  "changes_exception_detection":false,
+  "all_unlisted_fields_inherit_original_receipt":true
+}
