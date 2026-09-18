@@ -1,0 +1,123 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M01-20260917T2345Z-001",
+  "stage": "MATERIALIZE_061_090",
+  "logical_rank_range": [
+    61,
+    90
+  ],
+  "microsegment_rank_range": [
+    76,
+    80
+  ],
+  "data_head": "99259f31aad624d6764c47b7dba541c9a392bee5",
+  "complete_state_blob": "172a50084ff3021bf61848352de4d80f1c44112b",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M01-20260917T2345Z-001/r076-080.json",
+    "blob_sha": "4774f61489e9dd47728b01b637d61fa9e73a2e55"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "9ec1347416ac09fb59d9eafec3628e68ac777f6f",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M01-20260917T2345Z-001/r071-075.json",
+    "blob_sha": "7a0c447970141c066aa7982217dd6d7636c3b272"
+  },
+  "applicable_prior_triage_corrections": [
+    {
+      "path": "review-runs/lens-history-v1/automation/receipts/triage/M01-20260917T2345Z-001/corrections/r061-065-c001.json",
+      "blob_sha": "ab3fc8b6eca04a4388d7ceba6b8773d28f9a9793"
+    }
+  ],
+  "source_review": [
+    {
+      "rank": 76,
+      "path": "review-runs/checkpoints/2026-09-14T135726Z__55e54888__checkpoint.md",
+      "source_blob": "c770cc57bfb37ee918805e84142230dd9fa52f80",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve explicit bootstrap kind while treating P0/P1/P2 and finding states as inherited provisional history pending current-run revalidation; listed findings are open review candidates, not new semantic events."
+    },
+    {
+      "rank": 77,
+      "path": "review-runs/checkpoints/2026-09-14__55e54888__f10-completed-wave-reconciliation.md",
+      "source_blob": "5851d043b7c0f70cbd3e62790369dc51470705cc",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve explicit F10 reconciliation: two prior residuals closed, one same-root pre-debt failure frontier remains, count delta 0."
+    },
+    {
+      "rank": 78,
+      "path": "review-runs/checkpoints/2026-09-14__558d692d__completed-review-fix-wave-verdict.md",
+      "source_blob": "4498639fd603a7cf007144457c2167be0d307066",
+      "independent_exception_triggers": [
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_OR_SCOPE_EXPANSION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve combined completed-wave F10/F20 reconciliation, same-root residuals, non-canonical precedence note for the earlier in-progress checkpoint, and zero net blocker-count delta."
+    },
+    {
+      "rank": 79,
+      "path": "review-runs/checkpoints/2026-09-14__558d692d__f20-completed-wave-reconciliation.md",
+      "source_blob": "b8decaa7aa5f6d5095c8b6c2bd60ae4e14d5c106",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve closed document-ID-whitespace subcase, remaining exact-provider-authority scoping residual under the same F20 root, and count delta 0."
+    },
+    {
+      "rank": 80,
+      "path": "review-runs/checkpoints/2026-09-14__558d692d__f10-completed-wave-reconciliation.md",
+      "source_blob": "681f34a72c4a030ac4a9e27acb61e216774065f7",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve completed-result precedence over the in-progress checkpoint and two remaining same-root F10 persistence/recovery residuals with count delta 0."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      76,
+      77,
+      78,
+      79,
+      80
+    ],
+    "materializer_flagged_exception_ranks": [
+      76,
+      77,
+      78,
+      79,
+      80
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
