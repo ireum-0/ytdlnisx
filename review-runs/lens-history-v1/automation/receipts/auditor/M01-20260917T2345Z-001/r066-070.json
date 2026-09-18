@@ -1,0 +1,516 @@
+{
+  "schema_version": "lens-history-v1-auditor-receipt-v2",
+  "run_id": "M01-20260917T2345Z-001",
+  "stage": "MATERIALIZE_061_090",
+  "logical_rank_range": [
+    61,
+    90
+  ],
+  "microsegment_rank_range": [
+    66,
+    70
+  ],
+  "complete_state_blob": "172a50084ff3021bf61848352de4d80f1c44112b",
+  "data_head": "99259f31aad624d6764c47b7dba541c9a392bee5",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "final_triage": {
+    "path": "review-runs/lens-history-v1/automation/triage/M01-20260917T2345Z-001.json",
+    "blob_sha": "ccf702f2c8ddd43569d9033efb3af691e7b5e88a"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M01-20260917T2345Z-001/r066-070.json",
+    "blob_sha": "9ba8f98100c3a3db5f6b21733c2ff0f0c475f9ce"
+  },
+  "materializer_remediations": [
+    {
+      "protocol_blob_sha": "cbb53fda36b75fffbb438d641df722ed90fcb87b",
+      "invalidation_blob_sha": "9bc66232e9cee8908d522ddb6d08310e488184ce",
+      "replacement_blob_sha": "43b372f6d0dd6f028a99f75f839de62a020efc08",
+      "effective_aggregate_overlay_blob_sha": "d2a8cf74c691f6d754e03efe08757ba97ecc257f",
+      "target_rank": 67,
+      "validated": true,
+      "unsafe": false
+    }
+  ],
+  "triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M01-20260917T2345Z-001/r066-070.json",
+    "blob_sha": "d493d5ae8f825c188927fbed2e2af337349a28a6"
+  },
+  "triage_corrections": [
+    {
+      "path": "review-runs/lens-history-v1/automation/receipts/triage/M01-20260917T2345Z-001/corrections/r061-065-c001.json",
+      "blob_sha": "ab3fc8b6eca04a4388d7ceba6b8773d28f9a9793",
+      "validated": true,
+      "semantic_results_changed": false
+    }
+  ],
+  "ledger": {
+    "path": "review-runs/lens-history-v1/ledger-batches/0010-newest-061-070.jsonl",
+    "blob_sha": "5fead1ccb7e4f6c64ae7386f4490bc78a1d8f627"
+  },
+  "official_validation": {
+    "path": "review-runs/lens-history-v1/validation/ledger-batch-0010.json",
+    "blob_sha": "1b4ae1f56749d684fc6bab0af6ef58bf71285944",
+    "status": "PASS"
+  },
+  "previous_auditor_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/auditor/M01-20260917T2345Z-001/r061-065.json",
+    "blob_sha": "30a1ba3af64b6a2cfb0ac753a4dd2d45f9733fda"
+  },
+  "rows": [
+    {
+      "rank": 66,
+      "history_commit": "2f1fc243009b7e419e0aa1d07bda76cd25a83595",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14T153600Z__55e54888__checkpoint.md",
+        "status": "added",
+        "source_blob": "ce2109c7604b01ff42cb78a71bc4868eaeac3d96",
+        "frozen_blob": "ce2109c7604b01ff42cb78a71bc4868eaeac3d96",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "55e54888a0e03c17a4cbdb51817d3ad4336107f4"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "generic checkpoint; source says final checkpoint/verdict remain in scope and commit message/chronology cannot establish kind"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "structural kind is NOT_VERIFIED and no explicit effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 6,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-CLEANUP-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "P2 / OPEN"
+        },
+        "finding_relation": {
+          "state": "DIRECT",
+          "value": "four same-root recovery subcases"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "AMBIGUOUS_KIND",
+          "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATE"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 67,
+      "history_commit": "2e8cf9a940461f94245b40b8e77cf2675e708263",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14T152300Z__55e54888__checkpoint.md",
+        "status": "added",
+        "source_blob": "1c1541ddd52baa0bbf13504c4586540dca313f09",
+        "frozen_blob": "1c1541ddd52baa0bbf13504c4586540dca313f09",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "55e54888a0e03c17a4cbdb51817d3ad4336107f4"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "DIRECT",
+        "value": "BOOTSTRAP"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_APPLICABLE",
+        "reason": "bootstrap checkpoint excluded from cumulative effectiveness"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 7,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "NOT_VERIFIED"
+        },
+        "finding_disposition": {
+          "state": "NOT_VERIFIED"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "materializer_remediation_validation": {
+        "original_receipt_blob_sha": "f04543a60b3867bc44488a05e3236da6ca5d704c",
+        "original_recorded_effectiveness": {
+          "state": "NOT_VERIFIED",
+          "value": "NOT_VERIFIED",
+          "reason": "BOOTSTRAP is not eligible for cumulative effectiveness and no explicit effectiveness payload exists"
+        },
+        "protocol_blob_sha": "cbb53fda36b75fffbb438d641df722ed90fcb87b",
+        "invalidation_blob_sha": "9bc66232e9cee8908d522ddb6d08310e488184ce",
+        "replacement_blob_sha": "43b372f6d0dd6f028a99f75f839de62a020efc08",
+        "effective_aggregate_overlay_blob_sha": "d2a8cf74c691f6d754e03efe08757ba97ecc257f",
+        "effective_value_matches_source_rule": true,
+        "official_ledger_uses_effective_value": true,
+        "original_ancestry_preserved": true
+      },
+      "exception_validation": {
+        "expected": [
+          "PROVISIONAL_COUNTS",
+          "STATUS_BASIS_HISTORICAL_ONLY",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 68,
+      "history_commit": "42e5e4cc0fc397efc3bc55be67afae44dd5764d2",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14__55e54888__scope-recheck-f10-expanded.md",
+        "status": "added",
+        "source_blob": "2c203d93d95c130da4fe1899d067306e4a59910b",
+        "frozen_blob": "2c203d93d95c130da4fe1899d067306e4a59910b",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "55e54888a0e03c17a4cbdb51817d3ad4336107f4"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "DERIVABLE",
+        "value": "SUBSTANTIVE_NON_FINAL",
+        "rule": "lens-history-v1/document-identity-v1"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_APPLICABLE",
+        "reason": "SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness by document-identity-v1"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 8,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-CLEANUP-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "P2 / OPEN"
+        },
+        "finding_relation": {
+          "state": "DIRECT",
+          "value": "scope expansion to four same-root recovery subcases with count delta 0"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "RECONCILIATION_OR_SCOPE_EXPANSION",
+          "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+          "COUNT_RECONCILIATION",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATE"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 69,
+      "history_commit": "37ac6ea5f4c9c19c33b50e605a9cb5ea3c89ebd0",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14T143320Z__55e54888__checkpoint.md",
+        "status": "added",
+        "source_blob": "85025f1a34c900ff6091a05032b86a0cf2761721",
+        "frozen_blob": "85025f1a34c900ff6091a05032b86a0cf2761721",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "55e54888a0e03c17a4cbdb51817d3ad4336107f4"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "DIRECT",
+        "value": "FINAL"
+      },
+      "effectiveness_eligibility": {
+        "state": "DERIVABLE",
+        "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+        "rule": "lens-history-v1/final-only-explicit"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 9,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "NOT_VERIFIED"
+        },
+        "finding_disposition": {
+          "state": "NOT_VERIFIED"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      }
+    },
+    {
+      "rank": 70,
+      "history_commit": "a66eb3c0dbf26641a0ccdbbfd0f9ae0e81beff0b",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-14T143100Z__55e54888__checkpoint.md",
+        "status": "added",
+        "source_blob": "18e967ebb1c9b5efd39ba5ca343f2e88035b390b",
+        "frozen_blob": "18e967ebb1c9b5efd39ba5ca343f2e88035b390b",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "55e54888a0e03c17a4cbdb51817d3ad4336107f4"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "generic checkpoint with remaining review scope; no positive structural kind and commit message/chronology are prohibited"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "structural kind is NOT_VERIFIED and no explicit effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 10,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "NOT_VERIFIED"
+        },
+        "finding_disposition": {
+          "state": "NOT_VERIFIED"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "AMBIGUOUS_KIND",
+          "PROVISIONAL_COUNTS"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    }
+  ],
+  "summary": {
+    "ranks_audited": 5,
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "replay_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0,
+    "expected_exception_ranks": [
+      66,
+      67,
+      68,
+      70
+    ],
+    "independently_observed_exception_ranks": [
+      66,
+      67,
+      68,
+      70
+    ],
+    "missed_exception_count": 0,
+    "status": "PASS"
+  }
+}
