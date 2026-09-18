@@ -925,14 +925,55 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             monthlyAnchorDay = anchorDay,
         ).timeInMillis
 
-        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
+        val authorityCommitAttempts = AtomicInteger(0)
+        CleanupScheduleCoordinator.authorityCommitOverrideForTesting = {
+            authorityCommitAttempts.incrementAndGet()
+            false
+        }
         operation.succeed()
         assertTrue(
             awaitPreference(timeoutMs = 2_000L) {
-                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == generation
+                preferences.getString("cleanup_leftover_downloads_pending_generation", null) == generation &&
+                    authorityCommitAttempts.get() > 0
             }
         )
-        markCurrentEffectConsumed(predecessorAt)
+        val failedPromotionAttempts = authorityCommitAttempts.get()
+        // Stop the promotion-failure replay owner while the test establishes
+        // the exact completed predecessor through the coordinator's effect
+        // phase writer.  The durable pending tuple remains the recovery
+        // carrier; the owner is recreated by the deliberate successor write
+        // failure below.
+        CleanupScheduleCoordinator.resetReplayOwnerForTesting()
+        val effectPhaseCommitAttempts = AtomicInteger(0)
+        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = { editor ->
+            effectPhaseCommitAttempts.incrementAndGet()
+            editor.commit()
+        }
+        val completeJournal = CleanupEffectJournal(
+            generation = generation,
+            cadence = CleanupSchedulePolicy.DAILY,
+            monthlyAnchorDay = anchorDay,
+            occurrenceAt = predecessorAt,
+            cancelledDeletionComplete = true,
+            cancelledRefreshComplete = true,
+            erroredDeletionComplete = true,
+            erroredRefreshComplete = true,
+            tempCleanupRequired = false,
+        )
+        assertTrue(
+            CleanupScheduleCoordinator.seedEffectJournalForTesting(
+                context = context,
+                journal = completeJournal,
+                phase = "consumed",
+            )
+        )
+        assertEquals(1, effectPhaseCommitAttempts.get())
+        assertEquals(
+            "consumed",
+            preferences.getString("cleanup_leftover_downloads_pending_effect_phase", null),
+        )
+        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = null
+        val successorAttemptBaseline = authorityCommitAttempts.get()
         assertFalse(
             CleanupScheduleCoordinator.scheduleSuccessor(
                 context = context,
@@ -942,6 +983,12 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 completedOccurrenceAt = predecessorAt,
             )
         )
+        assertEquals(
+            "the successor publication must reach a new authority commit after predecessor completion",
+            successorAttemptBaseline + 1,
+            authorityCommitAttempts.get(),
+        )
+        assertTrue(authorityCommitAttempts.get() > failedPromotionAttempts)
         assertEquals(
             predecessorAt,
             preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
