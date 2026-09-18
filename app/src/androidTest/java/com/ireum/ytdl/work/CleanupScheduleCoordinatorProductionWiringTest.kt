@@ -2235,6 +2235,14 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
                     navHost.navController.navigate(R.id.folderSettingsFragment)
                     navHost.childFragmentManager.executePendingTransactions()
+                }
+                awaitSettingsUiReady(
+                    scenario,
+                    destinationId = R.id.folderSettingsFragment,
+                )
+                scenario.onActivity { activity ->
+                    val navHost = activity.supportFragmentManager
+                        .findFragmentById(R.id.frame_layout) as NavHostFragment
                     val fragment = navHost.childFragmentManager.primaryNavigationFragment
                         as FolderSettingsFragment
                     fragment.findPreference<androidx.preference.Preference>("reset_preferences")
@@ -2331,6 +2339,14 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
                     navHost.navController.navigate(R.id.folderSettingsFragment)
                     navHost.childFragmentManager.executePendingTransactions()
+                }
+                awaitSettingsUiReady(
+                    scenario,
+                    destinationId = R.id.folderSettingsFragment,
+                )
+                scenario.onActivity { activity ->
+                    val navHost = activity.supportFragmentManager
+                        .findFragmentById(R.id.frame_layout) as NavHostFragment
                     val fragment = navHost.childFragmentManager.primaryNavigationFragment
                         as FolderSettingsFragment
                     fragment.findPreference<androidx.preference.Preference>("reset_preferences")
@@ -2428,6 +2444,14 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
                     navHost.navController.navigate(R.id.folderSettingsFragment)
                     navHost.childFragmentManager.executePendingTransactions()
+                }
+                awaitSettingsUiReady(
+                    scenario,
+                    destinationId = R.id.folderSettingsFragment,
+                )
+                scenario.onActivity { activity ->
+                    val navHost = activity.supportFragmentManager
+                        .findFragmentById(R.id.frame_layout) as NavHostFragment
                     val fragment = navHost.childFragmentManager.primaryNavigationFragment
                         as FolderSettingsFragment
                     fragment.findPreference<androidx.preference.Preference>("reset_preferences")
@@ -3293,6 +3317,14 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     .findFragmentById(R.id.frame_layout) as NavHostFragment
                 navHost.navController.navigate(R.id.downloadSettingsFragment)
                 navHost.childFragmentManager.executePendingTransactions()
+            }
+            awaitSettingsUiReady(
+                scenario,
+                destinationId = R.id.downloadSettingsFragment,
+            )
+            scenario.onActivity { activity ->
+                val navHost = activity.supportFragmentManager
+                    .findFragmentById(R.id.frame_layout) as NavHostFragment
                 val fragment = navHost.childFragmentManager.primaryNavigationFragment
                     as DownloadSettingsFragment
                 fragment.findPreference<androidx.preference.Preference>("reset_preferences")
@@ -3344,6 +3376,14 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     .findFragmentById(R.id.frame_layout) as NavHostFragment
                 navHost.navController.navigate(R.id.downloadSettingsFragment)
                 navHost.childFragmentManager.executePendingTransactions()
+            }
+            awaitSettingsUiReady(
+                scenario,
+                destinationId = R.id.downloadSettingsFragment,
+            )
+            scenario.onActivity { activity ->
+                val navHost = activity.supportFragmentManager
+                    .findFragmentById(R.id.frame_layout) as NavHostFragment
                 val fragment = navHost.childFragmentManager.primaryNavigationFragment
                     as DownloadSettingsFragment
                 fragment.findPreference<androidx.preference.Preference>("reset_preferences")
@@ -3934,7 +3974,8 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                             activityReady =
                                 activity.lifecycle.currentState == Lifecycle.State.RESUMED &&
                                     activity.window.decorView.isShown &&
-                                    activity.window.decorView.hasWindowFocus()
+                                    (dialogTextResId != null ||
+                                        activity.window.decorView.hasWindowFocus())
                             currentDestination = navHost?.navController?.currentDestination?.id
                         }
                     }
