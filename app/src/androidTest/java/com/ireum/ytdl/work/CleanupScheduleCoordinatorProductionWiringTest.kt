@@ -999,7 +999,18 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         // Model the predecessor no longer being discoverable.  The replay
         // owner must advance the exact successor rather than selecting the
         // stale predecessor tuple merely because its clear commit failed.
-        CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = { emptyList() }
+        val predecessorTag = occurrenceTag(generation, predecessorAt)
+        val successorTag = occurrenceTag(generation, expectedSuccessorAt)
+        CleanupScheduleCoordinator.workInfoQueryOverrideForTesting = {
+            // Keep real unique-work discovery enabled and hide only the old
+            // predecessor.  The successor created by recovery, and any
+            // unrelated current work, must remain observable to the
+            // coordinator.
+            workManager.getWorkInfosForUniqueWork(
+                CleanupScheduleCoordinator.WORK_NAME,
+            ).get(WORK_MANAGER_QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+                .filterNot { info -> info.tags.contains(predecessorTag) }
+        }
 
         assertTrue(
             awaitPreference(timeoutMs = 5_000L) {
@@ -1007,10 +1018,33 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     preferences.getLong("cleanup_leftover_downloads_active_occurrence_at", -1L) == expectedSuccessorAt
             }
         )
-        val current = unfinishedCurrentWork()
-        assertEquals(1, current.size)
-        assertTrue(current.single().tags.contains(occurrenceTag(generation, expectedSuccessorAt)))
-        assertTrue(current.single().tags.none { it.contains("_$predecessorAt") })
+        fun isUnfinished(info: WorkInfo): Boolean =
+            info.state == WorkInfo.State.ENQUEUED ||
+                info.state == WorkInfo.State.RUNNING ||
+                info.state == WorkInfo.State.BLOCKED
+        val current = awaitWork(timeoutMs = 10_000L) { infos ->
+            val unfinishedSuccessors = infos.filter { info ->
+                isUnfinished(info) && info.tags.contains(successorTag)
+            }
+            val unfinishedPredecessors = infos.filter { info ->
+                isUnfinished(info) && info.tags.contains(predecessorTag)
+            }
+            unfinishedSuccessors.size == 1 && unfinishedPredecessors.isEmpty()
+        }
+        val unfinishedSuccessors = current.filter { info ->
+            isUnfinished(info) && info.tags.contains(successorTag)
+        }
+        assertEquals(1, unfinishedSuccessors.size)
+        assertTrue(
+            unfinishedSuccessors.single().state == WorkInfo.State.ENQUEUED ||
+                unfinishedSuccessors.single().state == WorkInfo.State.RUNNING ||
+                unfinishedSuccessors.single().state == WorkInfo.State.BLOCKED,
+        )
+        assertTrue(
+            current.none { info ->
+                isUnfinished(info) && info.tags.contains(predecessorTag)
+            },
+        )
     }
 
     @Test
