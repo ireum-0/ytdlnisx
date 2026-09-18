@@ -1,0 +1,108 @@
+{
+  "schema_version":"lens-history-v1-materializer-rank-receipt-v1",
+  "run_id":"M01-20260917T2345Z-001",
+  "stage":"MATERIALIZE_061_090",
+  "logical_rank_range":[61,90],
+  "rank":72,
+  "materializer_state_blob":"1ec31076b8be849fb6759ecd0a2c979ab4d9dd75",
+  "governing_pins":{
+    "frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob":"18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "previous_rank_receipt":{
+    "path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r071.json",
+    "blob_sha":"8885e8eaa2834e566bc53e1f05f910a3df08f2bc"
+  },
+  "history":{
+    "commit_sha":"fc2df021ed3efd4f2727f7d9d8392910cc9ee8b5",
+    "resolution":"exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=72"
+  },
+  "changed_file_enumeration":{
+    "per_page":1,
+    "pages_checked":[1,2],
+    "closure_page":2,
+    "closure_proof":"files: []",
+    "complete":true,
+    "files":[{
+      "file_page":1,
+      "path":"review-runs/checkpoints/2026-09-14__55e54888__f20-completed-wave-reconciliation.md",
+      "status":"added",
+      "source_blob_sha":"8bce131e151985f8584b50cf209a0e83b575e253",
+      "checkpoint_path":true,
+      "frozen_presence":true,
+      "frozen_blob_sha":"8bce131e151985f8584b50cf209a0e83b575e253",
+      "source_frozen_match":true
+    }]
+  },
+  "checkpoint":{
+    "path":"review-runs/checkpoints/2026-09-14__55e54888__f20-completed-wave-reconciliation.md",
+    "status":"added",
+    "source_blob_sha":"8bce131e151985f8584b50cf209a0e83b575e253",
+    "frozen_blob_sha":"8bce131e151985f8584b50cf209a0e83b575e253",
+    "source_frozen_match":true,
+    "implementation_sha":{
+      "state":"DIRECT",
+      "value":"55e54888a0e03c17a4cbdb51817d3ad4336107f4",
+      "evidence":"explicit Exact implementation HEAD"
+    },
+    "schema_class":"UNINSTRUMENTED",
+    "kind":{
+      "state":"DERIVABLE",
+      "value":"SUBSTANTIVE_NON_FINAL",
+      "rule":"lens-history-v1/document-identity-v1",
+      "reason":"the exact source positively identifies itself as an F20 reconciliation, records finding/status/count reconciliation, and does not claim to be the final checkpoint/verdict for the review run",
+      "evidence":"title: F20 completed-wave reconciliation at 55e54888; body explicitly records Finding, Verdict, Count delta, Verification gate, and Canonical consequence"
+    },
+    "effectiveness_eligibility":{
+      "state":"NOT_APPLICABLE",
+      "reason":"SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness by document-identity-v1"
+    },
+    "raw_audit_lens":{"state":"NOT_VERIFIED"},
+    "primary_deep_lens":{"state":"NOT_VERIFIED"},
+    "lens_selection_reason":{"state":"NOT_VERIFIED"},
+    "lens_coverage_current_sha":{"state":"NOT_VERIFIED"},
+    "effectiveness":{},
+    "finding_attribution":{
+      "finding_id":{"state":"DIRECT","value":"BUG-LOCALADD-01"},
+      "finding_disposition":{"state":"DIRECT","value":"SOURCE-FIXED / EXECUTION-NOT-VERIFIED / NOT CANONICALLY CLOSED; existing P2"},
+      "finding_relation":{"state":"DIRECT","value":"source semantics fixed, canonical closure withheld because production-wiring execution was not performed; count delta 0"},
+      "modern_primary_detecting_lens":{"state":"NOT_VERIFIED"}
+    },
+    "not_verified_candidates":{
+      "state":"DIRECT",
+      "items":[
+        "HistoryFileDeletion.kt authority-lowercasing deletion observation remains a candidate pending reconciliation with existing deletion finding inventory"
+      ]
+    }
+  },
+  "factual_exception_triggers":[
+    {
+      "type":"RECONCILIATION_OR_SCOPE_EXPANSION",
+      "finding_id":"BUG-LOCALADD-01",
+      "evidence":"source is an explicit F20 completed-wave reconciliation with canonical consequence"
+    },
+    {
+      "type":"CONTRADICTORY_STATUS_LABELING",
+      "finding_id":"BUG-LOCALADD-01",
+      "evidence":"source labels the root SOURCE-FIXED while also EXECUTION-NOT-VERIFIED / NOT CANONICALLY CLOSED and keeps the existing P2; preserve semantic nuance without resolving canonical status"
+    },
+    {
+      "type":"COUNT_RECONCILIATION",
+      "finding_id":"BUG-LOCALADD-01",
+      "evidence":"source explicitly records Count delta 0 and says canonical blocker count does not decrease"
+    },
+    {
+      "type":"NOT_VERIFIED_SEMANTIC_CANDIDATE",
+      "evidence":"HistoryFileDeletion.kt authority-normalization observation is explicitly outside F20 scope and requires root reconciliation before any count change"
+    }
+  ],
+  "materialization":{
+    "replay_comparison":{"state":"NOT_APPLICABLE","reason":"new materialization range"},
+    "official_outputs_deferred":true
+  }
+}
