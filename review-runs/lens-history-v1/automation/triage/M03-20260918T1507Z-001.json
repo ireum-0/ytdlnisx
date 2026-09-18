@@ -1,0 +1,248 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M03-20260918T1507Z-001",
+  "stage": "MATERIALIZE_121_150",
+  "logical_rank_range": [
+    121,
+    150
+  ],
+  "data_head": "4a8010b3a3ce12c48cd4ad09bfe2949bceed58e1",
+  "complete_state_blob": "fad41c56a65064ccb21bece23d05c8e84a51ad37",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "022ba25d13353a4b739be1410e59f82dc42f55bc",
+    "bcaa75f8d1e8b016040184d89cf724d44e301223",
+    "46cc172ff7a9854996f2dd2ff5d97d9e6e17042b",
+    "75a29b4b091ac19447e61934c7c4ae6e1947254f",
+    "93493bd639e6d6371f8d9cc5ae6fab56369081ae",
+    "d493474e9c5a6307c39ef288026f964d499d1706"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M03-20260918T1507Z-001-materialization-121-150.json",
+    "blob_sha": "fadbc54a7ea09006b75750db1eee62491da96e3d",
+    "status": "PASS"
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        121,
+        125
+      ],
+      "blob_sha": "5655ec961c9a511b8389d814f139334ad706e40f"
+    },
+    {
+      "range": [
+        126,
+        130
+      ],
+      "blob_sha": "20bcbcf55dc7860074e6997021f36f3364e9ed01"
+    },
+    {
+      "range": [
+        131,
+        135
+      ],
+      "blob_sha": "e7f55146714a3772b997adac4fe8299061aec44f"
+    },
+    {
+      "range": [
+        136,
+        140
+      ],
+      "blob_sha": "2dce62ec4e79bf19636ba3cc224be3adc3366ea5"
+    },
+    {
+      "range": [
+        141,
+        145
+      ],
+      "blob_sha": "b6f7abefb46803b1177ecfb3aea3e8e6f8c40c2c"
+    },
+    {
+      "range": [
+        146,
+        150
+      ],
+      "blob_sha": "c3c83a2334ff62414b6250edd30550618edf68d2"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "3d8712ce1e266234cbed13dfe88361aa8bd37bac",
+  "materializer_exception_rank_count": 30,
+  "independent_exception_ranks": [
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150
+  ],
+  "independent_exception_rank_count": 30,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "human_review_packets": [
+    {
+      "topic": "generic checkpoint kind ambiguity",
+      "ranks": [
+        121,
+        124,
+        128,
+        129,
+        141,
+        142,
+        144,
+        145,
+        147,
+        148,
+        150
+      ],
+      "required_decision": "Preserve NOT_VERIFIED structural kind whenever exact source does not positively establish a supported structural identity; do not infer kind from filename, commit message, chronology, or generic review wording."
+    },
+    {
+      "topic": "F10/F16/F17 source-level status and reconciliation semantics",
+      "ranks": [
+        122,
+        123,
+        125,
+        126,
+        127,
+        128,
+        129,
+        130,
+        131,
+        132,
+        133,
+        134,
+        135,
+        137,
+        138,
+        140,
+        141,
+        143,
+        144,
+        146,
+        147,
+        149,
+        150
+      ],
+      "required_decision": "Preserve source-semantic FIXED, exact-SHA execution NOT_VERIFIED, canonical OPEN/CLOSED distinctions, same-root residual replacements, later closure reconciliations, and count deltas exactly where source supports them; do not propagate a later status backward or invent a new root."
+    },
+    {
+      "topic": "provisional, historical-only, and unresolved semantic evidence",
+      "ranks": [
+        121,
+        122,
+        123,
+        124,
+        126,
+        127,
+        128,
+        129,
+        134,
+        135,
+        136,
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147,
+        148,
+        149,
+        150
+      ],
+      "required_decision": "Treat provisional blocker counts, historical carry-forward status, and NOT_VERIFIED candidates as contextual evidence only; do not convert them into deterministic current status or numeric lens effectiveness."
+    },
+    {
+      "topic": "existing F21/F22 exact-basis reconciliations",
+      "ranks": [
+        125,
+        126
+      ],
+      "required_decision": "Preserve BUG-QUEUE-01 and BUG-PLAYER-01 as existing roots with count delta 0 and their exact-basis/source semantics; surrounding blocker-count reconciliation must not be mistaken for a root disposition change."
+    },
+    {
+      "topic": "Observe ordinary-generation fencing",
+      "ranks": [
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        130,
+        131,
+        132,
+        133,
+        134,
+        135,
+        136,
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147,
+        148,
+        149,
+        150
+      ],
+      "required_decision": "Where mentioned, preserve BUG-OBSERVE-HANDOFF-01 as an existing P0 OPEN path unless exact source explicitly proves otherwise; do not infer configuration-generation fencing from WorkManager cancellation or handoff-only fingerprint checks."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_121_150": true,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
