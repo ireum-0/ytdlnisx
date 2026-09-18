@@ -1,6 +1,6 @@
 {
   "schema_version": "lens-history-v1-automation-state-v3",
-  "status": "ACTIVE",
+  "status": "COMPLETE",
   "run_id": "M01-20260917T2345Z-001",
   "started_at": "2026-09-17T23:45:00Z",
   "stage": "MATERIALIZE_061_090",
@@ -175,10 +175,79 @@
   ],
   "resume_safe": true,
   "materialization_outputs": {
-    "official_inventory_written": false,
-    "official_ledger_written": false,
-    "official_validation_written": false,
-    "progress_counter_changed": false
+    "official_inventory_written": true,
+    "official_ledger_written": true,
+    "official_validation_written": true,
+    "progress_counter_changed": true,
+    "batches": [
+      {
+        "range": [
+          61,
+          70
+        ],
+        "inventory": {
+          "path": "review-runs/lens-history-v1/inventory-batches/0010-newest-061-070.jsonl",
+          "blob_sha": "9e035b177127855ef748f9131892237bf2226a2b"
+        },
+        "ledger": {
+          "path": "review-runs/lens-history-v1/ledger-batches/0010-newest-061-070.jsonl",
+          "blob_sha": "5fead1ccb7e4f6c64ae7386f4490bc78a1d8f627"
+        },
+        "validation": {
+          "path": "review-runs/lens-history-v1/validation/ledger-batch-0010.json",
+          "blob_sha": "1b4ae1f56749d684fc6bab0af6ef58bf71285944",
+          "status": "PASS"
+        }
+      },
+      {
+        "range": [
+          71,
+          80
+        ],
+        "inventory": {
+          "path": "review-runs/lens-history-v1/inventory-batches/0011-newest-071-080.jsonl",
+          "blob_sha": "5d850984c058f786a928e955c569ec2fcfa3f92f"
+        },
+        "ledger": {
+          "path": "review-runs/lens-history-v1/ledger-batches/0011-newest-071-080.jsonl",
+          "blob_sha": "10c3707cf6a2bbfdc1614a7c96a0bca8e0c0ca86"
+        },
+        "validation": {
+          "path": "review-runs/lens-history-v1/validation/ledger-batch-0011.json",
+          "blob_sha": "72efe24c4496c26c7b2d9f1782cce10b818fdfac",
+          "status": "PASS"
+        }
+      },
+      {
+        "range": [
+          81,
+          90
+        ],
+        "inventory": {
+          "path": "review-runs/lens-history-v1/inventory-batches/0012-newest-081-090.jsonl",
+          "blob_sha": "b430be9f60627bf7fb872de992b2d267be3ffead"
+        },
+        "ledger": {
+          "path": "review-runs/lens-history-v1/ledger-batches/0012-newest-081-090.jsonl",
+          "blob_sha": "eb42c592a99ea10a68f72b9a806b4001d22cb1ca"
+        },
+        "validation": {
+          "path": "review-runs/lens-history-v1/validation/ledger-batch-0012.json",
+          "blob_sha": "36b42360ebe5bd0a6064ba536f7497b0875a6cfd",
+          "status": "PASS"
+        }
+      }
+    ],
+    "progress": {
+      "path": "review-runs/lens-history-v1/materialization-progress.json",
+      "start_blob_sha": "18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+      "completed_blob_sha": "4858e924ca5ca5ac3dd14b26d17b10499edcdef7",
+      "history_entries_before": 60,
+      "history_entries_after": 90,
+      "records_before": 60,
+      "records_after": 90,
+      "newest_history_rank_materialized_through": 90
+    }
   },
   "stability": {
     "consecutive_clean_30_materialization_batches": 0,
@@ -187,6 +256,26 @@
     "hold_or_anomaly_occurred": true,
     "adaptive_size_streak_eligible": false
   },
-  "requires_triage": false,
-  "requires_audit": false
+  "requires_triage": true,
+  "requires_audit": true,
+  "completed_at": "2026-09-18T04:48:34Z",
+  "data_head": "99259f31aad624d6764c47b7dba541c9a392bee5",
+  "exception_queue": {
+    "path": "review-runs/lens-history-v1/automation/exceptions/M01-20260917T2345Z-001.jsonl",
+    "blob_sha": "9ec1347416ac09fb59d9eafec3628e68ac777f6f",
+    "exception_rank_count": 26
+  },
+  "validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M01-20260917T2345Z-001-materialization-061-090.json",
+    "blob_sha": "844525bbe152f439c2a40a031caf25ef7e85ef38",
+    "status": "PASS",
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches_after_effective_remediation": 0,
+    "official_ledger_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0
+  }
 }
