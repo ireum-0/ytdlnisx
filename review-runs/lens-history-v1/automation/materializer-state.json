@@ -1,6 +1,6 @@
 {
   "schema_version": "lens-history-v1-automation-state-v3",
-  "status": "HOLD",
+  "status": "ACTIVE",
   "run_id": "M01-20260917T2345Z-001",
   "started_at": "2026-09-17T23:45:00Z",
   "stage": "MATERIALIZE_061_090",
@@ -46,7 +46,13 @@
       ],
       "path": "review-runs/lens-history-v1/automation/receipts/materializer/M01-20260917T2345Z-001/r066-070.json",
       "blob_sha": "9ba8f98100c3a3db5f6b21733c2ff0f0c475f9ce",
-      "corrections": []
+      "corrections": [],
+      "remediations": [
+        {
+          "effective_overlay_path": "review-runs/lens-history-v1/automation/remediation/materializer/M01-20260917T2345Z-001/r066-070-effective-001.json",
+          "effective_overlay_blob_sha": "d2a8cf74c691f6d754e03efe08757ba97ecc257f"
+        }
+      ]
     },
     {
       "range": [
@@ -70,6 +76,47 @@
     }
   },
   "corrections": [],
+  "materializer_remediations": [
+    {
+      "remediation_protocol": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v1.md",
+        "blob_sha": "cbb53fda36b75fffbb438d641df722ed90fcb87b"
+      },
+      "field_invalidation": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M01-20260917T2345Z-001/r067-effectiveness-invalidation-001.json",
+        "blob_sha": "9bc66232e9cee8908d522ddb6d08310e488184ce"
+      },
+      "field_replacement": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M01-20260917T2345Z-001/r067-effectiveness-replacement-001.json",
+        "blob_sha": "43b372f6d0dd6f028a99f75f839de62a020efc08"
+      },
+      "effective_aggregate": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M01-20260917T2345Z-001/r066-070-effective-001.json",
+        "blob_sha": "d2a8cf74c691f6d754e03efe08757ba97ecc257f"
+      },
+      "effective_change": {
+        "rank": 67,
+        "field": "checkpoint.effectiveness_eligibility",
+        "original_value": {
+          "state": "NOT_VERIFIED",
+          "value": "NOT_VERIFIED"
+        },
+        "effective_value": {
+          "state": "NOT_APPLICABLE",
+          "reason": "bootstrap checkpoint excluded from cumulative effectiveness"
+        }
+      }
+    }
+  ],
+  "hold_resolution": {
+    "prior_hold_state_blob": "def09ef1dc0712b1350b82b9c3418eec56f4710e",
+    "prior_hold_commit": "29927fc4c79cb5bccd62b019e25d355f008d3be8",
+    "prior_hold_class": "DETERMINISTIC_CLASSIFICATION_MISMATCH",
+    "remediation_chain_head": "94a3ce3cbe627b122f0913067ded9fd9769bd86b",
+    "resolution": "append-only field invalidation + replacement overlay + effective aggregate overlay",
+    "original_artifacts_rewritten": false,
+    "original_ancestry_anchors_preserved": true
+  },
   "next_rank": 76,
   "in_progress_exception_ranks": [
     61,
@@ -84,32 +131,7 @@
     74,
     75
   ],
-  "hold_class": "DETERMINISTIC_CLASSIFICATION_MISMATCH",
-  "resume_safe": false,
-  "hold_evidence": {
-    "receipt_path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r067.json",
-    "receipt_blob_sha": "f04543a60b3867bc44488a05e3236da6ca5d704c",
-    "aggregate_path": "review-runs/lens-history-v1/automation/receipts/materializer/M01-20260917T2345Z-001/r066-070.json",
-    "aggregate_blob_sha": "9ba8f98100c3a3db5f6b21733c2ff0f0c475f9ce",
-    "recorded_kind": {
-      "state": "DIRECT",
-      "value": "BOOTSTRAP"
-    },
-    "recorded_effectiveness_eligibility": {
-      "state": "NOT_VERIFIED",
-      "value": "NOT_VERIFIED"
-    },
-    "protocol_expected_effectiveness_eligibility": {
-      "state": "NOT_APPLICABLE",
-      "reason": "bootstrap checkpoint excluded from cumulative effectiveness"
-    },
-    "comparison_basis": [
-      "README field policy: cumulative contribution of bootstrap/intermediate records is NOT_APPLICABLE",
-      "PASS-audited R0B bootstrap receipts r033/r051/r055/r058 all record effectiveness_eligibility NOT_APPLICABLE"
-    ],
-    "immutable_receipt_constraint": "r067 and aggregate r066-070 must not be overwritten, deleted, or silently reclassified"
-  },
-  "hold_note": "Materialization is stopped before rank 76 because sealed M01 r067 deterministically identifies BOOTSTRAP but records effectiveness_eligibility as NOT_VERIFIED. This conflicts with the governing bootstrap/intermediate exclusion rule and prior PASS-audited bootstrap receipts. Current protocol permits no substantive effectiveness correction to an immutable Materializer receipt. Resume requires an explicit append-only remediation/invalidation-and-replacement protocol or another authoritative resolution that preserves immutable history.",
+  "resume_safe": true,
   "materialization_outputs": {
     "official_inventory_written": false,
     "official_ledger_written": false,
@@ -120,6 +142,7 @@
     "consecutive_clean_30_materialization_batches": 0,
     "consecutive_clean_40_materialization_batches": 0,
     "retryable_pause_occurred": false,
+    "hold_or_anomaly_occurred": true,
     "adaptive_size_streak_eligible": false
   },
   "requires_triage": false,
