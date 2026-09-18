@@ -3,13 +3,16 @@ package com.ireum.ytdl.work
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.view.accessibility.AccessibilityWindowInfo
 import com.google.gson.Gson
 import androidx.test.core.app.ActivityScenario
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.preference.PreferenceManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.work.BackoffPolicy
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.action.ViewActions.click
@@ -81,6 +84,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         const val WORK_MANAGER_QUERY_TIMEOUT_MILLIS = 1_000L
         const val WORK_POLL_INTERVAL_MILLIS = 50L
         const val WORKER_WAIT_TIMEOUT_MILLIS = 90_000L
+        const val SETTINGS_UI_READY_TIMEOUT_MILLIS = 20_000L
     }
 
     private lateinit var context: Context
@@ -2226,6 +2230,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
             val scenario = ActivityScenario.launch(SettingsActivity::class.java)
             try {
+                awaitSettingsUiReady(scenario)
                 scenario.onActivity { activity ->
                     val navHost = activity.supportFragmentManager
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -2236,6 +2241,11 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     fragment.findPreference<androidx.preference.Preference>("reset_preferences")
                         ?.performClick()
                 }
+                awaitSettingsUiReady(
+                    scenario,
+                    destinationId = R.id.folderSettingsFragment,
+                    dialogTextResId = R.string.continue_anyway,
+                )
                 onView(withText(R.string.continue_anyway)).perform(click())
 
                 assertTrue(
@@ -2317,6 +2327,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
             val scenario = ActivityScenario.launch(SettingsActivity::class.java)
             try {
+                awaitSettingsUiReady(scenario)
                 scenario.onActivity { activity ->
                     val navHost = activity.supportFragmentManager
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -2327,6 +2338,11 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     fragment.findPreference<androidx.preference.Preference>("reset_preferences")
                         ?.performClick()
                 }
+                awaitSettingsUiReady(
+                    scenario,
+                    destinationId = R.id.folderSettingsFragment,
+                    dialogTextResId = R.string.continue_anyway,
+                )
                 onView(withText(R.string.continue_anyway)).perform(click())
                 assertTrue(
                     awaitPreference(timeoutMs = 10_000L) {
@@ -2409,6 +2425,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
             val scenario = ActivityScenario.launch(SettingsActivity::class.java)
             try {
+                awaitSettingsUiReady(scenario)
                 scenario.onActivity { activity ->
                     val navHost = activity.supportFragmentManager
                         .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -2419,6 +2436,11 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     fragment.findPreference<androidx.preference.Preference>("reset_preferences")
                         ?.performClick()
                 }
+                awaitSettingsUiReady(
+                    scenario,
+                    destinationId = R.id.folderSettingsFragment,
+                    dialogTextResId = R.string.continue_anyway,
+                )
                 onView(withText(R.string.continue_anyway)).perform(click())
                 assertEquals(
                     rootOne.absolutePath,
@@ -3269,6 +3291,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         val scenario = ActivityScenario.launch(SettingsActivity::class.java)
         try {
+            awaitSettingsUiReady(scenario)
             scenario.onActivity { activity ->
                 val navHost = activity.supportFragmentManager
                     .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -3279,6 +3302,11 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 fragment.findPreference<androidx.preference.Preference>("reset_preferences")
                     ?.performClick()
             }
+            awaitSettingsUiReady(
+                scenario,
+                destinationId = R.id.downloadSettingsFragment,
+                dialogTextResId = R.string.continue_anyway,
+            )
             onView(withText(R.string.continue_anyway)).perform(click())
 
             assertTrue(
@@ -3315,6 +3343,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         val scenario = ActivityScenario.launch(SettingsActivity::class.java)
         try {
+            awaitSettingsUiReady(scenario)
             scenario.onActivity { activity ->
                 val navHost = activity.supportFragmentManager
                     .findFragmentById(R.id.frame_layout) as NavHostFragment
@@ -3325,6 +3354,11 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                 fragment.findPreference<androidx.preference.Preference>("reset_preferences")
                     ?.performClick()
             }
+            awaitSettingsUiReady(
+                scenario,
+                destinationId = R.id.downloadSettingsFragment,
+                dialogTextResId = R.string.continue_anyway,
+            )
             onView(withText(R.string.continue_anyway)).perform(click())
 
             val releaseSignaledBeforeAssertion =
@@ -3885,6 +3919,66 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         cancelAllWorkAndAwaitIdle()
         awaitCleanupCancellationQuiescence()
     }
+
+    private suspend fun awaitSettingsUiReady(
+        scenario: ActivityScenario<SettingsActivity>,
+        destinationId: Int? = null,
+        dialogTextResId: Int? = null,
+    ) {
+        val ready = withTimeoutOrNull(SETTINGS_UI_READY_TIMEOUT_MILLIS) {
+            var ready = false
+            while (!ready) {
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                var activityReady = false
+                var currentDestination: Int? = null
+                runCatching {
+                    if (scenario.state == Lifecycle.State.RESUMED) {
+                        scenario.onActivity { activity ->
+                            val navHost = activity.supportFragmentManager
+                                .findFragmentById(R.id.frame_layout) as? NavHostFragment
+                            activityReady =
+                                activity.lifecycle.currentState == Lifecycle.State.RESUMED &&
+                                    activity.window.decorView.isShown &&
+                                    activity.window.decorView.hasWindowFocus()
+                            currentDestination = navHost?.navController?.currentDestination?.id
+                        }
+                    }
+                }
+
+                val focusedWindow = focusedApplicationWindow()
+                val destinationReady = destinationId == null || currentDestination == destinationId
+                val dialogReady = dialogTextResId == null || focusedWindow?.root
+                    ?.findAccessibilityNodeInfosByText(
+                        context.getString(dialogTextResId),
+                    )
+                    .orEmpty()
+                    .any { node -> node.isVisibleToUser }
+
+                ready = activityReady && focusedWindow != null && destinationReady && dialogReady
+                if (!ready) {
+                    delay(WORK_POLL_INTERVAL_MILLIS)
+                }
+            }
+            awaitMainLooperIdle()
+            true
+        } ?: false
+
+        if (!ready) {
+            val state = runCatching { scenario.state }.getOrNull()
+            throw AssertionError(
+                "Timed out waiting for focused SettingsActivity UI: " +
+                    "state=$state, destination=$destinationId, dialogTextResId=$dialogTextResId",
+            )
+        }
+    }
+
+    private fun focusedApplicationWindow(): AccessibilityWindowInfo? =
+        InstrumentationRegistry.getInstrumentation().uiAutomation.windows
+            .firstOrNull { window ->
+                window.isFocused && runCatching {
+                    window.root?.packageName?.toString() == context.packageName
+                }.getOrDefault(false)
+            }
 
     private suspend fun awaitCleanupCancellationQuiescence() {
         // configure(null) deliberately exposes no synchronous cancellation
