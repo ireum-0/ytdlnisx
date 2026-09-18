@@ -2351,8 +2351,12 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         val occurrenceAt = currentScheduledOccurrenceAt()
         workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
         val phaseCommitAttempts = AtomicInteger(0)
-        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = {
-            phaseCommitAttempts.getAndIncrement() > 0
+        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = { editor ->
+            if (phaseCommitAttempts.getAndIncrement() == 0) {
+                false
+            } else {
+                editor.commit()
+            }
         }
 
         val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
@@ -2391,8 +2395,12 @@ class CleanupScheduleCoordinatorProductionWiringTest {
 
         val phaseCommitAttempts = AtomicInteger(0)
         CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = true
-        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = {
-            phaseCommitAttempts.getAndIncrement() > 0
+        CleanupScheduleCoordinator.effectPhaseCommitOverrideForTesting = { editor ->
+            if (phaseCommitAttempts.getAndIncrement() == 0) {
+                false
+            } else {
+                editor.commit()
+            }
         }
 
         val request = enqueueOccurrenceRequest(generation, anchorDay, occurrenceAt)
