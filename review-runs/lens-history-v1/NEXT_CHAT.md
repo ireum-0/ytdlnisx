@@ -136,6 +136,30 @@ If necessary, temporarily disable the role that would conflict, perform the seri
 
 ---
 
+## Append-only Materializer remediation
+
+If live `materializer-state.json` contains `materializer_remediations` or a completed microsegment contains a `remediations` binding, those artifacts are part of the authoritative current state and MUST be fresh-fetched before semantic comparison.
+
+The current remediation protocol lives on the live branch at:
+
+`review-runs/lens-history-v1/automation/remediation/materializer-remediation-v1.md`
+
+Its purpose is narrow: repair a deterministic `checkpoint.effectiveness_eligibility` defect in an already sealed immutable Materializer receipt without rewriting that receipt or its aggregate.
+
+For a valid bound remediation:
+
+- original rank/aggregate blobs remain immutable Git ancestry anchors;
+- later `previous_rank_receipt` bindings continue to validate against the original blobs;
+- semantic consumers apply the append-only field-replacement overlay;
+- the effective aggregate overlay binds the original aggregate plus the field remediation;
+- all remediation protocol / invalidation / replacement / effective-overlay blobs must match the exact blobs named by live state;
+- Triage and Auditor must compare against the effective semantic view while independently preserving and validating the original immutable chain;
+- do not silently generalize this mechanism to checkpoint kind, findings, attribution, metrics, exceptions, provenance, or source/frozen identity.
+
+A HOLD caused by a deterministic sealed-receipt mismatch may be released only when live state explicitly binds a valid remediation chain and records the prior HOLD state. If the live remediation artifacts do not satisfy their protocol, remain fail-closed.
+
+---
+
 ## Completed replay anchor
 
 The prior replay run is complete and certified:
