@@ -1,0 +1,108 @@
+{
+  "schema_version":"lens-history-v1-materializer-rank-receipt-v1",
+  "run_id":"M01-20260917T2345Z-001",
+  "stage":"MATERIALIZE_061_090",
+  "logical_rank_range":[61,90],
+  "rank":86,
+  "materializer_state_blob":"1986b0b3bf3c2f04d26c717195bc418b4e3055e7",
+  "governing_pins":{
+    "frozen_snapshot_sha":"25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha":"bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha":"b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha":"982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha":"531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha":"8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob":"18caf474c3c6ab1cb54ff9c66620b2fc9a6077e8",
+  "applicable_materializer_remediations":[
+    {
+      "effective_aggregate_path":"review-runs/lens-history-v1/automation/remediation/materializer/M01-20260917T2345Z-001/r066-070-effective-001.json",
+      "effective_aggregate_blob_sha":"d2a8cf74c691f6d754e03efe08757ba97ecc257f"
+    }
+  ],
+  "previous_rank_receipt":{
+    "path":"review-runs/lens-history-v1/automation/receipts/materializer-rank/M01-20260917T2345Z-001/r085.json",
+    "blob_sha":"962b7e52a63751787daa73316d2ac8acc29fd4b4"
+  },
+  "history":{
+    "commit_sha":"034a2c7450f8af9c1c535e705578c8e259ff1818",
+    "resolution":"exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=86"
+  },
+  "changed_file_enumeration":{
+    "per_page":1,
+    "pages_checked":[1,2],
+    "closure_page":2,
+    "closure_proof":"files: []",
+    "complete":true,
+    "files":[{
+      "file_page":1,
+      "path":"review-runs/checkpoints/2026-09-14__0968c7dd__f10-completed-wave-reconciliation.md",
+      "status":"added",
+      "source_blob_sha":"345ac9e2a781fcd3999513ce488ef4a57c85518e",
+      "checkpoint_path":true,
+      "frozen_presence":true,
+      "frozen_blob_sha":"345ac9e2a781fcd3999513ce488ef4a57c85518e",
+      "source_frozen_match":true
+    }]
+  },
+  "checkpoint":{
+    "path":"review-runs/checkpoints/2026-09-14__0968c7dd__f10-completed-wave-reconciliation.md",
+    "status":"added",
+    "source_blob_sha":"345ac9e2a781fcd3999513ce488ef4a57c85518e",
+    "frozen_blob_sha":"345ac9e2a781fcd3999513ce488ef4a57c85518e",
+    "source_frozen_match":true,
+    "implementation_sha":{
+      "state":"DIRECT",
+      "value":"0968c7dda0bb0673ca055156f760e64e4fc6b446",
+      "evidence":"explicit Reviewed implementation HEAD"
+    },
+    "schema_class":"UNINSTRUMENTED",
+    "kind":{
+      "state":"DERIVABLE",
+      "value":"SUBSTANTIVE_NON_FINAL",
+      "rule":"lens-history-v1/document-identity-v1",
+      "reason":"the exact source positively identifies itself as an F10 completed-wave reconciliation, records finding/status/count reconciliation and a same-root residual, and does not claim to be the final checkpoint/verdict for the entire review run",
+      "evidence":"title: F10 completed-wave reconciliation at 0968c7dd; body records Finding, Verdict, Severity, Count delta, Residual, and Required next correction"
+    },
+    "effectiveness_eligibility":{
+      "state":"NOT_APPLICABLE",
+      "reason":"SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness by document-identity-v1"
+    },
+    "raw_audit_lens":{"state":"NOT_VERIFIED"},
+    "primary_deep_lens":{"state":"NOT_VERIFIED"},
+    "lens_selection_reason":{"state":"NOT_VERIFIED"},
+    "lens_coverage_current_sha":{"state":"NOT_VERIFIED"},
+    "effectiveness":{},
+    "finding_attribution":{
+      "finding_id":{"state":"DIRECT","value":"BUG-CLEANUP-01"},
+      "finding_disposition":{"state":"DIRECT","value":"P2 / NOT_CLEAN / same existing root / count delta 0"},
+      "finding_relation":{"state":"DIRECT","value":"stale destructive-effect and synchronous-UI residuals closed, but enabled authority can persist while new scheduling-debt publication fails before enqueue/replay ownership"},
+      "modern_primary_detecting_lens":{"state":"NOT_VERIFIED"}
+    },
+    "execution_evidence":{
+      "state":"DIRECT",
+      "value":"INDEPENDENT EXECUTION: NOT EXECUTED"
+    }
+  },
+  "factual_exception_triggers":[
+    {
+      "type":"RECONCILIATION_OR_SCOPE_EXPANSION",
+      "finding_id":"BUG-CLEANUP-01",
+      "evidence":"source is an explicit F10 completed-wave reconciliation that closes prior subcases and preserves another same-root residual"
+    },
+    {
+      "type":"SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id":"BUG-CLEANUP-01",
+      "evidence":"source explicitly confirms the authority-commit to new scheduling-debt persistence failure frontier under the same F10 root"
+    },
+    {
+      "type":"COUNT_RECONCILIATION",
+      "finding_id":"BUG-CLEANUP-01",
+      "evidence":"source explicitly records Count delta 0, F10 remains one P2 root, and no CLEAN-basis advance"
+    }
+  ],
+  "materialization":{
+    "replay_comparison":{"state":"NOT_APPLICABLE","reason":"new materialization range"},
+    "official_outputs_deferred":true
+  }
+}
