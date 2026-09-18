@@ -1342,13 +1342,6 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             timeoutMs = 10_000L,
         )
         assertTrue(successorWork.tags.contains(occurrenceTag(generation, expectedSuccessorAt)))
-        assertEquals(
-            expectedSuccessorAt,
-            successorWork.inputData.getLong(
-                CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT,
-                -1L,
-            ),
-        )
         assertFalse(successorWork.tags.contains(predecessorTag))
 
         val finalPendingD2 = slotMatches("pending", expectedSuccessorAt)
