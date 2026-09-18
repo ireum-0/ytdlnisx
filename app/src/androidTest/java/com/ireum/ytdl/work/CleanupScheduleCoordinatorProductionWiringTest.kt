@@ -3,6 +3,7 @@ package com.ireum.ytdl.work
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import com.google.gson.Gson
 import androidx.test.core.app.ActivityScenario
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
@@ -2832,30 +2833,195 @@ class CleanupScheduleCoordinatorProductionWiringTest {
     }
 
     @Test
-    fun finalCleanupFailurePreservesFutureOccurrenceAndReportsFailure() = runBlocking {
+    fun finalCleanupFailureRetainsExactOccurrenceForRecovery() = runBlocking {
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
         CleanupScheduleCoordinator.successorDelayOverrideForTesting = TimeUnit.DAYS.toMillis(2)
         CleanupScheduleCoordinator.retryBackoffDelayOverrideForTesting =
             WORK_MANAGER_MIN_BACKOFF_MILLIS
+        // Keep the process-local replay owner out of the way until the
+        // original D1 request has reached its terminal failure.  The
+        // explicit reconcile below is the restart/recovery boundary under
+        // test.
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting =
+            TimeUnit.DAYS.toMillis(2)
         val attempts = AtomicInteger(0)
+        val admissionEntered = CountDownLatch(1)
+        val releaseAdmission = CountDownLatch(1)
+        CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = {
+            admissionEntered.countDown()
+            check(releaseAdmission.await(20, TimeUnit.SECONDS)) {
+                "cleanup admission did not release"
+            }
+        }
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {
             attempts.incrementAndGet()
             throw IllegalStateException("deterministic final cleanup failure")
         }
 
-        CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
-        val infos = awaitWork(timeoutMs = 140_000L) { current ->
-            attempts.get() >= CleanUpLeftoverDownloads.MAX_ATTEMPTS &&
-                current.any { it.state == WorkInfo.State.ENQUEUED &&
-                    it.tags.any { tag -> tag.startsWith("${CleanupScheduleCoordinator.TAG}_occurrence_") } } &&
-                current.any { it.state == WorkInfo.State.SUCCEEDED &&
-                    it.outputData.getBoolean("cleanup_failure", false) }
-        }
+        try {
+            assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+            assertTrue(admissionEntered.await(10, TimeUnit.SECONDS))
 
-        assertTrue(attempts.get() >= CleanUpLeftoverDownloads.MAX_ATTEMPTS)
-        assertTrue(infos.any { it.state == WorkInfo.State.SUCCEEDED &&
-            it.outputData.getBoolean("cleanup_failure", false) })
-        assertEquals(1, unfinishedCurrentWork().size)
+            val generation = requireNotNull(
+                preferences.getString("cleanup_leftover_downloads_generation", null),
+            )
+            val anchorDay = preferences.getInt("cleanup_leftover_downloads_anchor_day", -1)
+            val occurrenceAt = currentScheduledOccurrenceAt()
+            val predecessorTag = occurrenceTag(generation, occurrenceAt)
+            val expectedSuccessorAt = expectedSuccessorOccurrenceAt(
+                predecessorOccurrenceAt = occurrenceAt,
+                cadence = CleanupSchedulePolicy.DAILY,
+                monthlyAnchorDay = anchorDay,
+            )
+            val successorTag = occurrenceTag(generation, expectedSuccessorAt)
+
+            fun isUnfinished(info: WorkInfo): Boolean =
+                info.state == WorkInfo.State.ENQUEUED ||
+                    info.state == WorkInfo.State.RUNNING ||
+                    info.state == WorkInfo.State.BLOCKED
+
+            val original = awaitWork(timeoutMs = 10_000L) { current ->
+                current.count { info ->
+                    isUnfinished(info) && info.tags.contains(predecessorTag)
+                } == 1
+            }.single { info ->
+                isUnfinished(info) && info.tags.contains(predecessorTag)
+            }
+            val originalId = original.id
+
+            // The exact request is now identified while it is admitted, so
+            // later assertions cannot accidentally observe a different
+            // occurrence or a recovery request as the original D1.
+            releaseAdmission.countDown()
+            CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = null
+
+            val retrying = awaitWorkById(originalId) { info ->
+                info.state == WorkInfo.State.ENQUEUED && info.runAttemptCount >= 1
+            }
+            assertTrue(retrying.tags.contains(predecessorTag))
+            assertTrue(
+                hasDurableScheduledOccurrence(
+                    generation = generation,
+                    cadence = CleanupSchedulePolicy.DAILY,
+                    monthlyAnchorDay = anchorDay,
+                    occurrenceAt = occurrenceAt,
+                ),
+            )
+            assertFalse(
+                hasDurableScheduledOccurrence(
+                    generation = generation,
+                    cadence = CleanupSchedulePolicy.DAILY,
+                    monthlyAnchorDay = anchorDay,
+                    occurrenceAt = expectedSuccessorAt,
+                ),
+            )
+            val retryJournal = Gson().fromJson(
+                requireNotNull(
+                    preferences.getString("cleanup_leftover_downloads_effect_journal", null),
+                ),
+                CleanupEffectJournal::class.java,
+            )
+            assertTrue(retryJournal.matches(generation, CleanupSchedulePolicy.DAILY, anchorDay, occurrenceAt))
+            assertTrue(retryJournal.isStructurallyValid())
+            assertFalse(retryJournal.isComplete)
+            assertTrue(
+                listOf(
+                    preferences.getString("cleanup_leftover_downloads_pending_effect_phase", null),
+                    preferences.getString("cleanup_leftover_downloads_active_effect_phase", null),
+                ).contains("in_progress"),
+            )
+            assertTrue(
+                queryUniqueWorkInfos().none { info ->
+                    isUnfinished(info) && info.tags.contains(successorTag)
+                },
+            )
+
+            val terminal = awaitWorkById(originalId) { info ->
+                info.state == WorkInfo.State.FAILED ||
+                    info.state == WorkInfo.State.CANCELLED ||
+                    info.state == WorkInfo.State.SUCCEEDED
+            }
+            assertEquals(WorkInfo.State.FAILED, terminal.state)
+            assertEquals(CleanUpLeftoverDownloads.MAX_ATTEMPTS - 1, terminal.runAttemptCount)
+            assertEquals(CleanUpLeftoverDownloads.MAX_ATTEMPTS, attempts.get())
+            assertTrue(terminal.outputData.getBoolean("cleanup_schedule_failure", false))
+            assertTrue(terminal.outputData.getBoolean("cleanup_failure", false))
+            assertTrue(terminal.outputData.getBoolean("cleanup_effect_recovery_required", false))
+
+            val terminalJournal = Gson().fromJson(
+                requireNotNull(
+                    preferences.getString("cleanup_leftover_downloads_effect_journal", null),
+                ),
+                CleanupEffectJournal::class.java,
+            )
+            assertTrue(
+                terminalJournal.matches(
+                    generation,
+                    CleanupSchedulePolicy.DAILY,
+                    anchorDay,
+                    occurrenceAt,
+                ),
+            )
+            assertTrue(terminalJournal.isStructurallyValid())
+            assertFalse(terminalJournal.isComplete)
+            assertTrue(
+                hasDurableScheduledOccurrence(
+                    generation = generation,
+                    cadence = CleanupSchedulePolicy.DAILY,
+                    monthlyAnchorDay = anchorDay,
+                    occurrenceAt = occurrenceAt,
+                ),
+            )
+            assertFalse(
+                hasDurableScheduledOccurrence(
+                    generation = generation,
+                    cadence = CleanupSchedulePolicy.DAILY,
+                    monthlyAnchorDay = anchorDay,
+                    occurrenceAt = expectedSuccessorAt,
+                ),
+            )
+            assertTrue(
+                queryUniqueWorkInfos().none { info ->
+                    isUnfinished(info) && info.tags.contains(successorTag)
+                },
+            )
+
+            // Model loss of the process-local replay owner, then let the
+            // real reconciliation path requeue the exact unfinished D1.
+            CleanupScheduleCoordinator.resetReplayOwnerForTesting()
+            CleanupScheduleCoordinator.reconcile(context)
+            val recovered = awaitWork(timeoutMs = 30_000L) { current ->
+                val exactD1 = current.filter { info ->
+                    isUnfinished(info) && info.tags.contains(predecessorTag)
+                }
+                exactD1.size == 1 && current.none { info ->
+                    isUnfinished(info) && info.tags.contains(successorTag)
+                }
+            }
+            val recoveredD1 = recovered.single { info ->
+                isUnfinished(info) && info.tags.contains(predecessorTag)
+            }
+            assertTrue(recoveredD1.tags.contains(predecessorTag))
+            assertTrue(
+                hasDurableScheduledOccurrence(
+                    generation = generation,
+                    cadence = CleanupSchedulePolicy.DAILY,
+                    monthlyAnchorDay = anchorDay,
+                    occurrenceAt = occurrenceAt,
+                ),
+            )
+            assertFalse(
+                hasDurableScheduledOccurrence(
+                    generation = generation,
+                    cadence = CleanupSchedulePolicy.DAILY,
+                    monthlyAnchorDay = anchorDay,
+                    occurrenceAt = expectedSuccessorAt,
+                ),
+            )
+        } finally {
+            releaseAdmission.countDown()
+            CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = null
+        }
     }
 
     @Test
