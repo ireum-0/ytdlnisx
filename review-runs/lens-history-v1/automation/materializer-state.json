@@ -1,6 +1,6 @@
 {
   "schema_version": "lens-history-v1-automation-state-v3",
-  "status": "PAUSED_RETRYABLE",
+  "status": "HOLD",
   "run_id": "M06-20260919T1413Z-001",
   "started_at": "2026-09-19T14:13:50Z",
   "stage": "MATERIALIZE_231_270",
@@ -75,7 +75,7 @@
     239,
     240
   ],
-  "resume_safe": true,
+  "resume_safe": false,
   "materialization_outputs": {
     "official_inventory_written": false,
     "official_ledger_written": false,
@@ -86,9 +86,53 @@
     "consecutive_clean_30_materialization_batches": 2,
     "consecutive_clean_40_materialization_batches": 2,
     "retryable_pause_occurred": false,
-    "hold_or_anomaly_occurred": false,
-    "adaptive_size_streak_eligible": true
+    "hold_or_anomaly_occurred": true,
+    "adaptive_size_streak_eligible": false
   },
   "requires_triage": false,
-  "requires_audit": false
+  "requires_audit": false,
+  "hold_class": "DETERMINISTIC_CLASSIFICATION_MISMATCH",
+  "hold_evidence": {
+    "valid_unaggregated_prefix": [
+      {
+        "rank": 241,
+        "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r241.json",
+        "blob_sha": "2d06a2ccf96eea706eb180f8f4facf64edffdf83"
+      }
+    ],
+    "mismatch_receipt": {
+      "rank": 242,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r242.json",
+      "blob_sha": "4729f6c5fe3977789a93f8746abf7482e6fd90e4"
+    },
+    "source_path": "review-runs/checkpoints/2026-09-13__909d6e68__backup04-exact-publication-identity-addendum.md",
+    "source_blob_sha": "5e4d95de4a48ac9ef8760ecccfe628eb1f4c50b0",
+    "document_identity_rule": {
+      "path": "review-runs/lens-history-v1/rules/document-identity-v1.md",
+      "blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda"
+    },
+    "recorded_kind": {
+      "state": "DIRECT",
+      "value": "ADDENDUM",
+      "evidence": "source title explicitly identifies exact publication identity addendum"
+    },
+    "protocol_expected_kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "no explicit checkpoint_kind/equivalent kind field is present; the document positively identifies itself as an addendum, records same-root finding/count refinement, and does not claim to be a run-final checkpoint/verdict"
+    },
+    "effectiveness_eligibility_effective_expectation": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness"
+    },
+    "remediation_protocol": {
+      "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v1.md",
+      "blob_sha": "cbb53fda36b75fffbb438d641df722ed90fcb87b",
+      "applicability": "NOT_APPLICABLE",
+      "reason": "v1 permits only checkpoint.effectiveness_eligibility replacement and explicitly prohibits altering checkpoint kind"
+    },
+    "immutable_receipt_constraint": "r242 must not be overwritten, deleted, amended, rebased, or silently reclassified"
+  },
+  "hold_note": "Materialization is stopped before rank 243 because sealed M06 r242 records checkpoint.kind as DIRECT/ADDENDUM, but pinned document-identity-v1 deterministically requires DERIVABLE/SUBSTANTIVE_NON_FINAL for this addendum document. The existing append-only Materializer remediation v1 cannot repair checkpoint kind and explicitly prohibits such use. r241 is a valid unaggregated receipt; r242 remains an immutable but semantically invalid receipt. Resume requires a broader append-only remediation/invalidation protocol that preserves the original r242 Git object and chain evidence."
 }
