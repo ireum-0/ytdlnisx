@@ -1,0 +1,140 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "rank": 244,
+  "materializer_state_blob": "0e2dc3b7d515d9c6dd0ecd8d27fb58e7cf059761",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6dd62519edf788db869c87eb9d001b393065781a",
+  "applicable_materializer_remediations": [
+    {
+      "kind_replacement_path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/r242-kind-replacement-001.json",
+      "kind_replacement_blob_sha": "7d8ba15d9ea24124a341586893ee5a6264b21873",
+      "original_rank_receipt_path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r242.json",
+      "original_rank_receipt_blob_sha": "4729f6c5fe3977789a93f8746abf7482e6fd90e4",
+      "target_segment_range": [
+        241,
+        245
+      ],
+      "effective_aggregate_required": true
+    }
+  ],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r243.json",
+    "blob_sha": "b271eb82378d0ac36ad5ecbc55c15cdee9b9b520"
+  },
+  "history": {
+    "commit_sha": "83d922387be9231971207c0d76c58a1070fe61c0",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=244"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12T184100Z__a12c5805__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "95a9380d2184b6de4587484144c7e2300b65fa6d",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "95a9380d2184b6de4587484144c7e2300b65fa6d",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12T184100Z__a12c5805__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "95a9380d2184b6de4587484144c7e2300b65fa6d",
+    "frozen_blob_sha": "95a9380d2184b6de4587484144c7e2300b65fa6d",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "a12c58055fff51b104f8b56fd53b534b8d7e5df4",
+      "evidence": "source explicitly records Frozen basis Implementation"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source title explicitly identifies Independent correctness review final checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit",
+      "reason": "FINAL is explicitly established and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": {
+        "state": "DIRECT",
+        "value": [
+          {
+            "finding_id": "BUG-BACKUP-02",
+            "disposition": "EXISTING / P2 / OPEN / CONFIRMED; no material canonical status/count change"
+          },
+          {
+            "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+            "disposition": "previously FIXED-CLOSED on unchanged implementation SHA; no regression evidence in reviewed path"
+          }
+        ]
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records P0 2 / P1 1 / P2 29 as final provisional blocker count with no canonical count change"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+      "evidence": "source preserves previously FIXED-CLOSED status on unchanged implementation SHA and reports no regression evidence"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "runtime manifestation of BUG-BACKUP-02 is explicitly NOT_VERIFIED and independent runtime/device execution was not performed"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
