@@ -1,0 +1,119 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "microsegment_rank_range": [
+    196,
+    200
+  ],
+  "data_head": "82608b84d9909acc80c8ed7423282301b531b6e4",
+  "complete_state_blob": "52289c6a72a56ff30bb09fa59fe2f6860b0a445e",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M05-20260919T0449Z-001/r196-200.json",
+    "blob_sha": "a1f39ef93d486de5a3a769e8e02a76ccea5e591b"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "85ab2d5410037680f67a153ce1ee208874cc2995",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M05-20260919T0449Z-001/r191-195.json",
+    "blob_sha": "9f27ac175be49d56724e32247e385528556fcb7b"
+  },
+  "source_review": [
+    {
+      "rank": 196,
+      "path": "review-runs/checkpoints/2026-09-13T073000Z__a9586835__checkpoint.md",
+      "source_blob": "1cec04608a9892410b56352a948691856615c069",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "CONTRADICTORY_STATUS_LABELING",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic kind as NOT_VERIFIED; keep F10 same-process debt-replay ownership as an existing residual, and keep F8/F9 source-level remediation distinct from canonical closure because exact-SHA execution evidence is absent."
+    },
+    {
+      "rank": 197,
+      "path": "review-runs/checkpoints/2026-09-13T072400Z__a9586835__checkpoint.md",
+      "source_blob": "2a685d105a4c9ac54d0a73bf0ba0eba1533cf94a",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic structural kind and provisional blocker state; F10 recovery ownership is still an unresolved candidate at this point and must not be promoted to a new status transition."
+    },
+    {
+      "rank": 198,
+      "path": "review-runs/checkpoints/2026-09-13T063000Z__c67ecb66__checkpoint.md",
+      "source_blob": "50317bbb8c482c8837325308eeac1f1e0eaca938",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the two F10 residual paths—retry-exhaustion ownership loss and ignored asynchronous enqueue completion—as same-root evidence; runtime manifestation remains NOT_VERIFIED."
+    },
+    {
+      "rank": 199,
+      "path": "review-runs/checkpoints/2026-09-13T062700Z__c67ecb66__checkpoint.md",
+      "source_blob": "ce1641e2981afedd4d9ae5bf42177341f3dfd970",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic kind NOT_VERIFIED and preserve the existing F10 retry/enqueue residuals without creating a new root or closure; remaining execution evidence is explicitly unresolved."
+    },
+    {
+      "rank": 200,
+      "path": "review-runs/checkpoints/2026-09-13T053200Z__c67ecb66__checkpoint.md",
+      "source_blob": "b2616f185744ee1d2a2c796f0f2b3a029b3f8069",
+      "independent_exception_triggers": [
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-CLEANUP-01 as one existing P2 root containing retry-exhaustion and asynchronous enqueue-completion residuals; do not infer runtime reproduction from source-semantic confirmation."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      196,
+      197,
+      198,
+      199,
+      200
+    ],
+    "materializer_flagged_exception_ranks": [
+      196,
+      197,
+      198,
+      199,
+      200
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
