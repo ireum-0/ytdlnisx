@@ -1,0 +1,112 @@
+{
+  "schema_version": "lens-history-v1",
+  "validation_kind": "ledger_batch_validation",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "batch": {
+    "inventory": "review-runs/lens-history-v1/inventory-batches/0023-newest-191-200.jsonl",
+    "ledger": "review-runs/lens-history-v1/ledger-batches/0023-newest-191-200.jsonl",
+    "history_rank_from_newest": {
+      "first": 191,
+      "last": 200
+    },
+    "records": 10,
+    "internal_partitions": [
+      {
+        "first": 191,
+        "last": 195,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      },
+      {
+        "first": 196,
+        "last": 200,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      }
+    ]
+  },
+  "byte_identity": {
+    "inventory_git_blob_sha": {
+      "expected": "cb2196f2503fbc1331c9d1fa36f8f125c24818c6",
+      "stored": "cb2196f2503fbc1331c9d1fa36f8f125c24818c6",
+      "status": "MATCH"
+    },
+    "ledger_git_blob_sha": {
+      "expected": "e4a808050356ab11a8b53a2f9a87d05e60c5d7a2",
+      "stored": "e4a808050356ab11a8b53a2f9a87d05e60c5d7a2",
+      "status": "MATCH"
+    }
+  },
+  "source_provenance": {
+    "commit_detail_file_binding": "10/10 COMPLETE",
+    "frozen_tree_presence": "10/10 COMPLETE",
+    "source_to_frozen_blob_identity": "10/10 MATCH"
+  },
+  "schema_validation": {
+    "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "validator": "Draft 2020-12",
+    "records_checked": 10,
+    "valid_records": 10,
+    "invalid_records": 0,
+    "status": "PASS"
+  },
+  "classification_summary": {
+    "UNINSTRUMENTED": 10,
+    "LEGACY_AUDIT_LENS": 0,
+    "STRUCTURED_PROVISIONAL": 0,
+    "STRUCTURED_FINAL": 0,
+    "explicit_final_records": 4,
+    "explicit_intermediate_records": 0,
+    "verified_bootstrap_records": 0,
+    "substantive_non_final_records": 0,
+    "kind_not_verified_records": 6
+  },
+  "implementation_sha_summary": {
+    "a95868357ddd70ac990a79026daf8a571db1917b": 7,
+    "c67ecb66e3df954a225354632945be101a9d740d": 3
+  },
+  "semantic_preservation": {
+    "material_status_transitions_preserved": true,
+    "same_root_residuals_preserved": true,
+    "ambiguous_kind_ranks": [
+      191,
+      193,
+      194,
+      196,
+      197,
+      199
+    ],
+    "provisional_and_historical_only_states_preserved": true,
+    "converted_to_numeric_effectiveness": false,
+    "reason": "F10/F9 historical residuals, source-semantic versus canonical OPEN/NOT_VERIFIED distinctions, and the a9586835-to-c67ecb66 basis transition are preserved without backward normalization; generic periodic/bootstrap/semantic checkpoint labels remain NOT_VERIFIED when structural identity is absent"
+  },
+  "aggregate_reconciliation": {
+    "cumulative_eligible_structured_finals_in_batch": 0,
+    "aggregate_delta": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 0,
+      "rejected_candidates_with_proof": 0,
+      "not_verified_candidates": 0,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 0
+    },
+    "observed_measured_effectiveness_after_batch": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "status": "UNCHANGED_PASS"
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  }
+}
