@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.database.viewmodel
+package com.ireum.ytdl.database.viewmodel
 
 import android.app.Application
 import android.content.Context
@@ -16,6 +16,10 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.BackupRestoreParser
+import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreOutcome
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
 import com.ireum.ytdl.database.dao.KeywordGroupDao
 import com.ireum.ytdl.database.dao.PlaylistDao
 import com.ireum.ytdl.database.dao.PlaylistGroupDao
@@ -161,13 +165,23 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     private val youtuberMetaDao: YoutuberMetaDao
 
     init {
-        historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao, dbManager)
+        historyRepository = HistoryRepository(
+            dbManager.historyDao,
+            dbManager.playlistDao,
+            dbManager,
+            application,
+        )
         historyKeywordAssignments = HistoryKeywordAssignmentRepository(dbManager)
         downloadRepository = DownloadRepository(dbManager)
         cookieRepository = CookieRepository(dbManager.cookieDao)
         commandTemplateRepository = CommandTemplateRepository(dbManager.commandTemplateDao)
         searchHistoryRepository = SearchHistoryRepository(dbManager.searchHistoryDao)
-        observeSourcesRepository = ObserveSourcesRepository(dbManager.observeSourcesDao, workManager, preferences)
+        observeSourcesRepository = ObserveSourcesRepository(
+            dbManager.observeSourcesDao,
+            workManager,
+            preferences,
+            application,
+        )
         keywordGroupDao = dbManager.keywordGroupDao
         youtuberGroupDao = dbManager.youtuberGroupDao
         youtuberMetaDao = dbManager.youtuberMetaDao
@@ -453,11 +467,67 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         }
     }
 
-    suspend fun restoreData(data: RestoreAppDataItem, context: Context, resetData: Boolean = false) : Boolean {
+    suspend fun restoreData(
+        data: RestoreAppDataItem,
+        context: Context,
+    ): Boolean = restoreData(data, context, false) is RestoreOutcome.Completed
+
+    suspend fun restoreData(
+        data: RestoreAppDataItem,
+        context: Context,
+        resetData: Boolean,
+    ): RestoreOutcome {
+        val plan = try {
+            BackupRestoreParser.fromTyped(data)
+        } catch (error: Exception) {
+            return RestoreOutcome.RejectedBeforeOwnership(
+                error.message ?: "Restore payload validation failed",
+            )
+        }
+        return restorePlan(plan, context, resetData)
+    }
+
+    suspend fun restorePlan(
+        plan: com.ireum.ytdl.database.models.RestorePlan,
+        context: Context,
+        resetData: Boolean = false,
+    ): RestoreOutcome {
+        val validatedPlan = try {
+            BackupRestoreParser.validatePlan(plan)
+        } catch (error: Exception) {
+            return RestoreOutcome.RejectedBeforeOwnership(
+                error.message ?: "Restore payload validation failed",
+            )
+        }
+        if (resetData) {
+            return RestoreTransactionCoordinator.begin(context, validatedPlan)
+        }
+        if (RestoreGate.isRestoreInProgress(context)) {
+            return RestoreOutcome.RecoveryPending(
+                operationId = null,
+                phase = null,
+                reason = "A Reset recovery is still active",
+            )
+        }
+        return if (restoreMergeData(validatedPlan.data, context, resetData = false)) {
+            RestoreOutcome.Completed("merge-${System.currentTimeMillis()}")
+        } else {
+            RestoreOutcome.RejectedBeforeOwnership("Merge restore failed")
+        }
+    }
+
+    private suspend fun restoreMergeData(
+        data: RestoreAppDataItem,
+        context: Context,
+        resetData: Boolean = false,
+    ): Boolean {
+        // Destructive Reset is exclusively owned by the durable coordinator;
+        // this legacy body is Merge-only and must never become a bypass.
+        if (resetData) return false
         var customThumbnailStaging: RestoredCustomThumbnailStaging? = null
         val result = kotlin.runCatching {
             val settings = data.settings
-            val preservedCachePath = if (resetData && settings != null) {
+            val preservedCachePath = if (settings != null) {
                 // cache_path is destination-local. Generic settings restore
                 // filters imported cache_path values and therefore cannot
                 // change the effective root; only a reset needs to carry the
@@ -467,14 +537,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             } else {
                 null
             }
-            val coordinatorCadenceForReset = if (resetData && settings != null) {
-                check(CleanupScheduleCoordinator.prepareForSettingsReset(context)) {
-                    "Cleanup authority migration is not durably complete"
-                }
-                CleanupScheduleCoordinator.currentCadenceForSettings(context)
-            } else {
-                null
-            }
+            val coordinatorCadenceForReset: String? = null
             customThumbnailStaging = restoreCustomThumbnails(data.customThumbnails)
             val restoredCustomThumbByOldHistoryId = customThumbnailStaging!!.byOldHistoryId
             val resetAutomaticRules =

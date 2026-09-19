@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more.settings
+package com.ireum.ytdl.ui.more.settings
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -38,8 +38,6 @@ import com.ireum.ytdl.database.models.AutomaticKeywordRuleKeyword
 import com.ireum.ytdl.database.models.AutomaticKeywordRuleVideoMatch
 import com.ireum.ytdl.database.models.CommandTemplate
 import com.ireum.ytdl.database.models.CookieItem
-import com.ireum.ytdl.database.models.DownloadItem
-import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.KeywordGroup
 import com.ireum.ytdl.database.models.KeywordGroupMember
@@ -48,8 +46,6 @@ import com.ireum.ytdl.database.models.PlaylistItemCrossRef
 import com.ireum.ytdl.database.models.PlaylistGroup
 import com.ireum.ytdl.database.models.PlaylistGroupMember
 import com.ireum.ytdl.database.models.RestoreAppDataItem
-import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
-import com.ireum.ytdl.database.models.SearchHistoryItem
 import com.ireum.ytdl.database.models.TemplateShortcut
 import com.ireum.ytdl.database.models.YoutuberGroup
 import com.ireum.ytdl.database.models.YoutuberGroupMember
@@ -72,15 +68,10 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
-import com.google.gson.JsonArray
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 import java.util.Calendar
 import java.util.Locale
 
@@ -296,331 +287,59 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
             }
             lifecycleScope.launch {
                 runCatching {
-                    val ip = requireContext().contentResolver.openInputStream(result.data!!.data!!)
-                    val r = BufferedReader(InputStreamReader(ip))
-                    val total: java.lang.StringBuilder = java.lang.StringBuilder()
-                    var line: String?
-                    while (r.readLine().also { line = it } != null) {
-                        total.append(line).append('\n')
+                    val validatedPlan = withContext(Dispatchers.IO) {
+                        requireContext().contentResolver
+                            .openInputStream(result.data!!.data!!)
+                            ?.bufferedReader()
+                            ?.use { reader -> BackupRestoreParser.parse(reader.readText(), Gson()) }
+                            ?: error("Could not open backup stream")
                     }
 
-                    //PARSE RESTORE JSON
-                    val gson = Gson()
-                    val json = gson.fromJson(total.toString(), JsonObject::class.java)
-                    val backupVersion = json.get("backup_format_version")?.asInt ?: 3
-                    require(backupVersion in 3..4) {
-                        "Unsupported backup format version: $backupVersion"
-                    }
-                    val restoreData = RestoreAppDataItem()
-                    val parsedDataMessage = StringBuilder()
-
-                    if (json.has("settings")) {
-                        restoreData.settings = json.getAsJsonArray("settings").map {
-                            gson.fromJson(it, BackupSettingsItem::class.java)
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.settings)}: ${restoreData.settings!!.size}")
-                    }
-
-                    if (json.has("downloads")) {
-                        restoreData.downloads = json.getAsJsonArray("downloads").map {
-                            gson.fromJson(it, HistoryItem::class.java)
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.downloads)}: ${restoreData.downloads!!.size}")
-
-                    }
-
-                    if (json.has("custom_thumbnails")) {
-                        restoreData.customThumbnails = json.getAsJsonArray("custom_thumbnails").map {
-                            gson.fromJson(it, BackupCustomThumbItem::class.java)
-                        }
-                        parsedDataMessage.appendLine("Custom thumbnails: ${restoreData.customThumbnails!!.size}")
-                    }
-
-                    if (json.has("keyword_groups")) {
-                        restoreData.keywordGroups = json.getAsJsonArray("keyword_groups").map {
-                            gson.fromJson(it, KeywordGroup::class.java)
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.keywords)} Groups: ${restoreData.keywordGroups!!.size}")
-                    }
-
-                    if (json.has("keyword_group_members")) {
-                        restoreData.keywordGroupMembers = json.getAsJsonArray("keyword_group_members").map {
-                            gson.fromJson(it, KeywordGroupMember::class.java)
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.keywords)} Group Members: ${restoreData.keywordGroupMembers!!.size}")
-                    }
-
-                    if (json.has("history_visible_child_keywords")) {
-                        restoreData.historyVisibleChildKeywords =
-                            json.getAsJsonArray("history_visible_child_keywords")
-                                .mapNotNull {
-                                    runCatching { it.asString }.getOrNull()
-                                }
-                                .toSet()
-                        parsedDataMessage.appendLine("Visible child keywords: ${restoreData.historyVisibleChildKeywords!!.size}")
-                    }
-
-                    if (json.has("youtuber_groups")) {
-                        restoreData.youtuberGroups = json.getAsJsonArray("youtuber_groups").map {
-                            gson.fromJson(it, YoutuberGroup::class.java)
-                        }
-                        parsedDataMessage.appendLine("Youtuber Groups: ${restoreData.youtuberGroups!!.size}")
-                    }
-
-                    if (json.has("youtuber_group_members")) {
-                        restoreData.youtuberGroupMembers = json.getAsJsonArray("youtuber_group_members").map {
-                            gson.fromJson(it, YoutuberGroupMember::class.java)
-                        }
-                        parsedDataMessage.appendLine("Youtuber Group Members: ${restoreData.youtuberGroupMembers!!.size}")
-                    }
-
-                    if (json.has("youtuber_group_relations")) {
-                        restoreData.youtuberGroupRelations = json.getAsJsonArray("youtuber_group_relations").map {
-                            gson.fromJson(it, YoutuberGroupRelation::class.java)
-                        }
-                        parsedDataMessage.appendLine("Youtuber Group Relations: ${restoreData.youtuberGroupRelations!!.size}")
-                    }
-
-                    if (json.has("history_visible_child_youtuber_groups")) {
-                        restoreData.historyVisibleChildYoutuberGroups =
-                            json.getAsJsonArray("history_visible_child_youtuber_groups")
-                                .mapNotNull {
-                                    runCatching { it.asString.toLong() }.getOrNull()
-                                }
-                                .toSet()
-                        parsedDataMessage.appendLine("Visible child youtuber groups: ${restoreData.historyVisibleChildYoutuberGroups!!.size}")
-                    }
-
-                    if (json.has("history_visible_child_youtubers")) {
-                        restoreData.historyVisibleChildYoutubers =
-                            json.getAsJsonArray("history_visible_child_youtubers")
-                                .mapNotNull {
-                                    runCatching { it.asString }.getOrNull()
-                                }
-                                .toSet()
-                        parsedDataMessage.appendLine("Visible child youtubers: ${restoreData.historyVisibleChildYoutubers!!.size}")
-                    }
-
-                    if (json.has("youtuber_meta")) {
-                        restoreData.youtuberMeta = json.getAsJsonArray("youtuber_meta").map {
-                            gson.fromJson(it, YoutuberMeta::class.java)
-                        }
-                        parsedDataMessage.appendLine("Youtuber Metadata: ${restoreData.youtuberMeta!!.size}")
-                    }
-
-                    if (json.has("queued")) {
-                        restoreData.queued = json.getAsJsonArray("queued").map {
-                            val item =
-                                gson.fromJson(it, DownloadItem::class.java)
-                            item.id = 0L
-                            item
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.queue)}: ${restoreData.queued!!.size}")
-                    }
-
-                    if (json.has("paused")) {
-                        restoreData.paused = json.getAsJsonArray("paused").map {
-                            val item = gson.fromJson(it, DownloadItem::class.java)
-                            item.id = 0L
-                            item.status = com.ireum.ytdl.database.repository.DownloadRepository.Status.Paused.toString()
-                            item.executionId = ""
-                            item
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.paused_downloads)}: ${restoreData.paused!!.size}")
-                    }
-
-                    if (json.has("scheduled")) {
-                        restoreData.scheduled = json.getAsJsonArray("scheduled").map {
-                            val item =
-                                gson.fromJson(it, DownloadItem::class.java)
-                            item.id = 0L
-                            item
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.scheduled)}: ${restoreData.scheduled!!.size}")
-                    }
-
-                    if (json.has("cancelled")) {
-                        restoreData.cancelled = json.getAsJsonArray("cancelled").map {
-                            val item =
-                                gson.fromJson(it, DownloadItem::class.java)
-                            item.id = 0L
-                            item
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.cancelled)}: ${restoreData.cancelled!!.size}")
-                    }
-
-                    if (json.has("errored")) {
-                        restoreData.errored = json.getAsJsonArray("errored").map {
-                            val item =
-                                gson.fromJson(it, DownloadItem::class.java)
-                            item.id = 0L
-                            item
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.errored)}: ${restoreData.errored!!.size}")
-                    }
-
-                    if (json.has("saved")) {
-                        restoreData.saved = json.getAsJsonArray("saved").map {
-                            val item =
-                                gson.fromJson(it, DownloadItem::class.java)
-                            item.id = 0L
-                            item
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.saved)}: ${restoreData.saved!!.size}")
-                    }
-
-                    if (json.has("cookies")) {
-                        restoreData.cookies = json.getAsJsonArray("cookies").map {
-                            val item =
-                                gson.fromJson(it, CookieItem::class.java)
-                            item.id = 0L
-                            item
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.cookies)}: ${restoreData.cookies!!.size}")
-                    }
-
-                    if (json.has("templates")) {
-                        restoreData.templates = json.getAsJsonArray("templates").map {
-                            val item = gson.fromJson(
-                                it,
-                                CommandTemplate::class.java
-                            )
-                            item.id = 0L
-                            item
-                        }
-                        parsedDataMessage.appendLine("${getString(R.string.command_templates)}: ${restoreData.templates!!.size}")
-                    }
-
-                    if (json.has("shortcuts")) {
-                        restoreData.shortcuts = json.getAsJsonArray("shortcuts").map {
-                            val item = gson.fromJson(
-                                it,
-                                TemplateShortcut::class.java
-                            )
-                            item.id = 0L
-                            item
-                        }
-
-                        parsedDataMessage.appendLine("${getString(R.string.shortcuts)}: ${restoreData.shortcuts!!.size}")
-
-                    }
-
-                    if (json.has("search_history")) {
-                        restoreData.searchHistory = json.getAsJsonArray("search_history").map {
-                            val item = gson.fromJson(
-                                it,
-                                SearchHistoryItem::class.java
-                            )
-                            item.id = 0L
-                            item
-                        }
-
-                        parsedDataMessage.appendLine("${getString(R.string.search_history)}: ${restoreData.searchHistory!!.size}")
-                    }
-
-                    if (json.has("observe_sources")) {
-                        restoreData.observeSources = json.getAsJsonArray("observe_sources").map {
-                            val sourceJson = it.asJsonObject.deepCopy()
-                            listOf("ignoredLinks", "runHistory", "retryPromptedLinks", "observedLinks").forEach { key ->
-                                if (!sourceJson.has(key) || sourceJson.get(key).isJsonNull) {
-                                    sourceJson.add(key, JsonArray())
-                                }
-                            }
-                            listOf("currentRunStatus", "autoAddKeyword").forEach { key ->
-                                if (!sourceJson.has(key) || sourceJson.get(key).isJsonNull) {
-                                    sourceJson.addProperty(key, "")
-                                }
-                            }
-                            // Backups contain user-managed sources only. Never trust imported
-                            // internal-purpose metadata that could hide a scheduled source.
-                            sourceJson.addProperty("observationPurpose", "USER")
-                            sourceJson.addProperty("managedConditionKey", "")
-                            val item = gson.fromJson(
-                                sourceJson,
-                                ObserveSourcesItem::class.java
-                            )
-                            item
-                        }
-
-                        parsedDataMessage.appendLine("${getString(R.string.observe_sources)}: ${restoreData.observeSources!!.size}")
-                    }
-
-                    if (json.has("automatic_keyword_rules")) {
-                        restoreData.automaticKeywordRules =
-                            json.getAsJsonArray("automatic_keyword_rules").map {
-                                gson.fromJson(it, AutomaticKeywordRule::class.java)
-                        }
-                        parsedDataMessage.appendLine(
-                            "${getString(R.string.automatic_keyword_rules)}: " +
-                                restoreData.automaticKeywordRules!!.size
-                        )
-                    }
-
-                    if (json.has("automatic_keyword_rule_keywords")) {
-                        restoreData.automaticKeywordRuleKeywords =
-                            json.getAsJsonArray("automatic_keyword_rule_keywords").map {
-                                gson.fromJson(it, AutomaticKeywordRuleKeyword::class.java)
-                            }
-                    }
-
-                    if (json.has("automatic_keyword_rule_video_matches")) {
-                        restoreData.automaticKeywordRuleVideoMatches =
-                            json.getAsJsonArray("automatic_keyword_rule_video_matches").map {
-                                gson.fromJson(it, AutomaticKeywordRuleVideoMatch::class.java)
-                            }
-                    }
-
-                    if (json.has("history_keyword_assignments")) {
-                        restoreData.historyKeywordAssignments =
-                            json.getAsJsonArray("history_keyword_assignments").map {
-                                gson.fromJson(it, HistoryKeywordAssignment::class.java)
-                        }
-                    }
-
-                    val playlistPayload = BackupRestoreParser.parsePlaylistPayload(json, gson)
-                    playlistPayload.playlists?.let {
-                        restoreData.playlists = it
-                        parsedDataMessage.appendLine("Playlists: ${it.size}")
-                    }
-                    playlistPayload.playlistItemCrossRefs?.let {
-                        restoreData.playlistItemCrossRefs = it
-                        parsedDataMessage.appendLine("Playlist items: ${it.size}")
-                    }
-                    playlistPayload.playlistGroups?.let {
-                        restoreData.playlistGroups = it
-                        parsedDataMessage.appendLine("Playlist groups: ${it.size}")
-                    }
-                    playlistPayload.playlistGroupMembers?.let {
-                        restoreData.playlistGroupMembers = it
-                        parsedDataMessage.appendLine("Playlist group members: ${it.size}")
-                    }
-
-
+                    val parsedDataMessage = validatedPlan.summaryCounts()
+                        .filterValues { it > 0 }
+                        .entries
+                        .joinToString("\n") { "${it.key}: ${it.value}" }
                     showAppRestoreInfoDialog(
                         onMerge = {
                             lifecycleScope.launch {
-                                val res = withContext(Dispatchers.IO){
-                                    settingsViewModel.restoreData(restoreData, requireContext())
+                                val outcome = withContext(Dispatchers.IO) {
+                                    settingsViewModel.restorePlan(
+                                        validatedPlan,
+                                        requireContext(),
+                                        false,
+                                    )
                                 }
-                                if (res) {
-                                    showRestoreFinishedDialog(restoreData, parsedDataMessage.toString())
-                                }else{
-                                    throw Error()
+                                if (outcome is com.ireum.ytdl.database.RestoreOutcome.Completed) {
+                                    showRestoreFinishedDialog(validatedPlan.data, parsedDataMessage)
+                                } else {
+                                    Snackbar.make(
+                                        requireView(),
+                                        outcomeMessage(outcome),
+                                        Snackbar.LENGTH_INDEFINITE,
+                                    ).show()
                                 }
                             }
                         },
-                        onReset =  {
+                        onReset = {
                             lifecycleScope.launch {
-                                val res = withContext(Dispatchers.IO){
-                                    settingsViewModel.restoreData(restoreData, requireContext(),true)
+                                val outcome = withContext(Dispatchers.IO) {
+                                    settingsViewModel.restorePlan(
+                                        validatedPlan,
+                                        requireContext(),
+                                        true,
+                                    )
                                 }
-                                if (res) {
-                                    showRestoreFinishedDialog(restoreData, parsedDataMessage.toString())
-                                }else{
-                                    throw Error()
+                                if (outcome is com.ireum.ytdl.database.RestoreOutcome.Completed) {
+                                    showRestoreFinishedDialog(validatedPlan.data, parsedDataMessage)
+                                } else {
+                                    Snackbar.make(
+                                        requireView(),
+                                        outcomeMessage(outcome),
+                                        Snackbar.LENGTH_INDEFINITE,
+                                    ).show()
                                 }
                             }
-                        }
+                        },
                     )
 
                 }.onFailure {
@@ -683,6 +402,16 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
         val dialog = builder.create()
         dialog.show()
+    }
+
+    private fun outcomeMessage(outcome: com.ireum.ytdl.database.RestoreOutcome): String = when (outcome) {
+        is com.ireum.ytdl.database.RestoreOutcome.RejectedBeforeOwnership ->
+            "Restore rejected: ${outcome.reason}"
+        is com.ireum.ytdl.database.RestoreOutcome.RecoveryPending ->
+            "Restore remains pending and will recover automatically."
+        is com.ireum.ytdl.database.RestoreOutcome.CommittedReconciliationPending ->
+            "Restored data is committed; background reconciliation remains pending."
+        is com.ireum.ytdl.database.RestoreOutcome.Completed -> "Restore completed."
     }
 }
 
