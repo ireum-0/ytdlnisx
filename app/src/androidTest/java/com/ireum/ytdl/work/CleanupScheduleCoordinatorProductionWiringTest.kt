@@ -26,6 +26,8 @@ import androidx.work.impl.utils.futures.SettableFuture
 import androidx.work.workDataOf
 import com.google.common.util.concurrent.ListenableFuture
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
+import com.ireum.ytdl.database.RestoreOutcome
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.BackupSettingsItem
 import com.ireum.ytdl.database.models.DownloadItem
@@ -347,27 +349,26 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             CleanupScheduleCoordinator.authorityCommitOverrideForTesting = { false }
             CleanupScheduleCoordinator.reconcile(context)
 
-            assertFalse(
-                SettingsViewModel(context as android.app.Application).restoreData(
-                    RestoreAppDataItem(
-                        settings = listOf(
-                            BackupSettingsItem(
-                                "cleanup_leftover_downloads",
-                                CleanupSchedulePolicy.WEEKLY,
-                                "String",
-                            ),
-                            BackupSettingsItem(
-                                "cleanup_leftover_downloads_generation",
-                                "imported-reset-generation",
-                                "String",
-                            ),
-                            BackupSettingsItem("f10_restore_reset", "must-not-apply", "String"),
+            val pendingReset = SettingsViewModel(context as android.app.Application).restoreData(
+                RestoreAppDataItem(
+                    settings = listOf(
+                        BackupSettingsItem(
+                            "cleanup_leftover_downloads",
+                            CleanupSchedulePolicy.WEEKLY,
+                            "String",
                         ),
+                        BackupSettingsItem(
+                            "cleanup_leftover_downloads_generation",
+                            "imported-reset-generation",
+                            "String",
+                        ),
+                        BackupSettingsItem("f10_restore_reset", "must-not-apply", "String"),
                     ),
-                    context,
-                    resetData = true,
                 ),
+                context,
+                resetData = true,
             )
+            assertTrue(pendingReset is RestoreOutcome.RecoveryPending)
             assertEquals(generation, legacyPreferences.getString("cleanup_leftover_downloads_generation", null))
             assertEquals(CleanupSchedulePolicy.DAILY, legacyPreferences.getString("cleanup_leftover_downloads", null))
             assertFalse(legacyPreferences.contains("f10_restore_reset"))
@@ -376,6 +377,9 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             CleanupScheduleCoordinator.commitFailureAppliesMemoryForTesting = false
             CleanupScheduleCoordinator.authorityCommitOverrideForTesting = null
             CleanupScheduleCoordinator.reconcile(context)
+            assertTrue(
+                RestoreTransactionCoordinator.recover(context) is com.ireum.ytdl.database.RestoreOutcome.Completed,
+            )
 
             assertEquals(generation, preferences.getString("cleanup_leftover_downloads_generation", null))
             assertEquals(
@@ -2555,7 +2559,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     ),
                     context,
                     resetData = true,
-                )
+                ) is RestoreOutcome.Completed
             )
             assertEquals(rootOne.absolutePath, legacyPreferences.getString("cache_path", null))
             assertEquals("no", legacyPreferences.getString("settings_restore_reset", null))
@@ -3630,7 +3634,7 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                     RestoreAppDataItem(settings = importedSettings),
                     context,
                     resetData = resetData,
-                )
+                ) is RestoreOutcome.Completed
             )
             assertEquals(
                 rootOne.canonicalFile.absolutePath,

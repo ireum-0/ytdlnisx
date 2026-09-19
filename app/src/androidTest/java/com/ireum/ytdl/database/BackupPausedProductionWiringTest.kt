@@ -88,7 +88,7 @@ class BackupPausedProductionWiringTest {
                 RestoreAppDataItem(paused = listOf(encodedItem)),
                 context,
                 resetData = true,
-            )
+            ).isCompleted()
         )
 
         val restored = database.downloadDao.getAllDownloadsList().single()
@@ -135,7 +135,7 @@ class BackupPausedProductionWiringTest {
                 RestoreAppDataItem(paused = listOf(pausedDownload(orderPosition = 9L))),
                 context,
                 resetData = true,
-            )
+            ).isCompleted()
         )
 
         val rows = database.downloadDao.getAllDownloadsList()

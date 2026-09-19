@@ -207,7 +207,7 @@ class BackupPlaylistProductionWiringTest {
                 ),
                 context,
                 resetData = true,
-            )
+            ).isCompleted()
         )
 
         assertTrue(database.playlistDao.getAllPlaylistsSync().none { it.name == "Old" })

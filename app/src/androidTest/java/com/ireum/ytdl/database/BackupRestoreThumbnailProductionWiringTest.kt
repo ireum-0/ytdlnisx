@@ -75,8 +75,8 @@ class BackupRestoreThumbnailProductionWiringTest {
             resetData = false,
         )
 
-        assertTrue(first)
-        assertTrue(second)
+        assertTrue(first.isCompleted())
+        assertTrue(second.isCompleted())
         val restored = database.historyDao.getAll().sortedBy { it.id }
         assertEquals(2, restored.size)
         val firstPath = File(restored[0].customThumb)
@@ -99,7 +99,7 @@ class BackupRestoreThumbnailProductionWiringTest {
             resetData = true,
         )
 
-        assertTrue(success)
+        assertTrue(success.isCompleted())
         assertEquals("", database.historyDao.getAll().single().customThumb)
     }
 
@@ -120,7 +120,7 @@ class BackupRestoreThumbnailProductionWiringTest {
             resetData = true,
         )
 
-        assertFalse(success)
+        assertFalse(success.isCompleted())
         assertEquals(0, database.historyDao.getCount())
         assertTrue(
             !restoredThumbnailDirectory.exists() ||
@@ -145,7 +145,7 @@ class BackupRestoreThumbnailProductionWiringTest {
             resetData = false,
         )
 
-        assertFalse(result)
+        assertFalse(result.isCompleted())
         val rows = database.historyDao.getAll()
         assertTrue(rows.any { it.id == unrelatedId })
         val failedRow = rows.single { it.url == "https://example.com/restore-90" }
@@ -176,7 +176,7 @@ class BackupRestoreThumbnailProductionWiringTest {
                 resetData = false,
             )
 
-            assertFalse(result)
+            assertFalse(result.isCompleted())
             assertEquals(listOf(unrelatedId), database.historyDao.getAll().map { it.id })
             assertTrue(
                 !restoredThumbnailDirectory.exists() ||

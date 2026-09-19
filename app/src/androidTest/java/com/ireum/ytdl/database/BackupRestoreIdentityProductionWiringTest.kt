@@ -207,7 +207,7 @@ class BackupRestoreIdentityProductionWiringTest {
             resetData = false,
         )
 
-        assertTrue(success)
+        assertTrue(success.isCompleted())
         val imported = database.youtuberGroupDao.getGroupByName("imported-visible")!!
         val visible = PreferenceManager.getDefaultSharedPreferences(context)
             .getStringSet("history_visible_child_youtuber_groups", emptySet())
@@ -299,7 +299,7 @@ class BackupRestoreIdentityProductionWiringTest {
             resetData = false,
         )
 
-        assertTrue(success)
+        assertTrue(success.isCompleted())
         val importedRule = database.automaticKeywordRuleDao.getAllRules()
             .single { it.conditionKey == "youtube:playlist:IMPORTED" }
         val importedHistory = database.historyDao.getAll()
