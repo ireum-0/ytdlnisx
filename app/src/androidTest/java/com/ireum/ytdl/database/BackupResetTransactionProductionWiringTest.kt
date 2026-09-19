@@ -215,6 +215,33 @@ class BackupResetTransactionProductionWiringTest {
     }
 
     @Test
+    fun secondResetCannotReplaceAnActiveOwner() = runBlocking {
+        val throwOnce = AtomicBoolean(true)
+        RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = {
+            if (throwOnce.compareAndSet(true, false)) error("F11 active-owner boundary")
+        }
+
+        val first = RestoreTransactionCoordinator.begin(
+            context,
+            plan(history(17L, "https://example.com/active-owner-first")),
+        )
+        assertTrue(first is RestoreOutcome.RecoveryPending)
+        assertTrue(RestoreGate.isRestoreInProgress(context))
+
+        RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = null
+        val second = RestoreTransactionCoordinator.begin(
+            context,
+            plan(history(18L, "https://example.com/active-owner-second")),
+        )
+        assertTrue(second is RestoreOutcome.RejectedBeforeOwnership)
+        assertEquals(
+            listOf("https://example.com/active-owner-first"),
+            database.historyDao.getAll().map { it.url },
+        )
+        assertFalse(RestoreGate.isRestoreInProgress(context))
+    }
+
+    @Test
     fun stagingFailureBeforeActivePublicationLeavesLiveStateUntouched() = runBlocking {
         val existing = history(5L, "https://example.com/staging-existing")
         database.historyDao.insertAndGetIdRaw(existing)

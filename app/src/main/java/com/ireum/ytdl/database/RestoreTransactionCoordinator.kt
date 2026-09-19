@@ -366,7 +366,13 @@ object RestoreTransactionCoordinator {
                 return@withLock RestoreOutcome.RecoveryPending(null, null, blocked.message.orEmpty())
             }
             if (existing != null) {
-                return@withLock drive(context, existing)
+                val existingOutcome = drive(context, existing)
+                return@withLock when (existingOutcome) {
+                    is RestoreOutcome.Completed -> RestoreOutcome.RejectedBeforeOwnership(
+                        "Existing Reset operation ${existing.journal.operationId} was recovered; retry this Reset request",
+                    )
+                    else -> existingOutcome
+                }
             }
 
             val validatedPlan = try {
