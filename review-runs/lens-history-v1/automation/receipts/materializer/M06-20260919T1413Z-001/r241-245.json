@@ -1,0 +1,205 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "segment_range": [
+    241,
+    245
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6dd62519edf788db869c87eb9d001b393065781a",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M06-20260919T1413Z-001/r236-240.json",
+    "blob_sha": "26059e231c2fba50f1ae46a6b6f367583faa3010"
+  },
+  "rank_receipts": [
+    {
+      "rank": 241,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r241.json",
+      "blob_sha": "2d06a2ccf96eea706eb180f8f4facf64edffdf83"
+    },
+    {
+      "rank": 242,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r242.json",
+      "blob_sha": "4729f6c5fe3977789a93f8746abf7482e6fd90e4"
+    },
+    {
+      "rank": 243,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r243.json",
+      "blob_sha": "b271eb82378d0ac36ad5ecbc55c15cdee9b9b520"
+    },
+    {
+      "rank": 244,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r244.json",
+      "blob_sha": "dfe4af2f1c0c5f9b978addeda1f093eb9ca43521"
+    },
+    {
+      "rank": 245,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r245.json",
+      "blob_sha": "7c75bfc20ddd55a516d584f8dc088423e7f47539"
+    }
+  ],
+  "semantic_remediation_pending": {
+    "target_rank": 242,
+    "target_field": "checkpoint.kind",
+    "replacement_path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/r242-kind-replacement-001.json",
+    "replacement_blob_sha": "7d8ba15d9ea24124a341586893ee5a6264b21873",
+    "effective_aggregate_overlay_required": true,
+    "note": "This raw aggregate preserves original immutable rank classifications; semantic consumers must not apply the r242 replacement until the required effective aggregate overlay is sealed."
+  },
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      241,
+      242,
+      243,
+      244,
+      245
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity",
+        "rank": 241,
+        "source_blob_sha": "b7d9419f1f6bc12b7b086f5b49dc79b4e311fffa"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 29 as provisional severity state",
+        "rank": 241,
+        "source_blob_sha": "b7d9419f1f6bc12b7b086f5b49dc79b4e311fffa"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source carries BUG-BACKUP-04 as existing P1 provisionally OPEN while final classification/closure work remains pending",
+        "rank": 241,
+        "source_blob_sha": "b7d9419f1f6bc12b7b086f5b49dc79b4e311fffa"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves exact publication identity residual, consumer/effect closure, exact-SHA execution evidence, and final recount unresolved; independent execution is explicitly NOT EXECUTED",
+        "rank": 241,
+        "source_blob_sha": "b7d9419f1f6bc12b7b086f5b49dc79b4e311fffa"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly identifies itself as an addendum and records an additional exact-source residual at the same publication boundary",
+        "rank": 242,
+        "source_blob_sha": "5e4d95de4a48ac9ef8760ecccfe628eb1f4c50b0"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly states stale sibling enumeration can publish/return an unproven sibling and that this is a subcase of the same existing F4 publication correctness root",
+        "rank": 242,
+        "source_blob_sha": "5e4d95de4a48ac9ef8760ecccfe628eb1f4c50b0"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly records Count delta 0 and canonical count remains P0 2 / P1 1 / P2 29",
+        "rank": 242,
+        "source_blob_sha": "5e4d95de4a48ac9ef8760ecccfe628eb1f4c50b0"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED",
+        "rank": 242,
+        "source_blob_sha": "5e4d95de4a48ac9ef8760ecccfe628eb1f4c50b0"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly establishes the process-global lastMoveFailureDetails race as a residual of existing BUG-BACKUP-04 and not a new blocker/root",
+        "rank": 243,
+        "source_blob_sha": "213c6446144f51f2f79f25404108f8146f18b595"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly records canonical count delta 0 and blockers P0 2 / P1 1 / P2 29",
+        "rank": 243,
+        "source_blob_sha": "213c6446144f51f2f79f25404108f8146f18b595"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source keeps the existing P1 open and the contiguous independently CLEAN basis at the prior review base; no new canonical root is created",
+        "rank": 243,
+        "source_blob_sha": "213c6446144f51f2f79f25404108f8146f18b595"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "implementation-agent test evidence is not independent reviewer execution, focused tests do not exercise the concurrent/global publication-outcome race, and source explicitly records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 243,
+        "source_blob_sha": "213c6446144f51f2f79f25404108f8146f18b595"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 29 as final provisional blocker count with no canonical count change",
+        "rank": 244,
+        "source_blob_sha": "95a9380d2184b6de4587484144c7e2300b65fa6d"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source preserves previously FIXED-CLOSED status on unchanged implementation SHA and reports no regression evidence",
+        "rank": 244,
+        "source_blob_sha": "95a9380d2184b6de4587484144c7e2300b65fa6d"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "runtime manifestation of BUG-BACKUP-02 is explicitly NOT_VERIFIED and independent runtime/device execution was not performed",
+        "rank": 244,
+        "source_blob_sha": "95a9380d2184b6de4587484144c7e2300b65fa6d"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity",
+        "rank": 245,
+        "source_blob_sha": "51e19da04e24f14dc2d58e42c3a72ff57943bc85"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 29 as provisional blockers",
+        "rank": 245,
+        "source_blob_sha": "51e19da04e24f14dc2d58e42c3a72ff57943bc85"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source preserves previously closed status on unchanged implementation SHA and reports no fresh regression evidence",
+        "rank": 245,
+        "source_blob_sha": "51e19da04e24f14dc2d58e42c3a72ff57943bc85"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "possible separate destructive-cleanup root was investigated but not established; runtime/device manifestation is NOT_VERIFIED; final root-ownership reconciliation and branch recount remain pending; independent execution is NOT EXECUTED",
+        "rank": 245,
+        "source_blob_sha": "51e19da04e24f14dc2d58e42c3a72ff57943bc85"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 231-270 is receipted"
+  }
+}
