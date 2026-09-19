@@ -1,0 +1,159 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "segment_range": [
+    201,
+    205
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "68e11966a1ab046c9bc0cecf69a5e75d2b8382b8",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M05-20260919T0449Z-001/r196-200.json",
+    "blob_sha": "a1f39ef93d486de5a3a769e8e02a76ccea5e591b"
+  },
+  "rank_receipts": [
+    {
+      "rank": 201,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r201.json",
+      "blob_sha": "4c9fd39b9408688ec358f68f163052f70cb994c7"
+    },
+    {
+      "rank": 202,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r202.json",
+      "blob_sha": "84358e6728c0bbfd8d20940983c8edf998f08f56"
+    },
+    {
+      "rank": 203,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r203.json",
+      "blob_sha": "601eb8208bf83cfc1fd00bff3b1826361bb23f20"
+    },
+    {
+      "rank": 204,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r204.json",
+      "blob_sha": "d8d4393f32faf5cd9203f3cee6b2311e38036c2d"
+    },
+    {
+      "rank": 205,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r205.json",
+      "blob_sha": "3a645e39e3065a7a2d9eb124ab1a8e0059ea69c6"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      201,
+      202,
+      203,
+      204,
+      205
+    ],
+    "triggers": [
+      {
+        "rank": 201,
+        "type": "AMBIGUOUS_KIND",
+        "source_blob_sha": "1fa76ffbffcf89e03f02cc6978da343dd9ee7f37"
+      },
+      {
+        "rank": 201,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "1fa76ffbffcf89e03f02cc6978da343dd9ee7f37"
+      },
+      {
+        "rank": 201,
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "source_blob_sha": "1fa76ffbffcf89e03f02cc6978da343dd9ee7f37",
+        "finding_id": "BUG-CLEANUP-01"
+      },
+      {
+        "rank": 201,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "1fa76ffbffcf89e03f02cc6978da343dd9ee7f37"
+      },
+      {
+        "rank": 202,
+        "type": "AMBIGUOUS_KIND",
+        "source_blob_sha": "bf8d4c9209b30b1abaaee92861333ba7315fa8dc"
+      },
+      {
+        "rank": 202,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "bf8d4c9209b30b1abaaee92861333ba7315fa8dc"
+      },
+      {
+        "rank": 202,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "bf8d4c9209b30b1abaaee92861333ba7315fa8dc"
+      },
+      {
+        "rank": 203,
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "source_blob_sha": "91eba27dbec8b524f2b4e487e10474e6b60b3aa9",
+        "finding_id": "BUG-CLEANUP-01"
+      },
+      {
+        "rank": 203,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "91eba27dbec8b524f2b4e487e10474e6b60b3aa9"
+      },
+      {
+        "rank": 204,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "12f87519d535e69b78e6ebb78afc2cc9c1b2d5b8"
+      },
+      {
+        "rank": 204,
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "source_blob_sha": "12f87519d535e69b78e6ebb78afc2cc9c1b2d5b8",
+        "finding_id": "BUG-CLEANUP-01"
+      },
+      {
+        "rank": 204,
+        "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "source_blob_sha": "12f87519d535e69b78e6ebb78afc2cc9c1b2d5b8",
+        "finding_id": "BUG-CLEANUP-01"
+      },
+      {
+        "rank": 204,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "12f87519d535e69b78e6ebb78afc2cc9c1b2d5b8"
+      },
+      {
+        "rank": 205,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "7c26434e1f92fb416858a700e5b5fd9a003b1c8e"
+      },
+      {
+        "rank": 205,
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "source_blob_sha": "7c26434e1f92fb416858a700e5b5fd9a003b1c8e",
+        "finding_id": "BUG-CLEANUP-01"
+      },
+      {
+        "rank": 205,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "7c26434e1f92fb416858a700e5b5fd9a003b1c8e"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 191-230 is receipted"
+  }
+}
