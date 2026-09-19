@@ -1,6 +1,6 @@
 {
   "schema_version": "lens-history-v1-automation-state-v3",
-  "status": "ACTIVE",
+  "status": "PAUSED_RETRYABLE",
   "run_id": "M06-20260919T1413Z-001",
   "started_at": "2026-09-19T14:13:50Z",
   "stage": "MATERIALIZE_231_270",
@@ -47,17 +47,32 @@
       "path": "review-runs/lens-history-v1/automation/receipts/materializer/M06-20260919T1413Z-001/r236-240.json",
       "blob_sha": "26059e231c2fba50f1ae46a6b6f367583faa3010",
       "corrections": []
+    },
+    {
+      "range": [
+        241,
+        245
+      ],
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M06-20260919T1413Z-001/r241-245.json",
+      "blob_sha": "547f6f6f1543ec0f36ef5b4fd0766ba5a2d07dbf",
+      "corrections": [],
+      "remediations": [
+        {
+          "effective_overlay_path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/r241-245-kind-effective-001.json",
+          "effective_overlay_blob_sha": "d5a39d2f36c47e9e1fa826aae689cb18feac4200"
+        }
+      ]
     }
   ],
   "rank_evidence_provenance": {
     "completed_rank_range": [
       231,
-      240
+      245
     ],
-    "receipt_count": 10,
+    "receipt_count": 15,
     "last_rank_receipt": {
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r240.json",
-      "blob_sha": "7f61ea58453d26afa2633264592c6c18fff73824"
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r245.json",
+      "blob_sha": "7c75bfc20ddd55a516d584f8dc088423e7f47539"
     }
   },
   "corrections": [],
@@ -98,10 +113,14 @@
         241,
         245
       ],
-      "effective_aggregate_required": true
+      "effective_aggregate_required": false,
+      "effective_aggregate": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/r241-245-kind-effective-001.json",
+        "blob_sha": "d5a39d2f36c47e9e1fa826aae689cb18feac4200"
+      }
     }
   ],
-  "next_rank": 241,
+  "next_rank": 246,
   "in_progress_exception_ranks": [
     231,
     232,
@@ -112,7 +131,12 @@
     237,
     238,
     239,
-    240
+    240,
+    241,
+    242,
+    243,
+    244,
+    245
   ],
   "resume_safe": true,
   "materialization_outputs": {
