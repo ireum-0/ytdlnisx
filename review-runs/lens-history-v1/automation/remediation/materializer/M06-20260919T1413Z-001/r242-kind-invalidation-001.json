@@ -1,0 +1,62 @@
+{
+  "schema_version": "lens-history-v1-materializer-kind-invalidation-v1",
+  "remediation_protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v2-kind.md",
+    "blob_sha": "d909926923428a9d83aed72c37c6f54bcdc742ff"
+  },
+  "run_id": "M06-20260919T1413Z-001",
+  "rank": 242,
+  "hold_state": {
+    "path": "review-runs/lens-history-v1/automation/materializer-state.json",
+    "blob_sha": "b6ec9d01fa6a2daa7d6c211d9d83b1a42da05268",
+    "commit_sha": "63e776a8841a785922b6518a65c9e523f1d3bac5",
+    "hold_class": "DETERMINISTIC_CLASSIFICATION_MISMATCH"
+  },
+  "original_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r242.json",
+    "blob_sha": "4729f6c5fe3977789a93f8746abf7482e6fd90e4"
+  },
+  "exact_source": {
+    "path": "review-runs/checkpoints/2026-09-13__909d6e68__backup04-exact-publication-identity-addendum.md",
+    "source_blob_sha": "5e4d95de4a48ac9ef8760ecccfe628eb1f4c50b0",
+    "frozen_blob_sha": "5e4d95de4a48ac9ef8760ecccfe628eb1f4c50b0",
+    "source_frozen_match": true
+  },
+  "document_identity_rule": {
+    "path": "review-runs/lens-history-v1/rules/document-identity-v1.md",
+    "blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda"
+  },
+  "target_field": "checkpoint.kind",
+  "recorded_value": {
+    "state": "DIRECT",
+    "value": "ADDENDUM",
+    "evidence": "source title explicitly identifies exact publication identity addendum"
+  },
+  "invalidation_reason": "The source has no explicit checkpoint_kind or equivalent kind field. Under pinned document-identity-v1, a document that positively identifies itself as an addendum, records a same-root finding/count refinement, and does not claim to be the run-final checkpoint/verdict is DERIVABLE SUBSTANTIVE_NON_FINAL rather than DIRECT ADDENDUM.",
+  "deterministic_expected_value": {
+    "state": "DERIVABLE",
+    "value": "SUBSTANTIVE_NON_FINAL",
+    "rule": "lens-history-v1/document-identity-v1",
+    "evidence": [
+      "title positively identifies the source as an exact publication identity addendum",
+      "body records an additional same-root BUG-BACKUP-04 residual and count delta 0",
+      "body explicitly states the addendum is a subcase of the same existing F4 root and not a new blocker",
+      "document does not claim to be the final checkpoint/verdict for a review run"
+    ]
+  },
+  "effectiveness_eligibility_check": {
+    "recorded_value": {
+      "state": "NOT_APPLICABLE",
+      "reason": "addendum is not a cumulative-eligible final checkpoint"
+    },
+    "expected_under_corrected_kind": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness"
+    },
+    "changes_required": false
+  },
+  "non_target_fields_authoritative": true,
+  "changes_finding_attribution": false,
+  "changes_exception_detection": false,
+  "original_blob_remains_immutable_chain_anchor": true
+}
