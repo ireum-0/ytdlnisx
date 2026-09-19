@@ -266,7 +266,7 @@ internal object RestoreOperationStore {
         .digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun writeAtomic(file: File, bytes: ByteArray) {
-        check(file.parentFile?.mkdirs() != false)
+        check(file.parentFile?.let { it.mkdirs() || it.isDirectory } == true)
         val temporary = File(file.parentFile, ".${file.name}.${UUID.randomUUID()}.tmp")
         FileOutputStream(temporary).use { output ->
             output.write(bytes)
