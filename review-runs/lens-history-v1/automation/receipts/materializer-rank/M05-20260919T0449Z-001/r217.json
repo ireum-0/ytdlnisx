@@ -1,0 +1,131 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "rank": 217,
+  "materializer_state_blob": "17e6d5c46ade90b1c036f4d7fdf8f1a8b4697398",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "68e11966a1ab046c9bc0cecf69a5e75d2b8382b8",
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r216.json",
+    "blob_sha": "5785c9024c95d40be1886a3221576f4076691e52"
+  },
+  "history": {
+    "commit_sha": "cf69d7e7a1bf7d895f6a493338f042fff42b273a",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=217"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-13__a12c5805__observe-handoff-p0-current-basis-revalidation.md",
+        "status": "added",
+        "source_blob_sha": "273beb1afeb1d8255ff6d24443d63c744b3175d9",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "273beb1afeb1d8255ff6d24443d63c744b3175d9",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-13__a12c5805__observe-handoff-p0-current-basis-revalidation.md",
+    "status": "added",
+    "source_blob_sha": "273beb1afeb1d8255ff6d24443d63c744b3175d9",
+    "frozen_blob_sha": "273beb1afeb1d8255ff6d24443d63c744b3175d9",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "a12c58055fff51b104f8b56fd53b534b8d7e5df4",
+      "evidence": "source explicitly records Exact independently CLEAN implementation basis reviewed"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "source positively identifies BUG-OBSERVE-HANDOFF-01 exact CLEAN-basis generation/revocation revalidation, records root/count reconciliation and stable correction boundary, and is not identified as final"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness by document-identity-v1"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OBSERVE-HANDOFF-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P0 OPEN / NOT_CLEAN; count delta 0"
+      },
+      "finding_relation": {
+        "state": "DIRECT",
+        "value": "ordinary Observe requests lack immutable configuration generation; stale workers can republish full-row source state, positive Download intent, destructive History/file mutations and recurring successors after edit/STOP/delete; historical BUG-OBSERVE-04 remains an alias/subcase while F3, BUG-OBSERVE-02 and BUG-OBSERVE-03 remain distinct"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-OBSERVE-HANDOFF-01",
+      "evidence": "exact-basis revalidation reconciles intervening duplicate-admission changes, confirmed-retry fingerprint narrowing, positive/destructive consumers and neighboring Observe roots"
+    },
+    {
+      "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id": "BUG-OBSERVE-HANDOFF-01",
+      "evidence": "stale full-row source persistence, positive Download publication, destructive History/file mutation and recurring successor publication are preserved as same-root generation-fencing consumers; BUG-OBSERVE-04 remains an alias/subcase"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-OBSERVE-HANDOFF-01",
+      "evidence": "source explicitly says keep the root counted once as P0, canonical count delta 0 and P0 2 / P1 1 / P2 26"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "independent execution is explicitly NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
