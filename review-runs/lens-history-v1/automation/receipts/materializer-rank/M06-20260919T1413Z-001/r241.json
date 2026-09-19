@@ -1,0 +1,124 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "rank": 241,
+  "materializer_state_blob": "8a9a42630fe777682ed269c4c254c198bbc44f08",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6dd62519edf788db869c87eb9d001b393065781a",
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r240.json",
+    "blob_sha": "7f61ea58453d26afa2633264592c6c18fff73824"
+  },
+  "history": {
+    "commit_sha": "d47e03fc45e9a7d31623dee3e3afa2c27be4be15",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=241"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12T192600Z__909d6e68__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "b7d9419f1f6bc12b7b086f5b49dc79b4e311fffa",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "b7d9419f1f6bc12b7b086f5b49dc79b4e311fffa",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12T192600Z__909d6e68__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "b7d9419f1f6bc12b7b086f5b49dc79b4e311fffa",
+    "frozen_blob_sha": "b7d9419f1f6bc12b7b086f5b49dc79b4e311fffa",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "909d6e68a12e84b78455ec600bdc7a9b1727e0e2",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic checkpoint source has no explicit checkpoint_kind/equivalent structural field and does not positively identify as final/intermediate/bootstrap/addendum/reconciliation/scope-expansion; filename, commit message, chronology, and remaining-scope prose are insufficient"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "referenced_findings": {
+        "state": "DIRECT",
+        "value": [
+          {
+            "finding_id": "BUG-BACKUP-04",
+            "relation": "source explicitly records existing P1 as still provisionally OPEN and leaves exact publication identity/consumer-effect closure as unresolved review work; no new canonical finding or closure is established"
+          }
+        ]
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint source lacks positive structural identity"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records P0 2 / P1 1 / P2 29 as provisional severity state"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "finding_id": "BUG-BACKUP-04",
+      "evidence": "source carries BUG-BACKUP-04 as existing P1 provisionally OPEN while final classification/closure work remains pending"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "source leaves exact publication identity residual, consumer/effect closure, exact-SHA execution evidence, and final recount unresolved; independent execution is explicitly NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
