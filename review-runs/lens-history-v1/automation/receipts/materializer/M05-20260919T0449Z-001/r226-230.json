@@ -1,0 +1,189 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "segment_range": [
+    226,
+    230
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "68e11966a1ab046c9bc0cecf69a5e75d2b8382b8",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M05-20260919T0449Z-001/r221-225.json",
+    "blob_sha": "96a9fae8dfe57ee4159c135d08d5fcf83a4432df"
+  },
+  "rank_receipts": [
+    {
+      "rank": 226,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r226.json",
+      "blob_sha": "3c387f561028f41eeef8f303cfe899f93ceb6297"
+    },
+    {
+      "rank": 227,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r227.json",
+      "blob_sha": "d28eb67c14289a617907c7062f9536cd90ffd735"
+    },
+    {
+      "rank": 228,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r228.json",
+      "blob_sha": "163dd177ab09bcf40e5aa2e8cf08c59db601269f"
+    },
+    {
+      "rank": 229,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r229.json",
+      "blob_sha": "974b9ec5694d143d970d8804ddcc5efde48ad48b"
+    },
+    {
+      "rank": 230,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r230.json",
+      "blob_sha": "413f691e106947a0ba56896c6da4c20d81684c76"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      226,
+      227,
+      228,
+      229,
+      230
+    ],
+    "triggers": [
+      {
+        "rank": 226,
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "source_blob_sha": "39b215d12ce676ed01f13a1b0e3e590860aa494e",
+        "finding_id": "BUG-BACKUP-02"
+      },
+      {
+        "rank": 226,
+        "type": "COUNT_RECONCILIATION",
+        "source_blob_sha": "39b215d12ce676ed01f13a1b0e3e590860aa494e",
+        "finding_id": "BUG-BACKUP-02"
+      },
+      {
+        "rank": 226,
+        "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "source_blob_sha": "39b215d12ce676ed01f13a1b0e3e590860aa494e",
+        "finding_id": "BUG-BACKUP-02"
+      },
+      {
+        "rank": 226,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "39b215d12ce676ed01f13a1b0e3e590860aa494e",
+        "finding_id": "BUG-BACKUP-02"
+      },
+      {
+        "rank": 226,
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "source_blob_sha": "39b215d12ce676ed01f13a1b0e3e590860aa494e",
+        "finding_id": "BUG-BACKUP-02"
+      },
+      {
+        "rank": 227,
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "source_blob_sha": "bd9107454322ec5dce73bbe0dff2da0beb802b72",
+        "finding_id": "BUG-BACKUP-04"
+      },
+      {
+        "rank": 227,
+        "type": "COUNT_RECONCILIATION",
+        "source_blob_sha": "bd9107454322ec5dce73bbe0dff2da0beb802b72",
+        "finding_id": "BUG-BACKUP-04"
+      },
+      {
+        "rank": 227,
+        "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "source_blob_sha": "bd9107454322ec5dce73bbe0dff2da0beb802b72",
+        "finding_id": "BUG-BACKUP-04"
+      },
+      {
+        "rank": 227,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "bd9107454322ec5dce73bbe0dff2da0beb802b72",
+        "finding_id": "BUG-BACKUP-04"
+      },
+      {
+        "rank": 228,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "71dbf7e1ef1481000780dbb83009927865d8f617"
+      },
+      {
+        "rank": 228,
+        "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "source_blob_sha": "71dbf7e1ef1481000780dbb83009927865d8f617",
+        "finding_id": "BUG-BACKUP-03"
+      },
+      {
+        "rank": 228,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "71dbf7e1ef1481000780dbb83009927865d8f617",
+        "finding_id": "BUG-BACKUP-03"
+      },
+      {
+        "rank": 229,
+        "type": "AMBIGUOUS_KIND",
+        "source_blob_sha": "74dada861d49a1887ba1e576aa726f3087c99538"
+      },
+      {
+        "rank": 229,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "74dada861d49a1887ba1e576aa726f3087c99538"
+      },
+      {
+        "rank": 229,
+        "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "source_blob_sha": "74dada861d49a1887ba1e576aa726f3087c99538",
+        "finding_id": "BUG-BACKUP-03"
+      },
+      {
+        "rank": 229,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "74dada861d49a1887ba1e576aa726f3087c99538",
+        "finding_id": "BUG-BACKUP-03"
+      },
+      {
+        "rank": 230,
+        "type": "AMBIGUOUS_KIND",
+        "source_blob_sha": "dec5e4c9cb06bea45d8088b04674148186ae342b"
+      },
+      {
+        "rank": 230,
+        "type": "PROVISIONAL_COUNTS",
+        "source_blob_sha": "dec5e4c9cb06bea45d8088b04674148186ae342b"
+      },
+      {
+        "rank": 230,
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "source_blob_sha": "dec5e4c9cb06bea45d8088b04674148186ae342b",
+        "finding_id": "BUG-BACKUP-03"
+      },
+      {
+        "rank": 230,
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "source_blob_sha": "dec5e4c9cb06bea45d8088b04674148186ae342b",
+        "finding_id": "BUG-BACKUP-03"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 191-230 is receipted"
+  }
+}
