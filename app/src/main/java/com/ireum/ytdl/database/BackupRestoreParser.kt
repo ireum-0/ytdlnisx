@@ -261,7 +261,7 @@ internal object BackupRestoreParser {
         compatibility: BackupCompatibility,
     ): RestoreAppDataItem {
         val settings = input.settings
-            ?.filter(BackupSettingsUtil::isPortablePreferenceKey)
+            ?.filter { BackupSettingsUtil.isPortablePreferenceKey(it.key) }
             ?.also(::validateSettings)
         val history = input.downloads?.map { item ->
             require(item.id > 0L) { "History backup identity must be positive" }

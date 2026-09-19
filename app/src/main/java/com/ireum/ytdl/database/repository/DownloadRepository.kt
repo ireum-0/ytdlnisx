@@ -441,7 +441,7 @@ class DownloadRepository(private val database: DBManager) {
                 "History replacement refusal was not restored for download $restoredId"
             }
         }
-        restoredId
+        return restoredId
     }
 
     /**

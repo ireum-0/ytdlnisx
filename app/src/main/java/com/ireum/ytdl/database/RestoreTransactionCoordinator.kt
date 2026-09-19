@@ -204,7 +204,7 @@ internal object RestoreOperationStore {
     fun load(context: Context): RestoreRecord? {
         val active = File(root(context), ACTIVE_FILE)
         if (!active.isFile) return null
-        try {
+        return try {
             val pointer = gson.fromJson(
                 readAtomic(active).toString(Charsets.UTF_8),
                 RestorePointer::class.java,
@@ -447,7 +447,7 @@ object RestoreTransactionCoordinator {
 
     private suspend fun drive(context: Context, initial: RestoreRecord): RestoreOutcome {
         var record = initial
-        try {
+        return try {
             while (true) {
                 when (RestorePhase.valueOf(record.journal.phase)) {
                     RestorePhase.PREPARED -> {
@@ -496,6 +496,7 @@ object RestoreTransactionCoordinator {
                     }
                 }
             }
+            error("Restore drive loop terminated unexpectedly")
         } catch (error: Exception) {
             runCatching { RestoreOperationStore.recordError(record, error) }
             val phase = runCatching { RestorePhase.valueOf(record.journal.phase) }.getOrNull()

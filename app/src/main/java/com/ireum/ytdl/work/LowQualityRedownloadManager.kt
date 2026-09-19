@@ -158,7 +158,6 @@ class LowQualityRedownloadManager private constructor(
         recoveryRepository: LowQualityRedownloadRepository = repository,
     ) {
         if (RestoreGate.isRestoreInProgress(appContext)) {
-            completion(IllegalStateException("Restore transaction is active"))
             return
         }
         try {
