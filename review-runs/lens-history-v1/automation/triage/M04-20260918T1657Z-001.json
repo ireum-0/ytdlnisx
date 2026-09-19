@@ -1,0 +1,291 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M04-20260918T1657Z-001",
+  "stage": "MATERIALIZE_151_190",
+  "logical_rank_range": [
+    151,
+    190
+  ],
+  "data_head": "128452c84d68a2eac31ab16273dc5c06c20d677f",
+  "complete_state_blob": "c851c841b43cb9805d53c3d9fb1a2b96f80afde0",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "795c1ddebe5f5a815715c5682925309176bf5de8",
+    "50d8856eaa8e1bd02675b10e716c0972dd050f64",
+    "3750913153b1bfebd6906748412d69610267d6ad",
+    "e9e57ca5c9e8b984e3685f8b34e384323c1ac586",
+    "f1b30e30c6c2914273ce97b8201494a9b1a41ce5",
+    "59469e529fe9c9628d7e4b6d3d57fd594741920b",
+    "a71a8dbe09776952a21f45600e602edd78c868e7",
+    "86a0fd1e1afc13ec6a2e7e2fabcbc4632b447cfb"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M04-20260918T1657Z-001-materialization-151-190.json",
+    "blob_sha": "28848ad000b17ac531ef02b549a3bbcbce7fe527",
+    "status": "PASS"
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        151,
+        155
+      ],
+      "blob_sha": "561f983a95748346c60de1c49254f9360e9369bb"
+    },
+    {
+      "range": [
+        156,
+        160
+      ],
+      "blob_sha": "76d2459ae35df7caed99653a4ffd0c4704549af7"
+    },
+    {
+      "range": [
+        161,
+        165
+      ],
+      "blob_sha": "0309cce04a93e2771655ae625398120331573cc0"
+    },
+    {
+      "range": [
+        166,
+        170
+      ],
+      "blob_sha": "8edef66e62211b11ca3948149d72c77f7f90f62d"
+    },
+    {
+      "range": [
+        171,
+        175
+      ],
+      "blob_sha": "a796473c2720d3ea70727cc813e44a64a8d7c7f7"
+    },
+    {
+      "range": [
+        176,
+        180
+      ],
+      "blob_sha": "f52557a3a1a221c39901d3e92db654b39cfb31a9"
+    },
+    {
+      "range": [
+        181,
+        185
+      ],
+      "blob_sha": "8ae9a67b6151024ed80b1f43bc1f0007ce9f58e5"
+    },
+    {
+      "range": [
+        186,
+        190
+      ],
+      "blob_sha": "72209d573deefb512a18ec40dac71e0f0c5880c7"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "7881baa208aca7ad3b1d0e7132cf25a81cf0d25f",
+  "materializer_exception_rank_count": 40,
+  "independent_exception_ranks": [
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
+    188,
+    189,
+    190
+  ],
+  "independent_exception_rank_count": 40,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "human_review_packets": [
+    {
+      "topic": "generic checkpoint kind ambiguity",
+      "ranks": [
+        151,
+        156,
+        157,
+        165,
+        166,
+        169,
+        170,
+        172,
+        173,
+        180,
+        181,
+        186,
+        187
+      ],
+      "required_decision": "Preserve NOT_VERIFIED structural kind whenever exact source lacks a supported explicit/deterministically derivable identity; do not infer kind from filename, title wording, commit message or chronology."
+    },
+    {
+      "topic": "historical count reconciliation and superseding arithmetic",
+      "ranks": [
+        168,
+        169,
+        171,
+        172,
+        173,
+        178,
+        179,
+        180,
+        182,
+        183,
+        184,
+        188,
+        189,
+        190
+      ],
+      "required_decision": "Preserve each checkpoint's recorded count/status arithmetic at its exact historical basis, while treating rank 178 as the explicit later reconciliation that restores the omitted F8 closure and canonical P2=23; do not back-propagate later arithmetic into older records."
+    },
+    {
+      "topic": "source-semantic repaired versus canonical OPEN/CLOSED",
+      "ranks": [
+        164,
+        165,
+        168,
+        169,
+        171,
+        179,
+        180,
+        181,
+        182,
+        183,
+        184,
+        185,
+        186,
+        188,
+        189,
+        190
+      ],
+      "required_decision": "Preserve source-semantic repaired/fixed language separately from canonical disposition and independent-execution status; focused later residual/closure records may supersede an earlier semantic conclusion only prospectively, never by rewriting historical evidence."
+    },
+    {
+      "topic": "existing-root exact-basis residual and closure reconciliation",
+      "ranks": [
+        152,
+        153,
+        154,
+        158,
+        159,
+        160,
+        174,
+        175,
+        176,
+        177,
+        182,
+        183,
+        184,
+        188,
+        189,
+        190
+      ],
+      "required_decision": "Keep each explicitly identified finding as the existing root unless the source deterministically says otherwise; preserve same-root residuals/subcases and explicit closure/count deltas without inventing new roots or duplicate counts."
+    },
+    {
+      "topic": "provenance correction and historical authority",
+      "ranks": [
+        164,
+        166,
+        167
+      ],
+      "required_decision": "Use append-only correction evidence for the mistaken bootstrap review-governance SHA; preserve the erroneous earlier value as historical source text but never as authoritative governance provenance."
+    },
+    {
+      "topic": "provisional and NOT_VERIFIED execution evidence",
+      "ranks": [
+        151,
+        152,
+        153,
+        154,
+        155,
+        156,
+        157,
+        158,
+        159,
+        160,
+        161,
+        162,
+        163,
+        164,
+        165,
+        166,
+        167,
+        168,
+        169,
+        170,
+        171,
+        172,
+        173,
+        174,
+        175,
+        176,
+        177,
+        178,
+        179,
+        180,
+        181,
+        182,
+        183,
+        184,
+        185,
+        186,
+        187,
+        188,
+        189,
+        190
+      ],
+      "required_decision": "Treat provisional blocker counts, historical carry-forward status and absent exact-SHA independent runtime evidence conservatively; do not convert them into numeric lens effectiveness, deterministic runtime PASS, or unsupported current status."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_151_190": true,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
