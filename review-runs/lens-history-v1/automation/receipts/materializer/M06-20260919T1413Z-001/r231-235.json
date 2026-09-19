@@ -1,0 +1,179 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "segment_range": [
+    231,
+    235
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6dd62519edf788db869c87eb9d001b393065781a",
+  "previous_aggregate_receipt": null,
+  "rank_receipts": [
+    {
+      "rank": 231,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r231.json",
+      "blob_sha": "43c864f731c5caacdff3f7c5b07f22c6b4b3207d"
+    },
+    {
+      "rank": 232,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r232.json",
+      "blob_sha": "3dff66fd48c7201fa78f85bd7fb73329551dbbf2"
+    },
+    {
+      "rank": 233,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r233.json",
+      "blob_sha": "54c034d609f168f712dd104ae2c4518e7689e5b9"
+    },
+    {
+      "rank": 234,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r234.json",
+      "blob_sha": "14203ca4330e44ba1b5d36f59a364195f9307ff2"
+    },
+    {
+      "rank": 235,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r235.json",
+      "blob_sha": "8463e5b91873555664fa7fba1b47d79d275a1625"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      231,
+      232,
+      233,
+      234,
+      235
+    ],
+    "triggers": [
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 29 and NOT_CLEAN as the final provisional blocker recount",
+        "rank": 231,
+        "source_blob_sha": "0b1709188298e15731c04fb2a29aac92f2103d1f"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-UPDATER-02",
+        "evidence": "source explicitly states execution manifestation is NOT_VERIFIED in this run while source semantics are sufficient only to keep the already-existing finding OPEN",
+        "rank": 231,
+        "source_blob_sha": "0b1709188298e15731c04fb2a29aac92f2103d1f"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity",
+        "rank": 232,
+        "source_blob_sha": "1f609615865253211c47d70a5063ff1df76d1f4a"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 29 as provisional blockers",
+        "rank": 232,
+        "source_blob_sha": "1f609615865253211c47d70a5063ff1df76d1f4a"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-UPDATER-02",
+        "evidence": "remaining review scope explicitly leaves exact-SHA execution evidence, later governance closure, canonical blocker recount and final verdict unresolved",
+        "rank": 232,
+        "source_blob_sha": "1f609615865253211c47d70a5063ff1df76d1f4a"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity",
+        "rank": 233,
+        "source_blob_sha": "34d7e136c110550a13111c9d66d1ca5771d9b8d9"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 29 and NOT_CLEAN as provisional",
+        "rank": 233,
+        "source_blob_sha": "34d7e136c110550a13111c9d66d1ca5771d9b8d9"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source states no new source/governance fact has yet justified a canonical status change and carries the prior open-root set forward without a new disposition",
+        "rank": 233,
+        "source_blob_sha": "34d7e136c110550a13111c9d66d1ca5771d9b8d9"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly leaves selected-root source-semantic closure, exact-SHA execution evidence, upstream semantics, recount and final verdict pending",
+        "rank": 233,
+        "source_blob_sha": "34d7e136c110550a13111c9d66d1ca5771d9b8d9"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records final blocker recount P0 2 / P1 1 / P2 29 and NOT_CLEAN",
+        "rank": 234,
+        "source_blob_sha": "b6c2ca963611c80deca53a7f15ab0a05d8912011"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly preserves same-second concurrent staging-path collision as a residual subcase of existing BUG-BACKUP-04 without count increase",
+        "rank": 234,
+        "source_blob_sha": "b6c2ca963611c80deca53a7f15ab0a05d8912011"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source distinguishes source-semantic FIXED from canonical OPEN because exact-SHA execution closure remains required",
+        "rank": 234,
+        "source_blob_sha": "b6c2ca963611c80deca53a7f15ab0a05d8912011"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "runtime manifestation of the BUG-BACKUP-04 interleaving and exact-SHA execution closure are explicitly NOT_VERIFIED/NOT EXECUTED",
+        "rank": 234,
+        "source_blob_sha": "b6c2ca963611c80deca53a7f15ab0a05d8912011"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 29 and canonical count delta 0 as provisional blocker state",
+        "rank": 235,
+        "source_blob_sha": "5e2208e03837bb0edea5c4b4ef43109a53ba07fd"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly preserves the same-second concurrent staging-path interleaving as an existing residual subcase rather than a new root",
+        "rank": 235,
+        "source_blob_sha": "5e2208e03837bb0edea5c4b4ef43109a53ba07fd"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source records the source-semantic fix while leaving required execution closure NOT_VERIFIED",
+        "rank": 235,
+        "source_blob_sha": "5e2208e03837bb0edea5c4b4ef43109a53ba07fd"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "exact-SHA execution metadata is absent and independent runtime execution was not performed",
+        "rank": 235,
+        "source_blob_sha": "5e2208e03837bb0edea5c4b4ef43109a53ba07fd"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 231-270 is receipted"
+  }
+}
