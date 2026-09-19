@@ -1,0 +1,125 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M04-20260918T1657Z-001",
+  "stage": "MATERIALIZE_151_190",
+  "logical_rank_range": [
+    151,
+    190
+  ],
+  "microsegment_rank_range": [
+    171,
+    175
+  ],
+  "data_head": "128452c84d68a2eac31ab16273dc5c06c20d677f",
+  "complete_state_blob": "c851c841b43cb9805d53c3d9fb1a2b96f80afde0",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M04-20260918T1657Z-001/r171-175.json",
+    "blob_sha": "f1b30e30c6c2914273ce97b8201494a9b1a41ce5"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "7881baa208aca7ad3b1d0e7132cf25a81cf0d25f",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M04-20260918T1657Z-001/r166-170.json",
+    "blob_sha": "8edef66e62211b11ca3948149d72c77f7f90f62d"
+  },
+  "source_review": [
+    {
+      "rank": 171,
+      "path": "review-runs/checkpoints/2026-09-13T123355Z__97342490__final-checkpoint.md",
+      "source_blob": "7ce03c562a1d8fda5095df374dccb8695cdaefe4",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve P2=23 as bookkeeping restoration of the already-recorded F8 closure, not a new production closure; keep F10 OPEN and the other exact-basis/governance statuses historical where not fully rederived."
+    },
+    {
+      "rank": 172,
+      "path": "review-runs/checkpoints/2026-09-13T122955Z__97342490__checkpoint.md",
+      "source_blob": "1f515c514f7ea718dd079094edd92af39260bed8",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic kind ambiguity, existing F10 OPEN, and P2=23 bookkeeping correction while treating F8/F9/F15 and other governance revalidations as historical evidence rather than fresh source-semantic closure here."
+    },
+    {
+      "rank": 173,
+      "path": "review-runs/checkpoints/2026-09-13T122455Z__97342490__checkpoint.md",
+      "source_blob": "426029a64c4f7cae35cbf5e45ca116276f79c704",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic kind ambiguity and canonical arithmetic reconciliation from P2=24 to P2=23 due to prior F8 closure; do not turn prior closure/revalidation records into new current-source status transitions."
+    },
+    {
+      "rank": 174,
+      "path": "review-runs/checkpoints/2026-09-13__90afaec1__date03-current-basis-revalidation.md",
+      "source_blob": "aecb8414117123b73eff17b9fc3b69f9cc9f758e",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-DATE-03 as the existing P2 durable producer-to-scheduler handoff root, distinct from CLOSED F15 and active F16, with process-death/rejection/reconcile variants as same-root residuals and count delta 0."
+    },
+    {
+      "rank": 175,
+      "path": "review-runs/checkpoints/2026-09-13__90afaec1__migration01-current-basis-revalidation.md",
+      "source_blob": "dce2f94ea67b8050cf273635e40d7beeb5e5a2f1",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-MIGRATION-01 as one existing P2 restart-durability root across raw/SAF and multi-History variants, while keeping the obsolete full-row metadata-overwrite subcase excluded and count delta 0."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      171,
+      172,
+      173,
+      174,
+      175
+    ],
+    "materializer_flagged_exception_ranks": [
+      171,
+      172,
+      173,
+      174,
+      175
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
