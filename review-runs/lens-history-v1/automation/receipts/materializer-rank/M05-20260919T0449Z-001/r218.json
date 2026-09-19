@@ -1,0 +1,177 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "rank": 218,
+  "materializer_state_blob": "17e6d5c46ade90b1c036f4d7fdf8f1a8b4697398",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "68e11966a1ab046c9bc0cecf69a5e75d2b8382b8",
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r217.json",
+    "blob_sha": "caba92967d2c9e234b0c6e4d2cd8b9c7ebf25582"
+  },
+  "history": {
+    "commit_sha": "ad8f332310058405f189ce7a4f5c62ab44048295",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=218"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-13__f20833d6__backup06-independent-closure.md",
+        "status": "added",
+        "source_blob_sha": "b85f7225419f80eaebb8a4db5fe00f89bd0b42c4",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "b85f7225419f80eaebb8a4db5fe00f89bd0b42c4",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-13__f20833d6__backup06-independent-closure.md",
+    "status": "added",
+    "source_blob_sha": "b85f7225419f80eaebb8a4db5fe00f89bd0b42c4",
+    "frozen_blob_sha": "b85f7225419f80eaebb8a4db5fe00f89bd0b42c4",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "f20833d6d74134ec52a33c6cdb4a862784d9c4bf",
+      "evidence": "source explicitly records Exact implementation HEAD"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "source positively identifies F6 / BUG-BACKUP-06 independent closure, records explicit status/count reconciliation and dependency consequence, and is not identified as final"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness by document-identity-v1"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-BACKUP-06"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "F6 CLEAN / CLOSED at exact f20833d6"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "restore composition uses explicit backup-old-ID -> destination-new-ID maps across material imported identity graph and missing mappings fail closed/clear/drop per field contract"
+          }
+        },
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-BACKUP-08"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "F7 remains independently CLOSED"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "regression/dependency assessment"
+          }
+        },
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-BACKUP-02"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "F5 independently CLOSED in immediately preceding checkpoint"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "regression/dependency assessment"
+          }
+        },
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-BACKUP-04"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "F4 remains independently OPEN"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "distinct same-second backup staging artifact-identity residual blocks cumulative backup-wave CLEAN basis"
+          }
+        }
+      ],
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-BACKUP-06",
+      "evidence": "source explicitly records BUG-BACKUP-06 CLEAN / CLOSED at exact f20833d6"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-BACKUP-06",
+      "evidence": "source explicitly records P2 count 27 -> 26 and resulting P0 2 / P1 1 / P2 26"
+    },
+    {
+      "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-BACKUP-06",
+      "evidence": "closure reconciles source-semantic ID remapping, added collision instrumentation, F5/F7 dependency state and F8/F9 prerequisite consequences"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "reported exact-final instrumentation 6/6 PASS and related execution evidence are implementation-agent evidence; independent execution is explicitly NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
