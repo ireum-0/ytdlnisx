@@ -1,0 +1,111 @@
+{
+  "schema_version": "lens-history-v1",
+  "validation_kind": "ledger_batch_validation",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "batch": {
+    "inventory": "review-runs/lens-history-v1/inventory-batches/0025-newest-211-220.jsonl",
+    "ledger": "review-runs/lens-history-v1/ledger-batches/0025-newest-211-220.jsonl",
+    "history_rank_from_newest": {
+      "first": 211,
+      "last": 220
+    },
+    "records": 10,
+    "internal_partitions": [
+      {
+        "first": 211,
+        "last": 215,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      },
+      {
+        "first": 216,
+        "last": 220,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      }
+    ]
+  },
+  "byte_identity": {
+    "inventory_git_blob_sha": {
+      "expected": "2d036f28855b9ecd716accb14618dff675b26939",
+      "stored": "2d036f28855b9ecd716accb14618dff675b26939",
+      "status": "MATCH"
+    },
+    "ledger_git_blob_sha": {
+      "expected": "13c28942945d71cda2b4bd4610f40a381d50d9f9",
+      "stored": "13c28942945d71cda2b4bd4610f40a381d50d9f9",
+      "status": "MATCH"
+    }
+  },
+  "source_provenance": {
+    "commit_detail_file_binding": "10/10 COMPLETE",
+    "frozen_tree_presence": "10/10 COMPLETE",
+    "source_to_frozen_blob_identity": "10/10 MATCH"
+  },
+  "schema_validation": {
+    "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "validator": "Draft 2020-12",
+    "records_checked": 10,
+    "valid_records": 10,
+    "invalid_records": 0,
+    "status": "PASS"
+  },
+  "classification_summary": {
+    "UNINSTRUMENTED": 10,
+    "LEGACY_AUDIT_LENS": 0,
+    "STRUCTURED_PROVISIONAL": 0,
+    "STRUCTURED_FINAL": 0,
+    "explicit_final_records": 2,
+    "explicit_intermediate_records": 0,
+    "verified_bootstrap_records": 0,
+    "substantive_non_final_records": 5,
+    "kind_not_verified_records": 3
+  },
+  "implementation_sha_summary": {
+    "c67ecb66e3df954a225354632945be101a9d740d": 4,
+    "90afaec157607669ea32fa41877e7f0efcdcca86": 2,
+    "a12c58055fff51b104f8b56fd53b534b8d7e5df4": 1,
+    "f20833d6d74134ec52a33c6cdb4a862784d9c4bf": 3
+  },
+  "semantic_preservation": {
+    "material_status_transitions_preserved": true,
+    "same_root_residuals_preserved": true,
+    "ambiguous_kind_ranks": [
+      213,
+      214,
+      216
+    ],
+    "provisional_and_historical_only_states_preserved": true,
+    "converted_to_numeric_effectiveness": false,
+    "reason": "F4/F5/F6 status transitions, F10 same-root recurrence/acceptance residuals, Observe handoff exact-basis revalidation, and source-semantic versus canonical-open distinctions are preserved at their exact implementation bases without backward normalization"
+  },
+  "aggregate_reconciliation": {
+    "cumulative_eligible_structured_finals_in_batch": 0,
+    "aggregate_delta": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 0,
+      "rejected_candidates_with_proof": 0,
+      "not_verified_candidates": 0,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 0
+    },
+    "observed_measured_effectiveness_after_batch": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "status": "UNCHANGED_PASS"
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  }
+}
