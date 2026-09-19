@@ -283,7 +283,7 @@ internal object RestoreOperationStore {
 
     private fun <T> withActiveLock(context: Context, block: () -> T): T {
         val lockFile = File(root(context), ACTIVE_LOCK_FILE)
-        check(lockFile.parentFile?.mkdirs() != false)
+        check(lockFile.parentFile?.let { it.mkdirs() || it.isDirectory } == true)
         FileOutputStream(lockFile, true).use { output ->
             val lock = try {
                 output.channel.tryLock()
