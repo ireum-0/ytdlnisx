@@ -1,0 +1,128 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "rank": 229,
+  "materializer_state_blob": "19df4c3068c302e02c181400b5f751b5c83aabe1",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "68e11966a1ab046c9bc0cecf69a5e75d2b8382b8",
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r228.json",
+    "blob_sha": "163dd177ab09bcf40e5aa2e8cf08c59db601269f"
+  },
+  "history": {
+    "commit_sha": "17595ca63965faa80bf7f0e9ddb30e669ad58864",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=229"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12T233500Z__1bae1eaf__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "74dada861d49a1887ba1e576aa726f3087c99538",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "74dada861d49a1887ba1e576aa726f3087c99538",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12T233500Z__1bae1eaf__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "74dada861d49a1887ba1e576aa726f3087c99538",
+    "frozen_blob_sha": "74dada861d49a1887ba1e576aa726f3087c99538",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "1bae1eafea08942f11e6df30e4a13a515dda621c",
+      "evidence": "source explicitly records Frozen implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic checkpoint source has no explicit checkpoint_kind/equivalent field and does not positively identify as a finding/addendum/reconciliation/scope-expansion record; commit-message intermediate wording is prohibited structural evidence"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-BACKUP-03"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P0 OPEN / independently reconfirmed at source-semantic level; no new blocker or canonical status change"
+      },
+      "finding_relation": {
+        "state": "DIRECT",
+        "value": "Reset restore still exposes independently visible Room/preferences/filesystem/worker/schedule effects without a restore-wide durable commit/compensation/recovery boundary"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint source lacks positive structural identity; commit-message intermediate label is prohibited"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records P0 2 / P1 1 / P2 29 and NOT_CLEAN as provisional"
+    },
+    {
+      "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-BACKUP-03",
+      "evidence": "checkpoint retraces complete Reset restore production path and reconciles narrow prerequisite fixes against the still-open global restore root"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "finding_id": "BUG-BACKUP-03",
+      "evidence": "runtime manifestation remains NOT_VERIFIED and independent execution was not performed"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
