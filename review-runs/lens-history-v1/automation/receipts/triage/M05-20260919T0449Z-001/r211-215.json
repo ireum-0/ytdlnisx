@@ -1,0 +1,127 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "microsegment_rank_range": [
+    211,
+    215
+  ],
+  "data_head": "82608b84d9909acc80c8ed7423282301b531b6e4",
+  "complete_state_blob": "52289c6a72a56ff30bb09fa59fe2f6860b0a445e",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M05-20260919T0449Z-001/r211-215.json",
+    "blob_sha": "5d1ba9ca690d58875cc50ca7c898e0d4e41b2918"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "85ab2d5410037680f67a153ce1ee208874cc2995",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M05-20260919T0449Z-001/r206-210.json",
+    "blob_sha": "3e31484b4f1a5f3a94a13b45f79926e2c451d73c"
+  },
+  "source_review": [
+    {
+      "rank": 211,
+      "path": "review-runs/checkpoints/2026-09-13__c67ecb66__backup04-closure-cleanup01-recurrence-reconciliation.md",
+      "source_blob": "1fb9791246655ef6019bcf1e720cc953fbc9d3e8",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve F4 CLEAN/CLOSED and P1 1→0 as explicit reconciliation at c67ecb66; keep F10 retry-exhaustion and asynchronous enqueue-acceptance failures as same-root residuals, with implementation-agent execution distinguished from independent execution."
+    },
+    {
+      "rank": 212,
+      "path": "review-runs/checkpoints/2026-09-13T022930Z__c67ecb66__checkpoint.md",
+      "source_blob": "06fe063481bab25f7e8feebcbb45602e7bd00fd7",
+      "independent_exception_triggers": [
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve historical P1=1/P2=26 final state and F10 retry-exhaustion residual; newer rank 211 later closes F4 and reconciles P1 to 0, while runtime manifestation here remains independently unexecuted."
+    },
+    {
+      "rank": 213,
+      "path": "review-runs/checkpoints/2026-09-13T022625Z__c67ecb66__checkpoint.md",
+      "source_blob": "387c07dba17956a25ece5a9207fa67f44087dcd3",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic kind and provisional P0 2 / P1 1 / P2 26; F10 retry-exhaustion is an existing same-root residual, and this historical arithmetic is later reconciled by the newer F4 closure without backward normalization."
+    },
+    {
+      "rank": 214,
+      "path": "review-runs/checkpoints/2026-09-13T022205Z__c67ecb66__checkpoint.md",
+      "source_blob": "265c2ed803b8ff6f04f1c4c79297aabb3629ada4",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the transition from CLEAN basis 90afaec1 to c67ecb66 as F10 remediation boundary; prior P1=1 is historical starting state, with current closure and upstream semantics still under review at this checkpoint."
+    },
+    {
+      "rank": 215,
+      "path": "review-runs/checkpoints/2026-09-13T013500Z__90afaec1__final-checkpoint.md",
+      "source_blob": "c284f434aa1ff57dd7904d55f65708dcea671d1d",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep F4 source-semantic FIXED distinct from historical canonical OPEN caused by missing exact-current execution closure; preserve F5/F6 as carried prior closures and the later rank-211 P1 reconciliation."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      211,
+      212,
+      213,
+      214,
+      215
+    ],
+    "materializer_flagged_exception_ranks": [
+      211,
+      212,
+      213,
+      214,
+      215
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
