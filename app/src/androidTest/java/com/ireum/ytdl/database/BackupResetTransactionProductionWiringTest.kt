@@ -45,7 +45,7 @@ class BackupResetTransactionProductionWiringTest {
     private lateinit var preferences: android.content.SharedPreferences
 
     @Before
-    fun setUp() = runBlocking {
+    fun setUp() = runBlocking<Unit> {
         context = ApplicationProvider.getApplicationContext()
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
         WorkManager.getInstance(context).cancelAllWork().result.get(20, TimeUnit.SECONDS)
@@ -59,7 +59,7 @@ class BackupResetTransactionProductionWiringTest {
     }
 
     @After
-    fun tearDown() = runBlocking {
+    fun tearDown() = runBlocking<Unit> {
         clearHooks()
         runCatching { RestoreTransactionCoordinator.recover(context) }
         database.historyDao.nuke()
