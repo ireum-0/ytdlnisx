@@ -1,0 +1,123 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "microsegment_rank_range": [
+    216,
+    220
+  ],
+  "data_head": "82608b84d9909acc80c8ed7423282301b531b6e4",
+  "complete_state_blob": "52289c6a72a56ff30bb09fa59fe2f6860b0a445e",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M05-20260919T0449Z-001/r216-220.json",
+    "blob_sha": "ae0f090187c5124a5f330f8901ed18125fa4adfa"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "85ab2d5410037680f67a153ce1ee208874cc2995",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M05-20260919T0449Z-001/r211-215.json",
+    "blob_sha": "22ff280ca76d34ebdc4979156384d50e32926012"
+  },
+  "source_review": [
+    {
+      "rank": 216,
+      "path": "review-runs/checkpoints/2026-09-13T012930Z__90afaec1__checkpoint.md",
+      "source_blob": "1e8552fdc4d4c00bb204c3010cdc4c5ec2ddbcc8",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic kind; F4 appears source-fixed but canonical P1 remains OPEN pending full path and execution closure, while F5/F6 closures are carried historical governance evidence."
+    },
+    {
+      "rank": 217,
+      "path": "review-runs/checkpoints/2026-09-13__a12c5805__observe-handoff-p0-current-basis-revalidation.md",
+      "source_blob": "273beb1afeb1d8255ff6d24443d63c744b3175d9",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-OBSERVE-HANDOFF-01 as one existing P0 root across stale source-row persistence, positive Download publication, destructive mutation and recurring successor consumers; alias/subcase and neighboring-root boundaries remain explicit."
+    },
+    {
+      "rank": 218,
+      "path": "review-runs/checkpoints/2026-09-13__f20833d6__backup06-independent-closure.md",
+      "source_blob": "b85f7225419f80eaebb8a4db5fe00f89bd0b42c4",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve F6 CLEAN/CLOSED with P2 27→26 and its dependency consequences; reported instrumentation is implementation-agent evidence, distinct from independent execution."
+    },
+    {
+      "rank": 219,
+      "path": "review-runs/checkpoints/2026-09-13__f20833d6__backup02-independent-closure.md",
+      "source_blob": "5e58329cbd73677ff3877e728a3e780ace671619",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve F5 CLEAN/CLOSED with P2 28→27, restore-thumbnail ownership closure and F4 dependency state; implementation-agent execution must not be converted to independent execution."
+    },
+    {
+      "rank": 220,
+      "path": "review-runs/checkpoints/2026-09-13__f20833d6__backup04-same-second-artifact-identity-residual.md",
+      "source_blob": "e22e04d8325ba7292ea54c7381917aa8a0820fa1",
+      "independent_exception_triggers": [
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve F4 same-second staging pathname collision as an existing P1 same-root residual with count delta 0 at the historical pre-F5/F6-closure sequence point; do not normalize its P2=28 forward."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      216,
+      217,
+      218,
+      219,
+      220
+    ],
+    "materializer_flagged_exception_ranks": [
+      216,
+      217,
+      218,
+      219,
+      220
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
