@@ -1,0 +1,132 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "rank": 234,
+  "materializer_state_blob": "69f5e7749f16a926c25b4531b32f32fbdf290af2",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6dd62519edf788db869c87eb9d001b393065781a",
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r233.json",
+    "blob_sha": "54c034d609f168f712dd104ae2c4518e7689e5b9"
+  },
+  "history": {
+    "commit_sha": "5b2be1de08bdf7b83999b62dd990a8bedff22927",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=234"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12T212615Z__1bae1eaf__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "b6c2ca963611c80deca53a7f15ab0a05d8912011",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "b6c2ca963611c80deca53a7f15ab0a05d8912011",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12T212615Z__1bae1eaf__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "b6c2ca963611c80deca53a7f15ab0a05d8912011",
+    "frozen_blob_sha": "b6c2ca963611c80deca53a7f15ab0a05d8912011",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "1bae1eafea08942f11e6df30e4a13a515dda621c",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source title explicitly identifies Independent correctness review final checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit",
+      "reason": "FINAL is explicitly established and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": {
+        "state": "DIRECT",
+        "value": [
+          {
+            "finding_id": "BUG-BACKUP-04",
+            "disposition": "EXISTING / P1 / OPEN, unchanged; same-second staging-path overlap retained as residual subcase, canonical count delta 0"
+          },
+          {
+            "finding_id": "BUG-BACKUP-02",
+            "disposition": "EXISTING / P2 / source-semantic FIXED / canonical OPEN / execution NOT_VERIFIED, unchanged"
+          }
+        ]
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records final blocker recount P0 2 / P1 1 / P2 29 and NOT_CLEAN"
+    },
+    {
+      "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+      "finding_id": "BUG-BACKUP-04",
+      "evidence": "source explicitly preserves same-second concurrent staging-path collision as a residual subcase of existing BUG-BACKUP-04 without count increase"
+    },
+    {
+      "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+      "finding_id": "BUG-BACKUP-02",
+      "evidence": "source distinguishes source-semantic FIXED from canonical OPEN because exact-SHA execution closure remains required"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "runtime manifestation of the BUG-BACKUP-04 interleaving and exact-SHA execution closure are explicitly NOT_VERIFIED/NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
