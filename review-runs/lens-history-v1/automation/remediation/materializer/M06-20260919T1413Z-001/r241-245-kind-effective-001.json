@@ -1,0 +1,74 @@
+{
+  "schema_version": "lens-history-v1-materializer-kind-effective-aggregate-v1",
+  "remediation_protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v2-kind.md",
+    "blob_sha": "d909926923428a9d83aed72c37c6f54bcdc742ff"
+  },
+  "run_id": "M06-20260919T1413Z-001",
+  "segment_range": [
+    241,
+    245
+  ],
+  "original_aggregate": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M06-20260919T1413Z-001/r241-245.json",
+    "blob_sha": "547f6f6f1543ec0f36ef5b4fd0766ba5a2d07dbf"
+  },
+  "original_rank_receipts": [
+    {
+      "rank": 241,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r241.json",
+      "blob_sha": "2d06a2ccf96eea706eb180f8f4facf64edffdf83"
+    },
+    {
+      "rank": 242,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r242.json",
+      "blob_sha": "4729f6c5fe3977789a93f8746abf7482e6fd90e4"
+    },
+    {
+      "rank": 243,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r243.json",
+      "blob_sha": "b271eb82378d0ac36ad5ecbc55c15cdee9b9b520"
+    },
+    {
+      "rank": 244,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r244.json",
+      "blob_sha": "dfe4af2f1c0c5f9b978addeda1f093eb9ca43521"
+    },
+    {
+      "rank": 245,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r245.json",
+      "blob_sha": "7c75bfc20ddd55a516d584f8dc088423e7f47539"
+    }
+  ],
+  "field_invalidation": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/r242-kind-invalidation-001.json",
+    "blob_sha": "425146238e0522d8cddc53e566d9281ee6861ba1"
+  },
+  "field_replacement": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/r242-kind-replacement-001.json",
+    "blob_sha": "7d8ba15d9ea24124a341586893ee5a6264b21873"
+  },
+  "target": {
+    "rank": 242,
+    "field": "checkpoint.kind",
+    "original_value": {
+      "state": "DIRECT",
+      "value": "ADDENDUM",
+      "evidence": "source title explicitly identifies exact publication identity addendum"
+    },
+    "effective_value": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "evidence": "source positively identifies itself as an addendum, records a same-root finding/count refinement, and does not claim to be the final checkpoint/verdict"
+    }
+  },
+  "original_aggregate_remains_immutable": true,
+  "original_rank_receipts_remain_immutable": true,
+  "semantic_consumers_must_apply_field_replacement": true,
+  "ancestry_validation_uses_original_rank_and_aggregate_blobs": true,
+  "changes_effectiveness_eligibility": false,
+  "changes_finding_attribution": false,
+  "changes_exception_detection": false,
+  "changes_provenance": false
+}
