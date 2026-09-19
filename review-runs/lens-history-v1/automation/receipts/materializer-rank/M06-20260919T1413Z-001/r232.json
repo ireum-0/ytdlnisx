@@ -1,0 +1,123 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "rank": 232,
+  "materializer_state_blob": "69f5e7749f16a926c25b4531b32f32fbdf290af2",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6dd62519edf788db869c87eb9d001b393065781a",
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r231.json",
+    "blob_sha": "43c864f731c5caacdff3f7c5b07f22c6b4b3207d"
+  },
+  "history": {
+    "commit_sha": "4b36d75d2aa532256d70fadd0ba09ad7bc3ac1d1",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=232"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12T223400Z__1bae1eaf__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "1f609615865253211c47d70a5063ff1df76d1f4a",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "1f609615865253211c47d70a5063ff1df76d1f4a",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12T223400Z__1bae1eaf__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "1f609615865253211c47d70a5063ff1df76d1f4a",
+    "frozen_blob_sha": "1f609615865253211c47d70a5063ff1df76d1f4a",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "1bae1eafea08942f11e6df30e4a13a515dda621c",
+      "evidence": "source explicitly records Frozen implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic checkpoint source has no explicit checkpoint_kind/equivalent structural field and does not positively identify as a finding/addendum/reconciliation/scope-expansion record; filename/commit message/chronology are insufficient"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-UPDATER-02"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "EXISTING / P2 / OPEN / CONFIRMED; no new canonical root identified"
+      },
+      "finding_relation": {
+        "state": "DIRECT",
+        "value": "current production source still permits overlapping updater callers to enter the shared runtime mutation domain without owner/generation serialization or current-source revalidation"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint source lacks positive structural identity"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records P0 2 / P1 1 / P2 29 as provisional blockers"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "finding_id": "BUG-UPDATER-02",
+      "evidence": "remaining review scope explicitly leaves exact-SHA execution evidence, later governance closure, canonical blocker recount and final verdict unresolved"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
