@@ -1,0 +1,304 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "data_head": "82608b84d9909acc80c8ed7423282301b531b6e4",
+  "complete_state_blob": "52289c6a72a56ff30bb09fa59fe2f6860b0a445e",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "c4b5c2428fd726a8d831af6aa0ea4ef4ff492bfe",
+    "a1f39ef93d486de5a3a769e8e02a76ccea5e591b",
+    "31a8e3de9b4a7805d83783456f3bf29c6ebc3cf0",
+    "cce46ca25cf54e8a2c97f25fbe12d1563ca649ca",
+    "5d1ba9ca690d58875cc50ca7c898e0d4e41b2918",
+    "ae0f090187c5124a5f330f8901ed18125fa4adfa",
+    "96a9fae8dfe57ee4159c135d08d5fcf83a4432df",
+    "1aef16cedafa1f6941ac3879783b35c2bfb82b53"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M05-20260919T0449Z-001-materialization-191-230.json",
+    "blob_sha": "d4e68f6779fd7e1ca57f7658e1344fd7e0f485c4",
+    "status": "PASS"
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        191,
+        195
+      ],
+      "blob_sha": "9f27ac175be49d56724e32247e385528556fcb7b"
+    },
+    {
+      "range": [
+        196,
+        200
+      ],
+      "blob_sha": "91072ba59c6452d2232a38bdc6ff2ac9d18da5b6"
+    },
+    {
+      "range": [
+        201,
+        205
+      ],
+      "blob_sha": "a8cbd819d2c24a7b4d9368d67eb9e0e009c55ab6"
+    },
+    {
+      "range": [
+        206,
+        210
+      ],
+      "blob_sha": "3e31484b4f1a5f3a94a13b45f79926e2c451d73c"
+    },
+    {
+      "range": [
+        211,
+        215
+      ],
+      "blob_sha": "22ff280ca76d34ebdc4979156384d50e32926012"
+    },
+    {
+      "range": [
+        216,
+        220
+      ],
+      "blob_sha": "432196429a60f6121bc277a0546497a3711d4327"
+    },
+    {
+      "range": [
+        221,
+        225
+      ],
+      "blob_sha": "2a8f4adcaae57a1c9256fcae6efab2ff417bed0f"
+    },
+    {
+      "range": [
+        226,
+        230
+      ],
+      "blob_sha": "96823dd3c2c30701c7682eff691e36e7b523ad8b"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "85ab2d5410037680f67a153ce1ee208874cc2995",
+  "materializer_exception_rank_count": 40,
+  "independent_exception_ranks": [
+    191,
+    192,
+    193,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    207,
+    208,
+    209,
+    210,
+    211,
+    212,
+    213,
+    214,
+    215,
+    216,
+    217,
+    218,
+    219,
+    220,
+    221,
+    222,
+    223,
+    224,
+    225,
+    226,
+    227,
+    228,
+    229,
+    230
+  ],
+  "independent_exception_rank_count": 40,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "human_review_packets": [
+    {
+      "topic": "generic checkpoint kind ambiguity",
+      "ranks": [
+        191,
+        193,
+        194,
+        196,
+        197,
+        199,
+        201,
+        202,
+        207,
+        208,
+        213,
+        214,
+        216,
+        222,
+        223,
+        229,
+        230
+      ],
+      "required_decision": "Preserve NOT_VERIFIED structural kind whenever exact source lacks a supported explicit or deterministically derivable identity; do not infer kind from filename, title, commit message, or chronology."
+    },
+    {
+      "topic": "provisional counts and historical arithmetic",
+      "ranks": [
+        191,
+        192,
+        193,
+        194,
+        196,
+        197,
+        198,
+        199,
+        201,
+        202,
+        204,
+        205,
+        207,
+        208,
+        213,
+        214,
+        215,
+        216,
+        222,
+        223,
+        228,
+        229,
+        230
+      ],
+      "required_decision": "Preserve each checkpoint's provisional blocker arithmetic at its exact historical basis and do not back-propagate later closure/count reconciliations into older records."
+    },
+    {
+      "topic": "source-clean or repaired versus canonical OPEN",
+      "ranks": [
+        195,
+        196,
+        215,
+        216,
+        225,
+        226,
+        227
+      ],
+      "required_decision": "Keep source-semantic CLEAN/FIXED language distinct from canonical disposition when exact required execution evidence is incomplete; later focused closure evidence may supersede prospectively but must not rewrite history."
+    },
+    {
+      "topic": "existing-root residuals and exact-basis reconciliation",
+      "ranks": [
+        195,
+        196,
+        198,
+        199,
+        200,
+        201,
+        203,
+        204,
+        206,
+        207,
+        208,
+        211,
+        212,
+        213,
+        217,
+        220,
+        221,
+        222
+      ],
+      "required_decision": "Preserve explicit same-root residual/subcase relationships and count roots once; do not manufacture new findings from narrower residuals."
+    },
+    {
+      "topic": "explicit material status/count transitions",
+      "ranks": [
+        206,
+        209,
+        210,
+        211,
+        212,
+        213,
+        215,
+        217,
+        218,
+        219,
+        220,
+        221,
+        224,
+        225,
+        226,
+        227
+      ],
+      "required_decision": "Preserve explicit status/count transitions and their exact basis while keeping implementation-agent execution separate from independent execution and retaining later superseding evidence only prospectively."
+    },
+    {
+      "topic": "provisional and NOT_VERIFIED execution evidence",
+      "ranks": [
+        191,
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        198,
+        199,
+        200,
+        201,
+        202,
+        203,
+        204,
+        205,
+        206,
+        207,
+        208,
+        210,
+        212,
+        213,
+        214,
+        215,
+        216,
+        217,
+        221,
+        222,
+        223,
+        225,
+        226,
+        227,
+        228,
+        229,
+        230
+      ],
+      "required_decision": "Do not convert absent exact-SHA independent execution, runtime manifestation gaps, or source-only conclusions into deterministic PASS, CLOSED, or numeric effectiveness."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_191_230": true,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
