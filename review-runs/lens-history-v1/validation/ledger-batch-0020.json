@@ -1,0 +1,109 @@
+{
+  "schema_version": "lens-history-v1",
+  "validation_kind": "ledger_batch_validation",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "batch": {
+    "inventory": "review-runs/lens-history-v1/inventory-batches/0020-newest-161-170.jsonl",
+    "ledger": "review-runs/lens-history-v1/ledger-batches/0020-newest-161-170.jsonl",
+    "history_rank_from_newest": {
+      "first": 161,
+      "last": 170
+    },
+    "records": 10,
+    "internal_partitions": [
+      {
+        "first": 161,
+        "last": 165,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      },
+      {
+        "first": 166,
+        "last": 170,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      }
+    ]
+  },
+  "byte_identity": {
+    "inventory_git_blob_sha": {
+      "expected": "5daa5c1fa29915bc8f2160f60e41c58b45a3b546",
+      "stored": "5daa5c1fa29915bc8f2160f60e41c58b45a3b546",
+      "status": "MATCH"
+    },
+    "ledger_git_blob_sha": {
+      "expected": "513363cea30d259718c10c291cf4c202c48382b7",
+      "stored": "513363cea30d259718c10c291cf4c202c48382b7",
+      "status": "MATCH"
+    }
+  },
+  "source_provenance": {
+    "commit_detail_file_binding": "10/10 COMPLETE",
+    "frozen_tree_presence": "10/10 COMPLETE",
+    "source_to_frozen_blob_identity": "10/10 MATCH"
+  },
+  "schema_validation": {
+    "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "validator": "Draft 2020-12",
+    "records_checked": 10,
+    "valid_records": 10,
+    "invalid_records": 0,
+    "status": "PASS"
+  },
+  "classification_summary": {
+    "UNINSTRUMENTED": 10,
+    "LEGACY_AUDIT_LENS": 0,
+    "STRUCTURED_PROVISIONAL": 0,
+    "STRUCTURED_FINAL": 0,
+    "explicit_final_records": 3,
+    "explicit_intermediate_records": 1,
+    "verified_bootstrap_records": 2,
+    "substantive_non_final_records": 0,
+    "kind_not_verified_records": 4
+  },
+  "implementation_sha_summary": {
+    "973424909fd97de758b62f639967c8bae7c0bad7": 10
+  },
+  "semantic_preservation": {
+    "material_status_transitions_preserved": true,
+    "same_root_residuals_preserved": true,
+    "ambiguous_kind_ranks": [
+      165,
+      166,
+      169,
+      170
+    ],
+    "provisional_and_historical_only_states_preserved": true,
+    "converted_to_numeric_effectiveness": false,
+    "reason": "explicit FINAL/final-pre-verdict, semantic-intermediate and bootstrap identities are preserved only where source evidence establishes them; title/commit-message-only structural labels remain NOT_VERIFIED, and historical F10/Observe/count corrections remain lossless without numeric effectiveness conversion"
+  },
+  "aggregate_reconciliation": {
+    "cumulative_eligible_structured_finals_in_batch": 0,
+    "aggregate_delta": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 0,
+      "rejected_candidates_with_proof": 0,
+      "not_verified_candidates": 0,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 0
+    },
+    "observed_measured_effectiveness_after_batch": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "status": "UNCHANGED_PASS"
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  }
+}
