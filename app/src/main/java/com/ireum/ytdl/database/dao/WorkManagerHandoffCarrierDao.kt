@@ -54,6 +54,20 @@ interface WorkManagerHandoffCarrierDao {
     )
     suspend fun deleteOutstandingForBoundary(kind: String, boundary: String): Int
 
+    @Query(
+        "DELETE FROM work_manager_handoff_carriers " +
+            "WHERE kind = 'OBSERVE_RETRY_DOWNLOAD' AND sourceId IN (:sourceIds) " +
+            "AND state IN ('PENDING_ENQUEUE', 'ACCEPTED')"
+    )
+    suspend fun deleteOutstandingObserveRetryForSourceIds(sourceIds: List<Long>): Int
+
+    @Query(
+        "DELETE FROM work_manager_handoff_carriers " +
+            "WHERE kind IN (:kinds) " +
+            "AND state IN ('PENDING_ENQUEUE', 'ACCEPTED')"
+    )
+    suspend fun deleteOutstandingForKinds(kinds: List<String>): Int
+
     @Query("DELETE FROM work_manager_handoff_carriers WHERE handoffId = :handoffId")
     suspend fun delete(handoffId: String): Int
 

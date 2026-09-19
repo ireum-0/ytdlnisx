@@ -9,10 +9,20 @@ import kotlinx.coroutines.flow.Flow
 
 class PlaylistRepository(
     private val playlistDao: PlaylistDao,
-    private val playlistGroupDao: PlaylistGroupDao
+    private val playlistGroupDao: PlaylistGroupDao,
+    private val context: android.content.Context? = null,
 ) {
     private companion object {
         const val ID_BATCH_SIZE = 800
+    }
+
+    private fun ensureRestoreAdmission() {
+        val app = context?.applicationContext
+            ?: runCatching { com.ireum.ytdl.App.instance }.getOrNull()
+            ?: return
+        check(!com.ireum.ytdl.database.RestoreGate.isRestoreInProgress(app)) {
+            "Restore transaction is active"
+        }
     }
 
     fun getAllPlaylists(): Flow<List<Playlist>> {
@@ -51,15 +61,18 @@ class PlaylistRepository(
     }
 
     suspend fun insertPlaylist(playlist: Playlist): Long {
+        ensureRestoreAdmission()
         return playlistDao.insertPlaylist(playlist)
     }
 
     suspend fun insertPlaylistItem(playlistId: Long, historyItemId: Long) {
+        ensureRestoreAdmission()
         val crossRef = PlaylistItemCrossRef(playlistId, historyItemId)
         playlistDao.insertPlaylistItem(crossRef)
     }
 
     suspend fun insertPlaylistItems(playlistId: Long, historyItemIds: List<Long>) {
+        ensureRestoreAdmission()
         if (historyItemIds.isEmpty()) return
         val refs = historyItemIds.map { historyItemId ->
             PlaylistItemCrossRef(playlistId, historyItemId)
@@ -68,18 +81,22 @@ class PlaylistRepository(
     }
 
     suspend fun renamePlaylist(playlistId: Long, name: String) {
+        ensureRestoreAdmission()
         playlistDao.renamePlaylist(playlistId, name)
     }
 
     suspend fun removePlaylistItems(playlistId: Long, historyItemIds: List<Long>) {
+        ensureRestoreAdmission()
         playlistDao.deletePlaylistItems(playlistId, historyItemIds)
     }
 
     suspend fun removePlaylistItemsByHistoryIds(historyItemIds: List<Long>) {
+        ensureRestoreAdmission()
         playlistDao.deletePlaylistItemsByHistoryIds(historyItemIds)
     }
 
     suspend fun clearPlaylistItems() {
+        ensureRestoreAdmission()
         playlistDao.clearPlaylistItems()
     }
 
@@ -89,6 +106,7 @@ class PlaylistRepository(
     }
 
     suspend fun deletePlaylist(playlistId: Long) {
+        ensureRestoreAdmission()
         playlistDao.deletePlaylistItemsByPlaylistId(playlistId)
         playlistDao.deletePlaylist(playlistId)
         playlistGroupDao.deleteMembersByPlaylist(playlistId)

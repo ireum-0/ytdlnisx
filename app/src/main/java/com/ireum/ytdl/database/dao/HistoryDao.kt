@@ -153,6 +153,9 @@ interface HistoryDao {
     @Query("UPDATE history SET customThumb = :customThumb WHERE id = :id")
     fun updateCustomThumbById(id: Long, customThumb: String): Int
 
+    @Query("UPDATE history SET downloadId = :downloadId WHERE id = :id")
+    fun updateDownloadIdById(id: Long, downloadId: Long): Int
+
     @Query("UPDATE history SET artist = :artist WHERE id = :id")
     fun updateArtistById(id: Long, artist: String): Int
 

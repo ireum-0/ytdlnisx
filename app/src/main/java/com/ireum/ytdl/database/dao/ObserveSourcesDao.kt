@@ -423,6 +423,19 @@ interface ObserveSourcesDao {
     }
 
     /**
+     * Restore-only source reset primitive. The outer restore transaction owns
+     * the transaction boundary; this method preserves the existing source
+     * revocation and membership-child convergence semantics without emitting
+     * notification side effects.
+     */
+    suspend fun deleteAllForRestoreReset(): List<Long> {
+        val waitingIds = getAllMembershipRetryDownloadIds()
+        deleteAllRecords()
+        convergeMembershipRevocation(waitingIds)
+        return waitingIds
+    }
+
+    /**
      * Keeps source revocation and the linked low-quality terminal transition
      * in one Room transaction.  If the transaction is interrupted, SQLite
      * rolls back both the source/download mutation and this convergence, so

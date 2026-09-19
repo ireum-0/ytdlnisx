@@ -448,4 +448,26 @@ interface LowQualityRedownloadDao {
             "AND itemState NOT IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED','NOT_SELECTED')"
     )
     suspend fun countSelectedNonterminal(operationId: String): Int
+
+    @Query(
+        "SELECT DISTINCT operationId FROM low_quality_redownload_items " +
+            "WHERE downloadId IN (:downloadIds) OR historyId IN (:historyIds)"
+    )
+    suspend fun getOperationIdsForRestoreReset(
+        downloadIds: List<Long>,
+        historyIds: List<Long>,
+    ): List<String>
+
+    @Query("DELETE FROM low_quality_redownload_items WHERE downloadId IN (:downloadIds)")
+    suspend fun deleteItemsForDownloadIds(downloadIds: List<Long>): Int
+
+    @Query("DELETE FROM low_quality_redownload_items WHERE historyId IN (:historyIds)")
+    suspend fun deleteItemsForHistoryIds(historyIds: List<Long>): Int
+
+    @Query(
+        "DELETE FROM low_quality_redownload_operations " +
+            "WHERE operationId IN (:operationIds) " +
+            "AND operationId NOT IN (SELECT DISTINCT operationId FROM low_quality_redownload_items)"
+    )
+    suspend fun deleteOrphanedOperationsForRestoreReset(operationIds: List<String>): Int
 }

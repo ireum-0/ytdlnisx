@@ -7,9 +7,11 @@ import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.Operation
 import androidx.work.WorkManager
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.work.AutomaticKeywordRuleSyncWorker
+import com.ireum.ytdl.database.RestoreGate
 import java.util.concurrent.TimeUnit
 
 object AutomaticKeywordRuleScheduler {
@@ -17,7 +19,13 @@ object AutomaticKeywordRuleScheduler {
 
     fun workName(ruleId: Long) = "AUTOMATIC_KEYWORD_RULE_SYNC_$ruleId"
 
-    fun enqueue(context: Context, ruleId: Long, mode: Mode) {
+    fun enqueue(
+        context: Context,
+        ruleId: Long,
+        mode: Mode,
+        allowDuringRestore: Boolean = false,
+    ): Operation? {
+        if (!allowDuringRestore && RestoreGate.isRestoreInProgress(context)) return null
         val allowMeteredNetworks = PreferenceManager
             .getDefaultSharedPreferences(context)
             .getBoolean("metered_networks", true)
@@ -35,7 +43,7 @@ object AutomaticKeywordRuleScheduler {
             .addTag("automaticKeywordRules")
             .addTag("automaticKeywordRule_$ruleId")
             .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(
+        return WorkManager.getInstance(context).enqueueUniqueWork(
             workName(ruleId),
             ExistingWorkPolicy.REPLACE,
             request

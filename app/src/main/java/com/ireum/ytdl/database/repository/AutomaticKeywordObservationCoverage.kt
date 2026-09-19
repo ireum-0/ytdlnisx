@@ -5,6 +5,7 @@ import androidx.preference.PreferenceManager
 import androidx.work.WorkManager
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
@@ -23,14 +24,17 @@ import kotlinx.coroutines.sync.withLock
  */
 class AutomaticKeywordObservationCoverage(
     private val context: Context,
-    private val db: DBManager = DBManager.getInstance(context)
+    private val db: DBManager = DBManager.getInstance(context),
+    private val allowDuringRestore: Boolean = false,
 ) {
     suspend fun reconcile() = reconciliationMutex.withLock {
+        if (!allowDuringRestore && RestoreGate.isRestoreInProgress(context)) return@withLock
         val observeDao = db.observeSourcesDao
         val repository = ObserveSourcesRepository(
             observeDao,
             WorkManager.getInstance(context),
-            PreferenceManager.getDefaultSharedPreferences(context)
+            PreferenceManager.getDefaultSharedPreferences(context),
+            context,
         )
         val enabledRules = db.automaticKeywordRuleDao.getAllEnabledRules()
         val requiredByKey = enabledRules.groupBy { it.conditionKey }
@@ -48,7 +52,7 @@ class AutomaticKeywordObservationCoverage(
             .values
             .forEach { duplicates ->
                 duplicates.drop(1).forEach {
-                    repository.cancelObservationTaskByID(it.id)
+                    repository.cancelObservationTaskByID(it.id, allowDuringRestore)
                     observeDao.deleteRecord(it.id)
                 }
             }
@@ -57,7 +61,7 @@ class AutomaticKeywordObservationCoverage(
             .filter { it.observationPurpose == ObservationPurposes.KEYWORD_DISCOVERY }
             .forEach { managed ->
             if (managed.managedConditionKey !in requiredByKey || managed.managedConditionKey in publicActiveKeys) {
-                repository.cancelObservationTaskByID(managed.id)
+                repository.cancelObservationTaskByID(managed.id, allowDuringRestore)
                 observeDao.deleteRecord(managed.id)
             }
         }
@@ -79,13 +83,17 @@ class AutomaticKeywordObservationCoverage(
                 ).let { candidate ->
                     val id = observeDao.insert(candidate)
                     if (id > 0) {
-                        repository.observeTask(candidate.copy(id = id))
+                        check(repository.observeTaskAndAwait(candidate.copy(id = id), allowDuringRestore)) {
+                            "Managed ObserveSource scheduling was not accepted"
+                        }
                     }
                 }
             } else if (existing.status != ObserveSourcesRepository.SourceStatus.ACTIVE) {
                 val active = existing.copy(status = ObserveSourcesRepository.SourceStatus.ACTIVE)
                     .also { observeDao.update(it) }
-                repository.observeTask(active)
+                check(repository.observeTaskAndAwait(active, allowDuringRestore)) {
+                    "Managed ObserveSource scheduling was not accepted"
+                }
             }
         }
     }

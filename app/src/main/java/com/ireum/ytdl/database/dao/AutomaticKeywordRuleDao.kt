@@ -210,4 +210,7 @@ interface AutomaticKeywordRuleDao {
 
     @Query("DELETE FROM history_keyword_assignments WHERE historyItemId = :historyItemId")
     suspend fun deleteAssignmentsForHistory(historyItemId: Long)
+
+    @Query("DELETE FROM history_keyword_assignments WHERE historyItemId IN (:historyItemIds)")
+    suspend fun deleteAssignmentsForHistoryIds(historyItemIds: List<Long>): Int
 }

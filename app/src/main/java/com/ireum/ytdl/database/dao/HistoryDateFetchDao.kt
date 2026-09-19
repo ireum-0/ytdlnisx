@@ -137,4 +137,17 @@ interface HistoryDateFetchDao {
         reason: String,
         completedAt: Long,
     ): Int
+
+    @Query("DELETE FROM history_date_fetch_items WHERE historyId IN (:historyIds)")
+    suspend fun deleteItemsForHistoryIds(historyIds: List<Long>): Int
+
+    @Query("SELECT DISTINCT operationId FROM history_date_fetch_items WHERE historyId IN (:historyIds)")
+    suspend fun getOperationIdsForHistoryIds(historyIds: List<Long>): List<String>
+
+    @Query(
+        "DELETE FROM history_date_fetch_operations " +
+            "WHERE operationId IN (:operationIds) " +
+            "AND operationId NOT IN (SELECT DISTINCT operationId FROM history_date_fetch_items)"
+    )
+    suspend fun deleteOrphanedOperationsForRestoreReset(operationIds: List<String>): Int
 }

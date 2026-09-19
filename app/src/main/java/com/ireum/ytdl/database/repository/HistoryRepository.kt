@@ -1,7 +1,9 @@
 ﻿package com.ireum.ytdl.database.repository
 
+import android.content.Context
 import com.ireum.ytdl.database.DBManager.SORTING
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.dao.HistoryDao
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.KeywordInfo
@@ -25,6 +27,7 @@ class HistoryRepository(
     private val historyDao: HistoryDao,
     private val playlistDao: com.ireum.ytdl.database.dao.PlaylistDao,
     private val database: DBManager? = null,
+    private val context: Context? = null,
 ) {
     private companion object {
         // Keep Room IN-clause bindings safely below SQLite variable limits.
@@ -417,11 +420,13 @@ class HistoryRepository(
                 group.sortedWith(compareBy<HistoryItem> { it.time }.thenBy { it.id })
             }
 
-    fun updateArtist(id: Long, artist: String): Boolean =
+    fun updateArtist(id: Long, artist: String): Boolean = withRestoreAdmission {
         historyDao.updateArtistById(id, artist) > 0
+    }
 
-    fun updateThumb(id: Long, expectedThumb: String, newThumb: String): Boolean =
+    fun updateThumb(id: Long, expectedThumb: String, newThumb: String): Boolean = withRestoreAdmission {
         historyDao.updateThumbIfUnchanged(id, expectedThumb, newThumb) > 0
+    }
 
     fun updateDownloadPath(
         id: Long,
@@ -445,25 +450,38 @@ class HistoryRepository(
         normalizedUrl: String,
         mediaPublishedAt: Long
     ): Boolean {
-        return historyDao.updateMediaPublishedAtIfMissing(
-            id = id,
-            normalizedUrl = normalizedUrl,
-            mediaPublishedAt = mediaPublishedAt
-        ) > 0
+        return withRestoreAdmission {
+            historyDao.updateMediaPublishedAtIfMissing(
+                id = id,
+                normalizedUrl = normalizedUrl,
+                mediaPublishedAt = mediaPublishedAt
+            ) > 0
+        }
     }
 
     fun updateHardSubScanRemoved(ids: List<Long>, removed: Boolean) {
-        if (ids.isEmpty()) return
-        ids.chunked(ID_BATCH_SIZE).forEach { batch ->
-            historyDao.updateHardSubScanRemovedForIds(batch, removed)
+        withRestoreAdmission {
+            if (ids.isEmpty()) return@withRestoreAdmission
+            ids.chunked(ID_BATCH_SIZE).forEach { batch ->
+                historyDao.updateHardSubScanRemovedForIds(batch, removed)
+            }
         }
     }
 
-    fun updateHardSubDone(ids: List<Long>, done: Boolean): Int {
-        if (ids.isEmpty()) return 0
-        return ids.chunked(ID_BATCH_SIZE).sumOf { batch ->
+    fun updateHardSubDone(ids: List<Long>, done: Boolean): Int = withRestoreAdmission {
+        if (ids.isEmpty()) return@withRestoreAdmission 0
+        ids.chunked(ID_BATCH_SIZE).sumOf { batch ->
             historyDao.updateHardSubDoneForIds(batch, done)
         }
+    }
+
+    private inline fun <T> withRestoreAdmission(block: () -> T): T {
+        if (context != null) {
+            check(!RestoreGate.isRestoreInProgress(context)) {
+                "Restore transaction is active"
+            }
+        }
+        return block()
     }
 
     enum class HistorySortType {

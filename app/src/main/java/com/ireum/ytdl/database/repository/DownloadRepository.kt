@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.database.repository
+package com.ireum.ytdl.database.repository
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -18,6 +18,7 @@ import com.google.gson.Gson
 import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.DownloadItemConfigureMultiple
@@ -98,6 +99,14 @@ sealed interface DuplicateAdmissionResult {
 class DownloadRepository(private val database: DBManager) {
     private val downloadDao: DownloadDao = database.downloadDao
     private val undoCarrierGson = Gson()
+
+    /** Ordinary Download writers fail closed while a durable Reset owns the graph. */
+    private fun ensureRestoreAdmission() {
+        val app = runCatching { App.instance }.getOrNull() ?: return
+        check(!RestoreGate.isRestoreInProgress(app)) {
+            "Restore transaction is active"
+        }
+    }
     val allDownloads : Pager<Int, DownloadItem> = Pager(
         config = PagingConfig(pageSize = 20, initialLoadSize = 20, prefetchDistance = 1),
         pagingSourceFactory = {downloadDao.getAllDownloads()}
@@ -315,7 +324,9 @@ class DownloadRepository(private val database: DBManager) {
         item: DownloadItem,
         mode: DuplicateAdmissionMode,
         currentCommand: String? = null,
-    ): DuplicateAdmissionResult = database.withTransaction {
+    ): DuplicateAdmissionResult {
+        ensureRestoreAdmission()
+        return database.withTransaction {
         check(item.id <= 0L) {
             "Duplicate admission is only valid for a new Download row"
         }
@@ -367,6 +378,7 @@ class DownloadRepository(private val database: DBManager) {
 
         DuplicateAdmissionResult.Inserted(database.downloadDao.insert(item))
     }
+    }
 
     /** Must only be called while the surrounding Room transaction is active. */
     private fun currentDownloadedHistory(url: String): List<HistoryItem> =
@@ -378,6 +390,7 @@ class DownloadRepository(private val database: DBManager) {
             }
 
     suspend fun insert(item: DownloadItem) : Long {
+        ensureRestoreAdmission()
         return downloadDao.insert(item)
     }
 
@@ -385,7 +398,19 @@ class DownloadRepository(private val database: DBManager) {
         item: DownloadItem,
         barrier: HistoryReplacementBarrier?,
         preserveOrderPosition: Boolean = false,
-    ): Long = database.withTransaction {
+    ): Long {
+        ensureRestoreAdmission()
+        return database.withTransaction {
+            insertRestoredDownloadWithinRestoreTransaction(item, barrier, preserveOrderPosition)
+        }
+    }
+
+    /** Restore-only primitive; the caller owns the outer Room transaction. */
+    internal suspend fun insertRestoredDownloadWithinRestoreTransaction(
+        item: DownloadItem,
+        barrier: HistoryReplacementBarrier?,
+        preserveOrderPosition: Boolean = false,
+    ): Long {
         val restoredItem = barrier?.let {
             item.copy(
                 status = Status.Error.name,
@@ -419,14 +444,53 @@ class DownloadRepository(private val database: DBManager) {
         restoredId
     }
 
+    /**
+     * Reset removes the exact Download rows that owned these undo carriers.
+     * Unrelated user undo authority remains intact; the restore gate prevents
+     * a resolver from racing this cleanup while the outer Room transaction is
+     * active.
+     */
+    internal suspend fun clearRestoreTargetedUndoCarriers(downloadIds: Set<Long>) {
+        if (downloadIds.isEmpty()) return
+        database.pendingUndoCarrierDao.getAll().forEach { carrier ->
+            val snapshotDownloadId = if (
+                carrier.kind == PendingUndoCarrier.REMOVAL_KIND &&
+                carrier.snapshotJson.isNotBlank()
+            ) {
+                runCatching {
+                    undoCarrierGson.fromJson(
+                        carrier.snapshotJson,
+                        DownloadRemovalSnapshot::class.java,
+                    ).download.id
+                }.getOrNull()
+            } else {
+                null
+            }
+            if (snapshotDownloadId != null && snapshotDownloadId in downloadIds) {
+                database.pendingUndoCarrierDao.delete(carrier.token)
+            }
+        }
+        database.lowQualityRedownloadDao.getPendingUndoItems()
+            .filter { it.downloadId != null && it.downloadId in downloadIds && it.reasonCode.isNotBlank() }
+            .forEach { item ->
+                database.pendingUndoCarrierDao.delete(item.reasonCode)
+            }
+    }
+
     suspend fun insertAll(items: List<DownloadItem>) : List<Long> {
+        ensureRestoreAdmission()
         return downloadDao.insertAll(items)
     }
 
-    suspend fun deleteAll(): Set<String> =
-        deleteKnownUserRemoval(downloadDao.getAllDownloadsList())
+    suspend fun deleteAll(): Set<String> {
+        ensureRestoreAdmission()
+        return deleteKnownUserRemoval(downloadDao.getAllDownloadsList())
+    }
 
-    suspend fun delete(id: Long): Set<String> = removeDownload(id)
+    suspend fun delete(id: Long): Set<String> {
+        ensureRestoreAdmission()
+        return removeDownload(id)
+    }
 
     /**
      * Deletes a Download and returns only after the matching Undo snapshot has
@@ -442,6 +506,7 @@ class DownloadRepository(private val database: DBManager) {
         id: Long,
         owner: UndoPresentationOwner,
     ): DownloadUndoHandle? {
+        ensureRestoreAdmission()
         val token = DownloadUndoToken("$PENDING_REMOVAL_TOKEN_PREFIX${UUID.randomUUID()}")
         if (registerPreparedUndoAuthority(token.value, owner, UndoAuthorityKind.REMOVAL)) {
             scheduleRecoveryForUndoToken(token.value)
@@ -594,14 +659,17 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun update(item: DownloadItem) : Long {
+        ensureRestoreAdmission()
         return if (item.id <= 0L) downloadDao.insert(item) else downloadDao.update(item)
     }
 
     suspend fun updateAll(list: List<DownloadItem>) : List<DownloadItem> {
+        ensureRestoreAdmission()
         return downloadDao.updateAll(list)
     }
 
     suspend fun updateWithoutUpsert(item: DownloadItem){
+        ensureRestoreAdmission()
         kotlin.runCatching { downloadDao.updateWithoutUpsert(item) }
     }
 
@@ -620,6 +688,7 @@ class DownloadRepository(private val database: DBManager) {
         token: DownloadUndoToken,
         owner: UndoPresentationOwner,
     ): Long? {
+        ensureRestoreAdmission()
         if (!acceptRemovalUndoResolution(token.value, PendingUndoResolutionIntent.RESTORE, owner)) {
             return null
         }
@@ -636,6 +705,7 @@ class DownloadRepository(private val database: DBManager) {
         token: DownloadUndoToken,
         owner: UndoPresentationOwner,
     ): Set<String> {
+        ensureRestoreAdmission()
         if (!acceptRemovalUndoResolution(token.value, PendingUndoResolutionIntent.COMMIT, owner)) {
             return emptySet()
         }
@@ -2589,6 +2659,7 @@ class DownloadRepository(private val database: DBManager) {
         status: Status,
         expectedExecutionId: String? = null,
     ): Boolean {
+        ensureRestoreAdmission()
         userStopWriteFailureForTesting?.invoke(id, status)?.let { throw it }
         if (userStopWriteNoOpForTesting?.invoke(id, status) == true) return false
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
@@ -2660,6 +2731,7 @@ class DownloadRepository(private val database: DBManager) {
         ids: List<Long>,
         status: Status,
     ): List<DownloadCancellationRegistry.Publication> {
+        ensureRestoreAdmission()
         if (status != Status.Paused && status != Status.Cancelled) {
             database.withTransaction {
                 ids.distinct().forEach { id ->
@@ -2720,6 +2792,7 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun saveForLater(item: DownloadItem): SavedDownloadResult {
+        ensureRestoreAdmission()
         val pendingTokensToRelease = linkedSetOf<String>()
         val result = database.withTransaction {
             if (item.id > 0L && downloadDao.getNullableDownloadById(item.id)?.let {
@@ -2772,6 +2845,7 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun moveToSaved(id: Long): Set<String> {
+        ensureRestoreAdmission()
         val pendingTokensToRelease = linkedSetOf<String>()
         val result = database.withTransaction {
             val item = downloadDao.getNullableDownloadById(id) ?: return@withTransaction emptySet()
@@ -2883,6 +2957,7 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun deleteProcessingByUrl(url: String) {
+        ensureRestoreAdmission()
         downloadDao.deleteProcessingByUrl(url)
     }
 
@@ -2891,6 +2966,7 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun reverseProcessingDownloads() {
+        ensureRestoreAdmission()
         downloadDao.reverseProcessingDownloads()
     }
 
@@ -2938,8 +3014,10 @@ class DownloadRepository(private val database: DBManager) {
         return downloadDao.getScheduledDownloadIDs()
     }
 
-    suspend fun deleteCancelled(): Set<String> =
-        deleteKnownUserRemoval(getCancelledDownloads())
+    suspend fun deleteCancelled(): Set<String> {
+        ensureRestoreAdmission()
+        return deleteKnownUserRemoval(getCancelledDownloads())
+    }
 
     /**
      * Deletes only the exact cancelled rows captured by one cleanup
@@ -3027,11 +3105,15 @@ class DownloadRepository(private val database: DBManager) {
         return downloadDao.getDownloadsCountByStatus(listOf(Status.Active, Status.PostProcessing).toListString())
     }
 
-    suspend fun deleteScheduled(): Set<String> =
-        deleteKnownUserRemoval(getScheduledDownloads())
+    suspend fun deleteScheduled(): Set<String> {
+        ensureRestoreAdmission()
+        return deleteKnownUserRemoval(getScheduledDownloads())
+    }
 
-    suspend fun deleteErrored(): Set<String> =
-        deleteKnownUserRemoval(getErroredDownloads())
+    suspend fun deleteErrored(): Set<String> {
+        ensureRestoreAdmission()
+        return deleteKnownUserRemoval(getErroredDownloads())
+    }
 
     /** See [deleteCancelledExactTargets]. */
     internal suspend fun deleteErroredExactTargets(
@@ -3042,13 +3124,18 @@ class DownloadRepository(private val database: DBManager) {
         deleteCacheAfterRoom = false,
     )
 
-    suspend fun deleteQueued(): Set<String> =
-        deleteKnownUserRemoval(getQueuedDownloads())
+    suspend fun deleteQueued(): Set<String> {
+        ensureRestoreAdmission()
+        return deleteKnownUserRemoval(getQueuedDownloads())
+    }
 
-    suspend fun deletePaused(): Set<String> =
-        deleteKnownUserRemoval(downloadDao.getPausedDownloadsList())
+    suspend fun deletePaused(): Set<String> {
+        ensureRestoreAdmission()
+        return deleteKnownUserRemoval(downloadDao.getPausedDownloadsList())
+    }
 
     suspend fun deleteSaved(){
+        ensureRestoreAdmission()
         val saved = getSavedDownloads()
         database.withTransaction {
             database.historyReplacementBarrierDao.deleteForDownloadIds(
@@ -3059,6 +3146,7 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun deleteProcessing(){
+        ensureRestoreAdmission()
         val processing = getAllProcessingDownloads()
         database.withTransaction {
             database.historyReplacementBarrierDao.deleteForDownloadIds(
@@ -3069,11 +3157,14 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     suspend fun deleteWithDuplicateStatus() {
+        ensureRestoreAdmission()
         downloadDao.deleteWithDuplicateStatus()
     }
 
-    suspend fun deleteAllWithIDs(ids: List<Long>): Set<String> =
-        deleteKnownUserRemoval(downloadDao.getDownloadsByIdsSuspend(ids.distinct()))
+    suspend fun deleteAllWithIDs(ids: List<Long>): Set<String> {
+        ensureRestoreAdmission()
+        return deleteKnownUserRemoval(downloadDao.getDownloadsByIdsSuspend(ids.distinct()))
+    }
 
     private suspend fun cancelByUserWithPublication(
         id: Long,
@@ -3136,6 +3227,7 @@ class DownloadRepository(private val database: DBManager) {
         id: Long,
         expectedExecutionId: String? = null,
     ): Set<String> {
+        ensureRestoreAdmission()
         val result = cancelByUserWithPublication(id, expectedExecutionId)
         result.publication?.let { DownloadCancellationRegistry.publish(listOf(it)) }
         return result.affectedOperationIds
@@ -3145,7 +3237,8 @@ class DownloadRepository(private val database: DBManager) {
         id: Long,
         successReason: String = "",
         expectedExecutionId: String = "",
-    ): Set<String> = database.withTransaction {
+    ): Set<String> {
+        return database.withTransaction {
         val currentDownload = downloadDao.getNullableDownloadById(id)
         val historyReplacementCommitted = currentDownload?.let {
             isCommittedHistoryReplacementLocked(it)
@@ -3240,12 +3333,13 @@ class DownloadRepository(private val database: DBManager) {
         downloadDao.delete(id)
         changedOperationIds
     }
+    }
 
     suspend fun completeHistoryTargetDeletedAndDelete(
         id: Long,
         expectedExecutionId: String = "",
-    ): Set<String> =
-        database.withTransaction {
+    ): Set<String> {
+        return database.withTransaction {
             assertTerminalExecutionOwned(id, expectedExecutionId)
             val ledgerDao = database.lowQualityRedownloadDao
             val ledgerItem = ledgerDao.getItemByDownloadId(id)
@@ -3302,6 +3396,7 @@ class DownloadRepository(private val database: DBManager) {
             downloadDao.delete(id)
             changedOperationIds
         }
+    }
 
     private fun assertTerminalExecutionOwned(
         id: Long,
@@ -3355,6 +3450,7 @@ class DownloadRepository(private val database: DBManager) {
         expectedExecutionId: String? = null,
         owner: UndoPresentationOwner,
     ): UndoableCancellation {
+        ensureRestoreAdmission()
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         val pendingTokensToRelease = linkedSetOf<String>()
         val pendingStatus = downloadDao.getNullableDownloadById(id)?.status?.let { status ->
@@ -3566,6 +3662,7 @@ class DownloadRepository(private val database: DBManager) {
         originalStatus: Status,
         owner: UndoPresentationOwner,
     ): PendingCancellationResolution {
+        ensureRestoreAdmission()
         val publications = mutableListOf<DownloadCancellationRegistry.Publication>()
         val pendingTokensToRelease = linkedSetOf<String>()
         if (!acceptCancellationUndoResolution(token, PendingUndoResolutionIntent.RESTORE, owner)) {
@@ -3697,6 +3794,7 @@ class DownloadRepository(private val database: DBManager) {
         token: String,
         owner: UndoPresentationOwner,
     ): Set<String> {
+        ensureRestoreAdmission()
         if (!acceptCancellationUndoResolution(token, PendingUndoResolutionIntent.COMMIT, owner)) {
             return emptySet()
         }
@@ -4278,10 +4376,33 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     @SuppressLint("RestrictedApi")
-    suspend fun startDownloadWorker(queuedItems: List<DownloadItem>, context: Context, continueAfterPriorityItems: Boolean = true) : Result<String> {
+    suspend fun startDownloadWorker(
+        queuedItems: List<DownloadItem>,
+        context: Context,
+        continueAfterPriorityItems: Boolean = true,
+        allowDuringRestore: Boolean = false,
+        awaitAcceptance: Boolean = false,
+    ): Result<String> {
+        if (!allowDuringRestore && RestoreGate.isRestoreInProgress(context)) {
+            return Result.failure(IllegalStateException("Restore transaction is active"))
+        }
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
         val allowMeteredNetworks = sharedPreferences.getBoolean("metered_networks", true)
         val workManager = WorkManager.getInstance(context)
+
+        suspend fun enqueueAndAwait(
+            name: String,
+            policy: ExistingWorkPolicy,
+            request: androidx.work.OneTimeWorkRequest,
+        ) {
+            val operation = workManager.enqueueUniqueWork(name, policy, request)
+            if (awaitAcceptance) {
+                operation.result.get(
+                    RESTORE_SCHEDULER_ACCEPTANCE_TIMEOUT_MS,
+                    TimeUnit.MILLISECONDS,
+                )
+            }
+        }
 
         val useAlarmForScheduling = sharedPreferences.getBoolean("use_alarm_for_scheduling", false)
         val currentTime = System.currentTimeMillis()
@@ -4334,7 +4455,7 @@ class DownloadRepository(private val database: DBManager) {
                     delay = startTime - currentTime,
                     continueAfterPriorityIds = true
                 )
-                workManager.enqueueUniqueWork(
+                enqueueAndAwait(
                     "$SCHEDULED_DOWNLOAD_WORK_NAME-$startTime",
                     ExistingWorkPolicy.REPLACE,
                     request
@@ -4350,7 +4471,7 @@ class DownloadRepository(private val database: DBManager) {
             )
             // Keep each trigger independent. A unique KEEP request can be dropped while
             // the previous worker is shutting down after observing an empty queue.
-            workManager.enqueueUniqueWork(
+            enqueueAndAwait(
                 "$DOWNLOAD_WORK_NAME-${request.id}",
                 ExistingWorkPolicy.REPLACE,
                 request
@@ -4377,6 +4498,7 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     companion object {
+        private const val RESTORE_SCHEDULER_ACCEPTANCE_TIMEOUT_MS = 5_000L
         const val REASON_USER_CANCELLED = "USER_CANCELLED"
         const val REASON_USER_REMOVED = "USER_REMOVED_QUEUE_ITEM"
         const val REASON_SAVED_FOR_LATER = "SAVED_FOR_LATER"

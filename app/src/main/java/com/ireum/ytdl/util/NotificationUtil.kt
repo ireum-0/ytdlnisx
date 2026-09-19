@@ -851,6 +851,19 @@ class NotificationUtil(var context: Context) {
         notificationManager.cancel(DOWNLOAD_ERRORED_NOTIFICATION_ID + id)
     }
 
+    /**
+     * Retires every per-Download notification family for one exact old
+     * Download identity.  Reset invokes this only after the replacement
+     * database image is authoritative, so a recovery retry cannot expose a
+     * half-reconciled notification set.
+     */
+    fun cancelDownloadNotifications(id: Int) {
+        cancelDownloadNotification(id)
+        cancelRunningDownloadNotification(id)
+        notificationManager.cancel(DOWNLOAD_FINISHED_NOTIFICATION_ID + id)
+        cancelErroredNotification(id)
+    }
+
     fun createDeletingLeftoverDownloadsNotification() : Notification {
         val notificationBuilder = getBuilder(DOWNLOAD_MISC_CHANNEL_ID)
 

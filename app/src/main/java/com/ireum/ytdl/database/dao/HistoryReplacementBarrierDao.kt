@@ -29,4 +29,7 @@ interface HistoryReplacementBarrierDao {
 
     @Query("DELETE FROM history_replacement_barriers WHERE downloadId IN (:downloadIds)")
     suspend fun deleteForDownloadIds(downloadIds: List<Long>)
+
+    @Query("DELETE FROM history_replacement_barriers WHERE historyId IN (:historyIds)")
+    suspend fun deleteForHistoryIds(historyIds: List<Long>)
 }

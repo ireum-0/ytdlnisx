@@ -563,6 +563,9 @@ interface DownloadDao {
     @Query("DELETE FROM downloads WHERE status in ('Queued','WaitingForMembership')")
     suspend fun deleteQueued()
 
+    @Query("DELETE FROM downloads WHERE status='Paused'")
+    suspend fun deletePaused()
+
     @Query("DELETE FROM downloads WHERE status='Saved'")
     suspend fun deleteSaved()
 

@@ -76,6 +76,10 @@ class HistoryDateFetchNotification(private val context: Context) {
         runCatching { manager.notify(NOTIFICATION_ID, notification) }
     }
 
+    fun cancel() {
+        manager.cancel(NOTIFICATION_ID)
+    }
+
     private fun openHistoryIntent(): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             action = Intent.ACTION_VIEW

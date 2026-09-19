@@ -55,4 +55,10 @@ interface DownloadPrimarySuccessAuthorityDao {
 
     @Query("DELETE FROM download_primary_success_authorities WHERE authorityKey = :authorityKey")
     suspend fun delete(authorityKey: String): Int
+
+    @Query("DELETE FROM download_primary_success_authorities WHERE downloadId IN (:downloadIds)")
+    suspend fun deleteForDownloadIds(downloadIds: List<Long>): Int
+
+    @Query("DELETE FROM download_primary_success_authorities WHERE historyId IN (:historyIds)")
+    suspend fun deleteForHistoryIds(historyIds: List<Long>): Int
 }

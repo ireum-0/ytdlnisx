@@ -34,6 +34,7 @@ class AutomaticKeywordRuleRepository(
         dao.getRuleKeywords(ruleId).map { it.keyword }
 
     suspend fun save(input: AutomaticKeywordRuleInput): Long {
+        checkRestoreAdmission()
         val conditionValue = requireNotNull(
             AutomaticKeywordNormalizer.canonicalPlaylistUrl(input.playlistUrl)
         ) { "Invalid playlist URL" }
@@ -128,6 +129,7 @@ class AutomaticKeywordRuleRepository(
     }
 
     suspend fun setEnabled(ruleId: Long, enabled: Boolean) {
+        checkRestoreAdmission()
         val rule = dao.getRule(ruleId) ?: return
         val needsSync = enabled && (!rule.baselineComplete || rule.pendingApplyToExisting)
         dao.updateRule(
@@ -167,18 +169,30 @@ class AutomaticKeywordRuleRepository(
     }
 
     suspend fun delete(ruleId: Long) {
+        checkRestoreAdmission()
         assignments.deleteRuleAndAssignments(ruleId)
         AutomaticKeywordRuleScheduler.cancel(context, ruleId)
         AutomaticKeywordObservationCoverage(context, db).reconcile()
     }
 
     suspend fun syncNow(ruleId: Long): Boolean {
+        checkRestoreAdmission()
         if (dao.requestApplyExistingSync(ruleId, System.currentTimeMillis()) == 0) return false
-        AutomaticKeywordRuleScheduler.enqueue(
-            context,
-            ruleId,
-            AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING
-        )
+        if (
+            AutomaticKeywordRuleScheduler.enqueue(
+                context,
+                ruleId,
+                AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING
+            ) == null
+        ) {
+            return false
+        }
         return true
+    }
+
+    private fun checkRestoreAdmission() {
+        check(!com.ireum.ytdl.database.RestoreGate.isRestoreInProgress(context)) {
+            "Restore transaction is active"
+        }
     }
 }
