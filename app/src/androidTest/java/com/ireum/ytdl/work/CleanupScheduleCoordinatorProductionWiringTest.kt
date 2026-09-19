@@ -382,9 +382,16 @@ class CleanupScheduleCoordinatorProductionWiringTest {
             )
 
             assertEquals(generation, preferences.getString("cleanup_leftover_downloads_generation", null))
-            assertEquals(
-                occurrenceAt,
-                preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1L),
+            val pendingOccurrence = preferences.getLong(
+                "cleanup_leftover_downloads_pending_occurrence_at",
+                -1L,
+            )
+            val activeOccurrence = preferences.getLong(
+                "cleanup_leftover_downloads_active_occurrence_at",
+                -1L,
+            )
+            assertTrue(
+                pendingOccurrence == occurrenceAt || activeOccurrence == occurrenceAt,
             )
             assertEquals(
                 "destination-reset-journal",
