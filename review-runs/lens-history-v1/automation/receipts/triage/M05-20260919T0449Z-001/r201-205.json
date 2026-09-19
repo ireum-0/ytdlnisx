@@ -1,0 +1,118 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "microsegment_rank_range": [
+    201,
+    205
+  ],
+  "data_head": "82608b84d9909acc80c8ed7423282301b531b6e4",
+  "complete_state_blob": "52289c6a72a56ff30bb09fa59fe2f6860b0a445e",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M05-20260919T0449Z-001/r201-205.json",
+    "blob_sha": "31a8e3de9b4a7805d83783456f3bf29c6ebc3cf0"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "85ab2d5410037680f67a153ce1ee208874cc2995",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M05-20260919T0449Z-001/r196-200.json",
+    "blob_sha": "91072ba59c6452d2232a38bdc6ff2ac9d18da5b6"
+  },
+  "source_review": [
+    {
+      "rank": 201,
+      "path": "review-runs/checkpoints/2026-09-13T052900Z__c67ecb66__checkpoint.md",
+      "source_blob": "1fa76ffbffcf89e03f02cc6978da343dd9ee7f37",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Title-only intermediate wording is insufficient for structural identity; preserve F10 retry-exhaustion/enqueue-completion subcases as one existing root and runtime evidence as NOT_VERIFIED."
+    },
+    {
+      "rank": 202,
+      "path": "review-runs/checkpoints/2026-09-13T052500Z__c67ecb66__checkpoint.md",
+      "source_blob": "bf8d4c9209b30b1abaaee92861333ba7315fa8dc",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic checkpoint kind and provisional counts; F10 residual questions and execution evidence are still unresolved and must not be promoted."
+    },
+    {
+      "rank": 203,
+      "path": "review-runs/checkpoints/2026-09-13T043020Z__c67ecb66__checkpoint.md",
+      "source_blob": "91eba27dbec8b524f2b4e487e10474e6b60b3aa9",
+      "independent_exception_triggers": [
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep the two F10 residuals as one existing P2 root; source-semantic reproduction does not establish runtime manifestation."
+    },
+    {
+      "rank": 204,
+      "path": "review-runs/checkpoints/2026-09-13T042720Z__c67ecb66__checkpoint.md",
+      "source_blob": "12f87519d535e69b78e6ebb78afc2cc9c1b2d5b8",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve explicit full-path intermediate phase, same-root F10 subcases, and the rejection of the ignored Boolean as a separately countable blocker; final execution remains NOT_VERIFIED."
+    },
+    {
+      "rank": 205,
+      "path": "review-runs/checkpoints/2026-09-13T042240Z__c67ecb66__checkpoint.md",
+      "source_blob": "7c26434e1f92fb416858a700e5b5fd9a003b1c8e",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve explicit bootstrap phase; prior F10 status is governance input only and current-source re-adjudication is still pending."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      201,
+      202,
+      203,
+      204,
+      205
+    ],
+    "materializer_flagged_exception_ranks": [
+      201,
+      202,
+      203,
+      204,
+      205
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
