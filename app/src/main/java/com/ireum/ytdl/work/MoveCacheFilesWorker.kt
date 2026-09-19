@@ -13,6 +13,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.App
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.util.FileUtil
@@ -32,6 +33,7 @@ class MoveCacheFilesWorker(
     workerParams: WorkerParameters
 ) : CoroutineWorker(context, workerParams) {
     override suspend fun doWork(): Result {
+        if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
         val notificationUtil = NotificationUtil(App.instance)
         val id = System.currentTimeMillis().toInt()
 

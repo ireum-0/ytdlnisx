@@ -13,6 +13,7 @@ import androidx.work.Operation
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
@@ -100,6 +101,9 @@ internal object WorkManagerHandoffRecovery {
     const val EXTRA_HANDOFF_ID = "workManagerHandoffId"
 
     fun prepareHardSub(context: Context): String {
+        check(!RestoreGate.isRestoreInProgress(context)) {
+            "Restore transaction is active"
+        }
         val handoffId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
         val carrier = WorkManagerHandoffCarrier(
@@ -121,6 +125,9 @@ internal object WorkManagerHandoffRecovery {
         boundary: String,
         notBeforeAt: Long,
     ): String {
+        check(!RestoreGate.isRestoreInProgress(context)) {
+            "Restore transaction is active"
+        }
         val kind = when (boundary) {
             WorkManagerHandoffCarrier.START_BOUNDARY -> WorkManagerHandoffCarrier.SCHEDULE_START
             WorkManagerHandoffCarrier.END_BOUNDARY -> WorkManagerHandoffCarrier.SCHEDULE_END
@@ -156,6 +163,9 @@ internal object WorkManagerHandoffRecovery {
         confirmedUrl: String,
         configFingerprint: String,
     ): String {
+        check(!RestoreGate.isRestoreInProgress(context)) {
+            "Restore transaction is active"
+        }
         val canonicalIdentity = "$sourceId|$confirmedUrl|$configFingerprint|" +
             ObserveRetryDecisionReceiver.ACTION_DOWNLOAD
         val handoffId = UUID.nameUUIDFromBytes(canonicalIdentity.toByteArray(StandardCharsets.UTF_8)).toString()
@@ -170,6 +180,9 @@ internal object WorkManagerHandoffRecovery {
         }
         if (existing != null) return existing.handoffId
 
+        check(!RestoreGate.isRestoreInProgress(context)) {
+            "Restore transaction is active"
+        }
         val now = System.currentTimeMillis()
         val carrier = WorkManagerHandoffCarrier(
             handoffId = handoffId,
@@ -184,7 +197,12 @@ internal object WorkManagerHandoffRecovery {
             createdAt = now,
             updatedAt = now,
         )
-        blocking { dao.insert(carrier) }
+        blocking {
+            check(!RestoreGate.isRestoreInProgress(context)) {
+                "Restore transaction is active"
+            }
+            dao.insert(carrier)
+        }
         return blocking { dao.get(handoffId) }?.handoffId ?: handoffId
     }
 
@@ -192,6 +210,7 @@ internal object WorkManagerHandoffRecovery {
         prepareSchedulerBoundary(context, boundary, System.currentTimeMillis())
 
     fun cancelScheduledHandoffs(context: Context) {
+        if (RestoreGate.isRestoreInProgress(context)) return
         cancelBoundary(
             context,
             WorkManagerHandoffCarrier.SCHEDULE_START,
@@ -263,6 +282,7 @@ internal object WorkManagerHandoffRecovery {
     /** Startup path; it does not require runtime/native readiness. */
     suspend fun reconcile(context: Context) {
         val appContext = context.applicationContext
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         val dao = database(appContext).workManagerHandoffCarrierDao
         dao.deleteResolved()
         dao.getOutstanding().forEach { carrier ->
@@ -275,6 +295,7 @@ internal object WorkManagerHandoffRecovery {
         handoffId: String,
         requestId: String,
     ): Boolean {
+        if (RestoreGate.isRestoreInProgress(context)) return false
         val dao = database(context).workManagerHandoffCarrierDao
         val changed = dao.markResolved(handoffId, requestId, System.currentTimeMillis())
         if (changed == 0) {
@@ -318,6 +339,7 @@ internal object WorkManagerHandoffRecovery {
         context: Context,
         carrier: WorkManagerHandoffCarrier,
     ) {
+        if (RestoreGate.isRestoreInProgress(context)) return
         if (!isCurrentGeneration(carrier)) return
         val workInfo = workInfo(context, carrier.requestId)
         if (carrier.state == WorkManagerHandoffCarrier.ACCEPTED) {
@@ -375,6 +397,10 @@ internal object WorkManagerHandoffRecovery {
     ): EnqueueOutcome {
         val dao = database(context).workManagerHandoffCarrierDao
         val carrier = dao.get(handoffId) ?: return EnqueueOutcome(OutcomeKind.SUPERSEDED)
+        if (RestoreGate.isRestoreInProgress(context)) {
+            scheduleRetry(context, handoffId)
+            return EnqueueOutcome(OutcomeKind.RETRYING)
+        }
         if (!isCurrentGeneration(carrier)) {
             return EnqueueOutcome(OutcomeKind.SUPERSEDED)
         }
@@ -401,7 +427,7 @@ internal object WorkManagerHandoffRecovery {
 
         return try {
             val operation = synchronized(boundaryLock(carrier)) {
-                if (!isCurrentGeneration(carrier)) {
+                if (RestoreGate.isRestoreInProgress(context) || !isCurrentGeneration(carrier)) {
                     null
                 } else {
                     enqueueUniqueWork(
@@ -410,7 +436,12 @@ internal object WorkManagerHandoffRecovery {
                         request = request,
                     )
                 }
-            } ?: return EnqueueOutcome(OutcomeKind.SUPERSEDED)
+            } ?: if (RestoreGate.isRestoreInProgress(context)) {
+                scheduleRetry(context, handoffId)
+                return EnqueueOutcome(OutcomeKind.RETRYING)
+            } else {
+                return EnqueueOutcome(OutcomeKind.SUPERSEDED)
+            }
             val failure = awaitOperation(operation)
             if (failure != null) {
                 retryAfterFailure(context, carrier, failure)
@@ -452,6 +483,10 @@ internal object WorkManagerHandoffRecovery {
         carrier: WorkManagerHandoffCarrier,
         failure: Throwable?,
     ): EnqueueOutcome {
+        if (RestoreGate.isRestoreInProgress(context)) {
+            scheduleRetry(context, carrier.handoffId)
+            return EnqueueOutcome(OutcomeKind.RETRYING, failure)
+        }
         val dao = database(context).workManagerHandoffCarrierDao
         if (!isCurrentGeneration(carrier)) {
             return EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
@@ -549,6 +584,9 @@ internal object WorkManagerHandoffRecovery {
         context: Context,
         carrier: WorkManagerHandoffCarrier,
     ) {
+        check(!RestoreGate.isRestoreInProgress(context)) {
+            "Restore transaction is active"
+        }
         synchronized(boundaryLock(carrier.kind, carrier.boundary)) {
             val dao = database(context).workManagerHandoffCarrierDao
             val oldCarrier = blocking {
@@ -559,6 +597,9 @@ internal object WorkManagerHandoffRecovery {
                 attemptJobs.remove(it.handoffId)?.cancel()
             }
             val inserted = blocking {
+                check(!RestoreGate.isRestoreInProgress(context)) {
+                    "Restore transaction is active"
+                }
                 database(context).withTransaction {
                     dao.deleteOutstandingForBoundary(carrier.kind, carrier.boundary)
                     dao.insert(carrier)
@@ -577,6 +618,7 @@ internal object WorkManagerHandoffRecovery {
         boundary: String,
     ) {
         synchronized(boundaryLock(kind, boundary)) {
+            if (RestoreGate.isRestoreInProgress(context)) return
             val dao = database(context).workManagerHandoffCarrierDao
             val carrier = blocking { dao.getOutstandingForBoundary(kind, boundary) }
             carrier?.let {

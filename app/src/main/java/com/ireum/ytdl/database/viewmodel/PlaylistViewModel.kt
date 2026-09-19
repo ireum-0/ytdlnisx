@@ -18,7 +18,7 @@ class PlaylistViewModel(application: Application) : AndroidViewModel(application
 
     init {
         val db = DBManager.getInstance(application)
-        repository = PlaylistRepository(db.playlistDao, db.playlistGroupDao)
+        repository = PlaylistRepository(db.playlistDao, db.playlistGroupDao, application)
         allPlaylists = repository.getAllPlaylists()
     }
 

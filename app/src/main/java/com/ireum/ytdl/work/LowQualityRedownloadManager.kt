@@ -10,6 +10,7 @@ import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
@@ -42,6 +43,7 @@ class LowQualityRedownloadManager private constructor(
     private val notification = LowQualityRedownloadNotification(appContext)
 
     fun startOrReconnect() {
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         scope.launch {
             val operation = repository.createOrReconnect()
             dispatchRecovery(operation)
@@ -49,10 +51,12 @@ class LowQualityRedownloadManager private constructor(
     }
 
     fun setSelected(operationId: String, historyId: Long, selected: Boolean) {
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         scope.launch { repository.setSelected(operationId, historyId, selected) }
     }
 
     fun confirm(operationId: String) {
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         scope.launch {
             confirmAndEnqueueLowQualityRedownload(
                 operationId = operationId,
@@ -65,6 +69,7 @@ class LowQualityRedownloadManager private constructor(
     }
 
     fun cancel(operationId: String, onComplete: (() -> Unit)? = null) {
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         scope.launch {
             try {
                 repository.requestCancellation(operationId)
@@ -103,6 +108,7 @@ class LowQualityRedownloadManager private constructor(
     }
 
     suspend fun reconcile() {
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         val operation = repository.getActiveOperation() ?: return
         dispatchRecovery(operation)
     }
@@ -116,6 +122,7 @@ class LowQualityRedownloadManager private constructor(
     suspend fun reconcileCancellationDebt(
         dbManager: DBManager = database,
     ): Boolean {
+        if (RestoreGate.isRestoreInProgress(appContext)) return false
         val recoveryRepository = if (dbManager === database) {
             repository
         } else {
@@ -150,6 +157,10 @@ class LowQualityRedownloadManager private constructor(
         dbManager: DBManager = database,
         recoveryRepository: LowQualityRedownloadRepository = repository,
     ) {
+        if (RestoreGate.isRestoreInProgress(appContext)) {
+            completion(IllegalStateException("Restore transaction is active"))
+            return
+        }
         try {
             LowQualityRedownloadLedger.cancelEnqueueConvergence(operationId)
             workManager.cancelAllWorkByTag(LowQualityRedownloadWorker.operationTag(operationId))

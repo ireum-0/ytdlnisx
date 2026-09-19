@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.database.viewmodel
+package com.ireum.ytdl.database.viewmodel
 
 import android.app.Application
 import android.content.SharedPreferences
@@ -14,6 +14,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
@@ -35,7 +36,7 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
         val dao = DBManager.getInstance(application).observeSourcesDao
         workManager = WorkManager.getInstance(application)
         preferences = PreferenceManager.getDefaultSharedPreferences(application)
-        repository = ObserveSourcesRepository(dao, workManager, preferences)
+        repository = ObserveSourcesRepository(dao, workManager, preferences, application)
         items = repository.items.asLiveData()
     }
 
@@ -52,6 +53,7 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
     }
 
     suspend fun insertUpdate(item: ObserveSourcesItem) : Long {
+        if (RestoreGate.isRestoreInProgress(application)) return 0L
         if (item.id > 0) {
             notificationUtil.cancelObserveRetryConfirmation(item.id)
             repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
@@ -68,6 +70,7 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
     }
 
     suspend fun stopObserving(item: ObserveSourcesItem) {
+        if (RestoreGate.isRestoreInProgress(application)) return
         notificationUtil.cancelObserveRetryConfirmation(item.id)
         item.status = ObserveSourcesRepository.SourceStatus.STOPPED
         repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
@@ -76,6 +79,7 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
     }
 
     fun delete(item: ObserveSourcesItem) = viewModelScope.launch(Dispatchers.IO) {
+        if (RestoreGate.isRestoreInProgress(application)) return@launch
         notificationUtil.cancelObserveRetryConfirmation(item.id)
         runCatching { repository.cancelObservationTaskByID(item.id) }
         repository.delete(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
@@ -83,6 +87,7 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
     }
 
     fun deleteAll() = viewModelScope.launch(Dispatchers.IO) {
+        if (RestoreGate.isRestoreInProgress(application)) return@launch
         getAll().forEach {
             notificationUtil.cancelObserveRetryConfirmation(it.id)
             runCatching { repository.cancelObservationTaskByID(it.id) }
@@ -93,6 +98,7 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
     }
 
     suspend fun update(item: ObserveSourcesItem) {
+        if (RestoreGate.isRestoreInProgress(application)) return
         repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
         AutomaticKeywordObservationCoverage(application).reconcile()
     }

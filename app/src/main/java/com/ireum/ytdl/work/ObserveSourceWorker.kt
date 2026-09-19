@@ -20,6 +20,7 @@ import androidx.work.WorkerParameters
 import com.ireum.ytdl.App
 import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.ResultItem
@@ -255,6 +256,7 @@ class ObserveSourceWorker(
     }
 
     override suspend fun doWork(): Result {
+        if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
         return try {
             runSourceWork()
         } catch (error: CancellationException) {
@@ -291,7 +293,8 @@ class ObserveSourceWorker(
             val repo = ObserveSourcesRepository(
                 dbManager.observeSourcesDao,
                 WorkManager.getInstance(context),
-                sharedPreferences
+                sharedPreferences,
+                context,
             )
             val item = withContext(Dispatchers.IO) {
                 dbManager.observeSourcesDao.getByIDOrNull(sourceID)
@@ -326,8 +329,18 @@ class ObserveSourceWorker(
             ?: DBManager.getInstance(context)
         val workManager = WorkManager.getInstance(context)
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
-        val repo = ObserveSourcesRepository(dbManager.observeSourcesDao, workManager, sharedPreferences)
-        val historyRepo = HistoryRepository(dbManager.historyDao, dbManager.playlistDao, dbManager)
+        val repo = ObserveSourcesRepository(
+            dbManager.observeSourcesDao,
+            workManager,
+            sharedPreferences,
+            context,
+        )
+        val historyRepo = HistoryRepository(
+            dbManager.historyDao,
+            dbManager.playlistDao,
+            dbManager,
+            context,
+        )
         val downloadRepo = DownloadRepository(dbManager)
         val commandTemplateDao = dbManager.commandTemplateDao
         val resultRepository = ResultRepository(dbManager.resultDao, commandTemplateDao, context)

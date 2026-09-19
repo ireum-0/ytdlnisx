@@ -23,7 +23,9 @@ internal data class AbandonedDownloadExecution(
 /** Serializes queue claim/publication with every stale-owner recovery scan. */
 internal suspend inline fun <T> withDownloadWorkerExecutionLock(
     block: suspend () -> T,
-): T = DownloadWorker.downloadWorkerMutex.withLock { block() }
+): T = DownloadWorker.downloadWorkerMutex.withLock {
+    block()
+}
 
 /**
  * Reconciles rows left in a running state by an execution that no longer has

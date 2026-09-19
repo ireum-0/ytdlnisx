@@ -3238,7 +3238,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             var appliedInitialQueuePlayback = false
             if (prefetchedHistoryIds.isNotEmpty()) {
                 val prefetchedItems = withContext(Dispatchers.IO) {
-                    val historyRepo = HistoryRepository(db.historyDao, db.playlistDao, db)
+                    val historyRepo = HistoryRepository(db.historyDao, db.playlistDao, db, this@VideoPlayerActivity)
                     val itemsById = historyRepo.getItemsFromIDs(prefetchedHistoryIds).associateBy { it.id }
                     prefetchedHistoryIds.asSequence()
                         .mapNotNull { id -> itemsById[id] }
@@ -3279,7 +3279,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 }
             }
             val items = withContext(Dispatchers.IO) {
-                val historyRepo = HistoryRepository(db.historyDao, db.playlistDao, db)
+                val historyRepo = HistoryRepository(db.historyDao, db.playlistDao, db, this@VideoPlayerActivity)
                 val keywordForBaseQuery = if (includeChildCategoryVideos && keywordFilter.isNotBlank()) "" else keywordFilter
                 val ids = historyRepo.getFilteredIDs(
                     query = queryFilter,
@@ -4784,7 +4784,11 @@ class VideoPlayerActivity : AppCompatActivity() {
         playbackQueueState.recordPlaybackPosition(historyId, positionMs)
         cachePlaybackPosition(historyId, positionMs)
         lifecycleScope.launch(Dispatchers.IO) {
-            DBManager.getInstance(this@VideoPlayerActivity).historyDao.updatePlaybackPosition(historyId, positionMs)
+            HistoryReferenceMutationCoordinator.withLock {
+                DBManager.getInstance(this@VideoPlayerActivity)
+                    .historyDao
+                    .updatePlaybackPosition(historyId, positionMs)
+            }
         }
     }
 
@@ -4812,7 +4816,11 @@ class VideoPlayerActivity : AppCompatActivity() {
         recentWatchUpdated = true
         val now = System.currentTimeMillis() / 1000L
         lifecycleScope.launch(Dispatchers.IO) {
-            DBManager.getInstance(this@VideoPlayerActivity).historyDao.updateLastWatched(historyId, now)
+            HistoryReferenceMutationCoordinator.withLock {
+                DBManager.getInstance(this@VideoPlayerActivity)
+                    .historyDao
+                    .updateLastWatched(historyId, now)
+            }
         }
     }
 

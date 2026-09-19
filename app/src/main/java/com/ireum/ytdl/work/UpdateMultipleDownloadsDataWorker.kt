@@ -9,6 +9,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.App
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.repository.ResultRepository
 import com.ireum.ytdl.util.DownloadMetadataEnrichmentPolicy
 import com.ireum.ytdl.util.NotificationUtil
@@ -33,6 +34,7 @@ class UpdateMultipleDownloadsDataWorker(private val context: Context,workerParam
 
 
     override suspend fun doWork(): Result {
+        if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
         val dbManager = UpdateMultipleDownloadsDataWorkerTestHooks.dbManagerForTesting
             ?: DBManager.getInstance(context)
         val dao = dbManager.downloadDao

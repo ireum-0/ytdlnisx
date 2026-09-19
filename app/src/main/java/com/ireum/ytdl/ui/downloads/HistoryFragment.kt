@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.downloads
+package com.ireum.ytdl.ui.downloads
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -74,6 +74,7 @@ import com.ireum.ytdl.R
 import com.ireum.ytdl.VideoPlayerActivity
 import com.ireum.ytdl.database.DBManager.SORTING
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
@@ -4611,7 +4612,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private fun showAddKeywordsDialog(selectedIds: List<Long>) {
         lifecycleScope.launch(Dispatchers.IO) {
             val db = DBManager.getInstance(requireContext())
-            val repository = HistoryRepository(db.historyDao, db.playlistDao, db)
+            val repository = HistoryRepository(db.historyDao, db.playlistDao, db, requireContext())
             val allItems = historyViewModel.getAll()
             val selectedItems = selectedIds.mapNotNull { id ->
                 runCatching { historyViewModel.getByID(id) }.getOrNull()
@@ -6737,23 +6738,30 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         existingItem: HistoryItem
     ): Boolean {
         return withContext(Dispatchers.IO) {
-            runCatching {
-                val db = DBManager.getInstance(requireContext())
-                val currentExistingItem = db.historyDao.getItem(existingItem.id)
-                if (
-                    !MediaPublishedDate.isPresent(currentExistingItem.mediaPublishedAt) &&
-                    MediaPublishedDate.isPresent(newItem.mediaPublishedAt)
-                ) {
-                    db.historyDao.updateMediaPublishedAtIfMissing(
-                        id = currentExistingItem.id,
-                        normalizedUrl = currentExistingItem.url.trim(),
-                        mediaPublishedAt = newItem.mediaPublishedAt,
-                    )
+            try {
+                HistoryReferenceMutationCoordinator.withLock {
+                    check(!RestoreGate.isRestoreInProgress(requireContext())) {
+                        "Restore transaction is active"
+                    }
+                    val db = DBManager.getInstance(requireContext())
+                    val currentExistingItem = db.historyDao.getItem(existingItem.id)
+                    if (
+                        !MediaPublishedDate.isPresent(currentExistingItem.mediaPublishedAt) &&
+                        MediaPublishedDate.isPresent(newItem.mediaPublishedAt)
+                    ) {
+                        db.historyDao.updateMediaPublishedAtIfMissing(
+                            id = currentExistingItem.id,
+                            normalizedUrl = currentExistingItem.url.trim(),
+                            mediaPublishedAt = newItem.mediaPublishedAt,
+                        )
+                    }
+                    com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
+                        .mergeHistoryAssignments(newItem.id, currentExistingItem.id)
+                    true
                 }
-                com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository(db)
-                    .mergeHistoryAssignments(newItem.id, currentExistingItem.id)
-                true
-            }.getOrDefault(false)
+            } catch (_: Exception) {
+                false
+            }
         }
     }
 

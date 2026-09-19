@@ -6,6 +6,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.repository.DownloadRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -19,6 +20,7 @@ class CancelScheduledDownloadWorker(
 ) : CoroutineWorker(context, workerParams) {
     @SuppressLint("RestrictedApi")
     override suspend fun doWork(): Result {
+        if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
         if (isStopped) return Result.success()
         val dbManager = DBManager.getInstance(context)
         val dao = dbManager.downloadDao

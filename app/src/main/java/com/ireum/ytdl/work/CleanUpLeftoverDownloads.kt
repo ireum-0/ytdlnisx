@@ -10,6 +10,7 @@ import androidx.work.workDataOf
 import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.NotificationUtil
@@ -44,6 +45,7 @@ class CleanUpLeftoverDownloads(
     }
 
     override suspend fun doWork(): Result {
+        if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
         val generation = inputData.getString(CleanupScheduleCoordinator.INPUT_GENERATION)
         val cadence = inputData.getString(CleanupScheduleCoordinator.INPUT_CADENCE)
         val notificationUtil = NotificationUtil(App.instance)

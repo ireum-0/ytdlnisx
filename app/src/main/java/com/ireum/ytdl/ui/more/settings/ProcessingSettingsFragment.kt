@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more.settings
+package com.ireum.ytdl.ui.more.settings
 
 import android.annotation.SuppressLint
 import android.os.Bundle
@@ -9,6 +9,7 @@ import androidx.preference.Preference
 import androidx.preference.PreferenceManager
 import androidx.preference.SwitchPreferenceCompat
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.work.HardSubScanWorker
 
@@ -44,6 +45,7 @@ class ProcessingSettingsFragment : BaseSettingsFragment() {
         }
 
         findPreference<Preference>("hard_sub_scan_now")?.setOnPreferenceClickListener {
+            if (RestoreGate.isRestoreInProgress(requireContext())) return@setOnPreferenceClickListener false
             val context = requireContext()
             // Invalidate the previous REPLACE generation before preparing the
             // next one. A failed preparation must not leave an older
@@ -145,6 +147,7 @@ class ProcessingSettingsFragment : BaseSettingsFragment() {
         }
 
         findPreference<Preference>("reset_preferences")?.setOnPreferenceClickListener {
+            if (RestoreGate.isRestoreInProgress(requireContext())) return@setOnPreferenceClickListener false
             UiUtil.showGenericConfirmDialog(requireContext(), getString(R.string.reset), getString(R.string.reset_preferences_in_screen)) {
                 resetPreferences(editor, R.xml.processing_preferences)
                 requireActivity().recreate()

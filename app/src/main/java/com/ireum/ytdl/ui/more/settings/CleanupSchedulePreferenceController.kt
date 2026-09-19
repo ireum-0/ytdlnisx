@@ -1,6 +1,7 @@
 package com.ireum.ytdl.ui.more.settings
 
 import android.content.Context
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +33,7 @@ internal class CleanupSchedulePreferenceController(
      * the last durable coordinator state until that transition has completed.
      */
     fun request(newValue: Any?): Boolean {
+        if (RestoreGate.isRestoreInProgress(appContext)) return false
         val requestedCadence = newValue as? String ?: return false
         val requestId = ++latestRequest
         transitionJob?.cancel()

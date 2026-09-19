@@ -24,6 +24,7 @@ import com.ireum.ytdl.App
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
@@ -1113,6 +1114,7 @@ class DownloadWorker(
     }
 
     override suspend fun doWork(): Result {
+        if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
         return try {
             doWorkSerialized()
         } catch (cancelled: CancellationException) {

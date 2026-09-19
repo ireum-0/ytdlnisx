@@ -8,6 +8,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.models.AutomaticKeywordRule
 import com.ireum.ytdl.database.models.AutomaticKeywordSyncError
 import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
@@ -28,6 +29,7 @@ class AutomaticKeywordRuleSyncWorker(
     }
 
     override suspend fun doWork(): Result {
+        if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
         val ruleId = inputData.getLong(INPUT_RULE_ID, 0)
         if (ruleId <= 0) return Result.failure()
         val db = AutomaticKeywordRuleSyncWorkerTestHooks.dbManagerForTesting

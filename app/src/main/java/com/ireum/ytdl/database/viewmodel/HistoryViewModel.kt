@@ -313,7 +313,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         val keywordGroupDao = db.keywordGroupDao
         val groupDao = db.youtuberGroupDao
         val metaDao = db.youtuberMetaDao
-        repository = HistoryRepository(dao, playlistDao, db)
+        repository = HistoryRepository(dao, playlistDao, db, application)
         websites = repository.websites
         authors = repository.authors
         keywords = repository.keywords

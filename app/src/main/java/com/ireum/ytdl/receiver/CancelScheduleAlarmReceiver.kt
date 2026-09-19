@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +17,7 @@ class CancelScheduleAlarmReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                if (RestoreGate.isRestoreInProgress(context)) return@launch
                 val handoffId = intent?.getStringExtra(WorkManagerHandoffRecovery.EXTRA_HANDOFF_ID)
                     ?: WorkManagerHandoffRecovery.prepareLegacySchedulerBoundary(
                         context,

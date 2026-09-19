@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more.settings
+package com.ireum.ytdl.ui.more.settings
 
 import android.Manifest
 import android.app.Activity
@@ -32,6 +32,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
@@ -336,6 +337,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
 
         moveCache!!.onPreferenceClickListener =
             Preference.OnPreferenceClickListener {
+                if (RestoreGate.isRestoreInProgress(requireContext())) return@OnPreferenceClickListener false
                 val workRequest = OneTimeWorkRequestBuilder<MoveCacheFilesWorker>()
                     .addTag("cacheFiles")
                     .build()
@@ -362,6 +364,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
 
 
         findPreference<Preference>("reset_preferences")?.setOnPreferenceClickListener {
+            if (RestoreGate.isRestoreInProgress(requireContext())) return@setOnPreferenceClickListener false
             UiUtil.showGenericConfirmDialog(requireContext(), getString(R.string.reset), getString(R.string.reset_preferences_in_screen)) {
                 if (!captureCurrentCacheRootBeforeMutation()) {
                     Snackbar.make(

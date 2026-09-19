@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more
+package com.ireum.ytdl.ui.more
 
 import android.annotation.SuppressLint
 import android.content.DialogInterface
@@ -23,6 +23,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
@@ -124,6 +125,7 @@ class ObserveSourcesFragment : Fragment(), ObserveSourcesAdapter.OnItemClickList
 
     }
     override fun onItemSearch(item: ObserveSourcesItem) {
+        if (RestoreGate.isRestoreInProgress(requireContext())) return
         runCatching {
             val workConstraints = Constraints.Builder()
             val workRequest = OneTimeWorkRequestBuilder<ObserveSourceWorker>()

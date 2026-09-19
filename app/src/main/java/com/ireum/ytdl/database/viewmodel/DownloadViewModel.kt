@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.database.viewmodel
+package com.ireum.ytdl.database.viewmodel
 
 import android.app.Application
 import android.content.SharedPreferences
@@ -23,6 +23,7 @@ import androidx.work.WorkManager
 import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.dao.CommandTemplateDao
 import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.enums.DownloadType
@@ -113,6 +114,12 @@ class DownloadViewModel private constructor(
         @Suppress("UNUSED_PARAMETER") testOnly: Boolean,
     ) :
         this(application, database)
+
+    private fun ensureRestoreAdmission() {
+        check(!RestoreGate.isRestoreInProgress(application)) {
+            "Restore transaction is active"
+        }
+    }
 
     private companion object {
         const val DUP_LOG_TAG = "DuplicateCheck"
@@ -289,7 +296,12 @@ class DownloadViewModel private constructor(
         dao = dbManager.downloadDao
         commandTemplateDao = DBManager.getInstance(application).commandTemplateDao
         repository = DownloadRepository(dbManager)
-        historyRepository = HistoryRepository(dbManager.historyDao, dbManager.playlistDao, dbManager)
+        historyRepository = HistoryRepository(
+            dbManager.historyDao,
+            dbManager.playlistDao,
+            dbManager,
+            application,
+        )
         resultRepository = ResultRepository(dbManager.resultDao, commandTemplateDao, application)
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(application)
         downloadPresetStore = DownloadPresetStore(application, sharedPreferences)
@@ -374,6 +386,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun deleteDownloadAndWait(id: Long) = withContext(Dispatchers.IO) {
+        ensureRestoreAdmission()
         LowQualityRedownloadLedger.refresh(application, repository.delete(id))
         notificationUtil.cancelMembershipWaitingNotification(id)
     }
@@ -385,6 +398,7 @@ class DownloadViewModel private constructor(
         id: Long,
         owner: DownloadRepository.UndoPresentationOwner,
     ): DownloadRepository.DownloadUndoHandle? {
+        ensureRestoreAdmission()
         var committedHandle: DownloadRepository.DownloadUndoHandle? = null
         return try {
             withContext(Dispatchers.IO) {
@@ -407,6 +421,7 @@ class DownloadViewModel private constructor(
 
     suspend fun restoreDownloadUndo(handle: DownloadRepository.DownloadUndoHandle): Long? =
         withContext(Dispatchers.IO) {
+            ensureRestoreAdmission()
             val restoredId = repository.restoreUndo(handle.token, handle.owner)
             if (restoredId != null) {
                 LowQualityRedownloadLedger.refresh(application, handle.affectedOperationIds)
@@ -415,6 +430,7 @@ class DownloadViewModel private constructor(
         }
 
     fun restoreDownloadUndoFromUi(handle: DownloadRepository.DownloadUndoHandle): Boolean {
+        if (RestoreGate.isRestoreInProgress(application)) return false
         var reoffered = false
         val accepted = try {
             runBlocking(Dispatchers.IO) {
@@ -456,6 +472,7 @@ class DownloadViewModel private constructor(
 
     suspend fun commitDownloadUndo(handle: DownloadRepository.DownloadUndoHandle) =
         withContext(Dispatchers.IO) {
+            ensureRestoreAdmission()
             LowQualityRedownloadLedger.refresh(
                 application,
                 repository.commitUndo(handle.token, handle.owner),
@@ -463,6 +480,7 @@ class DownloadViewModel private constructor(
         }
 
     fun commitDownloadUndoFromUi(handle: DownloadRepository.DownloadUndoHandle): Boolean {
+        if (RestoreGate.isRestoreInProgress(application)) return false
         var reoffered = false
         val accepted = try {
             runBlocking(Dispatchers.IO) {
@@ -503,6 +521,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun updateDownload(item: DownloadItem){
+        ensureRestoreAdmission()
         if (item.status == DownloadRepository.Status.Cancelled.name) {
             withContext(Dispatchers.IO) {
                 val expectedExecutionId = dao.getNullableDownloadById(item.id)?.executionId.orEmpty()
@@ -638,6 +657,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun putToSaved(item: DownloadItem) {
+        ensureRestoreAdmission()
         val result = repository.saveForLater(item)
         LowQualityRedownloadLedger.refresh(application, result.affectedOperationIds)
         val id = result.downloadId
@@ -1224,6 +1244,7 @@ class DownloadViewModel private constructor(
     }
 
     fun turnDownloadItemsToProcessingDownloads(itemIDs: List<Long>, deleteExisting : Boolean = false) = viewModelScope.launch(Dispatchers.IO){
+        ensureRestoreAdmission()
         val job = viewModelScope.launch(Dispatchers.IO) {
             repository.deleteProcessing()
             processingItems.emit(true)
@@ -1292,6 +1313,7 @@ class DownloadViewModel private constructor(
     }
 
     fun turnHistoryItemsToProcessingDownloads(itemIDs: List<Long>, downloadNow: Boolean = false) = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         val job = viewModelScope.launch(Dispatchers.IO) {
             repository.deleteProcessing()
             processingItems.emit(true)
@@ -1323,6 +1345,7 @@ class DownloadViewModel private constructor(
 
 
     fun turnResultItemsToProcessingDownloads(itemIDs: List<Long>, downloadNow: Boolean = false) = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         val job = viewModelScope.launch(Dispatchers.IO) {
             repository.deleteProcessing()
             processingItems.emit(true)
@@ -1368,16 +1391,19 @@ class DownloadViewModel private constructor(
     }
 
     fun insert(item: DownloadItem) = viewModelScope.launch(Dispatchers.IO){
+        ensureRestoreAdmission()
         repository.insert(item)
     }
 
     fun insertAll(items: List<DownloadItem>)= viewModelScope.launch(Dispatchers.IO){
+        ensureRestoreAdmission()
         items.forEach{
             repository.insert(it)
         }
     }
 
     fun insertToProcessing(items: List<DownloadItem>)= viewModelScope.launch(Dispatchers.IO){
+        ensureRestoreAdmission()
         repository.deleteProcessing()
         items.forEach{
             it.status = DownloadRepository.Status.Processing.toString()
@@ -1386,14 +1412,17 @@ class DownloadViewModel private constructor(
     }
 
     fun deleteCancelled() = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         LowQualityRedownloadLedger.refresh(application, repository.deleteCancelled())
     }
 
     fun deleteScheduled() = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         LowQualityRedownloadLedger.refresh(application, repository.deleteScheduled())
     }
 
     fun deleteErrored() = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         LowQualityRedownloadLedger.refresh(
             application,
             repository.deleteErrored(),
@@ -1401,24 +1430,29 @@ class DownloadViewModel private constructor(
     }
 
     fun deleteQueued() = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         val membershipWaitingIds = repository.getMembershipWaitingDownloads().map(DownloadItem::id)
         LowQualityRedownloadLedger.refresh(application, repository.deleteQueued())
         membershipWaitingIds.forEach(notificationUtil::cancelMembershipWaitingNotification)
     }
 
     fun deleteSaved() = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         repository.deleteSaved()
     }
 
     fun deleteProcessing() = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         repository.deleteProcessing()
     }
 
     fun deleteWithDuplicateStatus() = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         repository.deleteWithDuplicateStatus()
     }
 
     suspend fun deleteAllWithID(ids: List<Long>) = withContext(Dispatchers.IO) {
+        ensureRestoreAdmission()
         LowQualityRedownloadLedger.refresh(application, repository.deleteAllWithIDs(ids))
         ids.distinct().forEach(notificationUtil::cancelMembershipWaitingNotification)
     }
@@ -1506,6 +1540,7 @@ class DownloadViewModel private constructor(
 
     suspend fun requeueActiveDownloadsForExit(ids: List<Long>) =
         withContext(Dispatchers.IO + NonCancellable) {
+            ensureRestoreAdmission()
             var firstFailure: Exception? = null
             fun recordFailure(failure: Exception) {
                 firstFailure = firstFailure?.also {
@@ -1705,18 +1740,21 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun resetScheduleTimeForItemsAndStartDownload(items: List<Long>) = withContext(Dispatchers.IO) {
+        ensureRestoreAdmission()
         items.forEach { convergePersistedHistoryRefusal(it) }
         if (dbManager.downloadDao.resetScheduleTimeForItems(items) == 0) return@withContext
         repository.startDownloadWorker(emptyList(), application)
     }
 
     suspend fun resetScheduleItemForAllScheduledItemsAndStartDownload() = withContext(Dispatchers.IO) {
+        ensureRestoreAdmission()
         repository.getScheduledDownloads().forEach { convergePersistedHistoryRefusal(it.id) }
         if (dbManager.downloadDao.resetScheduleTimeForAllScheduledItems() == 0) return@withContext
         repository.startDownloadWorker(emptyList(), application)
     }
 
     suspend fun rescheduleExistingDownload(id: Long, startTime: Long) = withContext(Dispatchers.IO) {
+        ensureRestoreAdmission()
         if (convergePersistedHistoryRefusal(id)) return@withContext
         if (dao.rescheduleQueuedOrScheduled(id, startTime) == 1) {
             repository.startDownloadWorker(emptyList(), application)
@@ -1724,16 +1762,19 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun putAtTopOfQueue(ids: List<Long>) = withContext(Dispatchers.IO) {
+        ensureRestoreAdmission()
         dao.putAtTopOfTheQueue(ids)
     }
 
 
     suspend fun putAtBottomOfQueue(ids: List<Long>) = withContext(Dispatchers.IO) {
+        ensureRestoreAdmission()
         dao.putAtBottomOfTheQueue(ids)
     }
 
 
     fun putAtPosition(current: Long, id: Long) = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         dao.putAtPosition(current, id)
     }
 
@@ -1742,6 +1783,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun reQueueDownloadItemsAndWait(items: List<Long>) = withContext(Dispatchers.IO) {
+        ensureRestoreAdmission()
         val candidates = items.distinct().mapNotNull { id ->
             if (DownloadExecutionRecovery.hasPendingRecovery(application, id)) {
                 // A bulk requeue is still a resumability publication.  Keep
@@ -1804,6 +1846,7 @@ class DownloadViewModel private constructor(
         id: Long,
         expectedExecutionId: String,
     ): Boolean = withContext(Dispatchers.IO) {
+        ensureRestoreAdmission()
         if (expectedExecutionId.isBlank()) return@withContext false
         withDownloadWorkerExecutionSideEffectLease(id, expectedExecutionId) {
             val resumed = withDownloadWorkerExecutionLock {
@@ -1844,6 +1887,7 @@ class DownloadViewModel private constructor(
         expectedRetryAttempt: Int? = null,
     ): DownloadRetryDecision =
         withContext(Dispatchers.IO) {
+            ensureRestoreAdmission()
             val observed = repository.getItemByID(itemId)
             withDownloadWorkerExecutionSideEffectLease(itemId, observed.executionId) {
                 withDownloadWorkerExecutionLock {
@@ -2013,11 +2057,13 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun queueProcessingDownloads(ignoreDuplicates: Boolean = false) : QueueDownloadsResult {
+        ensureRestoreAdmission()
         val processingItems = repository.getAllProcessingDownloads()
         return queueDownloads(processingItems, ignoreDuplicates)
     }
 
     suspend fun checkProcessingDuplicates(ignoreDuplicates: Boolean = false): List<AlreadyExistsIDs> {
+        ensureRestoreAdmission()
         val processingItems = repository.getAllProcessingDownloads()
         return detectAndMarkDuplicates(processingItems, ignoreDuplicates)
     }
@@ -2123,6 +2169,7 @@ class DownloadViewModel private constructor(
     )
 
     suspend fun queueDownloads(items: List<DownloadItem>, ignoreDuplicates : Boolean = false) : QueueDownloadsResult {
+        ensureRestoreAdmission()
         val context = App.instance
         val alarmScheduler = AlarmScheduler(context)
         val queuedItems = mutableListOf<DownloadItem>()
@@ -2644,6 +2691,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun moveProcessingToSavedCategory(){
+        ensureRestoreAdmission()
         val refused = repository.getAllProcessingDownloads().filter { item ->
             HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
                 dbManager.historyReplacementBarrierDao.getByDownloadIdBlocking(item.id) != null
@@ -2660,6 +2708,7 @@ class DownloadViewModel private constructor(
 
 
     fun updateAllProcessingFormats(selectedItems: List<Long>?, formatTuples : List<MultipleItemFormatTuple>) = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         val items = if (selectedItems.isNullOrEmpty()) {
             repository.getAllProcessingDownloads()
         }else {
@@ -2685,6 +2734,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun updateProcessingCommandFormat(selectedItems: List<Long>?, format: Format){
+        ensureRestoreAdmission()
         val items = if (selectedItems.isNullOrEmpty()) {
             repository.getAllProcessingDownloads()
         }else {
@@ -2698,6 +2748,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun updateProcessingContainer(checkedItems: List<Long>?, cont: String) {
+        ensureRestoreAdmission()
         var container = ""
         if (cont != resources.getString(R.string.defaultValue)) {
             container = cont
@@ -2712,6 +2763,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun updateProcessingDownloadPath(selectedItems: List<Long>?, path: String){
+        ensureRestoreAdmission()
         if (selectedItems.isNullOrEmpty()) {
             dao.updateProcessingDownloadPath(path)
         }else {
@@ -2729,6 +2781,7 @@ class DownloadViewModel private constructor(
     }
 
     fun updateDownloadItemFormats(id: Long, list: List<Format>) = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         val item = repository.getItemByID(id)
         item.allFormats.clear()
         item.allFormats.addAll(list)
@@ -2743,6 +2796,7 @@ class DownloadViewModel private constructor(
     }
 
     fun updateProcessingFormatByUrl(url: String, list: List<Format>) = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         val items = repository.getProcessingDownloadsByUrl(url)
         items.forEach { item ->
             item.allFormats.clear()
@@ -2760,11 +2814,13 @@ class DownloadViewModel private constructor(
     }
 
     fun removeUnavailableDownloadAndResultByURL(url: String) = viewModelScope.launch(Dispatchers.IO) {
+        ensureRestoreAdmission()
         repository.deleteProcessingByUrl(url)
         resultRepository.deleteByUrl(url)
     }
 
     suspend fun continueUpdatingFormatsOnBackground(selectedItems: List<Long>?){
+        ensureRestoreAdmission()
         val allProcessing = repository.getAllProcessingDownloads().map { it.id }
 
         val ids = if (selectedItems.isNullOrEmpty()) {
@@ -2812,6 +2868,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun updateProcessingType(selectedItems: List<Long>?, newType: DownloadType) {
+        ensureRestoreAdmission()
         val processing = if (selectedItems.isNullOrEmpty()) {
             repository.getAllProcessingDownloads()
         }else{
@@ -2827,6 +2884,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun updateProcessingDownloadTimeAndQueueScheduled(time: Long, ignoreDuplicates: Boolean = false) : QueueDownloadsResult {
+        ensureRestoreAdmission()
         val processing = repository.getAllProcessingDownloads()
         processing.forEach {
             it.downloadStartTime = time
@@ -2861,6 +2919,7 @@ class DownloadViewModel private constructor(
 
 
     suspend fun updateItemsWithIdsToProcessingStatus(ids: List<Long>) {
+        ensureRestoreAdmission()
         repository.deleteProcessing()
         val eligibleIds = ids.mapNotNull { id ->
             if (convergePersistedHistoryRefusal(id)) {
@@ -2878,6 +2937,7 @@ class DownloadViewModel private constructor(
         status: DownloadRepository.Status,
         expectedExecutionId: String? = null,
     ): Boolean {
+        ensureRestoreAdmission()
         if (status == DownloadRepository.Status.Saved) {
             LowQualityRedownloadLedger.refresh(application, repository.moveToSaved(id))
             return true
@@ -2887,6 +2947,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun restoreMembershipWaiting(item: DownloadItem) {
+        ensureRestoreAdmission()
         val current = dbManager.downloadDao.getNullableDownloadById(item.id)
         if (
             current != null &&
@@ -2953,6 +3014,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun updateProcessingIncognito(selectedItems: List<Long>?, incognito: Boolean) {
+        ensureRestoreAdmission()
         if (selectedItems.isNullOrEmpty()) {
             dao.updateProcessingIncognito(incognito)
         }else {
@@ -2972,6 +3034,7 @@ class DownloadViewModel private constructor(
         id: Long,
         expectedExecutionId: String? = null,
     ) {
+        ensureRestoreAdmission()
         withContext(Dispatchers.IO) {
             var recoveryRecorded = false
             var resolvedExecutionId = expectedExecutionId.orEmpty()
@@ -3155,6 +3218,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun cancelDownload(id: Long) {
+        ensureRestoreAdmission()
         withContext(Dispatchers.IO) {
             val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
             var recoveryRecorded = false
@@ -3263,6 +3327,7 @@ class DownloadViewModel private constructor(
         id: Long,
         owner: DownloadRepository.UndoPresentationOwner,
     ): String? {
+        ensureRestoreAdmission()
         var recoveryRecorded = false
         var unpublishedUndoToken: String? = null
         return try {
@@ -3433,6 +3498,7 @@ class DownloadViewModel private constructor(
      * the refusal barrier.
      */
     suspend fun undoCancelledDownload(item: DownloadItem) {
+        ensureRestoreAdmission()
         withContext(Dispatchers.IO) {
             val deleted = withDownloadWorkerExecutionSideEffectLease(
                 downloadId = item.id,
@@ -3489,6 +3555,7 @@ class DownloadViewModel private constructor(
         token: String,
         owner: DownloadRepository.UndoPresentationOwner,
     ): Boolean {
+        if (RestoreGate.isRestoreInProgress(application)) return false
         val accepted = try {
             runBlocking(Dispatchers.IO) {
                 val result = try {
@@ -3593,6 +3660,7 @@ class DownloadViewModel private constructor(
         token: String,
         owner: DownloadRepository.UndoPresentationOwner,
     ): Boolean {
+        if (RestoreGate.isRestoreInProgress(application)) return false
         val accepted = try {
             runBlocking(Dispatchers.IO) {
                 val result = try {
@@ -3635,6 +3703,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun pauseDownload(id: Long)  {
+        ensureRestoreAdmission()
         withContext(Dispatchers.IO) {
             val expectedExecutionId = dao.getNullableDownloadById(id)?.executionId.orEmpty()
             var recoveryRecorded = false
@@ -3732,6 +3801,7 @@ class DownloadViewModel private constructor(
     }
 
     suspend fun pauseAllDownloads() {
+        ensureRestoreAdmission()
         pausedAllDownloads.value = PausedAllDownloadsState.PROCESSING
         isPausingResuming = true
         val activeDownloadsList = withContext(Dispatchers.IO){
@@ -3858,6 +3928,7 @@ class DownloadViewModel private constructor(
     }
 
     fun resumeAllDownloads() = viewModelScope.launch {
+        ensureRestoreAdmission()
         pausedAllDownloads.value = PausedAllDownloadsState.PROCESSING
         isPausingResuming = true
         WorkManager.getInstance(application).cancelAllWorkByTag("download")
@@ -3886,11 +3957,13 @@ class DownloadViewModel private constructor(
     }
 
     fun deleteAll() = viewModelScope.launch {
+        ensureRestoreAdmission()
         cancelAllDownloadsImpl()
         LowQualityRedownloadLedger.refresh(application, repository.deleteAll())
     }
 
     fun cancelAllDownloads() = viewModelScope.launch {
+        ensureRestoreAdmission()
         cancelAllDownloadsImpl()
     }
 
@@ -3919,6 +3992,7 @@ class DownloadViewModel private constructor(
     }
 
     fun resumeDownload(itemID: Long) = viewModelScope.launch {
+        ensureRestoreAdmission()
         kotlin.runCatching {
             val persistedItem = withContext(Dispatchers.IO) {
                 dao.getNullableDownloadById(itemID)

@@ -1,9 +1,10 @@
-﻿package com.ireum.ytdl.receiver
+package com.ireum.ytdl.receiver
 
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.DownloadExecutionRecovery
@@ -43,6 +44,10 @@ class CancelDownloadNotificationReceiver private constructor(
         val id = intent.getIntExtra("itemID", 0)
         if (id > 0) {
             val result = goAsync()
+            if (RestoreGate.isRestoreInProgress(c)) {
+                result.finish()
+                return
+            }
             val finished = AtomicBoolean(false)
             fun finishOnce() {
                 if (finished.compareAndSet(false, true)) {

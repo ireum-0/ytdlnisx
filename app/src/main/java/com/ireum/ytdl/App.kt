@@ -10,6 +10,8 @@ import androidx.core.content.edit
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.ThemeUtil
+import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
 import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.HistoryDateFetchManager
@@ -78,8 +80,16 @@ class App : Application() {
                 }
             )
         }
+        // Restore recovery owns the ordering boundary for every reconciler
+        // that can observe or recreate Reset-targeted state.  Workers also
+        // check RestoreGate independently, so this is not the sole fence.
+        val restoreRecovery = applicationScope.async(Dispatchers.IO) {
+            RestoreTransactionCoordinator.recover(this@App)
+        }
         applicationScope.launch(Dispatchers.IO) {
             try {
+                restoreRecovery.await()
+                if (RestoreGate.isRestoreInProgress(this@App)) return@launch
                 // Download/History recovery must not wait for a worker or for
                 // optional native runtime initialization to succeed.
                 DownloadExecutionRecovery.reconcile(this@App)
@@ -89,6 +99,8 @@ class App : Application() {
         }
         applicationScope.launch(Dispatchers.IO) {
             try {
+                restoreRecovery.await()
+                if (RestoreGate.isRestoreInProgress(this@App)) return@launch
                 CleanupScheduleCoordinator.reconcile(this@App)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -136,6 +148,8 @@ class App : Application() {
         }
         applicationScope.launch(Dispatchers.IO) {
             try {
+                restoreRecovery.await()
+                if (RestoreGate.isRestoreInProgress(this@App)) return@launch
                 // One-shot click/alarm/notification handoffs are independent
                 // of optional native/runtime initialization.
                 WorkManagerHandoffRecovery.reconcile(this@App)
@@ -144,6 +158,8 @@ class App : Application() {
             }
         }
         applicationScope.launch(Dispatchers.IO) {
+            restoreRecovery.await()
+            if (RestoreGate.isRestoreInProgress(this@App)) return@launch
             runStartupCancellationReconciliation(
                 reconcile = {
                     LowQualityRedownloadManager.get(this@App)
@@ -157,7 +173,12 @@ class App : Application() {
         applicationScope.launch(Dispatchers.IO) {
             runStartupReconciliation(
                 readiness = runtimeReadiness,
-                reconcile = { AutomaticKeywordObservationCoverage(this@App).reconcile() },
+                reconcile = {
+                    restoreRecovery.await()
+                    if (!RestoreGate.isRestoreInProgress(this@App)) {
+                        AutomaticKeywordObservationCoverage(this@App).reconcile()
+                    }
+                },
                 reportFailure = {
                     Log.w(TAG, "Automatic keyword observation coverage reconciliation failed", it)
                 }
@@ -166,7 +187,12 @@ class App : Application() {
         applicationScope.launch(Dispatchers.IO) {
             runStartupReconciliation(
                 readiness = runtimeReadiness,
-                reconcile = { LowQualityRedownloadManager.get(this@App).reconcile() },
+                reconcile = {
+                    restoreRecovery.await()
+                    if (!RestoreGate.isRestoreInProgress(this@App)) {
+                        LowQualityRedownloadManager.get(this@App).reconcile()
+                    }
+                },
                 reportFailure = {
                     Log.w(TAG, "Low-quality re-download reconciliation failed", it)
                 }
@@ -175,7 +201,12 @@ class App : Application() {
         applicationScope.launch(Dispatchers.IO) {
             runStartupReconciliation(
                 readiness = runtimeReadiness,
-                reconcile = { HistoryDateFetchManager.get(this@App).reconcile() },
+                reconcile = {
+                    restoreRecovery.await()
+                    if (!RestoreGate.isRestoreInProgress(this@App)) {
+                        HistoryDateFetchManager.get(this@App).reconcile()
+                    }
+                },
                 reportFailure = {
                     Log.w(TAG, "History date-fetch reconciliation failed", it)
                 }

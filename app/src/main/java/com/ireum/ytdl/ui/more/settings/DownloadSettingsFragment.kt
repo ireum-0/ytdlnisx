@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more.settings
+package com.ireum.ytdl.ui.more.settings
 
 import android.app.Activity
 import android.widget.Toast
@@ -19,6 +19,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.work.AlarmScheduler
@@ -110,6 +111,9 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
         scheduleEnd?.summary = preferences.getString("schedule_end", "05:00")
 
         useScheduler?.setOnPreferenceChangeListener { preference, newValue ->
+            if (RestoreGate.isRestoreInProgress(requireContext())) {
+                return@setOnPreferenceChangeListener false
+            }
             var allowChange = true
             if (newValue as Boolean){
                 if (!scheduler.canSchedule() && Build.VERSION.SDK_INT >= 31){
@@ -141,6 +145,7 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
 
         scheduleStart?.setOnPreferenceClickListener {
             UiUtil.showTimePicker(parentFragmentManager, preferences){
+                if (RestoreGate.isRestoreInProgress(requireContext())) return@showTimePicker
                 val hr = it.get(Calendar.HOUR_OF_DAY)
                 val mn = it.get(Calendar.MINUTE)
                 val formattedTime = String.format("%02d", hr) + ":" + String.format("%02d", mn)
@@ -154,6 +159,7 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
 
         scheduleEnd?.setOnPreferenceClickListener {
             UiUtil.showTimePicker(parentFragmentManager, preferences){
+                if (RestoreGate.isRestoreInProgress(requireContext())) return@showTimePicker
                 val hr = it.get(Calendar.HOUR_OF_DAY)
                 val mn = it.get(Calendar.MINUTE)
                 val formattedTime = String.format("%02d", hr) + ":" + String.format("%02d", mn)
@@ -252,6 +258,7 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
         }
 
         findPreference<Preference>("reset_preferences")?.setOnPreferenceClickListener {
+            if (RestoreGate.isRestoreInProgress(requireContext())) return@setOnPreferenceClickListener false
             UiUtil.showGenericConfirmDialog(requireContext(), getString(R.string.reset), getString(R.string.reset_preferences_in_screen)) {
                 cleanupTransitionController?.cancelPendingRequest()
                 resetDownloadingPreferences(preferences)

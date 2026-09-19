@@ -9,6 +9,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.models.HistoryDateFetchOperationState
 import com.ireum.ytdl.database.repository.HistoryDateFetchRepository
 import com.ireum.ytdl.util.HistoryDateFetchNotification
@@ -33,6 +34,7 @@ class HistoryDateFetchWorker(
     private val notification by lazy { HistoryDateFetchNotification(context) }
 
     override suspend fun doWork(): Result {
+        if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
         val operationId = inputData.getString(KEY_OPERATION_ID).orEmpty()
         if (operationId.isBlank()) return Result.failure()
         val operation = repository.getOperation(operationId) ?: return Result.failure()

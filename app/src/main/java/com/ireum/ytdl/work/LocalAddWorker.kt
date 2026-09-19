@@ -15,6 +15,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
@@ -66,6 +67,7 @@ class LocalAddWorker(
     private var lastNotifyPercent = -1
 
     override suspend fun doWork(): Result {
+        if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
         val entriesJson = inputData.getString(KEY_ENTRIES_JSON).orEmpty()
         val sessionId = inputData.getString(KEY_SESSION_ID).orEmpty()
         val loadedFromSession = entriesJson.isBlank() && sessionId.isNotBlank()

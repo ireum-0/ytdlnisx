@@ -13,6 +13,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.Operation
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.ObserveSourceWorker
@@ -37,6 +38,7 @@ class ObserveRetryDecisionReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val appContext = context.applicationContext
+                if (RestoreGate.isRestoreInProgress(appContext)) return@launch
                 val dbManager = DBManager.getInstance(appContext)
                 val source = dbManager.observeSourcesDao.getByID(sourceId)
 
@@ -91,6 +93,9 @@ class ObserveRetryDecisionReceiver : BroadcastReceiver() {
                 // Ignore is final immediately. Download is recorded by the worker only
                 // after the target has actually been inserted into the download queue.
                 if (decision == ACTION_IGNORE) {
+                    check(!RestoreGate.isRestoreInProgress(appContext)) {
+                        "Restore transaction is active"
+                    }
                     if (!source.retryPromptedLinks.contains(canonicalUrl)) {
                         source.retryPromptedLinks.add(canonicalUrl)
                     }
@@ -99,6 +104,8 @@ class ObserveRetryDecisionReceiver : BroadcastReceiver() {
                     }
                     dbManager.observeSourcesDao.update(source)
                 }
+
+                if (RestoreGate.isRestoreInProgress(appContext)) return@launch
 
                 // The Ignore decision is already durable above; the existing
                 // observation enqueue remains independent of the Download

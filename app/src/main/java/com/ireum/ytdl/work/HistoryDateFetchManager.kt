@@ -8,6 +8,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.repository.HistoryDateFetchRepository
 import com.ireum.ytdl.util.HistoryDateFetchNotification
 import com.ireum.ytdl.util.HistoryDateFetchNotificationPolicy
@@ -26,6 +27,7 @@ class HistoryDateFetchManager private constructor(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
 
     fun startOrReconnect() {
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         scope.launch {
             val operation = repository.createOrReconnect()
             if (operation.candidateCount == 0) {
@@ -41,6 +43,7 @@ class HistoryDateFetchManager private constructor(context: Context) {
     }
 
     fun cancel(operationId: String, onComplete: (() -> Unit)? = null) {
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         scope.launch {
             try {
                 if (!repository.requestCancellation(operationId)) return@launch
@@ -57,6 +60,7 @@ class HistoryDateFetchManager private constructor(context: Context) {
     }
 
     suspend fun reconcile() {
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         repository.getNonterminalOperations()
             .filter(HistoryDateFetchNotificationPolicy::restoreAtStartup)
             .forEach { operation ->
@@ -66,6 +70,7 @@ class HistoryDateFetchManager private constructor(context: Context) {
     }
 
     private fun enqueue(operationId: String) {
+        if (RestoreGate.isRestoreInProgress(appContext)) return
         val request = OneTimeWorkRequestBuilder<HistoryDateFetchWorker>()
             .setConstraints(
                 Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
