@@ -1,0 +1,148 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M04-20260918T1657Z-001",
+  "stage": "MATERIALIZE_151_190",
+  "logical_rank_range": [
+    151,
+    190
+  ],
+  "rank": 164,
+  "materializer_state_blob": "57998607dc862d9be876cb5250957dfe554a92dd",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "60308d047dae78bcbd334c06a013b1756aed768c",
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M04-20260918T1657Z-001/r163.json",
+    "blob_sha": "571fb7f761a49ad0700be7dbccdb07df053ecaba"
+  },
+  "history": {
+    "commit_sha": "6db3c12ff079bd085496b467ae572a3de848edcb",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=164"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-13T143515Z__97342490__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "f1d81ee30bbe5626fdf159ae581172a36f09b0e8",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "f1d81ee30bbe5626fdf159ae581172a36f09b0e8",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-13T143515Z__97342490__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "f1d81ee30bbe5626fdf159ae581172a36f09b0e8",
+    "frozen_blob_sha": "f1d81ee30bbe5626fdf159ae581172a36f09b0e8",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "973424909fd97de758b62f639967c8bae7c0bad7",
+      "evidence": "explicit Frozen implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "final pre-verdict",
+      "evidence": "source explicitly records Checkpoint kind: final pre-verdict"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit",
+      "reason": "source explicitly identifies a final pre-verdict checkpoint and contains no structured lens/effectiveness payload"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-CLEANUP-01"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "existing P2 OPEN"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "source states older pending scheduling debt/replay authority survives disable/reconfiguration and describes the replay as bounded while freshness is tied to old pending debt"
+          }
+        },
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-OBSERVE-HANDOFF-01"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "existing P0 OPEN"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "ordinary Observe requests carry only source ID and no equivalent generation/config token proves stale admitted workers are fenced"
+          }
+        }
+      ],
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source labels P0 2 / P1 0 / P2 23 as Final provisional severity state and NOT_CLEAN as a verdict candidate"
+    },
+    {
+      "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+      "evidence": "checkpoint integrity note explicitly repairs an earlier bootstrap checkpoint's serialized review-bootstrap SHA via append-only correction evidence"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "finding_id": "BUG-CLEANUP-01",
+      "evidence": "this source's bounded-replay wording is a historical semantic statement preserved as recorded rather than normalized from later checkpoints"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "runtime manifestations remain NOT_VERIFIED because this run had no exact-SHA execution evidence"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
