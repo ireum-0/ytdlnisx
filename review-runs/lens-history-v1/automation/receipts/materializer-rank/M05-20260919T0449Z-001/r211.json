@@ -1,0 +1,153 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M05-20260919T0449Z-001",
+  "stage": "MATERIALIZE_191_230",
+  "logical_rank_range": [
+    191,
+    230
+  ],
+  "rank": 211,
+  "materializer_state_blob": "fb20a20af2ebd3a804cfaf418949b953923dee15",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "68e11966a1ab046c9bc0cecf69a5e75d2b8382b8",
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M05-20260919T0449Z-001/r210.json",
+    "blob_sha": "f9c097de22a0d4ff4ffae442f8ac2ca401aa5612"
+  },
+  "history": {
+    "commit_sha": "1729d6271c2dbe43e572d13047cf38e13d9b4142",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=211"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-13__c67ecb66__backup04-closure-cleanup01-recurrence-reconciliation.md",
+        "status": "added",
+        "source_blob_sha": "1fb9791246655ef6019bcf1e720cc953fbc9d3e8",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "1fb9791246655ef6019bcf1e720cc953fbc9d3e8",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-13__c67ecb66__backup04-closure-cleanup01-recurrence-reconciliation.md",
+    "status": "added",
+    "source_blob_sha": "1fb9791246655ef6019bcf1e720cc953fbc9d3e8",
+    "frozen_blob_sha": "1fb9791246655ef6019bcf1e720cc953fbc9d3e8",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "c67ecb66e3df954a225354632945be101a9d740d",
+      "evidence": "source explicitly records F10 commit / exact final remote HEAD and exact reviewed chain ending at c67ecb66"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "source explicitly identifies F4 closure and F10 recurrence reconciliation, records status/count/root reconciliation and required review-fix boundary, and is not identified as final"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness by document-identity-v1"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-BACKUP-04"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "F4 CLEAN / CLOSED at exact final c67ecb66; semantic fix commit 90afaec1"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "same-second staging-identity residual is closed by invocation-unique UUID staging names; canonical P1 count changes 1 -> 0"
+          }
+        },
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-CLEANUP-01"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "F10 OPEN / NOT_CLEAN; existing P2; count delta 0"
+          },
+          "finding_relation": {
+            "state": "DIRECT",
+            "value": "same durable-schedule root retains retry-exhaustion recurrence loss and ignored asynchronous WorkManager enqueue Operation acceptance residuals"
+          }
+        }
+      ],
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-BACKUP-04",
+      "evidence": "source explicitly records F4 CLEAN / CLOSED at exact final c67ecb66"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-BACKUP-04",
+      "evidence": "source explicitly records canonical P1 count 1 -> 0 and resulting P0 2 / P1 0 / P2 26"
+    },
+    {
+      "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id": "BUG-CLEANUP-01",
+      "evidence": "source explicitly preserves retry-exhaustion recurrence loss and asynchronous enqueue-acceptance failure as two material same-root residuals"
+    },
+    {
+      "type": "RECONCILIATION_OR_SCOPE_EXPANSION",
+      "evidence": "source reconciles exact chain f20833d6 -> 90afaec1 -> c67ecb66, F4 closure, F10 residuals, required review-fix boundary and CLEAN-basis advancement"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "reported production-wiring/JVM/build evidence is implementation-agent external execution evidence; independent execution is explicitly NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
