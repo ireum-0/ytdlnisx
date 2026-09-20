@@ -4513,9 +4513,9 @@ class DownloadRepository(private val database: DBManager) {
         authority: RestoreReconciliationAuthority,
         continueAfterPriorityItems: Boolean = true,
         awaitAcceptance: Boolean = false,
-    ): Result<String> = RestoreMutationAdmission.withRestoreMutation {
+    ): Result<String> {
         RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
-        startDownloadWorkerInternal(
+        return startDownloadWorkerInternal(
             queuedItems = queuedItems,
             context = context,
             continueAfterPriorityItems = continueAfterPriorityItems,
@@ -4540,7 +4540,14 @@ class DownloadRepository(private val database: DBManager) {
             policy: ExistingWorkPolicy,
             request: androidx.work.OneTimeWorkRequest,
         ) {
-            val operation = workManager.enqueueUniqueWork(name, policy, request)
+            val operation = if (authority == null) {
+                workManager.enqueueUniqueWork(name, policy, request)
+            } else {
+                RestoreMutationAdmission.withRestoreMutation {
+                    RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+                    workManager.enqueueUniqueWork(name, policy, request)
+                }
+            }
             if (awaitAcceptance) {
                 operation.result.get(
                     RESTORE_SCHEDULER_ACCEPTANCE_TIMEOUT_MS,
