@@ -44,7 +44,7 @@ class F11RestoreAlarmFallbackProductionWiringTest {
     private var originalAlarm = false
 
     @Before
-    fun setUp() = runBlocking {
+    fun setUp(): Unit = runBlocking {
         context = ApplicationProvider.getApplicationContext()
         database = DBManager.getInstance(context)
         workManager = WorkManager.getInstance(context)
@@ -62,7 +62,7 @@ class F11RestoreAlarmFallbackProductionWiringTest {
     }
 
     @After
-    fun tearDown() = runBlocking {
+    fun tearDown(): Unit = runBlocking {
         RestoreTransactionCoordinator.afterReconciliationBeforeCompleteForTesting = null
         AlarmScheduler.exactAlarmPublicationForTesting = null
         WorkManagerHandoffRecovery.clearForTesting()
@@ -77,7 +77,7 @@ class F11RestoreAlarmFallbackProductionWiringTest {
     }
 
     @Test
-    fun exactAlarmFailureAcceptsDelayedOwnerAndReplayKeepsOneCurrentWorkRequest() = runBlocking {
+    fun exactAlarmFailureAcceptsDelayedOwnerAndReplayKeepsOneCurrentWorkRequest(): Unit = runBlocking {
         val firstFailure = AtomicBoolean(true)
         AlarmScheduler.exactAlarmPublicationForTesting = { _, _, _ ->
             if (firstFailure.compareAndSet(true, false)) {
@@ -140,7 +140,7 @@ class F11RestoreAlarmFallbackProductionWiringTest {
     }
 
     @Test
-    fun fallbackEnqueueFailureLeavesReconciliationDebtUntilReplayAcceptsSuccessor() = runBlocking {
+    fun fallbackEnqueueFailureLeavesReconciliationDebtUntilReplayAcceptsSuccessor(): Unit = runBlocking {
         val firstFailure = AtomicBoolean(true)
         AlarmScheduler.exactAlarmPublicationForTesting = { _, _, _ ->
             if (firstFailure.compareAndSet(true, false)) {

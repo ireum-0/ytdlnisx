@@ -44,7 +44,7 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
     private var originalValues: Map<String, Any?> = emptyMap()
 
     @Before
-    fun setUp() = runBlocking {
+    fun setUp(): Unit = runBlocking {
         context = ApplicationProvider.getApplicationContext()
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
         originalValues = preferences.all.mapValues { (_, value) ->
@@ -57,7 +57,7 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
     }
 
     @After
-    fun tearDown() = runBlocking {
+    fun tearDown(): Unit = runBlocking {
         clearHooks()
         runCatching { RestoreTransactionCoordinator.recover(context) }
         WorkManager.getInstance(context).cancelAllWork().result.get(20, TimeUnit.SECONDS)
@@ -78,7 +78,7 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun switchPreferenceOrdinaryWriterWinsBeforeRestorePublication() = runBlocking {
+    fun switchPreferenceOrdinaryWriterWinsBeforeRestorePublication(): Unit = runBlocking {
         ordinaryWriterWins(
             restoreValue = BackupSettingsItem("use_alarm_for_scheduling", "false", "Boolean"),
             write = { _, switch, _, _ -> switch.isChecked = true },
@@ -87,7 +87,7 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun listPreferenceOrdinaryWriterWinsBeforeRestorePublication() = runBlocking {
+    fun listPreferenceOrdinaryWriterWinsBeforeRestorePublication(): Unit = runBlocking {
         ordinaryWriterWins(
             restoreValue = BackupSettingsItem("preferred_download_type", "audio", "String"),
             write = { _, _, list, _ -> list.value = "video" },
@@ -96,7 +96,7 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun editTextPreferenceOrdinaryWriterWinsBeforeRestorePublication() = runBlocking {
+    fun editTextPreferenceOrdinaryWriterWinsBeforeRestorePublication(): Unit = runBlocking {
         ordinaryWriterWins(
             restoreValue = BackupSettingsItem("proxy", "restore-proxy", "String"),
             write = { _, _, _, edit -> edit.text = "ordinary-proxy" },
@@ -105,7 +105,7 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun switchPreferenceResetWinsBeforeFrameworkMutation() = runBlocking {
+    fun switchPreferenceResetWinsBeforeFrameworkMutation(): Unit = runBlocking {
         resetWins(
             key = "use_alarm_for_scheduling",
             initial = false,
@@ -116,7 +116,7 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun listPreferenceResetWinsBeforeFrameworkMutation() = runBlocking {
+    fun listPreferenceResetWinsBeforeFrameworkMutation(): Unit = runBlocking {
         resetWins(
             key = "preferred_download_type",
             initial = "video",
@@ -127,7 +127,7 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun editTextPreferenceResetWinsBeforeFrameworkMutation() = runBlocking {
+    fun editTextPreferenceResetWinsBeforeFrameworkMutation(): Unit = runBlocking {
         resetWins(
             key = "proxy",
             initial = "before-reset",

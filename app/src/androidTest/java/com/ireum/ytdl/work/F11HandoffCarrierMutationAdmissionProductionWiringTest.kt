@@ -41,7 +41,7 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
     private lateinit var database: DBManager
 
     @Before
-    fun setUp() = runBlocking {
+    fun setUp(): Unit = runBlocking {
         context = ApplicationProvider.getApplicationContext()
         WorkManager.getInstance(context).cancelAllWork().result.get(20, TimeUnit.SECONDS)
         runCatching { RestoreTransactionCoordinator.recover(context) }
@@ -55,7 +55,7 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
     }
 
     @After
-    fun tearDown() = runBlocking {
+    fun tearDown(): Unit = runBlocking {
         clearHooks()
         WorkManagerHandoffRecovery.clearForTesting()
         if (::database.isInitialized) database.close()
@@ -64,12 +64,12 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun hardSubOrdinaryCarrierMutationCompletesBeforeRestorePublication() = runBlocking {
+    fun hardSubOrdinaryCarrierMutationCompletesBeforeRestorePublication(): Unit = runBlocking {
         ordinaryWriterWins { WorkManagerHandoffRecovery.prepareHardSub(context) }
     }
 
     @Test
-    fun schedulerOrdinaryCarrierMutationCompletesBeforeRestorePublication() = runBlocking {
+    fun schedulerOrdinaryCarrierMutationCompletesBeforeRestorePublication(): Unit = runBlocking {
         ordinaryWriterWins {
             WorkManagerHandoffRecovery.prepareSchedulerBoundary(
                 context,
@@ -80,7 +80,7 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun observeRetryOrdinaryCarrierMutationCompletesBeforeRestorePublication() = runBlocking {
+    fun observeRetryOrdinaryCarrierMutationCompletesBeforeRestorePublication(): Unit = runBlocking {
         ordinaryWriterWins {
             WorkManagerHandoffRecovery.prepareObserveRetryDownload(
                 context,
@@ -92,12 +92,12 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun hardSubResetWinsBeforeOrdinaryCarrierMutation() = runBlocking {
+    fun hardSubResetWinsBeforeOrdinaryCarrierMutation(): Unit = runBlocking {
         resetWins { WorkManagerHandoffRecovery.prepareHardSub(context) }
     }
 
     @Test
-    fun schedulerResetWinsBeforeOrdinaryCarrierMutation() = runBlocking {
+    fun schedulerResetWinsBeforeOrdinaryCarrierMutation(): Unit = runBlocking {
         resetWins {
             WorkManagerHandoffRecovery.prepareSchedulerBoundary(
                 context,
@@ -108,7 +108,7 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
     }
 
     @Test
-    fun observeRetryResetWinsBeforeOrdinaryCarrierMutation() = runBlocking {
+    fun observeRetryResetWinsBeforeOrdinaryCarrierMutation(): Unit = runBlocking {
         resetWins {
             WorkManagerHandoffRecovery.prepareObserveRetryDownload(
                 context,

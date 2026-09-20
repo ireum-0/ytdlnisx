@@ -45,7 +45,7 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
     private val sessions = mutableListOf<String>()
 
     @Before
-    fun setUp() = runBlocking {
+    fun setUp(): Unit = runBlocking {
         context = ApplicationProvider.getApplicationContext()
         database = DBManager.getInstance(context)
         workManager = WorkManager.getInstance(context)
@@ -65,7 +65,7 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
     }
 
     @After
-    fun tearDown() = runBlocking {
+    fun tearDown(): Unit = runBlocking {
         LocalAddWorkerTestHooks.matchForTesting = null
         LocalAddWorkerTestHooks.metadataForTesting = null
         LocalAddWorkerTestHooks.databaseForTesting = null
@@ -80,7 +80,7 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
     }
 
     @Test
-    fun activeSessionIsQuiescedAndReconstructedWithOneExactOwner() = runBlocking {
+    fun activeSessionIsQuiescedAndReconstructedWithOneExactOwner(): Unit = runBlocking {
         val initialEntered = CompletableDeferred<Unit>()
         val replacementEntered = CompletableDeferred<Unit>()
         val initialRelease = CompletableDeferred<Unit>()
@@ -150,7 +150,7 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
     }
 
     @Test
-    fun sameRestoreReplayReusesAcceptedLocalAddOwner() = runBlocking {
+    fun sameRestoreReplayReusesAcceptedLocalAddOwner(): Unit = runBlocking {
         val initialEntered = CompletableDeferred<Unit>()
         val replacementEntered = CompletableDeferred<Unit>()
         val initialRelease = CompletableDeferred<Unit>()
@@ -214,7 +214,7 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
     }
 
     @Test
-    fun cancelledSessionAndLegacyEntriesAreNeverRevived() = runBlocking {
+    fun cancelledSessionAndLegacyEntriesAreNeverRevived(): Unit = runBlocking {
         val cancelledSession = UUID.randomUUID().toString()
         sessions += cancelledSession
         val cancelledRequest = OneTimeWorkRequestBuilder<LocalAddWorker>()
