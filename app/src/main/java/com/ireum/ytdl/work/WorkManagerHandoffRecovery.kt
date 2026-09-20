@@ -30,11 +30,13 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.UUID
@@ -347,8 +349,13 @@ internal object WorkManagerHandoffRecovery {
     }
 
     internal fun clearForTesting() {
-        attemptJobs.values.toList().forEach { it.cancel() }
-        retryJobs.values.toList().forEach { it.cancel() }
+        val jobs = (attemptJobs.values.map { it as Job } + retryJobs.values.toList()).distinct()
+        jobs.forEach { it.cancel() }
+        runBlocking {
+            withTimeoutOrNull(5_000L) {
+                jobs.joinAll()
+            }
+        }
         attemptJobs.clear()
         retryJobs.clear()
         latestGenerationByBoundary.clear()
