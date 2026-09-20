@@ -1,0 +1,121 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "microsegment_rank_range": [
+    251,
+    255
+  ],
+  "data_head": "7189fbbefad1a5d187a96b077698c295aa8da599",
+  "complete_state_blob": "d700fa5f663c2ce95d30280ece084a1f86ae7cd2",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M06-20260919T1413Z-001/r251-255.json",
+    "blob_sha": "b5e470d72eae33515a67da936c3e68aca902a33b"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "ccaa24343ffa41862fd4961ff94c529427d01e16",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M06-20260919T1413Z-001/r246-250.json",
+    "blob_sha": "992460706ad222b6d667f587512f66d1048df497"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 251,
+      "path": "review-runs/checkpoints/2026-09-12T172900Z__a12c5805__checkpoint.md",
+      "source_blob": "e6d8d4e829add74ad13ddd865f64591cfa452282",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-DUPLICATE-ADMISSION-01 as FIXED-CLOSED / CLEAN at this exact reviewed scope after independent source-semantic closure and explicit exact-final external execution evidence. Keep the provenance distinction that this reviewer did not independently execute the tests, and preserve the overall project P0 2 / P1 1 / P2 29 NOT_CLEAN state."
+    },
+    {
+      "rank": 252,
+      "path": "review-runs/checkpoints/2026-09-12T172700Z__a12c5805__checkpoint.md",
+      "source_blob": "03a6269cf7933d844238c93398da22dc15b90133",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic structural kind NOT_VERIFIED; preserve the material transition that BUG-DUPLICATE-ADMISSION-01 is independently supportable as FIXED-CLOSED and the canonical P2 count changes 30 -> 29. Externally executed exact-final evidence is used only after source closure; reviewer runtime execution remains NOT EXECUTED."
+    },
+    {
+      "rank": 253,
+      "path": "review-runs/checkpoints/2026-09-12T172334Z__a12c5805__checkpoint.md",
+      "source_blob": "0818fbff19c0f3eebcd18e6051096927d7ff0234",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic structural kind NOT_VERIFIED and P2 29 as provisional at this intermediate historical basis. The checkpoint carries governance-recorded closure but explicitly says independent repository/worker/consumer/gate revalidation is still in progress, so do not back-propagate the later completed closure into this record."
+    },
+    {
+      "rank": 254,
+      "path": "review-runs/checkpoints/2026-09-12__a12c5805__duplicate-admission-execution-closure-basis-advance.md",
+      "source_blob": "bd7766ef64ad025009f5c80d7c9fa558fef9610e",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep whole-document structural kind NOT_VERIFIED; preserve canonical BUG-DUPLICATE-ADMISSION-01 CLOSED / CLEAN, P2 30 -> 29, and CLEAN-basis advance 3616ae02... -> a12c5805.... Preserve that implementation-agent/verifier execution is accepted exact-final evidence while independent reviewer execution is explicitly NOT EXECUTED."
+    },
+    {
+      "rank": 255,
+      "path": "review-runs/checkpoints/2026-09-12T163100Z__a12c5805__checkpoint.md",
+      "source_blob": "e749d0c3206eb3de019b0b0a60f796c1c238136a",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve this older exact basis as source-semantic FIXED / SOURCE CLEAN but canonical OPEN with P0 2 / P1 1 / P2 30 because its actual-execution gate was still unsatisfied. Do not rewrite this historical record using the later exact-final execution closure."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      251,
+      252,
+      253,
+      254,
+      255
+    ],
+    "materializer_flagged_exception_ranks": [
+      251,
+      252,
+      253,
+      254,
+      255
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
