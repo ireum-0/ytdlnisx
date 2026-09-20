@@ -6,6 +6,7 @@ import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import androidx.work.impl.WorkManagerImpl
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreTransactionCoordinator
@@ -106,22 +107,28 @@ internal object LocalAddResponsibilityReconciler {
             val captured = linkedSetOf<String>()
             captured += LocalAddStorage.loadLiveWorkOwners(appContext).map { it.sessionId }
 
-            val workManager = WorkManager.getInstance(appContext)
             // The old producer did not publish an owner marker, so use the
-            // persisted entry key only to derive the exact unique-work name;
-            // an unfinished WorkManager record is still required as proof.
+            // persisted entry key only to locate WorkSpecs; the exact session ID and worker class
+            // in WorkManager are still required as proof.
             LocalAddStorage.loadStoredSessionIds(appContext).forEach { sessionId ->
                 if (LocalAddStorage.loadWorkOwner(appContext, sessionId) != null) return@forEach
                 if (LocalAddStorage.loadEntries(appContext, sessionId).isEmpty()) return@forEach
-                val unfinished = workManager
-                    .getWorkInfosForUniqueWork(LocalAddStorage.uniqueWorkName(sessionId))
-                    .get(ACCEPTANCE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                    .filter { !it.state.isFinished }
-                val exactOwner = unfinished.firstOrNull() ?: return@forEach
+                val workDatabase = WorkManagerImpl.getInstance(appContext).workDatabase
+                val unfinished = workDatabase.workSpecDao()
+                    .getUnfinishedWorkWithTag(LocalAddWorker.TAG)
+                    .mapNotNull { id -> workDatabase.workSpecDao().getWorkSpec(id) }
+                    .filter { workSpec ->
+                        workSpec.workerClassName == LocalAddWorker::class.java.name &&
+                            workSpec.input.getString(LocalAddWorker.KEY_SESSION_ID) == sessionId
+                    }
+                check(unfinished.size <= 1) {
+                    "ambiguous live LocalAdd WorkManager owners for session $sessionId"
+                }
+                val exactOwner = unfinished.singleOrNull() ?: return@forEach
                 if (LocalAddStorage.trackActiveOwner(
                         appContext,
                         sessionId,
-                        exactOwner.id.toString(),
+                        exactOwner.id,
                     )
                 ) {
                     captured += sessionId

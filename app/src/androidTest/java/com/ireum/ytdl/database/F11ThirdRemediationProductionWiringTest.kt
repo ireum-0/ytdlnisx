@@ -113,11 +113,7 @@ class F11ThirdRemediationProductionWiringTest {
             sessionId,
             listOf(LocalAddEntryDto("content://provider/document/$sessionId", null)),
         )
-        workManager.enqueueUniqueWork(
-            LocalAddStorage.uniqueWorkName(sessionId),
-            ExistingWorkPolicy.KEEP,
-            request,
-        ).result.get(20, TimeUnit.SECONDS)
+        workManager.enqueue(request).result.get(20, TimeUnit.SECONDS)
         val original = requireNotNull(
             workManager.getWorkInfoById(request.id).get(10, TimeUnit.SECONDS)
         )
@@ -150,13 +146,8 @@ class F11ThirdRemediationProductionWiringTest {
             listOf(LocalAddEntryDto("content://provider/document/$sessionId", null)),
         )
         val request = delayedLocalAddRequest(sessionId)
-        workManager.enqueueUniqueWork(
-            LocalAddStorage.uniqueWorkName(sessionId),
-            ExistingWorkPolicy.KEEP,
-            request,
-        ).result.get(20, TimeUnit.SECONDS)
-        workManager.cancelUniqueWork(LocalAddStorage.uniqueWorkName(sessionId))
-            .result.get(20, TimeUnit.SECONDS)
+        workManager.enqueue(request).result.get(20, TimeUnit.SECONDS)
+        workManager.cancelWorkById(request.id).result.get(20, TimeUnit.SECONDS)
         assertTrue(
             requireNotNull(workManager.getWorkInfoById(request.id).get(10, TimeUnit.SECONDS))
                 .state.isFinished
