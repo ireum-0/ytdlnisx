@@ -75,6 +75,7 @@ import com.ireum.ytdl.VideoPlayerActivity
 import com.ireum.ytdl.database.DBManager.SORTING
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
@@ -89,6 +90,7 @@ import com.ireum.ytdl.database.viewmodel.HistoryDateFetchUiState
 import com.ireum.ytdl.database.viewmodel.HistoryDateFetchViewModel
 import com.ireum.ytdl.database.viewmodel.LowQualityRedownloadCandidateUi
 import com.ireum.ytdl.database.viewmodel.LowQualityRedownloadUiState
+import com.ireum.ytdl.work.LocalAddResponsibilityReconciler
 import com.ireum.ytdl.database.viewmodel.LowQualityRedownloadViewModel
 import com.ireum.ytdl.database.viewmodel.PlaylistViewModel
 import com.ireum.ytdl.ui.adapter.HistoryPaginatedAdapter
@@ -222,22 +224,23 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     "event=savePendingScrollRestore position=$position offset=$offset itemId=$itemId itemTop=$itemTop"
                 )
             }
-            PreferenceManager.getDefaultSharedPreferences(context).edit()
-                .putInt(PREF_PENDING_RESTORE_SCROLL_POSITION, position)
-                .putInt(PREF_PENDING_RESTORE_SCROLL_OFFSET, offset)
-                .apply {
-                    if (itemId != null && itemId > 0L) {
-                        putLong(PREF_PENDING_RESTORE_SCROLL_ITEM_ID, itemId)
-                    } else {
-                        remove(PREF_PENDING_RESTORE_SCROLL_ITEM_ID)
-                    }
-                    if (itemTop != null) {
-                        putInt(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP, itemTop)
-                    } else {
-                        remove(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP)
-                    }
+            RestoreMutationAdmission.applyOrdinaryPreferences(
+                context,
+                PreferenceManager.getDefaultSharedPreferences(context),
+            ) {
+                putInt(PREF_PENDING_RESTORE_SCROLL_POSITION, position)
+                putInt(PREF_PENDING_RESTORE_SCROLL_OFFSET, offset)
+                if (itemId != null && itemId > 0L) {
+                    putLong(PREF_PENDING_RESTORE_SCROLL_ITEM_ID, itemId)
+                } else {
+                    remove(PREF_PENDING_RESTORE_SCROLL_ITEM_ID)
                 }
-                .apply()
+                if (itemTop != null) {
+                    putInt(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP, itemTop)
+                } else {
+                    remove(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP)
+                }
+            }
         }
 
         fun peekPendingScrollRestore(context: Context): DirectScrollRestore? {
@@ -262,12 +265,15 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         }
 
         fun clearPendingScrollRestore(context: Context) {
-            PreferenceManager.getDefaultSharedPreferences(context).edit()
-                .remove(PREF_PENDING_RESTORE_SCROLL_POSITION)
-                .remove(PREF_PENDING_RESTORE_SCROLL_OFFSET)
-                .remove(PREF_PENDING_RESTORE_SCROLL_ITEM_ID)
-                .remove(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP)
-                .apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(
+                context,
+                PreferenceManager.getDefaultSharedPreferences(context),
+            ) {
+                remove(PREF_PENDING_RESTORE_SCROLL_POSITION)
+                remove(PREF_PENDING_RESTORE_SCROLL_OFFSET)
+                remove(PREF_PENDING_RESTORE_SCROLL_ITEM_ID)
+                remove(PREF_PENDING_RESTORE_SCROLL_ITEM_TOP)
+            }
             if (ENABLE_HISTORY_RETURN_LOGS) {
                 Log.d(HISTORY_RETURN_TAG, "event=clearPendingScrollRestore")
             }
@@ -522,25 +528,15 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     .addTag(LocalAddWorker.TAG)
                     .build()
                 activeLocalAddSessionId = sessionId
-                LocalAddStorage.beginSession(
+                // URI expansion and metadata work happen before this short
+                // publication window. The production reconciler owns the
+                // exact session/WorkManager/owner-marker transfer.
+                LocalAddResponsibilityReconciler.publishSession(
                     requireContext(),
                     sessionId,
-                    request.id.toString(),
+                    request,
                     entries,
                 )
-                val enqueue = WorkManager.getInstance(requireContext()).enqueueUniqueWork(
-                    LocalAddStorage.uniqueWorkName(sessionId),
-                    ExistingWorkPolicy.KEEP,
-                    request,
-                )
-                enqueue.result.get(5_000L, TimeUnit.MILLISECONDS)
-                check(
-                    LocalAddStorage.markOwnerAccepted(
-                        requireContext(),
-                        sessionId,
-                        request.id.toString(),
-                    )
-                ) { "LocalAdd owner was not accepted" }
                 withContext(Dispatchers.Main) {
                     Toast.makeText(requireContext(), getString(R.string.local_video_adding), Toast.LENGTH_SHORT).show()
                 }
@@ -1430,9 +1426,9 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 }
                 val sessionId = activeLocalAddSessionId
                 if (sessionId != null) {
-                    LocalAddStorage.retireSession(appContext, sessionId)
-                    WorkManager.getInstance(appContext)
-                        .cancelUniqueWork(LocalAddStorage.uniqueWorkName(sessionId))
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        LocalAddResponsibilityReconciler.retireAndCancel(appContext, sessionId)
+                    }
                     activeLocalAddSessionId = null
                 }
                 addLocalJob?.cancel()
@@ -5529,13 +5525,13 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     }
 
     private fun persistHiddenStateToPrefs() {
-        sharedPreferences.edit()
-            .putStringSet(prefHiddenYoutubersKey, hiddenYoutubers.toSet())
-            .putStringSet(prefHiddenYoutuberGroupsKey, hiddenYoutuberGroups.map { it.toString() }.toSet())
-            .putStringSet(prefVisibleChildYoutuberGroupsKey, visibleChildYoutuberGroups.map { it.toString() }.toSet())
-            .putStringSet(prefVisibleChildYoutubersKey, visibleChildYoutubers.toSet())
-            .putStringSet(prefVisibleChildKeywordsKey, visibleChildKeywords.toSet())
-            .apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences) {
+            putStringSet(prefHiddenYoutubersKey, hiddenYoutubers.toSet())
+            putStringSet(prefHiddenYoutuberGroupsKey, hiddenYoutuberGroups.map { it.toString() }.toSet())
+            putStringSet(prefVisibleChildYoutuberGroupsKey, visibleChildYoutuberGroups.map { it.toString() }.toSet())
+            putStringSet(prefVisibleChildYoutubersKey, visibleChildYoutubers.toSet())
+            putStringSet(prefVisibleChildKeywordsKey, visibleChildKeywords.toSet())
+        }
     }
 
     private fun showFiltersDialog() {
@@ -5647,7 +5643,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
         showHiddenOnlyCheck?.isChecked = historyViewModel.showHiddenOnlyFilter.value
         showHiddenOnlyCheck?.setOnCheckedChangeListener { _, isChecked ->
             historyViewModel.setShowHiddenOnlyFilter(isChecked)
-            sharedPreferences.edit().putBoolean(prefShowHiddenOnlyKey, isChecked).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences.edit().putBoolean(prefShowHiddenOnlyKey, isChecked))
         }
         if (websiteList.size < 2) {
             filterSheet.findViewById<View>(R.id.websiteFilters)?.isVisible = false
@@ -6802,7 +6798,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     }
 
     private fun removePendingDuplicateDownload(key: String) {
-        PendingDuplicateDownloadStore.remove(sharedPreferences, key)
+        PendingDuplicateDownloadStore.remove(requireContext(), sharedPreferences, key)
     }
 
     private fun showHistoryDetailsCard(item: HistoryItem, operationPaths: List<String>) {

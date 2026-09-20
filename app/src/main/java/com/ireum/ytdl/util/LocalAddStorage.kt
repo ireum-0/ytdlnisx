@@ -2,6 +2,7 @@ package com.ireum.ytdl.util
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import androidx.preference.PreferenceManager
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -136,6 +137,19 @@ object LocalAddStorage {
         return owner
     }
 
+    /**
+     * Returns stored session IDs only as candidates for an exact WorkManager
+     * unique-work lookup.  Callers must establish liveness from WorkManager;
+     * this method is never sufficient authority by itself.
+     */
+    internal fun loadStoredSessionIds(context: Context): List<String> =
+        prefs(context).all.keys
+            .filter { it.startsWith(KEY_ENTRIES_PREFIX) }
+            .map { it.removePrefix(KEY_ENTRIES_PREFIX) }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+
     /** Enumerates only explicit owner markers, never historical entry payload keys. */
     fun loadLiveWorkOwners(context: Context): List<LocalAddWorkOwner> =
         prefs(context).all.keys
@@ -199,7 +213,13 @@ object LocalAddStorage {
         return true
     }
 
-    fun retireSession(context: Context, sessionId: String) {
+    /**
+     * Applies user retirement or worker completion while the caller already
+     * owns the ordinary mutation admission boundary.  Restore reconciliation
+     * uses this narrow primitive so it cannot deadlock by reacquiring the
+     * process-global admission mutex.
+     */
+    internal fun retireSessionWithinMutation(context: Context, sessionId: String) {
         val existing = loadWorkOwner(context, sessionId)
         val retired = (existing ?: LocalAddWorkOwner(
             sessionId = sessionId,
@@ -215,6 +235,12 @@ object LocalAddStorage {
             editor.remove(KEY_OPEN_SESSION)
         }
         check(editor.commit()) { "LocalAdd retirement could not be durably persisted" }
+    }
+
+    fun retireSession(context: Context, sessionId: String) {
+        RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
+            retireSessionWithinMutation(context, sessionId)
+        }
     }
 
     fun completeSession(context: Context, sessionId: String) {

@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.util
+package com.ireum.ytdl.util
 
 import android.content.SharedPreferences
 import com.ireum.ytdl.database.models.BackupSettingsItem
@@ -28,13 +28,23 @@ object BackupSettingsUtil {
         // Re-emitted by the youtuber-data payload where old group IDs can be
         // explicitly remapped to destination group IDs.
         "history_visible_child_youtuber_groups",
+        "pending_duplicate_download_history_pairs",
+        "hard_sub_rescan_done_once_v2",
+        "latest_timepicker_date",
     )
     private const val PLAYBACK_POSITION_CACHE_PREFIX = "player_playback_position_"
+    // LocalAdd session, owner, pending and progress values are live destination authority, not portable settings.
+    private const val LOCAL_ADD_RUNTIME_PREFIX = "local_add_"
+    private const val UNDO_INTENT_FALLBACK_PREFIX = "pending_undo_intent_fallback:"
+    private const val YOUTUBE_API_RUNTIME_PREFIX = "youtube_api_"
 
     internal fun isPortablePreferenceKey(key: String): Boolean =
         key !in nonPortablePreferenceKeys &&
             !CleanupScheduleCoordinator.isCoordinatorOwnedPreferenceKey(key) &&
-            !key.startsWith(PLAYBACK_POSITION_CACHE_PREFIX)
+            !key.startsWith(PLAYBACK_POSITION_CACHE_PREFIX) &&
+            !key.startsWith(LOCAL_ADD_RUNTIME_PREFIX) &&
+            !key.startsWith(UNDO_INTENT_FALLBACK_PREFIX) &&
+            !key.startsWith(YOUTUBE_API_RUNTIME_PREFIX)
 
     /**
      * A successful empty array is meaningful backup state.  Capture failures

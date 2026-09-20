@@ -665,14 +665,13 @@ object RestoreTransactionCoordinator {
             if (record.plan.data.settings != null) add(CleanupScheduleCoordinator.TAG)
             if (hasDownloadReset) add("low_quality_redownload")
         }
-        // Capture only explicit live LocalAdd owner markers that F11 is
-        // about to quiesce. Raw historical entry keys are not ownership.
+        // Capture explicit owner markers plus only provably-live legacy
+        // sessions before cancellation.  The capture runs after the durable
+        // Restore owner is published, so a producer cannot appear between the
+        // inventory and the cancellation request.
         if (hasHistoryReset) {
-            val capturedLocalAddSessionIds = LocalAddStorage
-                .loadLiveWorkOwners(context)
-                .map { it.sessionId }
-                .distinct()
-                .sorted()
+            val capturedLocalAddSessionIds =
+                LocalAddResponsibilityReconciler.captureQuiescedSessions(context)
             if (capturedLocalAddSessionIds.isNotEmpty()) {
                 current = RestoreOperationStore.updateJournal(
                     current,
@@ -1350,6 +1349,13 @@ object RestoreTransactionCoordinator {
         val editor = preferences.edit()
         if (data.settings != null) {
             editor.clear()
+            // Reset replaces only portable settings. Destination-local,
+            // runtime and coordinator-owned keys remain authoritative in the
+            // destination snapshot; LocalAdd session/owner keys are included
+            // so History quiescence can transfer their responsibility.
+            snapshot
+                .filterKeys { !BackupSettingsUtil.isPortablePreferenceKey(it) }
+                .forEach { (key, value) -> putPreferenceValue(editor, key, value) }
             if (record.journal.preservedCachePathPresent ||
                 record.journal.preservedCachePath.isNotBlank()
             ) {
@@ -1384,6 +1390,23 @@ object RestoreTransactionCoordinator {
         }
         check(compensation.commit()) { "Preference compensation commit failed" }
         throw IllegalStateException("Restore preference commit was not durable")
+    }
+
+    private fun putPreferenceValue(
+        editor: SharedPreferences.Editor,
+        key: String,
+        value: Any?,
+    ) {
+        when (value) {
+            is String -> editor.putString(key, value)
+            is Boolean -> editor.putBoolean(key, value)
+            is Int -> editor.putInt(key, value)
+            is Long -> editor.putLong(key, value)
+            is Float -> editor.putFloat(key, value)
+            is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+            null -> editor.remove(key)
+            else -> error("Unsupported preference type for $key")
+        }
     }
 
     private fun putPortable(editor: SharedPreferences.Editor, item: com.ireum.ytdl.database.models.BackupSettingsItem) {
