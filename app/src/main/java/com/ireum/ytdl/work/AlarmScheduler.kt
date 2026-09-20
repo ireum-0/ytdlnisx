@@ -151,9 +151,11 @@ class AlarmScheduler(private val context: Context) {
         val cancelPendingIntent = PendingIntent.getBroadcast(context, 0, cancelIntent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
 
-        alarmManager?.cancel(pendingIntent)
-        alarmManager?.cancel(oneShotPendingIntent)
-        alarmManager?.cancel(cancelPendingIntent)
+        alarmManager?.let { manager ->
+            pendingIntent?.let(manager::cancel)
+            oneShotPendingIntent?.let(manager::cancel)
+            cancelPendingIntent?.let(manager::cancel)
+        }
     }
     private fun setAlarm(
         receiver: Class<out android.content.BroadcastReceiver>,
