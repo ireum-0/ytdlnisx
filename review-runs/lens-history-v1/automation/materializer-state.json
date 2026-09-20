@@ -1,6 +1,6 @@
 {
   "schema_version": "lens-history-v1-automation-state-v3",
-  "status": "ACTIVE",
+  "status": "PAUSED_RETRYABLE",
   "run_id": "M07-20260920T0528Z-001",
   "started_at": "2026-09-20T05:28:00Z",
   "stage": "MATERIALIZE_271_310",
@@ -29,16 +29,38 @@
     "status": "PASS",
     "unlock_allowed": true
   },
-  "completed_microsegments": [],
+  "completed_microsegments": [
+    {
+      "range": [
+        271,
+        275
+      ],
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M07-20260920T0528Z-001/r271-275.json",
+      "blob_sha": "7797fc7588fea47e9d8f35d39dbc1a76a2fafe72",
+      "corrections": []
+    }
+  ],
   "rank_evidence_provenance": {
-    "completed_rank_range": null,
-    "receipt_count": 0,
-    "last_rank_receipt": null
+    "completed_rank_range": [
+      271,
+      275
+    ],
+    "receipt_count": 5,
+    "last_rank_receipt": {
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r275.json",
+      "blob_sha": "82a397d1f7e34a07f1559c193cfe4079472b4a82"
+    }
   },
   "corrections": [],
   "materializer_remediations": [],
-  "next_rank": 271,
-  "in_progress_exception_ranks": [],
+  "next_rank": 276,
+  "in_progress_exception_ranks": [
+    271,
+    272,
+    273,
+    274,
+    275
+  ],
   "resume_safe": true,
   "materialization_outputs": {
     "official_inventory_written": false,
