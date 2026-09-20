@@ -1,5 +1,6 @@
-﻿package com.ireum.ytdl.ui.more.settings.updating
+package com.ireum.ytdl.ui.more.settings.updating
 
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import android.content.SharedPreferences
 import android.os.Bundle
 import android.view.View
@@ -50,8 +51,8 @@ class UpdateSettingsFragment : BaseSettingsFragment() {
             setOnPreferenceClickListener {
                 UiUtil.showYTDLSourceBottomSheet(requireActivity(), preferences) { t, r ->
                     summary = t
-                    preferences.edit().putString("ytdlp_source", r).apply()
-                    preferences.edit().putString("ytdlp_source_label", t).apply()
+                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("ytdlp_source", r))
+                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("ytdlp_source_label", t))
                     initYTDLUpdate(r)
                 }
                 true
@@ -129,10 +130,10 @@ class UpdateSettingsFragment : BaseSettingsFragment() {
             val version = withContext(Dispatchers.IO){
                 ytdlpViewModel.getVersion(preferences.getString("ytdlp_source", "stable")!!)
             }
-            preferences.edit().apply {
-                putString("ytdl-version", version)
-                apply()
-            }
+            RestoreMutationAdmission.applyOrdinaryPreferences(
+                requireContext(),
+                preferences.edit().putString("ytdl-version", version),
+            )
             ytdlVersion!!.summary = version
         }
     }

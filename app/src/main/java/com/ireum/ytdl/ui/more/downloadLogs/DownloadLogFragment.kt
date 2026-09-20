@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more.downloadLogs
+package com.ireum.ytdl.ui.more.downloadLogs
 
 import android.annotation.SuppressLint
 import android.app.ActionBar
@@ -24,6 +24,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
 import androidx.preference.PreferenceManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.viewmodel.LogViewModel
@@ -149,7 +150,7 @@ class DownloadLogFragment : Fragment() {
 //                        contentScrollView.setPadding(0,0,0,
 //                            (requireContext().resources.displayMetrics.density * 150).toInt()
 //                        )
-                        sharedPreferences.edit().putBoolean("wrap_text_log", true).apply()
+                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences.edit().putBoolean("wrap_text_log", true))
                         updateAutoScrollState()
                     }else{
                         val parent = content.parent as ViewGroup
@@ -167,7 +168,7 @@ class DownloadLogFragment : Fragment() {
                         scrollView.id = R.id.horizontalscroll_output
                         parent.addView(scrollView, 0)
                         updateAutoScrollState()
-                        sharedPreferences.edit().putBoolean("wrap_text_log", false).apply()
+                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences.edit().putBoolean("wrap_text_log", false))
                     }
                 }
 
@@ -208,7 +209,7 @@ class DownloadLogFragment : Fragment() {
             content.setCustomTextSize(this.value + 13f)
             this.addOnChangeListener { slider, value, fromUser ->
                 content.setCustomTextSize(value + 13f)
-                sharedPreferences.edit(true){
+                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences) {
                     putFloat("log_zoom", value)
                 }
             }

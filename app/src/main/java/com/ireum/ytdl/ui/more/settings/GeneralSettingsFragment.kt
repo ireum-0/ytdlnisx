@@ -1,5 +1,6 @@
-﻿package com.ireum.ytdl.ui.more.settings
+package com.ireum.ytdl.ui.more.settings
 
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
@@ -197,7 +198,7 @@ class GeneralSettingsFragment : BaseSettingsFragment() {
                             getString(R.string.light)
                         }
                     }
-                    editor.putString("ytdlnisx_theme", newValue.toString()).apply()
+                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putString("ytdlnisx_theme", newValue.toString()))
                     ThemeUtil.updateThemes()
                 }
                 dialog.show()

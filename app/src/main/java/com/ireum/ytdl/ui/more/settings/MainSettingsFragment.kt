@@ -1,5 +1,6 @@
 package com.ireum.ytdl.ui.more.settings
 
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.DialogInterface
@@ -275,7 +276,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
             val path = result.data!!.data.toString()
             backupPath!!.summary = FileUtil.formatPath(path)
             editor.putString("backup_path", path)
-            editor.apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor)
         }
     }
 

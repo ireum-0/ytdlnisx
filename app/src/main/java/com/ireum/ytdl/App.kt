@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl
+package com.ireum.ytdl
 
 import android.app.Application
 import android.os.Build
@@ -6,11 +6,11 @@ import android.os.Looper
 import android.system.Os
 import android.util.Log
 import android.widget.Toast
-import androidx.core.content.edit
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.ThemeUtil
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreTransactionCoordinator
 import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.ireum.ytdl.work.LowQualityRedownloadManager
@@ -52,20 +52,31 @@ class App : Application() {
         // and mistake an unconfigured registry for an empty one.
         YtdlpNativeProcessBarrier.configure(this)
 
-        val sharedPreferences =  PreferenceManager.getDefaultSharedPreferences(this@App)
-        setDefaultValues()
+        val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this@App)
         applicationScope = CoroutineScope(SupervisorJob())
+        // Discover and drive an active Restore before any startup default or
+        // version writer can mutate the preference graph it owns. Native/tool
+        // initialization remains outside the admission boundary.
+        val restoreRecovery = applicationScope.async(Dispatchers.IO) {
+            RestoreTransactionCoordinator.recover(this@App)
+        }
         val runtimeReadiness = applicationScope.async(Dispatchers.IO) {
             runStartupInitialization(
                 initialize = {
+                    restoreRecovery.await()
+                    check(!RestoreGate.isRestoreInProgress(this@App)) {
+                        "Restore recovery remains pending at startup"
+                    }
+                    setDefaultValues()
                     createNotificationChannels()
                     initLibraries()
 
                     val appVer = sharedPreferences.getString("version", "")!!
-                    if(appVer.isEmpty() || appVer != BuildConfig.VERSION_NAME){
-                        sharedPreferences.edit(commit = true){
-                            putString("version", BuildConfig.VERSION_NAME)
-                        }
+                    if (appVer.isEmpty() || appVer != BuildConfig.VERSION_NAME) {
+                        RestoreMutationAdmission.applyOrdinaryPreferences(
+                            this@App,
+                            sharedPreferences.edit().putString("version", BuildConfig.VERSION_NAME),
+                        )
                     }
                 },
                 reportFailure = { failure ->
@@ -84,9 +95,7 @@ class App : Application() {
         // Restore recovery owns the ordering boundary for every reconciler
         // that can observe or recreate Reset-targeted state.  Workers also
         // check RestoreGate independently, so this is not the sole fence.
-        val restoreRecovery = applicationScope.async(Dispatchers.IO) {
-            RestoreTransactionCoordinator.recover(this@App)
-        }
+
         applicationScope.launch(Dispatchers.IO) {
             try {
                 restoreRecovery.await()
@@ -251,18 +260,22 @@ class App : Application() {
         }
     }
 
-    private fun setDefaultValues(){
-        val SPL = 1
+    private fun setDefaultValues() {
+        val spl = 1
         val sp = PreferenceManager.getDefaultSharedPreferences(this)
-        if (sp.getInt("spl", 0) != SPL) {
-            PreferenceManager.setDefaultValues(this, R.xml.root_preferences, true)
-            PreferenceManager.setDefaultValues(this, R.xml.downloading_preferences, true)
-            PreferenceManager.setDefaultValues(this, R.xml.general_preferences, true)
-            PreferenceManager.setDefaultValues(this, R.xml.processing_preferences, true)
-            PreferenceManager.setDefaultValues(this, R.xml.folders_preference, true)
-            PreferenceManager.setDefaultValues(this, R.xml.updating_preferences, true)
-            PreferenceManager.setDefaultValues(this, R.xml.advanced_preferences, true)
-            sp.edit().putInt("spl", SPL).apply()
+        if (sp.getInt("spl", 0) != spl) {
+            RestoreMutationAdmission.withOrdinaryMutationBlocking(this) {
+                PreferenceManager.setDefaultValues(this, R.xml.root_preferences, true)
+                PreferenceManager.setDefaultValues(this, R.xml.downloading_preferences, true)
+                PreferenceManager.setDefaultValues(this, R.xml.general_preferences, true)
+                PreferenceManager.setDefaultValues(this, R.xml.processing_preferences, true)
+                PreferenceManager.setDefaultValues(this, R.xml.folders_preference, true)
+                PreferenceManager.setDefaultValues(this, R.xml.updating_preferences, true)
+                PreferenceManager.setDefaultValues(this, R.xml.advanced_preferences, true)
+                check(sp.edit().putInt("spl", spl).commit()) {
+                    "Startup preference defaults were not durable"
+                }
+            }
         }
 
     }

@@ -1,5 +1,6 @@
-﻿package com.ireum.ytdl.ui.more.settings.advanced.generateyoutubepotokens
+package com.ireum.ytdl.ui.more.settings.advanced.generateyoutubepotokens
 
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import android.app.Activity
 import android.content.Context.INPUT_METHOD_SERVICE
 import android.content.DialogInterface
@@ -137,7 +138,7 @@ class GenerateYoutubePoTokensFragment : Fragment() {
                         conf.clients.clear()
                         conf.clients.addAll(newValues)
                         configuration.add(conf)
-                        preferences.edit().putString("youtube_generated_po_tokens", Gson().toJson(configuration).toString()).apply()
+                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("youtube_generated_po_tokens", Gson().toJson(configuration).toString()))
                         setValues(conf)
                     }
                 }
@@ -164,7 +165,7 @@ class GenerateYoutubePoTokensFragment : Fragment() {
 
                 configuration.add(conf)
                 setValues(conf)
-                preferences.edit().putString("youtube_generated_po_tokens", Gson().toJson(configuration).toString()).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("youtube_generated_po_tokens", Gson().toJson(configuration).toString()))
             }
         }
 
@@ -177,7 +178,7 @@ class GenerateYoutubePoTokensFragment : Fragment() {
             conf.enabled = switch.isChecked
             useVisitorData.isEnabled = switch.isChecked
             configuration.add(conf)
-            preferences.edit().putString("youtube_generated_po_tokens", Gson().toJson(configuration).toString()).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("youtube_generated_po_tokens", Gson().toJson(configuration).toString()))
             if (conf.poTokens.isEmpty()) {
                 regenerate.performClick()
             }
@@ -190,7 +191,7 @@ class GenerateYoutubePoTokensFragment : Fragment() {
                 configuration.remove(conf)
                 conf.useVisitorData = b
                 configuration.add(conf)
-                preferences.edit().putString("youtube_generated_po_tokens", Gson().toJson(configuration).toString()).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("youtube_generated_po_tokens", Gson().toJson(configuration).toString()))
             }
         }
 

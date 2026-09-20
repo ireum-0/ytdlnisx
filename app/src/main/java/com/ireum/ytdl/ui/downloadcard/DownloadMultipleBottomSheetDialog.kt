@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.downloadcard
+package com.ireum.ytdl.ui.downloadcard
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -39,6 +39,7 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.DBManager.SORTING
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.CommandTemplate
@@ -800,7 +801,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                                                         commandTemplateViewModel.insert(nt)
                                                         items.forEach { downloadViewModel.updateDownload(it) }
                                                     }
-                                                    preferences.edit().putString("lastCommandTemplateUsed", nt.content).apply()
+                                                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("lastCommandTemplateUsed", nt.content))
                                                     bottomSheet.dismiss()
                                                 },
                                                 dismissed = {}
@@ -830,7 +831,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                                                         commandTemplateViewModel.insert(nt)
                                                         items.forEach { downloadViewModel.updateDownload(it) }
                                                     }
-                                                    preferences.edit().putString("lastCommandTemplateUsed", nt.content).apply()
+                                                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("lastCommandTemplateUsed", nt.content))
                                                     bottomSheet.dismiss()
                                                 },
                                                 dismissed = {}

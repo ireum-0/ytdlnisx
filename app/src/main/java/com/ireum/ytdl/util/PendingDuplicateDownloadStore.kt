@@ -1,6 +1,8 @@
 package com.ireum.ytdl.util
 
+import android.content.Context
 import android.content.SharedPreferences
+import com.ireum.ytdl.database.RestoreMutationAdmission
 
 object PendingDuplicateDownloadStore {
     private const val PREF_PENDING_DUPLICATE_DOWNLOADS = "pending_duplicate_download_history_pairs"
@@ -16,20 +18,25 @@ object PendingDuplicateDownloadStore {
     }
 
     fun add(
+        context: Context,
         sharedPreferences: SharedPreferences,
         newHistoryId: Long,
         existingHistoryId: Long
     ) {
         if (newHistoryId <= 0L || existingHistoryId <= 0L || newHistoryId == existingHistoryId) return
-        update(sharedPreferences) { pending ->
-            pending.add("$newHistoryId:$existingHistoryId")
+        RestoreMutationAdmission.withOrdinaryMutationBlocking(context.applicationContext) {
+            update(sharedPreferences) { pending ->
+                pending.add("$newHistoryId:$existingHistoryId")
+            }
         }
     }
 
-    fun remove(sharedPreferences: SharedPreferences, key: String) {
+    fun remove(context: Context, sharedPreferences: SharedPreferences, key: String) {
         if (key.isBlank()) return
-        update(sharedPreferences) { pending ->
-            pending.remove(key)
+        RestoreMutationAdmission.withOrdinaryMutationBlocking(context.applicationContext) {
+            update(sharedPreferences) { pending ->
+                pending.remove(key)
+            }
         }
     }
 
@@ -43,9 +50,11 @@ object PendingDuplicateDownloadStore {
                 .orEmpty()
                 .toMutableSet()
             mutate(pending)
-            sharedPreferences.edit()
+            check(sharedPreferences.edit()
                 .putStringSet(PREF_PENDING_DUPLICATE_DOWNLOADS, pending)
-                .commit()
+                .commit()) {
+                "Pending duplicate download state was not durable"
+            }
         }
     }
 }

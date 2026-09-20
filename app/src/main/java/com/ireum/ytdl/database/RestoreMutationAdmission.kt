@@ -86,4 +86,18 @@ internal object RestoreMutationAdmission {
             }
         }
     }
+
+    fun applyOrdinaryPreferences(
+        context: Context,
+        preferences: SharedPreferences,
+        edit: SharedPreferences.Editor.() -> Unit,
+    ) {
+        withOrdinaryMutationBlocking(context) {
+            val editor = preferences.edit()
+            edit(editor)
+            check(editor.commit()) {
+                "Ordinary preference persistence was not durable"
+            }
+        }
+    }
 }

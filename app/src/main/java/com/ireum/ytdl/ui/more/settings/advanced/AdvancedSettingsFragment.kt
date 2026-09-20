@@ -1,5 +1,6 @@
-﻿package com.ireum.ytdl.ui.more.settings.advanced
+package com.ireum.ytdl.ui.more.settings.advanced
 
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import android.annotation.SuppressLint
 import android.content.DialogInterface
 import android.graphics.Typeface
@@ -66,7 +67,7 @@ class AdvancedSettingsFragment : BaseSettingsFragment() {
                 }.toMutableList()
 
                 showFormatImportanceDialog(title.toString(), itms) { new ->
-                    editor.putString("format_importance_audio", new.joinToString(",") { it.first }).apply()
+                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putString("format_importance_audio", new.joinToString(",") { it.first }))
                     formatImportanceAudio.summary = new.map { it.second }.mapIndexed { index, s -> "${index + 1}. $s" }.joinToString("\n")
                 }
                 true
@@ -88,7 +89,7 @@ class AdvancedSettingsFragment : BaseSettingsFragment() {
                 }.toMutableList()
 
                 showFormatImportanceDialog(title.toString(), itms) {new ->
-                    editor.putString("format_importance_video", new.joinToString(",") { it.first }).apply()
+                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putString("format_importance_video", new.joinToString(",") { it.first }))
                     formatImportanceVideo.summary = new.map { it.second }.mapIndexed { index, s -> "${index + 1}. $s" }.joinToString("\n")
                 }
                 true

@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more.cookies
+package com.ireum.ytdl.ui.more.cookies
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -27,6 +27,7 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.ireum.ytdl.MainActivity
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.viewmodel.CookieViewModel
@@ -108,7 +109,7 @@ class CookiesFragment : Fragment(), CookieAdapter.OnItemClickListener {
 
         useCookies.setOnCheckedChangeListener { compoundButton, b ->
             newCookie.isEnabled = useCookies.isChecked
-            preferences.edit().putBoolean("use_cookies", useCookies.isChecked).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putBoolean("use_cookies", useCookies.isChecked))
         }
 
         val useCookiesPref = preferences.getBoolean("use_cookies", false)
@@ -145,7 +146,7 @@ class CookiesFragment : Fragment(), CookieAdapter.OnItemClickListener {
                 }
                 R.id.use_header -> {
                     m.isChecked = !m.isChecked
-                    preferences.edit().putBoolean("use_header", m.isChecked).apply()
+                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putBoolean("use_header", m.isChecked))
                 }
                 R.id.import_clipboard -> {
                     lifecycleScope.launch(Dispatchers.IO){

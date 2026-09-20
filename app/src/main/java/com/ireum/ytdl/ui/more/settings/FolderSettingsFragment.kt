@@ -1,5 +1,6 @@
 package com.ireum.ytdl.ui.more.settings
 
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import android.Manifest
 import android.app.Activity
 import android.annotation.SuppressLint
@@ -108,17 +109,17 @@ class FolderSettingsFragment : BaseSettingsFragment() {
         moveCache = findPreference("move_cache")
 
         if (preferences.getString("music_path", "")!!.isEmpty()) {
-            editor.putString("music_path", FileUtil.getDefaultAudioPath()).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putString("music_path", FileUtil.getDefaultAudioPath()))
         }
         if (preferences.getString("video_path", "")!!.isEmpty()) {
-            editor.putString("video_path", FileUtil.getDefaultVideoPath()).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putString("video_path", FileUtil.getDefaultVideoPath()))
         }
         if (preferences.getString("command_path", "")!!.isEmpty()) {
-            editor.putString("command_path", FileUtil.getDefaultCommandPath()).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putString("command_path", FileUtil.getDefaultCommandPath()))
         }
         if (preferences.getString("cache_path", "")!!.isEmpty()) {
             if (captureCurrentCacheRootBeforeMutation()) {
-                editor.putString("cache_path", FileUtil.getCachePath(requireContext())).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putString("cache_path", FileUtil.getCachePath(requireContext())))
             }
         }
 
@@ -126,7 +127,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
             accessAllFiles!!.isVisible = false
             cacheDownloads!!.isEnabled = true
         }else{
-            editor.putBoolean("cache_downloads", true).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putBoolean("cache_downloads", true))
             cacheDownloads!!.isEnabled = false
         }
 
@@ -188,13 +189,13 @@ class FolderSettingsFragment : BaseSettingsFragment() {
         }
 
         if (noFragments!!.isChecked) {
-            editor.putBoolean("keep_cache", false).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putBoolean("keep_cache", false))
             keepFragments!!.isChecked = false
             keepFragments!!.isEnabled = false
         }
         noFragments!!.setOnPreferenceChangeListener { _, newValue ->
             if(newValue as Boolean){
-                editor.putBoolean("keep_cache", false).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putBoolean("keep_cache", false))
                 keepFragments!!.isChecked = false
                 keepFragments!!.isEnabled = false
             }else{
@@ -210,7 +211,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
 
         videoFilenameTemplate?.setOnPreferenceClickListener {
             UiUtil.showFilenameTemplateDialog(requireActivity(),videoFilenameTemplate?.summary.toString() ?: "", "${getString(R.string.file_name_template)} [${getString(R.string.video)}]") {
-                editor.putString("file_name_template", it).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putString("file_name_template", it))
                 videoFilenameTemplate?.summary = it
             }
             false
@@ -218,7 +219,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
 
         audioFilenameTemplate?.setOnPreferenceClickListener {
             UiUtil.showFilenameTemplateDialog(requireActivity(), audioFilenameTemplate?.summary.toString() ?: "", "${getString(R.string.file_name_template)} [${getString(R.string.audio)}]") {
-                editor.putString("file_name_template_audio", it).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putString("file_name_template_audio", it))
                 audioFilenameTemplate?.summary = it
             }
             false
@@ -549,7 +550,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
             accessAllFiles!!.isVisible = false
             cacheDownloads!!.isEnabled = true
         }else{
-            editor.putBoolean("cache_downloads", true).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putBoolean("cache_downloads", true))
             cacheDownloads!!.isEnabled = false
         }
         super.onResume()
@@ -644,7 +645,7 @@ class FolderSettingsFragment : BaseSettingsFragment() {
             COMMAND_PATH_CODE -> editor.putString("command_path", path)
             CACHE_PATH_CODE -> editor.putString("cache_path", path)
         }
-        editor.apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor)
     }
 
     /**

@@ -1364,7 +1364,11 @@ class DownloadRepository(private val database: DBManager) {
         val value = undoIntentFallbackValue(kind, selected, intent)
         val existing = preferences.getString(key, null)
         if (existing == null) {
-            preferences.edit().putString(key, value).commit()
+            RestoreMutationAdmission.applyOrdinaryPreferences(
+                App.instance,
+                preferences.edit().putString(key, value),
+            )
+            true
         } else {
             existing == value
         }
@@ -1372,10 +1376,11 @@ class DownloadRepository(private val database: DBManager) {
 
     private fun clearUndoIntentFallback(token: String) {
         runCatching {
-            PreferenceManager.getDefaultSharedPreferences(App.instance)
-                .edit()
-                .remove(undoIntentFallbackKey(token))
-                .commit()
+            val preferences = PreferenceManager.getDefaultSharedPreferences(App.instance)
+            RestoreMutationAdmission.applyOrdinaryPreferences(
+                App.instance,
+                preferences.edit().remove(undoIntentFallbackKey(token)),
+            )
         }
     }
 

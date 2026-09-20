@@ -1,5 +1,6 @@
-﻿package com.ireum.ytdl.ui.more.settings.advanced
+package com.ireum.ytdl.ui.more.settings.advanced
 
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import android.animation.AnimatorSet
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -105,7 +106,7 @@ class YoutubePlayerClientFragment : Fragment(), YoutubePlayerClientAdapter.OnIte
     }
 
     private fun updateRecords() {
-        preferences.edit().putString("youtube_player_clients", currentListRaw).apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("youtube_player_clients", currentListRaw))
     }
 
     private fun checkNoResults() {

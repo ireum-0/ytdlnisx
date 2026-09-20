@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.downloadcard
+package com.ireum.ytdl.ui.downloadcard
 
 import android.annotation.SuppressLint
 import android.app.Dialog
@@ -33,6 +33,7 @@ import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.ui.PlayerView
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.models.ChapterItem
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.viewmodel.ResultViewModel
@@ -294,8 +295,7 @@ class CutVideoBottomSheetDialog(private val _item: DownloadItem? = null, private
 
         forceKeyframes.isChecked = prefs.getBoolean("force_keyframes", false)
         forceKeyframes.setOnCheckedChangeListener { compoundButton, b ->
-            editor.putBoolean("force_keyframes", forceKeyframes.isChecked)
-            editor.apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor.putBoolean("force_keyframes", forceKeyframes.isChecked))
         }
 
     }

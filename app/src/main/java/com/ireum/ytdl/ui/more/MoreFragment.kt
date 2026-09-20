@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more
+package com.ireum.ytdl.ui.more
 
 import android.content.Intent
 import android.content.SharedPreferences
@@ -17,6 +17,7 @@ import androidx.navigation.fragment.findNavController
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.ui.more.settings.SettingsActivity
 import com.ireum.ytdl.ui.more.terminal.TerminalActivity
@@ -160,7 +161,7 @@ class MoreFragment : Fragment() {
             dialog.setCanceledOnTouchOutside(false)
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
-            mainSharedPreferencesEditor.putBoolean("ask_terminate_app", !doNotShowAgainFinalState).commit()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), mainSharedPreferencesEditor.putBoolean("ask_terminate_app", !doNotShowAgainFinalState))
             terminateApp()
         }
     }

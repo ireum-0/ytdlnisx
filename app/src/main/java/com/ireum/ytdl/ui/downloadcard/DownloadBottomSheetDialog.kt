@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.downloadcard
+package com.ireum.ytdl.ui.downloadcard
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -32,6 +32,7 @@ import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.ResultItem
@@ -270,9 +271,8 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
             presetsButton.isVisible = viewPager2.currentItem != 2
         }
 
-        sharedPreferences.edit(commit = true) {
-            putString("last_used_download_type",
-                type.toString())
+        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences) {
+            putString("last_used_download_type", type.toString())
         }
 
 
@@ -320,9 +320,11 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
                 tabLayout.selectTab(tabLayout.getTabAt(position))
                 presetsButton.isVisible = position != 2
                 runCatching {
-                    sharedPreferences.edit(commit = true) {
-                        putString("last_used_download_type",
-                            listOf(DownloadType.audio, DownloadType.video, DownloadType.command)[position].toString())
+                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences) {
+                        putString(
+                            "last_used_download_type",
+                            listOf(DownloadType.audio, DownloadType.video, DownloadType.command)[position].toString(),
+                        )
                     }
                     fragmentAdapter.updateWhenSwitching(viewPager2.currentItem)
                 }
@@ -746,7 +748,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            sharedPreferences.edit().putBoolean("use_cookies", true).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences.edit().putBoolean("use_cookies", true))
             updateItem.isVisible = true
             initUpdateData()
         }

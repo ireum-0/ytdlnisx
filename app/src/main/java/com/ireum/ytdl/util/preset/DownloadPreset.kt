@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
 import androidx.preference.PreferenceManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
@@ -21,6 +22,7 @@ enum class PresetDownloadType {
     VIDEO;
 
     fun toDownloadType(): DownloadType = when (this) {
+
         AUDIO -> DownloadType.audio
         VIDEO -> DownloadType.video
     }
@@ -231,6 +233,7 @@ class DownloadPresetStore(
     context: Context,
     private val preferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
 ) {
+    private val applicationContext = context.applicationContext
     @Synchronized
     fun presets(): List<DownloadPreset> = readPresets()
 
@@ -278,7 +281,7 @@ class DownloadPresetStore(
         if (updated.size == current.size) return false
         writePresets(updated)
         if (preferences.getString(KEY_QUICK_PRESET_ID, "") == id) {
-            preferences.edit { remove(KEY_QUICK_PRESET_ID) }
+            RestoreMutationAdmission.applyOrdinaryPreferences(applicationContext, preferences) { remove(KEY_QUICK_PRESET_ID) }
         }
         return true
     }
@@ -286,11 +289,11 @@ class DownloadPresetStore(
     @Synchronized
     fun setQuickDownloadPreset(id: String?): Boolean {
         if (id == null) {
-            preferences.edit { remove(KEY_QUICK_PRESET_ID) }
+            RestoreMutationAdmission.applyOrdinaryPreferences(applicationContext, preferences) { remove(KEY_QUICK_PRESET_ID) }
             return true
         }
         if (readPresets().none { it.id == id }) return false
-        preferences.edit { putString(KEY_QUICK_PRESET_ID, id) }
+        RestoreMutationAdmission.applyOrdinaryPreferences(applicationContext, preferences) { putString(KEY_QUICK_PRESET_ID, id) }
         return true
     }
 
@@ -305,7 +308,7 @@ class DownloadPresetStore(
     }
 
     private fun writePresets(presets: List<DownloadPreset>) {
-        preferences.edit { putString(KEY_PRESETS, DownloadPresetCodec.encode(presets)) }
+        RestoreMutationAdmission.applyOrdinaryPreferences(applicationContext, preferences) { putString(KEY_PRESETS, DownloadPresetCodec.encode(presets)) }
     }
 
     companion object {

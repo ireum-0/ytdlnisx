@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more.terminal
+package com.ireum.ytdl.ui.more.terminal
 
 import android.annotation.SuppressLint
 import android.app.ActionBar.LayoutParams
@@ -32,6 +32,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.database.viewmodel.CommandTemplateViewModel
@@ -277,7 +278,7 @@ class TerminalFragment : Fragment() {
                         scrollView.removeAllViews()
                         parent.removeView(scrollView)
                         parent.addView(output, 0)
-                        sharedPreferences.edit().putBoolean("wrap_text_terminal", true).apply()
+                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences.edit().putBoolean("wrap_text_terminal", true))
                     }else{
                         val parent = output.parent as ViewGroup
                         parent.removeView(output)
@@ -289,7 +290,7 @@ class TerminalFragment : Fragment() {
                         scrollView.addView(output)
                         scrollView.id = R.id.horizontalscroll_output
                         parent.addView(scrollView, 0)
-                        sharedPreferences.edit().putBoolean("wrap_text_terminal", false).apply()
+                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences.edit().putBoolean("wrap_text_terminal", false))
                     }
                 }
                 R.id.export_clipboard -> {
@@ -315,7 +316,7 @@ class TerminalFragment : Fragment() {
             this.addOnChangeListener { slider, value, fromUser ->
                 output.setCustomTextSize(value + 13f)
                 input.setCustomTextSize(value + 13f)
-                sharedPreferences.edit(true){
+                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences) {
                     putFloat("terminal_zoom", value)
                 }
             }

@@ -1,5 +1,6 @@
-﻿package com.ireum.ytdl.ui.more.settings.advanced.generateyoutubepotokens.webview
+package com.ireum.ytdl.ui.more.settings.advanced.generateyoutubepotokens.webview
 
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.SharedPreferences
@@ -103,8 +104,7 @@ class PoTokenWebViewLoginActivity : BaseActivity() {
             cookieManager = CookieManager.getInstance()
 
             preferences = PreferenceManager.getDefaultSharedPreferences(this@PoTokenWebViewLoginActivity)
-            preferences.edit().putString("genenerate_youtube_po_token_preferred_url", url).apply()
-
+            RestoreMutationAdmission.applyOrdinaryPreferences(this@PoTokenWebViewLoginActivity, preferences.edit().putString("genenerate_youtube_po_token_preferred_url", url))
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
@@ -147,7 +147,7 @@ class PoTokenWebViewLoginActivity : BaseActivity() {
                                             )
                                         )
                                         cookiesViewModel.updateCookiesFile()
-                                        preferences.edit().putBoolean("use_cookies", true).apply()
+                                        RestoreMutationAdmission.applyOrdinaryPreferences(this@PoTokenWebViewLoginActivity, preferences.edit().putBoolean("use_cookies", true))
                                     }.onFailure {
                                         withContext(Dispatchers.Main) {
                                             Toast.makeText(

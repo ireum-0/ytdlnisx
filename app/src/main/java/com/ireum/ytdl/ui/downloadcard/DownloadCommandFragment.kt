@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.downloadcard
+package com.ireum.ytdl.ui.downloadcard
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -23,6 +23,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.CommandTemplate
 import com.ireum.ytdl.database.models.DownloadItem
@@ -90,7 +91,7 @@ class DownloadCommandFragment(private val resultItem: ResultItem? = null, privat
                 }
             }
 
-            preferences.edit().putString("lastCommandTemplateUsed", downloadItem.format.format_note).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("lastCommandTemplateUsed", downloadItem.format.format_note))
 
             if (!Patterns.WEB_URL.matcher(downloadItem.url).matches() && downloadItem.url.endsWith(".txt")){
                 downloadItem.format = downloadViewModel.generateCommandFormat(CommandTemplate(0,"txt", "-a \"${downloadItem.url}\"", useAsExtraCommand = false, useAsExtraCommandAudio = false, useAsExtraCommandVideo = false, useAsExtraCommandDataFetching = false))
@@ -127,7 +128,7 @@ class DownloadCommandFragment(private val resultItem: ResultItem? = null, privat
                             0,
                             p0.toString()
                         )
-                        preferences.edit().putString("lastCommandTemplateUsed", p0.toString()).apply()
+                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("lastCommandTemplateUsed", p0.toString()))
                     }
                 })
 
@@ -168,7 +169,7 @@ class DownloadCommandFragment(private val resultItem: ResultItem? = null, privat
                                     0,
                                     it.joinToString(" ") { c -> c.content }
                                 )
-                                preferences.edit().putString("lastCommandTemplateUsed", downloadItem.format.format_note).apply()
+                                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("lastCommandTemplateUsed", downloadItem.format.format_note))
                             }
                         }
 
@@ -234,7 +235,7 @@ class DownloadCommandFragment(private val resultItem: ResultItem? = null, privat
                                             0,
                                             it.content
                                         )
-                                        preferences.edit().putString("lastCommandTemplateUsed", it.content).apply()
+                                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("lastCommandTemplateUsed", it.content))
                                         commandTemplateCard.visibility = View.VISIBLE
                                         view.findViewById<TextView>(R.id.command_txt).visibility = View.VISIBLE
                                         view.findViewById<Chip>(R.id.editSelected).isEnabled = true
@@ -268,7 +269,7 @@ class DownloadCommandFragment(private val resultItem: ResultItem? = null, privat
                                             0,
                                             it.content
                                         )
-                                        preferences.edit().putString("lastCommandTemplateUsed", it.content).apply()
+                                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("lastCommandTemplateUsed", it.content))
                                     },
                                     dismissed = {}
                                 )
@@ -279,7 +280,7 @@ class DownloadCommandFragment(private val resultItem: ResultItem? = null, privat
                                         val selectionStart = chosenCommandView.editText!!.selectionStart
                                         chosenCommandView.editText!!.text.insert(selectionStart, it)
                                         chosenCommandView.editText!!.setSelection(selectionStart + it.length)
-                                        preferences.edit().putString("lastCommandTemplateUsed",  downloadItem.format.format_note).apply()
+                                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("lastCommandTemplateUsed", downloadItem.format.format_note))
                                     },
                                     itemRemoved = {removed ->
                                         chosenCommandView.editText!!.setText(chosenCommandView.editText!!.text.replace("(${
@@ -288,8 +289,7 @@ class DownloadCommandFragment(private val resultItem: ResultItem? = null, privat
                                             )
                                         })(?!.*\\1)".toRegex(), "").trimEnd())
                                         downloadItem.format.format_note = chosenCommandView.editText!!.text.toString().trimEnd()
-                                        preferences.edit().putString("lastCommandTemplateUsed",
-                                            chosenCommandView.editText!!.text.toString().trimEnd()).apply()
+                                        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("lastCommandTemplateUsed", chosenCommandView.editText!!.text.toString().trimEnd()))
                                     })
                             }
                         )

@@ -1,9 +1,10 @@
-﻿package com.ireum.ytdl.util.extractors
+package com.ireum.ytdl.util.extractors
 
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import androidx.preference.PreferenceManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.util.MediaPublishedDateParser
 import org.json.JSONException
@@ -14,6 +15,7 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 class YoutubeApiUtil(context: Context) {
+    private val applicationContext = context.applicationContext
     private var sharedPreferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
     private val countryCode = sharedPreferences.getString("locale", "")!!.ifEmpty { "US" }
     private var lastQuotaExceeded = false
@@ -348,22 +350,26 @@ class YoutubeApiUtil(context: Context) {
         if (!is403 && !quota) return
         lastQuotaExceeded = quota
         val streak = sharedPreferences.getInt(pref403Streak, 0) + 1
-        sharedPreferences.edit().putInt(pref403Streak, streak).apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(applicationContext, sharedPreferences.edit().putInt(pref403Streak, streak))
         if (streak < 3) return
         val nextLevel = 6
         val disabledUntil = System.currentTimeMillis() + (6 * 60 * 60 * 1000L)
-        sharedPreferences.edit()
-            .putLong(prefDisabledUntil, disabledUntil)
-            .putInt(prefBackoffLevel, nextLevel)
-            .apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(
+            applicationContext,
+            sharedPreferences.edit()
+                .putLong(prefDisabledUntil, disabledUntil)
+                .putInt(prefBackoffLevel, nextLevel),
+        )
         Log.w("YoutubeApiUtil", "YouTube API temporarily disabled until=$disabledUntil streak=$streak level=$nextLevel")
     }
 
     private fun registerApiSuccess() {
-        sharedPreferences.edit()
-            .putInt(pref403Streak, 0)
-            .putInt(prefBackoffLevel, 0)
-            .putLong(prefDisabledUntil, 0L)
-            .apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(
+            applicationContext,
+            sharedPreferences.edit()
+                .putInt(pref403Streak, 0)
+                .putInt(prefBackoffLevel, 0)
+                .putLong(prefDisabledUntil, 0L),
+        )
     }
 }

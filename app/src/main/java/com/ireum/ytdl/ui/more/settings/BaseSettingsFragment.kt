@@ -55,8 +55,12 @@ abstract class BaseSettingsFragment : PreferenceFragmentCompat() {
         getPreferences(preferenceScreen, mutableListOf()).forEach {
             if (it.key !in excludedKeys) editor.remove(it.key)
         }
-        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor)
-        PreferenceManager.setDefaultValues(requireActivity().applicationContext, key, true)
+        // Preference removal and framework default publication are one
+        // ordinary authority effect.  Do not release admission between them.
+        RestoreMutationAdmission.withOrdinaryMutationBlocking(requireContext()) {
+            check(editor.commit()) { "Settings reset was not durable" }
+            PreferenceManager.setDefaultValues(requireActivity().applicationContext, key, true)
+        }
     }
 
     //Thanks libretube

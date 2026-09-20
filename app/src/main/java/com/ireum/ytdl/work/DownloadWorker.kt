@@ -3599,6 +3599,7 @@ class DownloadWorker(
                                     ) {
                                         withOwnedExecutionSideEffect(downloadItem) {
                                             PendingDuplicateDownloadStore.add(
+                                                context,
                                                 sharedPreferences,
                                                 newHistoryId = persistedHistoryId,
                                                 existingHistoryId = existingDuplicateHistoryItem.id

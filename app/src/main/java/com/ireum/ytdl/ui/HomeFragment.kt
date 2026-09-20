@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui
+package com.ireum.ytdl.ui
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -34,6 +34,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.SearchSuggestionItem
@@ -343,7 +344,7 @@ class HomeFragment : Fragment(), HomeAdapter.OnItemClickListener, SearchSuggesti
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            sharedPreferences?.edit()?.putBoolean("use_cookies", true)?.apply()
+            sharedPreferences?.let { RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), it.edit().putBoolean("use_cookies", true)) }
             startSearch()
         }
     }
@@ -434,9 +435,12 @@ class HomeFragment : Fragment(), HomeAdapter.OnItemClickListener, SearchSuggesti
             tmp.tag = providersValues[i]
 
             tmp.setOnClickListener {
-                val editor = sharedPreferences?.edit()
-                editor?.putString("search_engine", providerValue)
-                editor?.apply()
+                sharedPreferences?.let { preferences ->
+                    RestoreMutationAdmission.applyOrdinaryPreferences(
+                        requireContext(),
+                        preferences.edit().putString("search_engine", providerValue),
+                    )
+                }
 
             }
 

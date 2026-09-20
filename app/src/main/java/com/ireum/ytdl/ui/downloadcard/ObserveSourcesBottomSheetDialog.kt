@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.downloadcard
+package com.ireum.ytdl.ui.downloadcard
 
 import android.annotation.SuppressLint
 import android.app.Dialog
@@ -29,6 +29,7 @@ import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
@@ -190,9 +191,8 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
             }
         }
 
-        sharedPreferences.edit(commit = true) {
-            putString("last_used_download_type",
-                type.toString())
+        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences) {
+            putString("last_used_download_type", type.toString())
         }
 
 
@@ -234,9 +234,11 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
             override fun onPageSelected(position: Int) {
                 tabLayout.selectTab(tabLayout.getTabAt(position))
                 runCatching {
-                    sharedPreferences.edit(commit = true) {
-                        putString("last_used_download_type",
-                            listOf(DownloadType.audio, DownloadType.video, DownloadType.command)[position].toString())
+                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences) {
+                        putString(
+                            "last_used_download_type",
+                            listOf(DownloadType.audio, DownloadType.video, DownloadType.command)[position].toString(),
+                        )
                     }
                 }
             }

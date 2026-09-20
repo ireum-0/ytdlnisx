@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.util
+package com.ireum.ytdl.util
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -10,6 +10,7 @@ import android.widget.PopupMenu
 import androidx.core.view.forEach
 import androidx.core.view.get
 import androidx.preference.PreferenceManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.R
 import com.ireum.ytdl.util.NavbarUtil.applyNavBarStyle
 import com.google.android.material.navigation.NavigationBarView
@@ -18,9 +19,11 @@ import com.google.android.material.navigation.NavigationBarView
 object NavbarUtil {
 
     lateinit var settings : SharedPreferences
+    private lateinit var settingsContext: Context
 
     fun init(context: Context){
-        settings = PreferenceManager.getDefaultSharedPreferences(context)
+        settingsContext = context.applicationContext
+        settings = PreferenceManager.getDefaultSharedPreferences(settingsContext)
     }
 
     private var navItems = mapOf(
@@ -49,11 +52,11 @@ object NavbarUtil {
             val index = defaultNavBarItems.indexOfFirst { newItem.itemId == it.itemId }
             prefString.add(if (newItem.isVisible) index.toString() else "-$index")
         }
-        settings.edit().putString("navigation_bar", prefString.joinToString(",")).apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(settingsContext, settings.edit().putString("navigation_bar", prefString.joinToString(",")))
     }
 
     fun setStartFragment(itemId: Int) {
-        settings.edit().putString("start_destination", navItems.filter { it.value == itemId }.keys.first()).apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(settingsContext, settings.edit().putString("start_destination", navItems.filter { it.value == itemId }.keys.first()))
     }
 
     fun getNavBarItems(context: Context): List<MenuItem> {

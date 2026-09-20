@@ -17,6 +17,7 @@ import androidx.work.WorkManager
 import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.BackupRestoreParser
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.RestoreOutcome
 import com.ireum.ytdl.database.RestoreTransactionCoordinator
@@ -553,7 +554,9 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
             settings?.apply {
                 val prefs = this
-                PreferenceManager.getDefaultSharedPreferences(context).edit(commit = true){
+                RestoreMutationAdmission.withOrdinaryMutation(context) {
+                    val editor = PreferenceManager.getDefaultSharedPreferences(context).edit()
+                    with(editor) {
                     if (resetData) {
                         clear()
                         // cache_path is destination-local and must survive a
@@ -615,8 +618,10 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                             )
                         }
                     }
+                    check(editor.commit()) { "Merge preference persistence was not durable" }
                 }
             }
+        }
 
 
             val importedHistoryIdMap = linkedMapOf<Long, Long>()
@@ -842,16 +847,16 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                     }
 
                     data.historyVisibleChildYoutuberGroups?.let { visible ->
-                        preferences.edit(commit = true) {
+                        RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences) {
                             putStringSet(
                                 prefVisibleChildYoutuberGroupsKey,
-                                visible.mapNotNull { youtuberGroupIdMap[it]?.toString() }.toSet()
+                                visible.mapNotNull { youtuberGroupIdMap[it]?.toString() }.toSet(),
                             )
                         }
                     }
 
                     data.historyVisibleChildYoutubers?.let { visible ->
-                        preferences.edit(commit = true) {
+                        RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences) {
                             putStringSet(prefVisibleChildYoutubersKey, visible.toSet())
                         }
                     }
@@ -860,7 +865,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
 
             data.historyVisibleChildKeywords?.let { visible ->
                 withContext(Dispatchers.IO) {
-                    preferences.edit(commit = true) {
+                    RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences) {
                         putStringSet(prefVisibleChildKeywordsKey, visible.toSet())
                     }
                 }

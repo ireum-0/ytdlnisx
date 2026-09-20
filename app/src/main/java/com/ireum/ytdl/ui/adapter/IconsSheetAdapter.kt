@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.adapter
+package com.ireum.ytdl.ui.adapter
 
 import android.app.Activity
 import android.view.LayoutInflater
@@ -6,6 +6,7 @@ import android.view.ViewGroup
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.recyclerview.widget.RecyclerView
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.R
 import com.ireum.ytdl.databinding.AppIconItemBinding
 import com.ireum.ytdl.util.ThemeUtil
@@ -30,7 +31,7 @@ class IconsSheetAdapter(val activity: Activity) : RecyclerView.Adapter<IconsShee
             iconName.text = root.context.getString(appIcon.nameResource)
             root.setOnClickListener {
                 val preferences = androidx.preference.PreferenceManager.getDefaultSharedPreferences(activity)
-                preferences.edit().putString("ytdlnisx_icon", appIcon.activityAlias).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(activity, preferences.edit().putString("ytdlnisx_icon", appIcon.activityAlias))
                 val theme = preferences.getString("ytdlnisx_theme", "System")!!
                 ThemeUtil.updateAppIcon(activity, theme,appIcon.activityAlias)
                 activity.recreate()

@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.util
+package com.ireum.ytdl.util
 
 import android.animation.Animator
 import android.animation.ObjectAnimator
@@ -55,6 +55,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.preference.PreferenceManager
 import com.afollestad.materialdialogs.utils.MDUtil.getStringArray
 import com.afollestad.materialdialogs.utils.MDUtil.textChanged
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.CommandTemplate
@@ -2300,14 +2301,14 @@ object UiUtil {
                         myTemplates.remove(it.text.toString())
                         myTemplatesView.isVisible = myTemplates.isNotEmpty()
                         myTemplatesChipGroup.removeView(it)
-                        preferences.edit().putStringSet("filename_templates", myTemplates).apply()
+                        RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences.edit().putStringSet("filename_templates", myTemplates))
                     }
                 }
             )
             chip.isChecked = true
             textInput.endIconDrawable = null
             myTemplates.add(editText.text.toString())
-            preferences.edit().putStringSet("filename_templates", myTemplates).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences.edit().putStringSet("filename_templates", myTemplates))
             myTemplatesChipGroup.addView(chip)
             myTemplatesView.isVisible = true
         }
@@ -2367,7 +2368,7 @@ object UiUtil {
                             myTemplates.remove(c.text.toString())
                             myTemplatesView.isVisible = myTemplates.isNotEmpty()
                             myTemplatesChipGroup.removeView(c)
-                            preferences.edit().putStringSet("filename_templates", myTemplates).apply()
+                            RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences.edit().putStringSet("filename_templates", myTemplates))
                         }
                     }
                 )
@@ -2709,7 +2710,7 @@ object UiUtil {
             setOnClickListener {
                 showAddEditCustomYTDLPSource(context) { title, repo ->
                     list.add("${title}___${repo}")
-                    preferences.edit().putStringSet("custom_ytdlp_sources", list.toSet()).apply()
+                    RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences.edit().putStringSet("custom_ytdlp_sources", list.toSet()))
                     bottomSheet.dismiss()
                     selectedSource(title, repo)
                 }
@@ -2758,7 +2759,7 @@ object UiUtil {
                                     child.findViewById<TextView>(R.id.sampleRepo).text = nr
                                     val index = list.indexOf(s)
                                     list[index] = "${nt}___${nr}"
-                                    preferences.edit().putStringSet("custom_ytdlp_sources", list.toSet()).apply()
+                                    RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences.edit().putStringSet("custom_ytdlp_sources", list.toSet()))
                                     if (child.findViewById<RadioButton>(R.id.sampleRadioBtn).isChecked) {
                                         selectedSource(nt, nr)
                                     }
@@ -2769,8 +2770,9 @@ object UiUtil {
                                 popup.dismiss()
                                 showGenericDeleteDialog(context, title) {
                                     list.remove(s)
-                                    preferences.edit()
-                                        .putStringSet("custom_ytdlp_sources", list.toSet()).apply()
+                                    RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences) {
+                                        putStringSet("custom_ytdlp_sources", list.toSet())
+                                    }
                                     if (child.findViewById<RadioButton>(R.id.sampleRadioBtn).isChecked) {
                                         parentView.children.first().performClick()
                                     }
@@ -2808,7 +2810,7 @@ object UiUtil {
             .setIcon(R.drawable.ic_update_app)
             .setNeutralButton(R.string.ignore){ d: DialogInterface?, _:Int ->
                 skippedVersions.add(v.tag_name)
-                preferences.edit().putString("skip_updates", skippedVersions.joinToString(",")).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences.edit().putString("skip_updates", skippedVersions.joinToString(",")))
                 d?.dismiss()
             }
             .setNegativeButton(context.getString(R.string.cancel)) { _: DialogInterface?, _: Int -> }

@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl
+package com.ireum.ytdl
 
 import android.app.ActionBar.LayoutParams
 import android.content.Context
@@ -32,6 +32,7 @@ import androidx.navigation.fragment.findNavController
 import androidx.navigation.ui.setupWithNavController
 import androidx.preference.PreferenceManager
 import com.anggrayudi.storage.file.getAbsolutePath
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.viewmodel.CookieViewModel
@@ -241,7 +242,7 @@ class MainActivity : BaseActivity() {
                                 }
                             }
                             if (doNotShowAgain){
-                                preferences.edit().putBoolean("ask_terminate_app", false).apply()
+                                RestoreMutationAdmission.applyOrdinaryPreferences(this@MainActivity, preferences.edit().putBoolean("ask_terminate_app", false))
                             }
                             finishAndRemoveTask()
                             finishAffinity()

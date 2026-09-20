@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl
+package com.ireum.ytdl
 
 import android.app.PictureInPictureParams
 import android.app.PendingIntent
@@ -67,6 +67,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
@@ -1218,17 +1219,19 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun persistSubtitlePreferences() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        prefs.edit()
-            .putFloat(PREF_SUBTITLE_TEXT_SIZE, subtitleTextSizeFraction)
-            .putBoolean(PREF_SUBTITLE_EMBEDDED_STYLES, subtitleApplyEmbeddedStyles)
-            .putBoolean(PREF_SUBTITLE_EMBEDDED_FONT_SIZES, subtitleApplyEmbeddedFontSizes)
-            .putFloat(PREF_HOLD_PLAYBACK_SPEED, holdPlaybackSpeed)
-            .putInt(PREF_SUBTITLE_FOREGROUND, subtitleStyle.foregroundColor)
-            .putInt(PREF_SUBTITLE_BACKGROUND, subtitleStyle.backgroundColor)
-            .putInt(PREF_SUBTITLE_WINDOW, subtitleStyle.windowColor)
-            .putInt(PREF_SUBTITLE_EDGE_TYPE, subtitleStyle.edgeType)
-            .putInt(PREF_SUBTITLE_EDGE_COLOR, subtitleStyle.edgeColor)
-            .apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(
+            this,
+            prefs.edit()
+                .putFloat(PREF_SUBTITLE_TEXT_SIZE, subtitleTextSizeFraction)
+                .putBoolean(PREF_SUBTITLE_EMBEDDED_STYLES, subtitleApplyEmbeddedStyles)
+                .putBoolean(PREF_SUBTITLE_EMBEDDED_FONT_SIZES, subtitleApplyEmbeddedFontSizes)
+                .putFloat(PREF_HOLD_PLAYBACK_SPEED, holdPlaybackSpeed)
+                .putInt(PREF_SUBTITLE_FOREGROUND, subtitleStyle.foregroundColor)
+                .putInt(PREF_SUBTITLE_BACKGROUND, subtitleStyle.backgroundColor)
+                .putInt(PREF_SUBTITLE_WINDOW, subtitleStyle.windowColor)
+                .putInt(PREF_SUBTITLE_EDGE_TYPE, subtitleStyle.edgeType)
+                .putInt(PREF_SUBTITLE_EDGE_COLOR, subtitleStyle.edgeColor),
+        )
     }
 
     private fun showSpeedDialog() {
@@ -1290,7 +1293,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 setOnClickListener { setSpeed(speed) }
                 setOnLongClickListener {
                     val currentSpeed = slider.value
-                    prefs.edit().putFloat(presetKeys[index], currentSpeed).apply()
+                    RestoreMutationAdmission.applyOrdinaryPreferences(this@VideoPlayerActivity, prefs.edit().putFloat(presetKeys[index], currentSpeed))
                     text = String.format("%.2fx", currentSpeed)
                     Toast.makeText(
                         this@VideoPlayerActivity,
@@ -2561,10 +2564,12 @@ class VideoPlayerActivity : AppCompatActivity() {
             return
         }
         volumeNormalizationEnabled = !volumeNormalizationEnabled
-        PreferenceManager.getDefaultSharedPreferences(this)
-            .edit()
-            .putBoolean(PREF_VOLUME_NORMALIZATION, volumeNormalizationEnabled)
-            .apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(
+            this,
+            PreferenceManager.getDefaultSharedPreferences(this)
+                .edit()
+                .putBoolean(PREF_VOLUME_NORMALIZATION, volumeNormalizationEnabled),
+        )
         ensureVolumeNormalization()
     }
 
@@ -4148,10 +4153,12 @@ class VideoPlayerActivity : AppCompatActivity() {
             else -> Player.REPEAT_MODE_OFF
         }
         player?.repeatMode = next
-        PreferenceManager.getDefaultSharedPreferences(this)
-            .edit()
-            .putInt(PREF_REPEAT_MODE, next)
-            .apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(
+            this,
+            PreferenceManager.getDefaultSharedPreferences(this)
+                .edit()
+                .putInt(PREF_REPEAT_MODE, next),
+        )
         updateRepeatButton()
     }
 

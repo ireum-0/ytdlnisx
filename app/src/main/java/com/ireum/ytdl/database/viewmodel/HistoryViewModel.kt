@@ -16,6 +16,7 @@ import androidx.paging.cachedIn
 import androidx.paging.insertHeaderItem
 import androidx.paging.map
 import androidx.room.withTransaction
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.DBManager.SORTING
 import com.ireum.ytdl.database.enums.DownloadType
@@ -884,9 +885,10 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
 
     fun setMissingSourceDatePolicy(policy: MissingSourceDatePolicy) {
         if (missingSourceDatePolicy.value == policy) return
-        preferences.edit()
-            .putString(PREF_MISSING_SOURCE_DATE_POLICY, policy.name)
-            .apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(
+            getApplication<Application>(),
+            preferences.edit().putString(PREF_MISSING_SOURCE_DATE_POLICY, policy.name),
+        )
         missingSourceDatePolicy.value = policy
         invalidateCachedIds(triggerRefresh = true)
     }
