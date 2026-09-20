@@ -1,0 +1,135 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "rank": 302,
+  "materializer_state_blob": "cda97ee1fd625ef25f815d9cdf21e6387355e8db",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "3ec0c900d1e1e1b2d3c53962f4dff072f8c5adbd",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r301.json",
+    "blob_sha": "54e2bba00ddf64d96a567f0d79fd908946dbb5f6"
+  },
+  "history": {
+    "commit_sha": "0befe2a5c1638509ede6fd918b30043e2d44f0e3",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=302"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12__93d01d2a__backup06-portable-id-current-basis-revalidation.md",
+        "status": "added",
+        "source_blob_sha": "d385857d210e4d6434f1e1bf9205de207549410e",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "d385857d210e4d6434f1e1bf9205de207549410e",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12__93d01d2a__backup06-portable-id-current-basis-revalidation.md",
+    "status": "added",
+    "source_blob_sha": "d385857d210e4d6434f1e1bf9205de207549410e",
+    "frozen_blob_sha": "d385857d210e4d6434f1e1bf9205de207549410e",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "93d01d2afbce2cfa62dc17fad4478416b3d7cf6c",
+      "evidence": "source explicitly records Fixed independently CLEAN implementation basis"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "source is a BUG-BACKUP-06 portable imported-ID authority current-basis revalidation record, but it has no explicit checkpoint_kind/equivalent field and does not unambiguously self-identify the whole document as a document-identity-v1 finding/addendum/reconciliation/scope-expansion record or final checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-BACKUP-06"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "EXISTING / P2 / OPEN / CONFIRMED at exact fixed CLEAN basis 93d01d2a; backup-local numeric IDs can still bind unrelated destination authority in Download provenance and legacy Observe-source keyword assignment, with no new root"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1"
+    },
+    {
+      "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+      "finding_id": "BUG-BACKUP-06",
+      "evidence": "source explicitly preserves two concrete consumers of the same F6 root: destination same-number Observe-source provenance reuse and legacy Observe-source keyword assignment carrying an unmapped backup-local numeric ID"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-BACKUP-06",
+      "evidence": "source explicitly preserves both consumers as one existing portable numeric-reference authority root, keeps F6 as the upstream identity-policy prerequisite for F7/F8/F9, and as a hard prerequisite of F11 BUG-BACKUP-03"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-BACKUP-06",
+      "evidence": "source explicitly records canonical blocker-count delta 0 and canonical blockers P0 2 / P1 1 / P2 31"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "finding_id": "BUG-BACKUP-06",
+      "evidence": "source explicitly records INDEPENDENT EXECUTION: NOT EXECUTED; current-basis conclusion is source-level independent revalidation"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
