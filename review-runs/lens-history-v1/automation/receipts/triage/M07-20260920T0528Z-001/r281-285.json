@@ -1,0 +1,125 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "microsegment_rank_range": [
+    281,
+    285
+  ],
+  "data_head": "87a0ac038b681911e491fffdcba3f4309bd957ce",
+  "complete_state_blob": "4b3b316639cb2c8312ba8ab8651b190d787d9a94",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M07-20260920T0528Z-001/r281-285.json",
+    "blob_sha": "30bb8b88dd773871fd0f877346ee1f3b619fd540"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "da166ba551fe4bfc4812702c3b67c90fc5707757",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M07-20260920T0528Z-001/r276-280.json",
+    "blob_sha": "e9436a3e1a14d6d0a4c8c8c045e93db6e0c6f5b7"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 281,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02-8c5db3c7__duplicate-admission-source-clean-awaiting-exact-verification.md",
+      "source_blob": "261979981fe22fffd89fc6d2652b7f24ef95a2b4",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "CONTRADICTORY_STATUS_LABELING",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED. Preserve the full-range source review as a source-clean closure candidate for existing BUG-DUPLICATE-ADMISSION-01 at exact 8c5db3c7 while canonical OPEN/count P2 30 remain until exact-final-SHA execution evidence exists. Preserve F19 and explicit bypass boundaries and do not create a new root; independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 282,
+      "path": "review-runs/checkpoints/2026-09-12T131800Z__3616ae02__backup06-portable-id-current-basis-revalidation.md",
+      "source_blob": "ed3e213fd92ac7a8e7d02e99cd6d1a6e20af58ec",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-BACKUP-06 as the existing P2 F6 portable imported-ID authority root. Restored Download Observe provenance and legacy Observe-source keyword assignment are two consumers of the same root; restore-wide BUG-BACKUP-03 stays separate. Count delta 0; independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 283,
+      "path": "review-runs/checkpoints/2026-09-12T130400Z__3616ae02__backup02-thumbnail-current-basis-revalidation.md",
+      "source_blob": "b37853caae73c0d492ecb9822bebf951e6ba4731",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-BACKUP-02 as the existing P2 F5 thumbnail publication/aliasing root: backup-local History ID still becomes live filesystem ownership identity across independent restores. Keep it narrower than restore-wide BUG-BACKUP-03. Count delta 0; independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 284,
+      "path": "review-runs/checkpoints/2026-09-12T124200Z__e7355f54__checkpoint.md",
+      "source_blob": "60199f6793ab07d677ddc571d2487214ded432c0",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the original repository check/insert race as fixed but the downstream Observe post-insert stale full-row overwrite as a surviving residual of existing BUG-DUPLICATE-ADMISSION-01, not a new canonical root. P0 2 / P1 1 / P2 30 remains final provisional state; runtime manifestation and independent execution remain NOT_VERIFIED/NOT EXECUTED."
+    },
+    {
+      "rank": 285,
+      "path": "review-runs/checkpoints/2026-09-12T123600Z__e7355f54__checkpoint.md",
+      "source_blob": "f3b1f6296c5516cabfa28922d47c8f2146ad3588",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic structural kind NOT_VERIFIED. Preserve the source-closed interleaving where a worker Active/executionId claim can be overwritten by Observe's stale full-row Upsert as a surviving same-root BUG-DUPLICATE-ADMISSION-01 residual; no new canonical root. Exact-SHA GitHub execution evidence is absent and independent execution NOT EXECUTED."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      281,
+      282,
+      283,
+      284,
+      285
+    ],
+    "materializer_flagged_exception_ranks": [
+      281,
+      282,
+      283,
+      284,
+      285
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
