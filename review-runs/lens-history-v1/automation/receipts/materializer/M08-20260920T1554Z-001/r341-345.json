@@ -1,0 +1,189 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "segment_range": [
+    341,
+    345
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "08c50d7f1e1fa393b059a255b2a5c1301258b32f",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M08-20260920T1554Z-001/r336-340.json",
+    "blob_sha": "4bc770bdec1a1497b8c04448743ae29aeb27f1da"
+  },
+  "rank_receipts": [
+    {
+      "rank": 341,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r341.json",
+      "blob_sha": "d22857b363b3ea55d2554b8cd538c27013bb5dbc"
+    },
+    {
+      "rank": 342,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r342.json",
+      "blob_sha": "98393d3bc82f6a78cc3b81eca2d3c08b885acba1"
+    },
+    {
+      "rank": 343,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r343.json",
+      "blob_sha": "dea7867b92bff93bd8b7e32978d5443dbcde623d"
+    },
+    {
+      "rank": 344,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r344.json",
+      "blob_sha": "89211d46e720c8fe97ffb13b3dad4072d8827268"
+    },
+    {
+      "rank": 345,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r345.json",
+      "blob_sha": "298258661da54a2b11ac45956bebd51106db9338"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      341,
+      342,
+      343,
+      344,
+      345
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 341,
+        "source_blob_sha": "7468b703d1783970f705386f5999c6dd5f240628"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-KEYWORD-04",
+        "evidence": "source explicitly preserves the stale-negative History omission as the opposite-direction residual of the same point-in-time History-index authority root after stale-positive candidates are fenced, and states recordDiscovery() widens this residual",
+        "rank": 341,
+        "source_blob_sha": "7468b703d1783970f705386f5999c6dd5f240628"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-KEYWORD-04",
+        "evidence": "source explicitly records count delta 0 and canonical blocker count P0 2 / P1 1 / P2 34",
+        "rank": 341,
+        "source_blob_sha": "7468b703d1783970f705386f5999c6dd5f240628"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED; implementation-agent execution evidence is preserved but does not cover the stale-negative sequence",
+        "rank": 341,
+        "source_blob_sha": "7468b703d1783970f705386f5999c6dd5f240628"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source explicitly records no canonical count change and final canonical inventory P0 2 / P1 1 / P2 34",
+        "rank": 342,
+        "source_blob_sha": "2714895d328388f5fac0311fb99d2f86c3d6465a"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent runtime/device execution is explicitly NOT EXECUTED and runtime manifestation beyond direct source semantics remains NOT_VERIFIED",
+        "rank": 342,
+        "source_blob_sha": "2714895d328388f5fac0311fb99d2f86c3d6465a"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks positive structural document identity under document-identity-v1",
+        "rank": 343,
+        "source_blob_sha": "43f17b5a05334aaa46901674cfc05b7c9ca11a87"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional canonical inventory P0 2 / P1 1 / P2 34 and overall NOT_CLEAN pending final canonical reconciliation",
+        "rank": 343,
+        "source_blob_sha": "43f17b5a05334aaa46901674cfc05b7c9ca11a87"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source is a pre-final revalidation checkpoint and explicitly leaves final canonical reconciliation/recount pending",
+        "rank": 343,
+        "source_blob_sha": "43f17b5a05334aaa46901674cfc05b7c9ca11a87"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent Gradle/device execution is NOT EXECUTED and runtime manifestation beyond source semantics remains NOT_VERIFIED",
+        "rank": 343,
+        "source_blob_sha": "43f17b5a05334aaa46901674cfc05b7c9ca11a87"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks positive structural document identity; commit-message bootstrap cannot establish kind",
+        "rank": 344,
+        "source_blob_sha": "b72c88e36a1187cdb02231c1b94175842f31d157"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional blocker inventory P0 2 / P1 1 / P2 34 and overall NOT_CLEAN",
+        "rank": 344,
+        "source_blob_sha": "b72c88e36a1187cdb02231c1b94175842f31d157"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source explicitly says independent F10 re-trace remains open and no newly established fixed invariant exists yet",
+        "rank": 344,
+        "source_blob_sha": "b72c88e36a1187cdb02231c1b94175842f31d157"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "exact upstream WorkManager semantics and exact-SHA execution evidence remain to be verified; no upstream semantic basis is used yet",
+        "rank": 344,
+        "source_blob_sha": "b72c88e36a1187cdb02231c1b94175842f31d157"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 345,
+        "source_blob_sha": "3ca6dc370d953d80355c7bac03477dc96260c0a6"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source revalidates the existing F10 recurring-cleanup root at the current CLEAN basis, reconciles the isolated NOT_CLEAN candidate, and preserves F11 hard dependency without creating a new root",
+        "rank": 345,
+        "source_blob_sha": "3ca6dc370d953d80355c7bac03477dc96260c0a6"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 2 / P1 1 / P2 34",
+        "rank": 345,
+        "source_blob_sha": "3ca6dc370d953d80355c7bac03477dc96260c0a6"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED; no in-progress implementation diff was inspected or relied on",
+        "rank": 345,
+        "source_blob_sha": "3ca6dc370d953d80355c7bac03477dc96260c0a6"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 311-350 is receipted"
+  }
+}
