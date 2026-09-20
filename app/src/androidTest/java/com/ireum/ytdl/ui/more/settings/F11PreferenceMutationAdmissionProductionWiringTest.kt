@@ -146,10 +146,9 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
         val scope = CoroutineScope(currentCoroutineContext())
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
-        val first = AtomicBoolean(true)
         val events = AtomicInteger(0)
-        RestoreMutationAdmission.ordinaryAuthorityAcquiredForTesting = {
-            if (first.compareAndSet(true, false)) {
+        RestoreAwarePreferenceDataStore.mutationForTesting = { changedKey ->
+            if (changedKey == restoreValue.key) {
                 assertTrue(events.compareAndSet(0, 1))
                 entered.countDown()
                 check(release.await(20, TimeUnit.SECONDS))
@@ -191,23 +190,28 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
         val (switch, list, edit) = preferencesFor()
         val publicationEntered = CountDownLatch(1)
         val writerStarted = CountDownLatch(1)
-        val ordinaryEntered = CountDownLatch(1)
-        val releaseOrdinary = CountDownLatch(1)
-        val first = AtomicBoolean(true)
+        val frameworkAttemptEntered = CountDownLatch(1)
+        val releaseFrameworkAttempt = CountDownLatch(1)
+        val releaseBeforeQuiescence = CountDownLatch(1)
         lateinit var writer: Deferred<Result<Unit>>
         val writerScope = CoroutineScope(currentCoroutineContext())
-        RestoreMutationAdmission.ordinaryAuthorityAcquiredForTesting = {
-            if (first.compareAndSet(true, false)) {
-                ordinaryEntered.countDown()
-                check(releaseOrdinary.await(20, TimeUnit.SECONDS))
+        RestoreAwarePreferenceDataStore.beforeAdmissionForTesting = { changedKey ->
+            if (changedKey == key) {
+                frameworkAttemptEntered.countDown()
+                check(releaseFrameworkAttempt.await(20, TimeUnit.SECONDS))
             }
         }
         RestoreMutationAdmission.restorePublicationAuthorityAcquiredForTesting = {
-            publicationEntered.countDown()
             writer = writerScope.async(Dispatchers.IO) {
                 writerStarted.countDown()
                 runCatching { write(context, switch, list, edit) }
             }
+        }
+        RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = {
+            publicationEntered.countDown()
+            check(writerStarted.await(20, TimeUnit.SECONDS))
+            check(frameworkAttemptEntered.await(20, TimeUnit.SECONDS))
+            check(releaseBeforeQuiescence.await(20, TimeUnit.SECONDS))
         }
 
         val reset = writerScope.async(Dispatchers.IO) {
@@ -218,12 +222,13 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
         }
         assertTrue(publicationEntered.await(20, TimeUnit.SECONDS))
         assertTrue(writerStarted.await(20, TimeUnit.SECONDS))
-        assertTrue(ordinaryEntered.await(20, TimeUnit.SECONDS))
+        assertTrue(frameworkAttemptEntered.await(20, TimeUnit.SECONDS))
         assertTrue(RestoreGate.isRestoreInProgress(context))
-        releaseOrdinary.countDown()
+        releaseFrameworkAttempt.countDown()
         val writerFailure = writer.await().exceptionOrNull()
         assertTrue(writerFailure is IllegalStateException)
         assertEquals(expectedBefore.toString(), preferences.all[key].toString())
+        releaseBeforeQuiescence.countDown()
         assertTrue(reset.await() is RestoreOutcome.Completed)
         assertEquals(restoreValue.value, preferences.all[key].toString())
     }
@@ -261,6 +266,8 @@ class F11PreferenceMutationAdmissionProductionWiringTest {
     )
 
     private fun clearHooks() {
+        RestoreAwarePreferenceDataStore.beforeAdmissionForTesting = null
+        RestoreAwarePreferenceDataStore.mutationForTesting = null
         RestoreMutationAdmission.ordinaryAuthorityAcquiredForTesting = null
         RestoreMutationAdmission.restorePublicationAuthorityAcquiredForTesting = null
         RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = null

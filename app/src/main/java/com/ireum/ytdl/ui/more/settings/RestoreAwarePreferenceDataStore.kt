@@ -17,6 +17,13 @@ import com.ireum.ytdl.database.RestoreMutationAdmission
 internal class RestoreAwarePreferenceDataStore(
     context: Context,
 ) : PreferenceDataStore() {
+    companion object {
+        @Volatile
+        internal var beforeAdmissionForTesting: ((String) -> Unit)? = null
+
+        @Volatile
+        internal var mutationForTesting: ((String) -> Unit)? = null
+    }
     private val applicationContext = context.applicationContext
     private val preferences: SharedPreferences =
         PreferenceManager.getDefaultSharedPreferences(applicationContext)
@@ -40,33 +47,35 @@ internal class RestoreAwarePreferenceDataStore(
         preferences.getStringSet(key, defValues)?.toSet()
 
     override fun putBoolean(key: String, value: Boolean) {
-        mutate { putBoolean(key, value) }
+        mutate(key) { putBoolean(key, value) }
     }
 
     override fun putFloat(key: String, value: Float) {
-        mutate { putFloat(key, value) }
+        mutate(key) { putFloat(key, value) }
     }
 
     override fun putInt(key: String, value: Int) {
-        mutate { putInt(key, value) }
+        mutate(key) { putInt(key, value) }
     }
 
     override fun putLong(key: String, value: Long) {
-        mutate { putLong(key, value) }
+        mutate(key) { putLong(key, value) }
     }
 
     override fun putString(key: String, value: String?) {
-        mutate { putString(key, value) }
+        mutate(key) { putString(key, value) }
     }
 
     override fun putStringSet(key: String, values: Set<String>?) {
-        mutate { putStringSet(key, values) }
+        mutate(key) { putStringSet(key, values) }
     }
 
-    private fun mutate(edit: SharedPreferences.Editor.() -> Unit) {
+    private fun mutate(key: String, edit: SharedPreferences.Editor.() -> Unit) {
+        beforeAdmissionForTesting?.invoke(key)
         RestoreMutationAdmission.withOrdinaryMutationBlocking(applicationContext) {
             val editor = preferences.edit()
             edit(editor)
+            mutationForTesting?.invoke(key)
             check(editor.commit()) {
                 "AndroidX Preference persistence was not durable"
             }
