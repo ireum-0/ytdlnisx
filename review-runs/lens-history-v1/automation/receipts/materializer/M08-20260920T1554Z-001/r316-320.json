@@ -1,0 +1,237 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "segment_range": [
+    316,
+    320
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "08c50d7f1e1fa393b059a255b2a5c1301258b32f",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M08-20260920T1554Z-001/r311-315.json",
+    "blob_sha": "4db17cf57284c4f047c44f096c96587adce3fab5"
+  },
+  "rank_receipts": [
+    {
+      "rank": 316,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r316.json",
+      "blob_sha": "c8d0f4937bd2ca91811647bd3c38946db4c8c752"
+    },
+    {
+      "rank": 317,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r317.json",
+      "blob_sha": "39fb9c2fe80a3c2389234bc81b26397e18b49e84"
+    },
+    {
+      "rank": 318,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r318.json",
+      "blob_sha": "a521257846f5fd3c4265fb37038f700446177cde"
+    },
+    {
+      "rank": 319,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r319.json",
+      "blob_sha": "458bfa408a32639dbd4999dcbb0102d64bf7a340"
+    },
+    {
+      "rank": 320,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r320.json",
+      "blob_sha": "fb9ba6d777625ed00694f80387b1a22cd881c539"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      316,
+      317,
+      318,
+      319,
+      320
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive whole-document structural identity",
+        "rank": 316,
+        "source_blob_sha": "6dba93139449be0b4797bf458c3d2b24b3384f57"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records canonical governance count P0 2 / P1 1 / P2 32 and BUG-CACHE-02 canonical P2 OPEN provisionally",
+        "rank": 316,
+        "source_blob_sha": "6dba93139449be0b4797bf458c3d2b24b3384f57"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly derives the starting canonical count from frozen governance that had closed historical BUG-DUPLICATE-01 with P2 -1; this checkpoint does not establish a fresh overall recount",
+        "rank": 316,
+        "source_blob_sha": "6dba93139449be0b4797bf458c3d2b24b3384f57"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source records source-semantic defect appears FIXED while canonical disposition remains P2 OPEN provisionally",
+        "rank": 316,
+        "source_blob_sha": "6dba93139449be0b4797bf458c3d2b24b3384f57"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "exact-SHA production-path execution remains the material closure gap; instrumentation source is not execution evidence and independent execution is explicitly NOT EXECUTED",
+        "rank": 316,
+        "source_blob_sha": "6dba93139449be0b4797bf458c3d2b24b3384f57"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive whole-document structural identity; commit-message bootstrap label is not accepted",
+        "rank": 317,
+        "source_blob_sha": "be67cc507673e8a6ea73e72a1e5b2025f3112217"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional canonical inventory P0 2 / P1 1 / P2 32",
+        "rank": 317,
+        "source_blob_sha": "be67cc507673e8a6ea73e72a1e5b2025f3112217"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source states the starting count reflects prior governance closure of historical BUG-DUPLICATE-01 and no current BUG-CACHE-02 disposition change is claimed yet",
+        "rank": 317,
+        "source_blob_sha": "be67cc507673e8a6ea73e72a1e5b2025f3112217"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "all production cache-root consumers, legacy/provider-only bypasses, app-owned fallback behavior, raw removable-storage authority, and exact-SHA execution remain open review questions",
+        "rank": 317,
+        "source_blob_sha": "be67cc507673e8a6ea73e72a1e5b2025f3112217"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "current-basis revalidation identity does not satisfy a supported document-identity-v1 structural class with sufficient certainty",
+        "rank": 318,
+        "source_blob_sha": "367bcbb3ee49ebd11f45fca3ff6f263e96e1abef"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-DUPLICATE-01",
+        "evidence": "source explicitly closes BUG-DUPLICATE-01 / F19 at current CLEAN basis",
+        "rank": 318,
+        "source_blob_sha": "367bcbb3ee49ebd11f45fca3ff6f263e96e1abef"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DUPLICATE-01",
+        "evidence": "source explicitly records canonical P2 -1, moving count P0 2 / P1 1 / P2 33 to P0 2 / P1 1 / P2 32",
+        "rank": 318,
+        "source_blob_sha": "367bcbb3ee49ebd11f45fca3ff6f263e96e1abef"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "evidence": "source explicitly separates BUG-DUPLICATE-01 from BUG-DUPLICATE-ADMISSION-01 and BUG-HISTORY-DUPLICATE-IDENTITY-01 and states no other root is added, removed, or reclassified",
+        "rank": 318,
+        "source_blob_sha": "367bcbb3ee49ebd11f45fca3ff6f263e96e1abef"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "focused tests are source evidence only and independent execution is explicitly NOT EXECUTED; separate BUG-DUPLICATE-ADMISSION-01 remains an open duplicate-domain target",
+        "rank": 318,
+        "source_blob_sha": "367bcbb3ee49ebd11f45fca3ff6f263e96e1abef"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive whole-document structural identity",
+        "rank": 319,
+        "source_blob_sha": "7e29ccf642a5ee09f4e34cc3bf4c6e7dc81af5c7"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records inherited provisional canonical gate NOT_CLEAN, P0 2 / P1 1 / P2 33 pending independent confirmation",
+        "rank": 319,
+        "source_blob_sha": "7e29ccf642a5ee09f4e34cc3bf4c6e7dc81af5c7"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly labels the canonical gate as inherited from frozen current governance pending independent confirmation",
+        "rank": 319,
+        "source_blob_sha": "7e29ccf642a5ee09f4e34cc3bf4c6e7dc81af5c7"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source explicitly labels BUG-CACHE-01 a REOPENED candidate, while also saying no new independent P0/P1/P2 finding is established yet; candidate status must not be promoted to canonical reopen",
+        "rank": 319,
+        "source_blob_sha": "7e29ccf642a5ee09f4e34cc3bf4c6e7dc81af5c7"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "Terminal namespace drift, Download ownership-marker ordering, destructive mutation revalidation, and exact execution evidence remain open questions",
+        "rank": 319,
+        "source_blob_sha": "7e29ccf642a5ee09f4e34cc3bf4c6e7dc81af5c7"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "canonical cumulative review identity does not unambiguously establish an allowed structural kind under checked-in rules",
+        "rank": 320,
+        "source_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source explicitly confirms a live-execution residual: effective cache root can be re-resolved after execution/recovery authority is acquired, allowing namespace switching without re-admission",
+        "rank": 320,
+        "source_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source explicitly REOPENS BUG-CACHE-01 because current production composition permits stale-negative marker deletion after process-owner publication",
+        "rank": 320,
+        "source_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source explicitly records canonical P2 +1, resulting in P0 2 / P1 1 / P2 33",
+        "rank": 320,
+        "source_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "evidence": "source explicitly moves the last still-proven contiguous CLEAN basis from 6cb93d12... back to 93d01d2a...",
+        "rank": 320,
+        "source_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "evidence": "source expands consumer-closure requirements across Terminal, Download, maintenance/import, recovery, and mutable cache preference producers while preserving CACHE-01/CACHE-02 root boundaries",
+        "rank": 320,
+        "source_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "implementation-agent verification is not independent execution and does not cover the exact root-switch or stale-marker interleavings; independent execution is explicitly NOT EXECUTED",
+        "rank": 320,
+        "source_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 311-350 is receipted"
+  }
+}
