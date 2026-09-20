@@ -46,9 +46,12 @@ import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.MoveCacheFilesWorker
+import com.ireum.ytdl.work.LocalAddResponsibilityReconciler
+import com.ireum.ytdl.work.LocalAddWorker
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.HistoryDateFetchNotification
 import com.ireum.ytdl.util.LowQualityRedownloadNotification
+import com.ireum.ytdl.util.LocalAddStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -107,6 +110,8 @@ internal data class RestoreJournal(
     val supersededObserveSourceNotificationIds: List<Long> = emptyList(),
     /** Exact WorkManager tags whose external owners were actually quiesced. */
     val quiescedWorkTags: List<String>? = null,
+    /** Exact live LocalAdd sessions whose owners F11 quiesced. */
+    val localAddSessionIds: List<String> = emptyList(),
     val sidecarsCaptured: Boolean = false,
 )
 
@@ -659,6 +664,25 @@ object RestoreTransactionCoordinator {
             if (hasKeywordReset) add("automaticKeywordRules")
             if (record.plan.data.settings != null) add(CleanupScheduleCoordinator.TAG)
             if (hasDownloadReset) add("low_quality_redownload")
+        }
+        // Capture only explicit live LocalAdd owner markers that F11 is
+        // about to quiesce. Raw historical entry keys are not ownership.
+        if (hasHistoryReset) {
+            val capturedLocalAddSessionIds = LocalAddStorage
+                .loadLiveWorkOwners(context)
+                .map { it.sessionId }
+                .distinct()
+                .sorted()
+            if (capturedLocalAddSessionIds.isNotEmpty()) {
+                current = RestoreOperationStore.updateJournal(
+                    current,
+                    current.journal.copy(
+                        localAddSessionIds = (
+                            current.journal.localAddSessionIds + capturedLocalAddSessionIds
+                        ).distinct().sorted(),
+                    ),
+                )
+            }
         }
         tags.forEach { tag ->
             workManager.cancelAllWorkByTag(tag)
@@ -1478,6 +1502,16 @@ object RestoreTransactionCoordinator {
 
         if (lowQualityResponsibilityQuiesced) {
             LowQualityRedownloadManager.get(context).reconcileForRestore(authority)
+        }
+
+        record.journal.localAddSessionIds.forEach { sessionId ->
+            check(
+                LocalAddResponsibilityReconciler.reconcileForRestore(
+                    context,
+                    sessionId,
+                    authority,
+                )
+            ) { "LocalAdd responsibility reconciliation was not accepted for $sessionId" }
         }
 
         val downloadRepository = DownloadRepository(db)

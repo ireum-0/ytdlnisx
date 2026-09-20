@@ -114,6 +114,7 @@ import com.ireum.ytdl.util.LocalAddCandidateDto
 import com.ireum.ytdl.util.LocalAddMatchDto
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import androidx.work.ExistingWorkPolicy
 import androidx.work.WorkInfo
 import androidx.lifecycle.asFlow
 import androidx.work.workDataOf
@@ -158,6 +159,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import java.io.File
 import java.io.FileOutputStream
@@ -328,6 +330,8 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
     private lateinit var selectedKeywordText: TextView
     private lateinit var selectedPlaylistText: TextView
     private var addLocalJob: Job? = null
+    @Volatile
+    private var activeLocalAddSessionId: String? = null
     private var pendingThumbItem: HistoryItem? = null
     private var pendingThumbCallback: ((String) -> Unit)? = null
     private var pendingReconnectHistoryItemId: Long? = null
@@ -513,12 +517,30 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 val expandedUris = expandVideoUris(uris)
                 val entries = expandedUris.map { LocalAddEntryDto(it.uri.toString(), it.treeUri?.toString()) }
                 val sessionId = UUID.randomUUID().toString()
-                LocalAddStorage.saveEntries(requireContext(), sessionId, entries)
                 val request = OneTimeWorkRequestBuilder<LocalAddWorker>()
                     .setInputData(workDataOf(LocalAddWorker.KEY_SESSION_ID to sessionId))
                     .addTag(LocalAddWorker.TAG)
                     .build()
-                WorkManager.getInstance(requireContext()).enqueue(request)
+                activeLocalAddSessionId = sessionId
+                LocalAddStorage.beginSession(
+                    requireContext(),
+                    sessionId,
+                    request.id.toString(),
+                    entries,
+                )
+                val enqueue = WorkManager.getInstance(requireContext()).enqueueUniqueWork(
+                    LocalAddStorage.uniqueWorkName(sessionId),
+                    ExistingWorkPolicy.KEEP,
+                    request,
+                )
+                enqueue.result.get(5_000L, TimeUnit.MILLISECONDS)
+                check(
+                    LocalAddStorage.markOwnerAccepted(
+                        requireContext(),
+                        sessionId,
+                        request.id.toString(),
+                    )
+                ) { "LocalAdd owner was not accepted" }
                 withContext(Dispatchers.Main) {
                     Toast.makeText(requireContext(), getString(R.string.local_video_adding), Toast.LENGTH_SHORT).show()
                 }
@@ -1406,8 +1428,14 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     snackbar.dismiss()
                     return@setOnClickListener
                 }
+                val sessionId = activeLocalAddSessionId
+                if (sessionId != null) {
+                    LocalAddStorage.retireSession(appContext, sessionId)
+                    WorkManager.getInstance(appContext)
+                        .cancelUniqueWork(LocalAddStorage.uniqueWorkName(sessionId))
+                    activeLocalAddSessionId = null
+                }
                 addLocalJob?.cancel()
-                WorkManager.getInstance(appContext).cancelAllWorkByTag(LocalAddWorker.TAG)
                 LocalAddStorage.clearProgressSnapshot(appContext)
                 snackbar.dismiss()
                 localMatchDialog?.dismiss()

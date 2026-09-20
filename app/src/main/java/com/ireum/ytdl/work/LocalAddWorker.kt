@@ -83,6 +83,7 @@ class LocalAddWorker(
             emptyList()
         }
         if (entries.isEmpty()) {
+            if (loadedFromSession) LocalAddStorage.completeSession(context, sessionId)
             LocalAddStorage.clearProgressSnapshot(context)
             return Result.success()
         }
@@ -211,7 +212,7 @@ class LocalAddWorker(
         }
 
         if (loadedFromSession) {
-            LocalAddStorage.clearEntries(context, sessionId)
+            LocalAddStorage.completeSession(context, sessionId)
         }
         LocalAddStorage.clearProgressSnapshot(context)
         return Result.success()

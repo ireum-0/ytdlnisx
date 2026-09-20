@@ -17,6 +17,7 @@ import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.HistoryDateFetchManager
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.WorkManagerHandoffRecovery
+import com.ireum.ytdl.work.LocalAddResponsibilityReconciler
 import com.ireum.ytdl.work.TerminalPublicationRecovery
 import com.ireum.ytdl.work.TerminalExecutionRecovery
 import com.ireum.ytdl.work.TerminalExecutionRegistry
@@ -85,6 +86,15 @@ class App : Application() {
         // check RestoreGate independently, so this is not the sole fence.
         val restoreRecovery = applicationScope.async(Dispatchers.IO) {
             RestoreTransactionCoordinator.recover(this@App)
+        }
+        applicationScope.launch(Dispatchers.IO) {
+            try {
+                restoreRecovery.await()
+                if (RestoreGate.isRestoreInProgress(this@App)) return@launch
+                LocalAddResponsibilityReconciler.reconcileStartup(this@App)
+            } catch (failure: Exception) {
+                Log.w(TAG, "LocalAdd responsibility recovery failed", failure)
+            }
         }
         applicationScope.launch(Dispatchers.IO) {
             try {
