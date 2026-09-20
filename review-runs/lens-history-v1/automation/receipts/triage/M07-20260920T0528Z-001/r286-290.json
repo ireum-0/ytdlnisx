@@ -1,0 +1,122 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "microsegment_rank_range": [
+    286,
+    290
+  ],
+  "data_head": "87a0ac038b681911e491fffdcba3f4309bd957ce",
+  "complete_state_blob": "4b3b316639cb2c8312ba8ab8651b190d787d9a94",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M07-20260920T0528Z-001/r286-290.json",
+    "blob_sha": "df70230f4dda569ceabb6b46d8a9a76d0585d9fd"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "da166ba551fe4bfc4812702c3b67c90fc5707757",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M07-20260920T0528Z-001/r281-285.json",
+    "blob_sha": "1d88e6aee15a53fbc0a2decd54be1e5854902841"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 286,
+      "path": "review-runs/checkpoints/2026-09-12T122800Z__e7355f54__checkpoint.md",
+      "source_blob": "88f2593425afbadda80a6410549984646022cf78",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic structural kind NOT_VERIFIED and P0 2 / P1 1 / P2 30 provisional. Preserve BUG-DUPLICATE-ADMISSION-01 only as an existing P2 OPEN candidate under partial revalidation: current source supports the Observe stale full-row overwrite race, but worker-claim/generic DAO authority closure, producer-side guards, tests, exact-SHA execution and exact upstream verification remain pending or NOT_VERIFIED."
+    },
+    {
+      "rank": 287,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02-e7355f54__duplicate-admission-independent-review-not-clean.md",
+      "source_blob": "b0d5d4c99e44faaf6225a3c40ae5b752b3d8f57c",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED. Preserve the fixed repository transaction subproblem and the downstream Observe post-insert stale full-row overwrite as a surviving residual of the same existing BUG-DUPLICATE-ADMISSION-01 P2 root, not a new canonical root; count delta 0. Supplied tests do not deterministically force the claim-overwrite interleaving and independent execution is NOT EXECUTED."
+    },
+    {
+      "rank": 288,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__queue05-clear-queue-current-basis-revalidation.md",
+      "source_blob": "780a8b6769373f369f27799d4af2d32c811eac6f",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED. Preserve BUG-QUEUE-05 as the existing P2 OPEN/CONFIRMED root at exact 3616ae02 because Clear Queue omits Paused rows while those rows remain resumable. Count delta remains 0; this checkpoint claims source-level revalidation only and no execution result."
+    },
+    {
+      "rank": 289,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__backup02-thumbnail-current-basis-revalidation.md",
+      "source_blob": "cdbc2b24e240782fdd8ac3cf0e78c60c949b3fb3",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED. Preserve BUG-BACKUP-02 as the existing narrower F5 P2 OPEN root at exact CLEAN basis 3616ae02, with backup-local History ID still used as live thumbnail ownership identity across imports. Keep F5 separate from restore-wide BUG-BACKUP-03 while retaining the hard prerequisite relation; count delta 0 and independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 290,
+      "path": "review-runs/checkpoints/2026-09-12T113500Z__3616ae02__checkpoint.md",
+      "source_blob": "5579fab8aaf9f9a29ec94dd7439d2a571226b200",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the exact historical transition: BUG-CACHE-02 moves OPEN -> FIXED-CLOSED at 3616ae02 after source-semantic closure plus exact-SHA production-regression execution evidence, reducing P2 31 -> 30. BUG-KEYWORD-02 remains an existing P2 OPEN/CONFIRMED root with no additional count and runtime manifestation not independently executed in this run."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      286,
+      287,
+      288,
+      289,
+      290
+    ],
+    "materializer_flagged_exception_ranks": [
+      286,
+      287,
+      288,
+      289,
+      290
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
