@@ -1,0 +1,125 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "rank": 336,
+  "materializer_state_blob": "8b298ac0ca4ed7f616c71d10c8d3887c56d09004",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "08c50d7f1e1fa393b059a255b2a5c1301258b32f",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r335.json",
+    "blob_sha": "42063653946675f339a168bc19e8a14544f925a5"
+  },
+  "history": {
+    "commit_sha": "7f51ffad47b54dced5df0da5c916d4d127b2f9d3",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=336"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12__93d01d2a__keyword04-cumulative-closure.md",
+        "status": "added",
+        "source_blob_sha": "ea2b588b5a52e13e2acc0a1fcee3fc91b9425cab",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "ea2b588b5a52e13e2acc0a1fcee3fc91b9425cab",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12__93d01d2a__keyword04-cumulative-closure.md",
+    "status": "added",
+    "source_blob_sha": "ea2b588b5a52e13e2acc0a1fcee3fc91b9425cab",
+    "frozen_blob_sha": "ea2b588b5a52e13e2acc0a1fcee3fc91b9425cab",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "93d01d2afbce2cfa62dc17fad4478416b3d7cf6c",
+      "evidence": "source explicitly records Final remote implementation HEAD independently verified"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "source identifies itself as a cumulative canonical closure review, but this is not one of the document-identity-v1 allowed positive structural markers (finding/addendum/reconciliation/scope-expansion), nor does it explicitly identify the whole document as a final checkpoint; filename/chronology/verdict headings are insufficient"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-KEYWORD-04"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "CLEAN / CLOSED for canonical range 9edd3e23... -> 93d01d2a...; count delta P2 -1; contiguous independently CLEAN basis advances to 93d01d2afbce2cfa62dc17fad4478416b3d7cf6c"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "whole-document structural identity is not one of the explicit or derivable document-identity-v1 classes despite a clear closure verdict"
+    },
+    {
+      "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+      "finding_id": "BUG-KEYWORD-04",
+      "evidence": "source explicitly records CLEAN / BUG-KEYWORD-04 CLOSED and advancement of the contiguous independently CLEAN basis"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-KEYWORD-04",
+      "evidence": "source explicitly records count delta P2 -1 and resulting canonical blocker count P0 2 / P1 1 / P2 33"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "implementation-agent execution evidence is preserved but independent execution is explicitly NOT EXECUTED; two documented instrumentation failures remain outside this root"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
