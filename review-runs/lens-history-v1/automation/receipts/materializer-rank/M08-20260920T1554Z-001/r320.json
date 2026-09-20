@@ -1,0 +1,162 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "rank": 320,
+  "materializer_state_blob": "336eea6893ecef7bf30524e178d1e50abdf8f139",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "08c50d7f1e1fa393b059a255b2a5c1301258b32f",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r319.json",
+    "blob_sha": "458bfa408a32639dbd4999dcbb0102d64bf7a340"
+  },
+  "history": {
+    "commit_sha": "a2114f4bde7c1ebe828497ea5e6aa08c6836ded0",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=320"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12__9aebcb7e__cache02-cumulative-review-not-clean.md",
+        "status": "added",
+        "source_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12__9aebcb7e__cache02-cumulative-review-not-clean.md",
+    "status": "added",
+    "source_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54",
+    "frozen_blob_sha": "5f35e70d405a2faea722ce6559a9f6f1c1ab9c54",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9aebcb7e2eb3c87813d49ea6c68b35d365f41738",
+      "evidence": "source explicitly records Completed implementation HEAD and exact one-commit range from prior CLEAN basis"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "source identifies a canonical cumulative review with a verdict, but has no explicit checkpoint_kind/equivalent field and does not unambiguously identify itself as a run-final checkpoint or a supported document-identity-v1 substantive non-final class"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": {
+        "state": "DIRECT",
+        "value": [
+          {
+            "finding_id": "BUG-CACHE-02",
+            "disposition": "OPEN / residual remains; static provider-only authority failure is improved, but live execution may re-resolve to a different effective cache root after admission; no P2 decrement"
+          },
+          {
+            "finding_id": "BUG-CACHE-01",
+            "disposition": "REOPENED because process-local owner publication and filesystem owner-marker publication are not ordered under the same maintenance authority"
+          }
+        ]
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": {
+          "severity": "P2",
+          "delta": 1,
+          "resulting_counts": {
+            "P0": 2,
+            "P1": 1,
+            "P2": 33
+          }
+        }
+      },
+      "clean_basis_transition": {
+        "state": "DIRECT",
+        "value": {
+          "from": "6cb93d12298427dbca2a596f5b6a6a6e82e41997",
+          "to": "93d01d2afbce2cfa62dc17fad4478416b3d7cf6c"
+        }
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "canonical cumulative review identity does not unambiguously establish an allowed structural kind under checked-in rules"
+    },
+    {
+      "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+      "finding_id": "BUG-CACHE-02",
+      "evidence": "source explicitly confirms a live-execution residual: effective cache root can be re-resolved after execution/recovery authority is acquired, allowing namespace switching without re-admission"
+    },
+    {
+      "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+      "finding_id": "BUG-CACHE-01",
+      "evidence": "source explicitly REOPENS BUG-CACHE-01 because current production composition permits stale-negative marker deletion after process-owner publication"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-CACHE-01",
+      "evidence": "source explicitly records canonical P2 +1, resulting in P0 2 / P1 1 / P2 33"
+    },
+    {
+      "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+      "evidence": "source explicitly moves the last still-proven contiguous CLEAN basis from 6cb93d12... back to 93d01d2a..."
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "evidence": "source expands consumer-closure requirements across Terminal, Download, maintenance/import, recovery, and mutable cache preference producers while preserving CACHE-01/CACHE-02 root boundaries"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "implementation-agent verification is not independent execution and does not cover the exact root-switch or stale-marker interleavings; independent execution is explicitly NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
