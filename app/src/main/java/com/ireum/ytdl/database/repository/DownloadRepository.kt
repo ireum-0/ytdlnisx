@@ -690,9 +690,7 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun restoreUndo(
         token: DownloadUndoToken,
         owner: UndoPresentationOwner,
-    ): Long? = withOrdinaryMutation {
-        restoreUndoInternal(token, owner)
-    }
+    ): Long? = restoreUndoInternal(token, owner)
 
     private suspend fun restoreUndoInternal(
         token: DownloadUndoToken,
@@ -713,9 +711,7 @@ class DownloadRepository(private val database: DBManager) {
     suspend fun commitUndo(
         token: DownloadUndoToken,
         owner: UndoPresentationOwner,
-    ): Set<String> = withOrdinaryMutation {
-        commitUndoInternal(token, owner)
-    }
+    ): Set<String> = commitUndoInternal(token, owner)
 
     private suspend fun commitUndoInternal(
         token: DownloadUndoToken,
@@ -740,7 +736,7 @@ class DownloadRepository(private val database: DBManager) {
         }
         return try {
             pendingRemovalResolverClaimedForTesting?.invoke()
-            val restoredId = restoreRemovalSnapshot(snapshot)
+            val restoredId = withOrdinaryMutation { restoreRemovalSnapshot(snapshot) }
             if (restoredId != null || !hasPendingUndoCarrier(token)) {
                 finishUndoResolverSuccess(claim)
             } else {
@@ -765,7 +761,7 @@ class DownloadRepository(private val database: DBManager) {
             return emptySet()
         }
         return try {
-            val affectedOperationIds = commitRemovalSnapshot(snapshot)
+            val affectedOperationIds = withOrdinaryMutation { commitRemovalSnapshot(snapshot) }
             if (!hasPendingUndoCarrier(token)) {
                 finishUndoResolverSuccess(claim)
             } else {
@@ -833,9 +829,9 @@ class DownloadRepository(private val database: DBManager) {
         return try {
             pendingRemovalResolverClaimedForTesting?.invoke()
             val restoredId = if (intent == PendingUndoResolutionIntent.RESTORE) {
-                restoreRemovalSnapshot(snapshot)
+                withOrdinaryMutation { restoreRemovalSnapshot(snapshot) }
             } else {
-                commitRemovalSnapshot(snapshot)
+                withOrdinaryMutation { commitRemovalSnapshot(snapshot) }
                 null
             }
             if (restoredId != null) {
@@ -870,7 +866,7 @@ class DownloadRepository(private val database: DBManager) {
         }
         return try {
             pendingRemovalResolverClaimedForTesting?.invoke()
-            val affectedOperationIds = commitRemovalSnapshot(snapshot)
+            val affectedOperationIds = withOrdinaryMutation { commitRemovalSnapshot(snapshot) }
             if (!hasPendingUndoCarrier(token)) {
                 finishUndoResolverSuccess(claim)
             } else {
@@ -1693,6 +1689,15 @@ class DownloadRepository(private val database: DBManager) {
     }
 
     private suspend fun acceptUndoResolution(
+        token: String,
+        kind: UndoAuthorityKind,
+        intent: PendingUndoResolutionIntent,
+        owner: UndoPresentationOwner,
+    ): Boolean = withOrdinaryMutation {
+        acceptUndoResolutionInternal(token, kind, intent, owner)
+    }
+
+    private suspend fun acceptUndoResolutionInternal(
         token: String,
         kind: UndoAuthorityKind,
         intent: PendingUndoResolutionIntent,
