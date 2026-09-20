@@ -1,0 +1,244 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "segment_range": [
+    301,
+    305
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "3ec0c900d1e1e1b2d3c53962f4dff072f8c5adbd",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M07-20260920T0528Z-001/r296-300.json",
+    "blob_sha": "07a815aac74b698e84054d1f54d5e5e8f5806b03"
+  },
+  "rank_receipts": [
+    {
+      "rank": 301,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r301.json",
+      "blob_sha": "54e2bba00ddf64d96a567f0d79fd908946dbb5f6"
+    },
+    {
+      "rank": 302,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r302.json",
+      "blob_sha": "f810ba5cf08bcf96e8f40662946338f7325bfff6"
+    },
+    {
+      "rank": 303,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r303.json",
+      "blob_sha": "4d58b40e9973afeeaa9c15cdc0fcaf2e6b27d58f"
+    },
+    {
+      "rank": 304,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r304.json",
+      "blob_sha": "080a29a95300533b118348c4b43129088e0d4b0b"
+    },
+    {
+      "rank": 305,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r305.json",
+      "blob_sha": "3988ce8274cb4b0c35eb6b78f36c139779ef4a5a"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      301,
+      302,
+      303,
+      304,
+      305
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 301,
+        "source_blob_sha": "f45914a42d318742e8d2bd8a0650aae4a0fa7a01"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-BACKUP-08",
+        "evidence": "source explicitly preserves admitted Long/Float silent-drop behavior and unknown non-Set silent-success handling as concrete manifestations of the existing F7 preference-type round-trip root",
+        "rank": 301,
+        "source_blob_sha": "f45914a42d318742e8d2bd8a0650aae4a0fa7a01"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-08",
+        "evidence": "source explicitly preserves F7 as the same existing preference-type root, constrained by upstream F6 portability semantics and a hard prerequisite of F11 BUG-BACKUP-03",
+        "rank": 301,
+        "source_blob_sha": "f45914a42d318742e8d2bd8a0650aae4a0fa7a01"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-08",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and canonical blockers P0 2 / P1 1 / P2 31",
+        "rank": 301,
+        "source_blob_sha": "f45914a42d318742e8d2bd8a0650aae4a0fa7a01"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-BACKUP-08",
+        "evidence": "source explicitly records INDEPENDENT EXECUTION: NOT EXECUTED; current-basis conclusion is source-level independent revalidation",
+        "rank": 301,
+        "source_blob_sha": "f45914a42d318742e8d2bd8a0650aae4a0fa7a01"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 302,
+        "source_blob_sha": "d385857d210e4d6434f1e1bf9205de207549410e"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-BACKUP-06",
+        "evidence": "source explicitly preserves two concrete consumers of the same F6 root: destination same-number Observe-source provenance reuse and legacy Observe-source keyword assignment carrying an unmapped backup-local numeric ID",
+        "rank": 302,
+        "source_blob_sha": "d385857d210e4d6434f1e1bf9205de207549410e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-06",
+        "evidence": "source explicitly preserves both consumers as one existing portable numeric-reference authority root, keeps F6 as the upstream identity-policy prerequisite for F7/F8/F9, and as a hard prerequisite of F11 BUG-BACKUP-03",
+        "rank": 302,
+        "source_blob_sha": "d385857d210e4d6434f1e1bf9205de207549410e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-06",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and canonical blockers P0 2 / P1 1 / P2 31",
+        "rank": 302,
+        "source_blob_sha": "d385857d210e4d6434f1e1bf9205de207549410e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-BACKUP-06",
+        "evidence": "source explicitly records INDEPENDENT EXECUTION: NOT EXECUTED; current-basis conclusion is source-level independent revalidation",
+        "rank": 302,
+        "source_blob_sha": "d385857d210e4d6434f1e1bf9205de207549410e"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 303,
+        "source_blob_sha": "f44925d3b4bd138c76dc81b1e4a743e7e47afd80"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source explicitly preserves cross-restore pathname alias/overwrite from restored_<oldHistoryId> publication and local skip-on-failure behavior as concrete manifestations of the existing F5 thumbnail ownership root",
+        "rank": 303,
+        "source_blob_sha": "f44925d3b4bd138c76dc81b1e4a743e7e47afd80"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source explicitly keeps F5 as the narrower custom-thumbnail ownership root, distinct from restore-wide rollback/atomicity BUG-BACKUP-03, while retaining F5 as a hard prerequisite of F11",
+        "rank": 303,
+        "source_blob_sha": "f44925d3b4bd138c76dc81b1e4a743e7e47afd80"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and canonical blockers P0 2 / P1 1 / P2 31",
+        "rank": 303,
+        "source_blob_sha": "f44925d3b4bd138c76dc81b1e4a743e7e47afd80"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source explicitly records INDEPENDENT EXECUTION: NOT EXECUTED; current-basis conclusion is source-level independent revalidation",
+        "rank": 303,
+        "source_blob_sha": "f44925d3b4bd138c76dc81b1e4a743e7e47afd80"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "whole-document structural kind is not explicitly established by a supported source identity",
+        "rank": 304,
+        "source_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source explicitly records BUG-CACHE-01 CLOSED at exact 3616ae02 and explains source + actual execution evidence for closure",
+        "rank": 304,
+        "source_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source explicitly records canonical P2 delta -1 and resulting blocker count P0 2 / P1 1 / P2 31",
+        "rank": 304,
+        "source_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source explicitly records BUG-CACHE-02 source-semantic FIXED while canonical disposition remains OPEN because exact-final production-wiring execution evidence is incomplete",
+        "rank": 304,
+        "source_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source preserves source-semantic fix separately from canonical execution-gate OPEN state and requests verification-only rerun rather than code change",
+        "rank": 304,
+        "source_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "Terminal/cache-storage instrumentation executed zero tests at exact final SHA due INSTALL_FAILED_INSUFFICIENT_STORAGE; independent reviewer execution is NOT EXECUTED",
+        "rank": 304,
+        "source_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 305,
+        "source_blob_sha": "4b7bbbdb487b9d7dca10afd966d87320ef08acc5"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source explicitly reconciles this root against closed F19 BUG-DUPLICATE-01, separate BUG-OBSERVE-HANDOFF-01, and separate post-insert execution-ownership roots; it remains the already-counted atomic publication root",
+        "rank": 305,
+        "source_blob_sha": "4b7bbbdb487b9d7dca10afd966d87320ef08acc5"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and historical canonical count P0 2 / P1 1 / P2 32 after separately recorded F19 closure",
+        "rank": 305,
+        "source_blob_sha": "4b7bbbdb487b9d7dca10afd966d87320ef08acc5"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source explicitly records INDEPENDENT EXECUTION: NOT EXECUTED; current-basis conclusion is source-level independent revalidation",
+        "rank": 305,
+        "source_blob_sha": "4b7bbbdb487b9d7dca10afd966d87320ef08acc5"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 271-310 is receipted"
+  }
+}
