@@ -1,0 +1,123 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "microsegment_rank_range": [
+    266,
+    270
+  ],
+  "data_head": "7189fbbefad1a5d187a96b077698c295aa8da599",
+  "complete_state_blob": "d700fa5f663c2ce95d30280ece084a1f86ae7cd2",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M06-20260919T1413Z-001/r266-270.json",
+    "blob_sha": "55c403971c9e202276f476c88ed91e809e954c1b"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "ccaa24343ffa41862fd4961ff94c529427d01e16",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M06-20260919T1413Z-001/r261-265.json",
+    "blob_sha": "a3c94883aedf09a2bac53a2d3df9261c5fb02439"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 266,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__observe03-current-basis-revalidation.md",
+      "source_blob": "c6d1a773c8218b098b5c5ba7da8782e59b8f337d",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-OBSERVE-03 as the existing ordinary successor-handoff P2 root, explicitly separate from P0 BUG-OBSERVE-HANDOFF-01, with count delta 0 and P0 2 / P1 1 / P2 30. Any future correction must compose recurrence debt with configuration-generation authority; independent execution is NOT EXECUTED."
+    },
+    {
+      "rank": 267,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__date01-current-basis-revalidation.md",
+      "source_blob": "2f378989a5ea3077f1f6c8712418633d7a9ddace",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-DATE-01 as the same F15 P2 root and F16's hard dependency on a typed child lookup outcome. Intervening YTDLPUtil changes do not close failure/ambiguity-to-absence collapse; count delta 0 and independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 268,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__history01-current-basis-revalidation.md",
+      "source_blob": "234e7ad244ea6d1e730fa4d8acc1c01ff80f0ef3",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve ordinary, bulk, and file-backed deletion plus Undo as manifestations of the same F17 BUG-HISTORY-01 relationship-atomicity root, with F18 hard-dependent on the atomic HistoryUndoSnapshot boundary. Count delta remains 0 and independent execution is NOT EXECUTED."
+    },
+    {
+      "rank": 269,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__player01-current-basis-revalidation.md",
+      "source_blob": "8f97c1cd279ad70f42895f0412d9259fb138cd3a",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve unordered durable writes and stale resume reconstruction, including explicit later zero, as two authority sides of the same F21 BUG-PLAYER-01 root rather than splitting them. Count delta 0; independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 270,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__localadd01-current-basis-revalidation.md",
+      "source_blob": "82e2b90d4e05ab7d57946bbf944b78db902ae40b",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve basename overreach, provider-unscoped document-ID collision, and stale final durable admission as one existing BUG-LOCALADD-01 local-storage identity/admission root, while keeping BUG-LOCALADD-HANDOFF-01 distinct. Count delta 0; independent execution NOT EXECUTED."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      266,
+      267,
+      268,
+      269,
+      270
+    ],
+    "materializer_flagged_exception_ranks": [
+      266,
+      267,
+      268,
+      269,
+      270
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
