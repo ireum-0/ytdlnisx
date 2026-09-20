@@ -11,6 +11,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.NetworkType
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
@@ -55,7 +56,7 @@ class HardSubScanWorker(
         val candidates = historyDao.getHardSubScanCandidates()
         if (candidates.isEmpty()) {
             if (resetForRescan) {
-                sharedPreferences.edit().putBoolean(PREF_HARD_SUB_RESCAN_DONE_ONCE, false).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(context, sharedPreferences.edit().putBoolean(PREF_HARD_SUB_RESCAN_DONE_ONCE, false))
             }
             return Result.success()
         }
@@ -77,7 +78,7 @@ class HardSubScanWorker(
             HardSubForegroundAttemptOutcome.FAILURE -> return Result.failure()
         }
         if (resetForRescan) {
-            sharedPreferences.edit().putBoolean(PREF_HARD_SUB_RESCAN_DONE_ONCE, false).apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(context, sharedPreferences.edit().putBoolean(PREF_HARD_SUB_RESCAN_DONE_ONCE, false))
         }
 
         candidates.forEach { item ->
