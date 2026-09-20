@@ -1353,34 +1353,42 @@ class DownloadRepository(private val database: DBManager) {
     }.getOrNull()
 
     /** Returns true only when this exact token/action record is synchronously durable. */
-    private fun persistUndoIntentFallback(
+    private suspend fun persistUndoIntentFallback(
         token: String,
         kind: UndoAuthorityKind,
         selected: UndoAuthority,
         intent: PendingUndoResolutionIntent,
-    ): Boolean = runCatching {
+    ): Boolean = try {
         val preferences = PreferenceManager.getDefaultSharedPreferences(App.instance)
         val key = undoIntentFallbackKey(token)
         val value = undoIntentFallbackValue(kind, selected, intent)
         val existing = preferences.getString(key, null)
         if (existing == null) {
-            RestoreMutationAdmission.applyOrdinaryPreferences(
-                App.instance,
-                preferences.edit().putString(key, value),
-            )
+            RestoreMutationAdmission.withOrdinaryMutation(App.instance) {
+                check(preferences.edit().putString(key, value).commit()) {
+                    "Ordinary preference persistence was not durable"
+                }
+            }
             true
         } else {
             existing == value
         }
-    }.getOrDefault(false)
+    } catch (_: Throwable) {
+        false
+    }
 
-    private fun clearUndoIntentFallback(token: String) {
-        runCatching {
+    private suspend fun clearUndoIntentFallback(token: String) {
+        try {
             val preferences = PreferenceManager.getDefaultSharedPreferences(App.instance)
-            RestoreMutationAdmission.applyOrdinaryPreferences(
-                App.instance,
-                preferences.edit().remove(undoIntentFallbackKey(token)),
-            )
+            RestoreMutationAdmission.withOrdinaryMutation(App.instance) {
+                check(preferences.edit().remove(undoIntentFallbackKey(token)).commit()) {
+                    "Ordinary preference persistence was not durable"
+                }
+            }
+        } catch (_: Throwable) {
+            // Resolver cleanup is best effort; the exact durable carrier has
+            // already reached its terminal state and startup can retry this
+            // disposable fallback record if needed.
         }
     }
 
@@ -1840,17 +1848,22 @@ class DownloadRepository(private val database: DBManager) {
         )
     }
 
-    private fun finishUndoResolverSuccess(claim: UndoResolverClaim) {
-        synchronized(undoAuthorityLock) {
-            val authority = undoAuthorities[claim.token] ?: return
+    private suspend fun finishUndoResolverSuccess(claim: UndoResolverClaim) {
+        val shouldClearFallback = synchronized(undoAuthorityLock) {
+            val authority = undoAuthorities[claim.token] ?: return@synchronized false
             if (
                 authority.generation == claim.generation &&
                     authority.resolverGeneration == claim.resolverGeneration
             ) {
                 undoAuthorities.remove(claim.token)
                 pendingRemovalSnapshots.remove(claim.token)
-                clearUndoIntentFallback(claim.token)
+                true
+            } else {
+                false
             }
+        }
+        if (shouldClearFallback) {
+            clearUndoIntentFallback(claim.token)
         }
     }
 
