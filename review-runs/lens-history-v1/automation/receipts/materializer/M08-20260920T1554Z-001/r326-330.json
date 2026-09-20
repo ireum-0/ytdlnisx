@@ -1,0 +1,203 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "segment_range": [
+    326,
+    330
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "08c50d7f1e1fa393b059a255b2a5c1301258b32f",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M08-20260920T1554Z-001/r321-325.json",
+    "blob_sha": "4ac404e05910c4d6e0d864d4412c1867a4a95616"
+  },
+  "rank_receipts": [
+    {
+      "rank": 326,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r326.json",
+      "blob_sha": "05d62d9a74fd208d322f37b916403b8bcc68dfb3"
+    },
+    {
+      "rank": 327,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r327.json",
+      "blob_sha": "45768b8c0be78e6deaaaaa8b3984538548150717"
+    },
+    {
+      "rank": 328,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r328.json",
+      "blob_sha": "27252c410e35b09a1f7fc9ed1d8675ae9a5ea298"
+    },
+    {
+      "rank": 329,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r329.json",
+      "blob_sha": "e9e31a98ac53548c4a561e1a91471339283eecec"
+    },
+    {
+      "rank": 330,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r330.json",
+      "blob_sha": "91dc7412d90e1bdbe688ea524fd62e7ffbd7be04"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      326,
+      327,
+      328,
+      329,
+      330
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive whole-document structural identity; commit-message bootstrap label is insufficient",
+        "rank": 326,
+        "source_blob_sha": "799ce6dca434e0bde3cb4e2c8a8d1b608f54626f"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 33 pending independent source-semantic review of BUG-CACHE-01",
+        "rank": 326,
+        "source_blob_sha": "799ce6dca434e0bde3cb4e2c8a8d1b608f54626f"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "implementation commit declares remediation of existing BUG-CACHE-01, but this checkpoint has not yet independently established source-semantic closure or a canonical disposition change",
+        "rank": 326,
+        "source_blob_sha": "799ce6dca434e0bde3cb4e2c8a8d1b608f54626f"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "full production authority path, exact live-owner protection, consumer propagation, failure truthfulness, and exact-SHA production wiring execution evidence are all still open review questions; independent execution NOT YET EXECUTED",
+        "rank": 326,
+        "source_blob_sha": "799ce6dca434e0bde3cb4e2c8a8d1b608f54626f"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 327,
+        "source_blob_sha": "323b67c2a9e198766d80a47202020913e3383c91"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source reconciles playlist-reference deletion, History-row deletion, ordinary Undo, bulk deletion and file-backed deletion as manifestations of the same F17 relationship-atomicity root and preserves F18 dependency",
+        "rank": 327,
+        "source_blob_sha": "323b67c2a9e198766d80a47202020913e3383c91"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source explicitly records count delta 0 and canonical blocker count P0 2 / P1 1 / P2 33",
+        "rank": 327,
+        "source_blob_sha": "323b67c2a9e198766d80a47202020913e3383c91"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED; current record is source-level revalidation of durability and Undo semantics",
+        "rank": 327,
+        "source_blob_sha": "323b67c2a9e198766d80a47202020913e3383c91"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 328,
+        "source_blob_sha": "a9162e60b7758ea16386c8f2be1242f0da2c090b"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DATE-01",
+        "evidence": "source revalidates the F15 failure/ambiguity-to-absence collapse on the current basis and preserves F16 dependency on the future typed child-outcome contract",
+        "rank": 328,
+        "source_blob_sha": "a9162e60b7758ea16386c8f2be1242f0da2c090b"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DATE-01",
+        "evidence": "source explicitly records count delta 0 and canonical blocker count P0 2 / P1 1 / P2 33",
+        "rank": 328,
+        "source_blob_sha": "a9162e60b7758ea16386c8f2be1242f0da2c090b"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "focused neighboring tests do not establish the required minimal-failure plus compatibility-null distinction; independent execution is explicitly NOT EXECUTED",
+        "rank": 328,
+        "source_blob_sha": "a9162e60b7758ea16386c8f2be1242f0da2c090b"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 329,
+        "source_blob_sha": "413d0dca4afdbd34e3689a6601fa273eabe446c7"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source narrows obsolete historical monthly=30-days evidence while revalidating stable logical owner, recurrence, cadence-generation fencing, retry/successor publication, and startup reconciliation as the same F10 root; F11 remains prerequisite-blocked",
+        "rank": 329,
+        "source_blob_sha": "413d0dca4afdbd34e3689a6601fa273eabe446c7"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source explicitly records count delta 0 and canonical blocker count P0 2 / P1 1 / P2 33",
+        "rank": 329,
+        "source_blob_sha": "413d0dca4afdbd34e3689a6601fa273eabe446c7"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "future correction must prove calendar recurrence, stale-run fencing, retry/re-entry and startup repair behavior; independent execution is explicitly NOT EXECUTED",
+        "rank": 329,
+        "source_blob_sha": "413d0dca4afdbd34e3689a6601fa273eabe446c7"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 330,
+        "source_blob_sha": "056996a5e2bebb2d4c08e5f547974ff8d437ca3e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source revalidates stale status-snapshot authority across linked low-quality-redownload state, History replacement barriers, Download deletion and post-commit cache cleanup while preserving explicit current-ID deletion as a distinct semantic contract",
+        "rank": 330,
+        "source_blob_sha": "056996a5e2bebb2d4c08e5f547974ff8d437ca3e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source explicitly records count delta 0 and canonical blocker count P0 2 / P1 1 / P2 33",
+        "rank": 330,
+        "source_blob_sha": "056996a5e2bebb2d4c08e5f547974ff8d437ca3e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "canonical candidate is not integrated and independent execution is explicitly NOT EXECUTED; future correction must prove final-boundary full-row/generation revalidation and mixed-batch sibling isolation",
+        "rank": 330,
+        "source_blob_sha": "056996a5e2bebb2d4c08e5f547974ff8d437ca3e"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 311-350 is receipted"
+  }
+}
