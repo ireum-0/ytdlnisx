@@ -103,6 +103,9 @@ internal object WorkManagerHandoffRecovery {
     @Volatile
     internal var cancelUniqueWorkOverrideForTesting: ((String) -> Unit)? = null
 
+    @Volatile
+    internal var cancelUniqueWorkOperationOverrideForTesting: ((String) -> Operation)? = null
+
     const val EXTRA_HANDOFF_ID = "workManagerHandoffId"
 
     fun prepareHardSub(context: Context): String {
@@ -126,6 +129,14 @@ internal object WorkManagerHandoffRecovery {
     }
 
     fun prepareSchedulerBoundary(
+        context: Context,
+        boundary: String,
+        notBeforeAt: Long,
+    ): String = RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
+        prepareSchedulerBoundaryWithinOrdinaryMutation(context, boundary, notBeforeAt)
+    }
+
+    internal fun prepareSchedulerBoundaryWithinOrdinaryMutation(
         context: Context,
         boundary: String,
         notBeforeAt: Long,
@@ -154,10 +165,9 @@ internal object WorkManagerHandoffRecovery {
             createdAt = now,
             updatedAt = now,
         )
-        replaceOutstandingAndInsert(context, carrier)
+        replaceOutstandingAndInsertLocked(context, carrier, null)
         return handoffId
     }
-
     internal suspend fun prepareSchedulerBoundaryForRestore(
         context: Context,
         boundary: String,
@@ -250,21 +260,43 @@ internal object WorkManagerHandoffRecovery {
         prepareSchedulerBoundary(context, boundary, System.currentTimeMillis())
 
     fun cancelScheduledHandoffs(context: Context) {
-        if (RestoreGate.isRestoreInProgress(context)) return
-        cancelBoundary(
+        RestoreMutationAdmission.tryOrdinaryMutationBlocking(context) {
+            cancelScheduledHandoffsWithinOrdinaryMutation(context)
+        }
+    }
+
+    /**
+     * Cancels the complete scheduler authority effect while the caller owns
+     * ordinary mutation admission. The carrier tombstone is installed before
+     * any later producer can enter, and WorkManager cancellation is awaited
+     * before the durable carrier rows are retired.
+     */
+    internal fun cancelScheduledHandoffsWithinOrdinaryMutation(context: Context) {
+        check(!RestoreGate.isRestoreInProgress(context)) {
+            "Restore transaction is active"
+        }
+        markBoundaryCancelledWithinOrdinaryMutation(
             context,
             WorkManagerHandoffCarrier.SCHEDULE_START,
             WorkManagerHandoffCarrier.START_BOUNDARY,
         )
-        cancelBoundary(
+        markBoundaryCancelledWithinOrdinaryMutation(
             context,
             WorkManagerHandoffCarrier.SCHEDULE_END,
             WorkManagerHandoffCarrier.END_BOUNDARY,
         )
-        runCatching {
-            cancelUniqueWork(context, START_WORK_NAME)
-            cancelUniqueWork(context, END_WORK_NAME)
-        }
+        cancelUniqueWorkAndAwait(context, START_WORK_NAME)
+        cancelUniqueWorkAndAwait(context, END_WORK_NAME)
+        deleteBoundaryAfterExternalCancellation(
+            context,
+            WorkManagerHandoffCarrier.SCHEDULE_START,
+            WorkManagerHandoffCarrier.START_BOUNDARY,
+        )
+        deleteBoundaryAfterExternalCancellation(
+            context,
+            WorkManagerHandoffCarrier.SCHEDULE_END,
+            WorkManagerHandoffCarrier.END_BOUNDARY,
+        )
     }
 
     fun enqueueAndObserve(
@@ -365,6 +397,7 @@ internal object WorkManagerHandoffRecovery {
         enqueueOverrideForTesting = null
         workInfoOverrideForTesting = null
         cancelUniqueWorkOverrideForTesting = null
+        cancelUniqueWorkOperationOverrideForTesting = null
     }
 
     /** A receiver can keep goAsync alive until this exact Operation completes. */
@@ -590,46 +623,54 @@ internal object WorkManagerHandoffRecovery {
         }
 
         return try {
-            val operation = if (authority == null) {
+            // WorkManager enqueue acceptance is itself part of the ordinary
+            // scheduler authority transfer. Keep the short enqueue/result/
+            // carrier-finalization boundary under the same admission so
+            // Restore cannot publish between an accepted external owner and
+            // its durable acknowledgement.
+            val result = if (authority == null) {
                 RestoreMutationAdmission.withOrdinaryMutation(context) {
-                    synchronized(boundaryLock(carrier)) {
-                        if (!schedulerAuthorityAvailable(context, null) || !isCurrentGeneration(carrier)) {
-                            null
+                    if (!schedulerAuthorityAvailable(context, null) || !isCurrentGeneration(carrier)) {
+                        null
+                    } else {
+                        val operation = enqueueUniqueWork(
+                            context = context,
+                            uniqueWorkName = carrier.uniqueWorkName,
+                            request = request,
+                        )
+                        val failure = awaitOperation(operation)
+                        if (failure != null) {
+                            retryAfterFailure(context, carrier, failure, null)
                         } else {
-                            enqueueUniqueWork(
-                                context = context,
-                                uniqueWorkName = carrier.uniqueWorkName,
-                                request = request,
-                            )
+                            finalizeAccepted(context, carrier, null)
                         }
                     }
                 }
             } else {
                 RestoreMutationAdmission.withRestoreMutation {
                     RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
-                    synchronized(boundaryLock(carrier)) {
-                        if (!schedulerAuthorityAvailable(context, authority) || !isCurrentGeneration(carrier)) {
-                            null
+                    if (!schedulerAuthorityAvailable(context, authority) || !isCurrentGeneration(carrier)) {
+                        null
+                    } else {
+                        val operation = enqueueUniqueWork(
+                            context = context,
+                            uniqueWorkName = carrier.uniqueWorkName,
+                            request = request,
+                        )
+                        val failure = awaitOperation(operation)
+                        if (failure != null) {
+                            retryAfterFailure(context, carrier, failure, authority)
                         } else {
-                            enqueueUniqueWork(
-                                context = context,
-                                uniqueWorkName = carrier.uniqueWorkName,
-                                request = request,
-                            )
+                            finalizeAccepted(context, carrier, authority)
                         }
                     }
                 }
-            } ?: if (!schedulerAuthorityAvailable(context, authority)) {
-                scheduleRetry(context, handoffId, authority)
-                return EnqueueOutcome(OutcomeKind.RETRYING)
-            } else {
-                return EnqueueOutcome(OutcomeKind.SUPERSEDED)
             }
-            val failure = awaitOperation(operation)
-            if (failure != null) {
-                retryAfterFailure(context, carrier, failure, authority)
+            result ?: if (!schedulerAuthorityAvailable(context, authority)) {
+                scheduleRetry(context, handoffId, authority)
+                EnqueueOutcome(OutcomeKind.RETRYING)
             } else {
-                finalizeAccepted(context, carrier, authority)
+                EnqueueOutcome(OutcomeKind.SUPERSEDED)
             }
         } catch (failure: Throwable) {
             retryAfterFailure(context, carrier, failure, authority)
@@ -890,23 +931,33 @@ internal object WorkManagerHandoffRecovery {
             latestGenerationByBoundary[boundaryKey(carrier.kind, carrier.boundary)] = carrier.handoffId
         }
     }
-    private fun cancelBoundary(
+    private fun markBoundaryCancelledWithinOrdinaryMutation(
         context: Context,
         kind: String,
         boundary: String,
     ) {
-        RestoreMutationAdmission.tryOrdinaryMutationBlocking(context) {
-            synchronized(boundaryLock(kind, boundary)) {
-                val dao = database(context).workManagerHandoffCarrierDao
+        synchronized(boundaryLock(kind, boundary)) {
+            val dao = database(context).workManagerHandoffCarrierDao
             val carrier = blocking { dao.getOutstandingForBoundary(kind, boundary) }
             carrier?.let {
                 retryJobs.remove(it.handoffId)?.cancel()
                 attemptJobs.remove(it.handoffId)?.cancel()
             }
-            blocking { dao.deleteOutstandingForBoundary(kind, boundary) }
-            // A tombstone prevents an already-running old attempt from
-            // treating a concurrent cancellation as a process-death reset.
-                latestGenerationByBoundary[boundaryKey(kind, boundary)] = CANCELLED_GENERATION
+            // The tombstone is visible to any already-created attempt before
+            // the external WorkManager cancellation is requested.
+            latestGenerationByBoundary[boundaryKey(kind, boundary)] = CANCELLED_GENERATION
+        }
+    }
+
+    private fun deleteBoundaryAfterExternalCancellation(
+        context: Context,
+        kind: String,
+        boundary: String,
+    ) {
+        synchronized(boundaryLock(kind, boundary)) {
+            blocking {
+                database(context).workManagerHandoffCarrierDao
+                    .deleteOutstandingForBoundary(kind, boundary)
             }
         }
     }
@@ -1045,9 +1096,20 @@ internal object WorkManagerHandoffRecovery {
         request,
     )
 
-    private fun cancelUniqueWork(context: Context, uniqueWorkName: String) {
-        cancelUniqueWorkOverrideForTesting?.invoke(uniqueWorkName)
-            ?: workManager(context).cancelUniqueWork(uniqueWorkName)
+    private fun cancelUniqueWorkAndAwait(context: Context, uniqueWorkName: String) {
+        val operation = cancelUniqueWorkOperationOverrideForTesting?.invoke(uniqueWorkName)
+        if (operation != null) {
+            operation.result.get(5_000L, TimeUnit.MILLISECONDS)
+            return
+        }
+        val override = cancelUniqueWorkOverrideForTesting
+        if (override != null) {
+            override(uniqueWorkName)
+            return
+        }
+        workManager(context).cancelUniqueWork(uniqueWorkName)
+            .result
+            .get(5_000L, TimeUnit.MILLISECONDS)
     }
 
     private fun boundaryKey(kind: String, boundary: String): String = "$kind\u0000$boundary"

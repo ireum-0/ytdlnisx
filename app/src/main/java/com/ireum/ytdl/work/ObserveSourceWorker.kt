@@ -1,4 +1,4 @@
-﻿
+
 
 package com.ireum.ytdl.work
 
@@ -384,7 +384,7 @@ class ObserveSourceWorker(
                             !alarmScheduler.isDuringTheScheduledTime() &&
                             alarmScheduler.canSchedule()
                         ) {
-                            alarmScheduler.schedule()
+                            alarmScheduler.scheduleSuspending()
                         } else {
                             startObserveDownloads(downloadRepo, requeuedItems)
                         }
@@ -1070,7 +1070,7 @@ class ObserveSourceWorker(
             }
 
             if (useScheduler && !alarmScheduler.isDuringTheScheduledTime() && alarmScheduler.canSchedule()){
-                alarmScheduler.schedule()
+                alarmScheduler.scheduleSuspending()
             }else {
                 startObserveDownloads(downloadRepo, queuedItems)
             }

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.preference.PreferenceManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
 import com.ireum.ytdl.receiver.CancelScheduleAlarmReceiver
@@ -27,8 +28,8 @@ class AlarmScheduler(private val context: Context) {
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
 
 
-    fun scheduleAt(at: Long) {
-        val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+    suspend fun scheduleAt(at: Long) = RestoreMutationAdmission.withOrdinaryMutation(context) {
+        val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundaryWithinOrdinaryMutation(
             context,
             WorkManagerHandoffCarrier.START_BOUNDARY,
             at,
@@ -40,8 +41,6 @@ class AlarmScheduler(private val context: Context) {
             handoffId = handoffId,
         )
     }
-
-
     internal suspend fun scheduleAtForRestore(
         at: Long,
         authority: RestoreReconciliationAuthority,
@@ -73,7 +72,19 @@ class AlarmScheduler(private val context: Context) {
     }
     @SuppressLint("ScheduleExactAlarm")
     fun schedule() {
-        cancel()
+        RestoreMutationAdmission.tryOrdinaryMutationBlocking(context) {
+            scheduleWithinOrdinaryMutation()
+        }
+    }
+
+    internal suspend fun scheduleSuspending() = RestoreMutationAdmission.withOrdinaryMutation(context) {
+        scheduleWithinOrdinaryMutation()
+    }
+
+    @SuppressLint("ScheduleExactAlarm")
+    private fun scheduleWithinOrdinaryMutation() {
+        WorkManagerHandoffRecovery.cancelScheduledHandoffsWithinOrdinaryMutation(context)
+        cancelAlarmsWithinOrdinaryMutation()
 
         val startingTime = preferences.getString("schedule_start", "00:00")!!
         val sTime = Calendar.getInstance()
@@ -82,7 +93,7 @@ class AlarmScheduler(private val context: Context) {
         sTime.set(Calendar.SECOND, 0)
         val time = calculateNextTime(sTime)
 
-        val startHandoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+        val startHandoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundaryWithinOrdinaryMutation(
             context,
             WorkManagerHandoffCarrier.START_BOUNDARY,
             time.timeInMillis,
@@ -101,7 +112,7 @@ class AlarmScheduler(private val context: Context) {
         sTime.set(Calendar.SECOND, 0)
         val calendar = calculateNextTime(eTime)
 
-        val endHandoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+        val endHandoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundaryWithinOrdinaryMutation(
             context,
             WorkManagerHandoffCarrier.END_BOUNDARY,
             calendar.timeInMillis,
@@ -115,7 +126,17 @@ class AlarmScheduler(private val context: Context) {
     }
 
     fun cancel() {
-        WorkManagerHandoffRecovery.cancelScheduledHandoffs(context)
+        RestoreMutationAdmission.tryOrdinaryMutationBlocking(context) {
+            cancelWithinOrdinaryMutation()
+        }
+    }
+
+    internal fun cancelWithinOrdinaryMutation() {
+        WorkManagerHandoffRecovery.cancelScheduledHandoffsWithinOrdinaryMutation(context)
+        cancelAlarmsWithinOrdinaryMutation()
+    }
+
+    private fun cancelAlarmsWithinOrdinaryMutation() {
         val intent = Intent(context, ScheduleAlarmReceiver::class.java)
         val pendingIntent = PendingIntent.getBroadcast(context, 0, intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
@@ -126,18 +147,14 @@ class AlarmScheduler(private val context: Context) {
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
         )
 
-
         val cancelIntent = Intent(context, CancelScheduleAlarmReceiver::class.java)
         val cancelPendingIntent = PendingIntent.getBroadcast(context, 0, cancelIntent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
 
-        kotlin.runCatching {
-            alarmManager?.cancel(pendingIntent)
-            alarmManager?.cancel(oneShotPendingIntent)
-            alarmManager?.cancel(cancelPendingIntent)
-        }
+        alarmManager?.cancel(pendingIntent)
+        alarmManager?.cancel(oneShotPendingIntent)
+        alarmManager?.cancel(cancelPendingIntent)
     }
-
     private fun setAlarm(
         receiver: Class<out android.content.BroadcastReceiver>,
         requestCode: Int,

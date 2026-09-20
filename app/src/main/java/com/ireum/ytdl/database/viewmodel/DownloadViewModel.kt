@@ -23,6 +23,7 @@ import androidx.work.WorkManager
 import com.ireum.ytdl.App
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.dao.CommandTemplateDao
 import com.ireum.ytdl.database.dao.DownloadDao
@@ -2416,9 +2417,9 @@ class DownloadViewModel private constructor(
             if (alarmScheduler.canSchedule()){
                 val persisted = persistQueuedItems()
                 queuedItems.removeAll { candidate -> persisted.none { it === candidate } }
-                alarmScheduler.schedule()
+                alarmScheduler.scheduleSuspending()
             }else{
-                sharedPreferences.edit().putBoolean("use_scheduler", false).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(context, sharedPreferences.edit().putBoolean("use_scheduler", false))
                 result.succeeded = false
                 result.message = context.getString(R.string.enable_alarm_permission)
             }

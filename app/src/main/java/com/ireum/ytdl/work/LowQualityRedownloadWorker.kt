@@ -9,6 +9,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
@@ -461,11 +462,11 @@ class LowQualityRedownloadWorker(
                 canScheduleExactAlarm = scheduler.canSchedule()
             )
         ) {
-            LowQualityQueueStartDecision.SCHEDULE -> scheduler.schedule()
+            LowQualityQueueStartDecision.SCHEDULE -> scheduler.scheduleSuspending()
             LowQualityQueueStartDecision.START_NOW_DISABLE_SCHEDULER -> {
                 // Match the normal queue's permission fallback. apply() changes the in-memory
                 // value synchronously, so the DownloadWorker cannot immediately self-stop.
-                preferences.edit().putBoolean("use_scheduler", false).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences.edit().putBoolean("use_scheduler", false))
                 DownloadRepository(database).startDownloadWorker(queued, context)
             }
             LowQualityQueueStartDecision.START_NOW ->

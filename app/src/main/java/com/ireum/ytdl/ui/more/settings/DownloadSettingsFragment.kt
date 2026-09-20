@@ -127,19 +127,28 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
                     scheduler.schedule()
                 }
             }else{
-                scheduler.cancel()
-                //start worker if there are leftover downloads waiting for scheduler
-                val workConstraints = Constraints.Builder()
-                val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
-                    .addTag("download")
-                    .setConstraints(workConstraints.build())
-                    .setInitialDelay(1000L, TimeUnit.MILLISECONDS)
-
-                WorkManager.getInstance(requireContext()).enqueueUniqueWork(
-                    System.currentTimeMillis().toString(),
-                    ExistingWorkPolicy.REPLACE,
-                    workRequest.build()
-                )
+                allowChange = RestoreMutationAdmission.tryOrdinaryMutationBlocking(requireContext()) {
+                    scheduler.cancelWithinOrdinaryMutation()
+                    // Start a worker for leftover downloads while the same
+                    // ordinary scheduler authority still owns the external
+                    // enqueue. Restore cannot publish between cancellation
+                    // and this successor acceptance.
+                    val workConstraints = Constraints.Builder()
+                    val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
+                        .addTag("download")
+                        .setConstraints(workConstraints.build())
+                        .setInitialDelay(1000L, TimeUnit.MILLISECONDS)
+                        .build()
+                    WorkManager.getInstance(requireContext())
+                        .enqueueUniqueWork(
+                            System.currentTimeMillis().toString(),
+                            ExistingWorkPolicy.REPLACE,
+                            workRequest,
+                        )
+                        .result
+                        .get(10L, TimeUnit.SECONDS)
+                    true
+                }
             }
             allowChange
         }
