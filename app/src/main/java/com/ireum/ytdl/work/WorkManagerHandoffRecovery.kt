@@ -295,6 +295,40 @@ internal object WorkManagerHandoffRecovery {
     }
 
     /**
+     * A delayed WorkManager fallback accepted during Restore remains the
+     * durable successor until ordinary startup reconciliation can retire its
+     * carrier after the Restore pointer is released.
+     */
+    internal suspend fun restoreSuccessorAlreadyAccepted(
+        context: Context,
+        handoffId: String,
+        authority: RestoreReconciliationAuthority,
+    ): Boolean {
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+        val carrier = database(context).workManagerHandoffCarrierDao.get(handoffId)
+            ?: return false
+        if (carrier.state != WorkManagerHandoffCarrier.ACCEPTED) return false
+        val current = workInfo(context, carrier.requestId) ?: return false
+        return current.id.toString() == carrier.requestId && !current.state.isFinished
+    }
+
+    /**
+     * A failed Restore fallback advances the carrier generation. On replay,
+     * retry that durable fallback before attempting exact-alarm publication
+     * again; the process-local retry job is never the owner.
+     */
+    internal suspend fun restoreSuccessorNeedsFallbackRetry(
+        context: Context,
+        handoffId: String,
+        authority: RestoreReconciliationAuthority,
+    ): Boolean {
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+        val carrier = database(context).workManagerHandoffCarrierDao.get(handoffId)
+            ?: return false
+        return carrier.state == WorkManagerHandoffCarrier.PENDING_ENQUEUE && carrier.attempt > 0
+    }
+
+    /**
      * Restore-owned callers must not retire the Restore pointer while an
      * exact-alarm failure still has only an in-memory retry. This suspend
      * boundary returns only after WorkManager Operation.result has accepted
@@ -617,7 +651,7 @@ internal object WorkManagerHandoffRecovery {
                 EnqueueOutcome(OutcomeKind.ACCEPTED)
             }
         } else {
-            if (carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
+            if (carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD && authority == null) {
                 dao.deleteAccepted(carrier.handoffId, carrier.requestId)
             }
             retryJobs.remove(carrier.handoffId)?.cancel()
@@ -658,7 +692,10 @@ internal object WorkManagerHandoffRecovery {
                         carrier.requestId,
                         System.currentTimeMillis(),
                     )
-                    if (accepted > 0 && carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
+                    if (accepted > 0 &&
+                        carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD &&
+                        authority == null
+                    ) {
                         dao.deleteAccepted(carrier.handoffId, carrier.requestId)
                     }
                     if (accepted > 0) {

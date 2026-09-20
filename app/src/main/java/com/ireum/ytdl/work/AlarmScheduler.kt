@@ -52,6 +52,17 @@ class AlarmScheduler(private val context: Context) {
             at,
             authority,
         )
+        if (WorkManagerHandoffRecovery.restoreSuccessorNeedsFallbackRetry(context, handoffId, authority)) {
+            WorkManagerHandoffRecovery.ensureConvergenceForRestoreAndAwait(
+                context,
+                handoffId,
+                authority,
+            )
+            return
+        }
+        if (WorkManagerHandoffRecovery.restoreSuccessorAlreadyAccepted(context, handoffId, authority)) {
+            return
+        }
         setAlarmForRestore(
             receiver = ScheduleAlarmReceiver::class.java,
             requestCode = 1,
