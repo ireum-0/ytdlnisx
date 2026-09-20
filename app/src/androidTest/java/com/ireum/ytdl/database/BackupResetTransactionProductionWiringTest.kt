@@ -12,6 +12,7 @@ import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.BackupCustomThumbItem
 import com.ireum.ytdl.database.models.BackupSettingsItem
 import com.ireum.ytdl.database.models.AudioPreferences
+import com.ireum.ytdl.database.models.AutomaticKeywordRule
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
@@ -708,7 +709,17 @@ class BackupResetTransactionProductionWiringTest {
 
     @Test
     fun managedKeywordSourceRegainsOwnerAfterDownloadQuiescence() = runBlocking {
-        val sourceId = database.observeSourcesDao.insert(managedKeywordSource(109L))
+        val conditionKey = "f11-managed-109"
+        database.automaticKeywordRuleDao.insertRule(
+            AutomaticKeywordRule(
+                conditionValue = "https://example.com/managed-109",
+                conditionKey = conditionKey,
+                playlistName = "F11 managed",
+            ),
+        )
+        val sourceId = database.observeSourcesDao.insert(
+            managedKeywordSource(109L, conditionKey),
+        )
         assertTrue(sourceId > 0L)
 
         val outcome = RestoreTransactionCoordinator.begin(
@@ -939,7 +950,7 @@ class BackupResetTransactionProductionWiringTest {
             downloadStartTime = startAt,
         )
 
-    private fun managedKeywordSource(index: Long): ObserveSourcesItem {
+    private fun managedKeywordSource(index: Long, conditionKey: String = "f11-managed-$index"): ObserveSourcesItem {
         val startsAt = System.currentTimeMillis() + 300_000L
         return ObserveSourcesItem(
             id = 0L,
@@ -962,7 +973,7 @@ class BackupResetTransactionProductionWiringTest {
             alreadyProcessedLinks = mutableListOf(),
             syncWithSource = false,
             observationPurpose = ObservationPurposes.KEYWORD_DISCOVERY,
-            managedConditionKey = "f11-managed-$index",
+            managedConditionKey = conditionKey,
         )
     }
 
