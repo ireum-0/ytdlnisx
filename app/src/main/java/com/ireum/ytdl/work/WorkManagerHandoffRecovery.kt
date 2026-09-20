@@ -623,27 +623,31 @@ internal object WorkManagerHandoffRecovery {
         }
 
         return try {
-            // WorkManager enqueue acceptance is itself part of the ordinary
-            // scheduler authority transfer. Keep the short enqueue/result/
-            // carrier-finalization boundary under the same admission so
-            // Restore cannot publish between an accepted external owner and
-            // its durable acknowledgement.
             val result = if (authority == null) {
-                RestoreMutationAdmission.withOrdinaryMutation(context) {
-                    if (!schedulerAuthorityAvailable(context, null) || !isCurrentGeneration(carrier)) {
+                // Enter admission only for the enqueue publication call. Awaiting
+                // Operation.result while holding the process-global mutex would
+                // block a newer REPLACE generation from superseding this attempt.
+                val operation = RestoreMutationAdmission.withOrdinaryMutation(context) {
+                    if (!schedulerAuthorityAvailable(context, null) ||
+                        !isCurrentGeneration(carrier)
+                    ) {
                         null
                     } else {
-                        val operation = enqueueUniqueWork(
+                        enqueueUniqueWork(
                             context = context,
                             uniqueWorkName = carrier.uniqueWorkName,
                             request = request,
                         )
-                        val failure = awaitOperation(operation)
-                        if (failure != null) {
-                            retryAfterFailure(context, carrier, failure, null)
-                        } else {
-                            finalizeAccepted(context, carrier, null)
-                        }
+                    }
+                }
+                if (operation == null) {
+                    null
+                } else {
+                    val failure = awaitOperation(operation)
+                    if (failure != null) {
+                        retryAfterFailure(context, carrier, failure, null)
+                    } else {
+                        finalizeAccepted(context, carrier, null)
                     }
                 }
             } else {
