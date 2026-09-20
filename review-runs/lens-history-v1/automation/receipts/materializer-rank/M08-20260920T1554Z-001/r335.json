@@ -1,0 +1,124 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "rank": 335,
+  "materializer_state_blob": "0fa143877a3e6c93e9ad885aea87c60b6946b582",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "08c50d7f1e1fa393b059a255b2a5c1301258b32f",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r334.json",
+    "blob_sha": "5ec297908596b6406f11085f56ebd3b12d4e5a64"
+  },
+  "history": {
+    "commit_sha": "36a45a3e7113d4218ce4f030c756a153f999d615",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=335"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12T022300Z__93d01d2a__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "0e3bcad52b9647f30762e3c5f94b76e3408f8d17",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "0e3bcad52b9647f30762e3c5f94b76e3408f8d17",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12T022300Z__93d01d2a__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "0e3bcad52b9647f30762e3c5f94b76e3408f8d17",
+    "frozen_blob_sha": "0e3bcad52b9647f30762e3c5f94b76e3408f8d17",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "93d01d2afbce2cfa62dc17fad4478416b3d7cf6c",
+      "evidence": "source explicitly records Frozen implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic checkpoint source has no explicit checkpoint_kind/equivalent structural field and does not positively self-identify as final/intermediate/bootstrap/finding/addendum/reconciliation/scope-expansion; filename/commit message/chronology are insufficient"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-KEYWORD-04"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "closure is under independent revalidation at exact implementation 93d01d2afbce2cfa62dc17fad4478416b3d7cf6c; no new finding yet; no current material closure or count change is established by this checkpoint"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint source lacks positive whole-document structural identity recognized by document-identity-v1"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records provisional blocker inventory P0 2 / P1 1 / P2 33"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "finding_id": "BUG-KEYWORD-04",
+      "evidence": "source states BUG-KEYWORD-04 closure is being independently revalidated and does not yet establish a current canonical disposition change"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "Room transaction semantics, authoritative-source/baseline propagation, exact-SHA execution evidence, candidate rejection, and canonical recount remain pending at this checkpoint"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
