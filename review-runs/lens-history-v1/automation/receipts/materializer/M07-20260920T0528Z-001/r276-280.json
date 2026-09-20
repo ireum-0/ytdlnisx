@@ -1,0 +1,202 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "segment_range": [
+    276,
+    280
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "3ec0c900d1e1e1b2d3c53962f4dff072f8c5adbd",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M07-20260920T0528Z-001/r271-275.json",
+    "blob_sha": "7797fc7588fea47e9d8f35d39dbc1a76a2fafe72"
+  },
+  "rank_receipts": [
+    {
+      "rank": 276,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r276.json",
+      "blob_sha": "94e0468c84f28dc01b3afcd5154c504e7121502d"
+    },
+    {
+      "rank": 277,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r277.json",
+      "blob_sha": "9587cde36074648e3101b2990e6f7594b47eeab3"
+    },
+    {
+      "rank": 278,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r278.json",
+      "blob_sha": "20f4f89af758b3f6062eadac9d0259aa590967a7"
+    },
+    {
+      "rank": 279,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r279.json",
+      "blob_sha": "1df87ee874df947f28d5f7cfab3306c4fdc7a300"
+    },
+    {
+      "rank": 280,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r280.json",
+      "blob_sha": "19064d28e9d261f721ccb17b5b675d07ce396d81"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      276,
+      277,
+      278,
+      279,
+      280
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 276,
+        "source_blob_sha": "e5687696fcbd60fcd4d1ffbdcaf483461f5721a3"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly reconciles swallowed selected-category exceptions, required-thumbnail omission, and mixed-time relational capture as subcases/evidence of the existing F4 root, keeps F4 distinct from restore-wide F11 and F5/F6/F7/F8/F9 roots, and preserves the recorded dependency boundary",
+        "rank": 276,
+        "source_blob_sha": "e5687696fcbd60fcd4d1ffbdcaf483461f5721a3"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and canonical blocker count P0 2 / P1 1 / P2 30",
+        "rank": 276,
+        "source_blob_sha": "e5687696fcbd60fcd4d1ffbdcaf483461f5721a3"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED",
+        "rank": 276,
+        "source_blob_sha": "e5687696fcbd60fcd4d1ffbdcaf483461f5721a3"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source labels the checkpoint blocker-count section provisional/final and records P0 2 / P1 1 / P2 30 with overall NOT_CLEAN",
+        "rank": 277,
+        "source_blob_sha": "105e0ac1d70d78969193b3f19f027595e9fdc012"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source records duplicate-admission source semantics as fixed while canonical disposition remains OPEN solely for missing exact-SHA execution closure",
+        "rank": 277,
+        "source_blob_sha": "105e0ac1d70d78969193b3f19f027595e9fdc012"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source explicitly records canonical delta from the prior run as 0",
+        "rank": 277,
+        "source_blob_sha": "105e0ac1d70d78969193b3f19f027595e9fdc012"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "exact GitHub execution evidence is 0/0/0 and independent reviewer execution was not performed; runtime manifestation/verification remains NOT_VERIFIED",
+        "rank": 277,
+        "source_blob_sha": "105e0ac1d70d78969193b3f19f027595e9fdc012"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 278,
+        "source_blob_sha": "a761f6ec1428dbe5189a66d3c3bb9f7ef7f4fb84"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source explicitly narrows away the historical fixed-30-day monthly-delay claim, re-centers the existing F10 root on durable recurring schedule authority, stale-generation fencing and restart reconciliation, and preserves F10 as a prerequisite for F11",
+        "rank": 278,
+        "source_blob_sha": "a761f6ec1428dbe5189a66d3c3bb9f7ef7f4fb84"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and canonical blocker count P0 2 / P1 1 / P2 30",
+        "rank": 278,
+        "source_blob_sha": "a761f6ec1428dbe5189a66d3c3bb9f7ef7f4fb84"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED",
+        "rank": 278,
+        "source_blob_sha": "a761f6ec1428dbe5189a66d3c3bb9f7ef7f4fb84"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive whole-document structural identity",
+        "rank": 279,
+        "source_blob_sha": "64ac7a0cb94fa84e5b8969130c4a62464659647f"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional blocker state P0 2 / P1 1 / P2 30 and gate NOT_CLEAN",
+        "rank": 279,
+        "source_blob_sha": "64ac7a0cb94fa84e5b8969130c4a62464659647f"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source explicitly records source-semantic FIXED while canonical CLEAN/closure remains blocked by absent exact-final-SHA execution evidence",
+        "rank": 279,
+        "source_blob_sha": "64ac7a0cb94fa84e5b8969130c4a62464659647f"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "exact implementation status/check-runs/Actions evidence is empty and independent execution is NOT EXECUTED",
+        "rank": 279,
+        "source_blob_sha": "64ac7a0cb94fa84e5b8969130c4a62464659647f"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity; commit-message bootstrap label is insufficient",
+        "rank": 280,
+        "source_blob_sha": "8ec3f69ef4fc4f184ef5dd90be4abd38e95be9b4"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional P0 2 / P1 1 / P2 30 and project gate NOT_CLEAN",
+        "rank": 280,
+        "source_blob_sha": "8ec3f69ef4fc4f184ef5dd90be4abd38e95be9b4"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source says governance records a source-clean candidate only and explicitly requires current end-to-end source and exact-SHA execution re-evaluation before canonical disposition/count reconciliation",
+        "rank": 280,
+        "source_blob_sha": "8ec3f69ef4fc4f184ef5dd90be4abd38e95be9b4"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "full current production path, other consumers, exact-SHA execution evidence, final count reconciliation, and independent execution remain pending or NOT EXECUTED",
+        "rank": 280,
+        "source_blob_sha": "8ec3f69ef4fc4f184ef5dd90be4abd38e95be9b4"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 271-310 is receipted"
+  }
+}
