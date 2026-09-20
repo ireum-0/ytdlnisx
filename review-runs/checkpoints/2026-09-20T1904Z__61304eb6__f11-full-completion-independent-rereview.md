@@ -38,13 +38,19 @@ F11 remains the existing canonical P0 root:
 
 Canonical root-count delta from this re-review: `0`.
 
+Checklist-v6 classification:
+
+- Current blocker: `[P0] BUG-BACKUP-03`.
+- F11-R1 / F11-R2 / F11-R3 are open residuals under that same P0 root; they do not receive separate HIGH/MEDIUM severities.
+- F11-R4 is closed.
+
 Do NOT advance the independently CLEAN basis to `61304eb6...`.
 
 ### Residual summary
 
-- `F11-R1`: **STILL_OPEN / HIGH**
-- `F11-R2`: **STILL_OPEN / HIGH**
-- `F11-R3`: **STILL_OPEN / HIGH**
+- `F11-R1`: **STILL_OPEN**
+- `F11-R2`: **STILL_OPEN**
+- `F11-R3`: **STILL_OPEN**
 - `F11-R4`: **CLOSED**
 
 Intermediate checkpoints incorporated by this final verdict:
@@ -57,7 +63,7 @@ Intermediate checkpoints incorporated by this final verdict:
 
 ---
 
-## F11-R1 — STILL_OPEN / HIGH
+## F11-R1 — STILL_OPEN
 
 ### What the remediation fixed
 
@@ -118,7 +124,7 @@ The final 26-method `BackupResetTransactionProductionWiringTest` has no LocalAdd
 
 ---
 
-## F11-R2 — STILL_OPEN / HIGH
+## F11-R2 — STILL_OPEN
 
 The new `RestoreMutationAdmission` is a valid shared serialization mechanism for callers that actually use it:
 
@@ -201,7 +207,7 @@ Do not hold the shared admission mutex across native/worker/network execution.
 
 ---
 
-## F11-R3 — STILL_OPEN / HIGH
+## F11-R3 — STILL_OPEN
 
 The remediation closes the original direct RestoreGate self-block by carrying an operation-bound `RestoreReconciliationAuthority` through:
 
