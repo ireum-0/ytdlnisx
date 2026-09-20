@@ -1,0 +1,124 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "microsegment_rank_range": [
+    291,
+    295
+  ],
+  "data_head": "87a0ac038b681911e491fffdcba3f4309bd957ce",
+  "complete_state_blob": "4b3b316639cb2c8312ba8ab8651b190d787d9a94",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M07-20260920T0528Z-001/r291-295.json",
+    "blob_sha": "924dada30e98488a3879fb86a7d825adc524b0cb"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "da166ba551fe4bfc4812702c3b67c90fc5707757",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M07-20260920T0528Z-001/r286-290.json",
+    "blob_sha": "5c5e42e5f27d7fceda1a92c9568572b0cc3b9077"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 291,
+      "path": "review-runs/checkpoints/2026-09-12T112700Z__3616ae02__checkpoint.md",
+      "source_blob": "1a44c61edac54cd4903e49df607024a8537df919",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic structural kind NOT_VERIFIED and provisional P0 2 / P1 1 / P2 30. Preserve BUG-CACHE-02 only as already CLOSED historical/governance context; this checkpoint's active scope is BUG-KEYWORD-02, whose delete -> snapshot -> rule mutation -> Undo -> current RULE recomputation path, upstream transaction semantics, tests and exact-SHA execution evidence remain incomplete or NOT_VERIFIED."
+    },
+    {
+      "rank": 292,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__keyword02-current-basis-revalidation.md",
+      "source_blob": "277b31152a0f24530f4b94f201e2aa74ca0f020b",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED. Preserve BUG-KEYWORD-02 as the existing P2 temporal-authority-at-Undo root: MANUAL/user state may be restored from the deletion snapshot, but derived RULE state must be recomputed from current rule authority. Keep it distinct from closed BUG-KEYWORD-01/04 and BUG-HISTORY-01; count delta 0 and independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 293,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__observe02-runtime-edit-current-basis-revalidation.md",
+      "source_blob": "05b85fdbb9b0b1db58d4518b9577734f5a558d12",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED. Preserve BUG-OBSERVE-02 as the same already-counted P2 OPEN root where ordinary configuration Save reconstructs/resets worker-owned runtime fields. Keep it distinct from BUG-OBSERVE-HANDOFF-01, BUG-OBSERVE-SOURCE-IDENTITY-01, closed BUG-OBSERVE-01 and BUG-OBSERVE-03; count delta 0 and independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 294,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__duplicate-admission-current-basis-revalidation.md",
+      "source_blob": "ac8033e90049c82ba6ebbb262a8e0b2461489e0f",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED. Preserve BUG-DUPLICATE-ADMISSION-01 as the same already-counted P2 check-to-insert root at exact CLEAN basis 3616ae02, separate from closed F19 comparator semantics and separate post-insert execution/cache ownership roots. Count delta 0; independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 295,
+      "path": "review-runs/checkpoints/2026-09-12__3616ae02__cache02-execution-closure-basis-advance.md",
+      "source_blob": "6aff55ccd4a84ac48a1fe38cdd34fc319eb69d43",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED. Preserve BUG-CACHE-02 CLOSED/CLEAN and contiguous CLEAN-basis advance to 3616ae02 with P2 delta -1 -> 30. Preserve the failing pre-existing TerminalExecutionProductionWiringTest method as an instrumentation seam mismatch rather than a new blocker, and distinguish accepted external exact-final execution evidence from this review's INDEPENDENT EXECUTION: NOT EXECUTED."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      291,
+      292,
+      293,
+      294,
+      295
+    ],
+    "materializer_flagged_exception_ranks": [
+      291,
+      292,
+      293,
+      294,
+      295
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
