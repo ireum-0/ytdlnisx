@@ -1,0 +1,214 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "segment_range": [
+    306,
+    310
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "3ec0c900d1e1e1b2d3c53962f4dff072f8c5adbd",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M07-20260920T0528Z-001/r301-305.json",
+    "blob_sha": "32b8cfc4f254526d7e6694e63f0001e252e9660b"
+  },
+  "rank_receipts": [
+    {
+      "rank": 306,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r306.json",
+      "blob_sha": "dcace90839f2711e3d52e4da872de21bb7889d71"
+    },
+    {
+      "rank": 307,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r307.json",
+      "blob_sha": "9f315eff9a8f46cdba7a6a75a7a795c419344ebf"
+    },
+    {
+      "rank": 308,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r308.json",
+      "blob_sha": "c8dd5a5b352b1b41bb2f35f942afe48500fc445c"
+    },
+    {
+      "rank": 309,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r309.json",
+      "blob_sha": "008ccb0ee2b91d6271312a0d346a7e150ac4dd1c"
+    },
+    {
+      "rank": 310,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r310.json",
+      "blob_sha": "c464d4f5673f386f7b417fa63fd472fccf3c1caa"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      306,
+      307,
+      308,
+      309,
+      310
+    ],
+    "triggers": [
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records final provisional/canonical severity inventory P0 2 / P1 1 / P2 32 with gate NOT_CLEAN",
+        "rank": 306,
+        "source_blob_sha": "113b8056ba112a45d2551248ec3cf63c3ecc7db5"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source records source-semantic FIXED while canonical P2 remains OPEN solely on required exact-SHA execution evidence, and states no status/material change",
+        "rank": 306,
+        "source_blob_sha": "113b8056ba112a45d2551248ec3cf63c3ecc7db5"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source records source-semantic FIXED while canonical P2 remains OPEN solely on required exact-SHA execution evidence, and states no status/material change",
+        "rank": 306,
+        "source_blob_sha": "113b8056ba112a45d2551248ec3cf63c3ecc7db5"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source reports commit-status contexts 0, check-runs 0, and no independent device/instrumentation execution; actual exact-SHA execution closure therefore remains unverified here",
+        "rank": 306,
+        "source_blob_sha": "113b8056ba112a45d2551248ec3cf63c3ecc7db5"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive whole-document structural identity",
+        "rank": 307,
+        "source_blob_sha": "ba6406c4eac8d2cd7ade49f2514f6b0f1238ae1e"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records current provisional severity inventory P0 2 / P1 1 / P2 32 with gate NOT_CLEAN and no material/status change",
+        "rank": 307,
+        "source_blob_sha": "ba6406c4eac8d2cd7ade49f2514f6b0f1238ae1e"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source records source-semantic FIXED while canonical P2 remains OPEN because exact-SHA execution evidence is unverified",
+        "rank": 307,
+        "source_blob_sha": "ba6406c4eac8d2cd7ade49f2514f6b0f1238ae1e"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source records source-semantic FIXED while canonical P2 remains OPEN because exact-SHA execution evidence is unverified",
+        "rank": 307,
+        "source_blob_sha": "ba6406c4eac8d2cd7ade49f2514f6b0f1238ae1e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source reports exact-SHA commit-status contexts 0/check-runs 0 and independent reviewer did not execute required race/device instrumentation",
+        "rank": 307,
+        "source_blob_sha": "ba6406c4eac8d2cd7ade49f2514f6b0f1238ae1e"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive whole-document structural identity; commit-message bootstrap label is not accepted",
+        "rank": 308,
+        "source_blob_sha": "3a8adf8ff5ec6048de416e165fa646eba6cacd5e"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 32 with gate NOT_CLEAN as current provisional severity inventory",
+        "rank": 308,
+        "source_blob_sha": "3a8adf8ff5ec6048de416e165fa646eba6cacd5e"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly says prior governance records BUG-CACHE-01/02 as source-semantic FIXED / canonical OPEN but this run is independently revalidating those paths before carrying the disposition forward",
+        "rank": 308,
+        "source_blob_sha": "3a8adf8ff5ec6048de416e165fa646eba6cacd5e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "full current production consumer/effect closure, exact-SHA execution evidence, governance-state recount, and final disposition remain open review scope",
+        "rank": 308,
+        "source_blob_sha": "3a8adf8ff5ec6048de416e165fa646eba6cacd5e"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records final provisional/canonical severity inventory P0 2 / P1 1 / P2 32 with gate NOT_CLEAN",
+        "rank": 309,
+        "source_blob_sha": "0fb3d766ffa8a1a07598bb99f96a1ac9d67602e0"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source records source-semantic FIXED while canonical P2 remains OPEN and states no status/material change",
+        "rank": 309,
+        "source_blob_sha": "0fb3d766ffa8a1a07598bb99f96a1ac9d67602e0"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source records source-semantic FIXED while canonical P2 remains OPEN and states no status/material change",
+        "rank": 309,
+        "source_blob_sha": "0fb3d766ffa8a1a07598bb99f96a1ac9d67602e0"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source reports exact SHA has no GitHub commit-status contexts or associated workflow runs and independent runtime execution was not performed, so execution closure remains NOT_VERIFIED",
+        "rank": 309,
+        "source_blob_sha": "0fb3d766ffa8a1a07598bb99f96a1ac9d67602e0"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity",
+        "rank": 310,
+        "source_blob_sha": "caa8b51e4e4b099ff436cf910d668d66e1c6c0e3"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional severity inventory P0 2 / P1 1 / P2 32 with gate NOT_CLEAN",
+        "rank": 310,
+        "source_blob_sha": "caa8b51e4e4b099ff436cf910d668d66e1c6c0e3"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source records fixed invariants but explicitly forbids canonical FIXED-CLOSED because exact-SHA actual execution evidence is absent",
+        "rank": 310,
+        "source_blob_sha": "caa8b51e4e4b099ff436cf910d668d66e1c6c0e3"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source records fixed invariants but explicitly forbids canonical FIXED-CLOSED because exact-SHA actual execution evidence is absent",
+        "rank": 310,
+        "source_blob_sha": "caa8b51e4e4b099ff436cf910d668d66e1c6c0e3"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source reports exact-SHA commit status contexts 0 and workflow runs 0; required exact-SHA actual execution evidence remains absent, so execution closure stays NOT_VERIFIED",
+        "rank": 310,
+        "source_blob_sha": "caa8b51e4e4b099ff436cf910d668d66e1c6c0e3"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 271-310 is receipted"
+  }
+}
