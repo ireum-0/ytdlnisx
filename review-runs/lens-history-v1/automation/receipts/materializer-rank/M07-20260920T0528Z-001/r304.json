@@ -1,0 +1,154 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "rank": 304,
+  "materializer_state_blob": "cda97ee1fd625ef25f815d9cdf21e6387355e8db",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "3ec0c900d1e1e1b2d3c53962f4dff072f8c5adbd",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r303.json",
+    "blob_sha": "4d58b40e9973afeeaa9c15cdc0fcaf2e6b27d58f"
+  },
+  "history": {
+    "commit_sha": "70903cc0bce3ba6e90442cfe17e398dcd481a9ad",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=304"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12__3616ae02__cache01-close-cache02-execution-hold.md",
+        "status": "added",
+        "source_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12__3616ae02__cache01-close-cache02-execution-hold.md",
+    "status": "added",
+    "source_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59",
+    "frozen_blob_sha": "55c2a971bec132938fa3632f16fde8142095ab59",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "3616ae02e56995e795cc52f3074d8c3d1cd2e330",
+      "evidence": "source explicitly records Review-fix final SHA and verified remote implementation HEAD"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "source identifies an independent cumulative cache review with partial closure, but does not explicitly identify the whole document as a supported checkpoint_kind or unambiguous document-identity-v1 substantive non-final structural class"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": {
+        "state": "DIRECT",
+        "value": [
+          {
+            "finding_id": "BUG-CACHE-01",
+            "disposition": "EXISTING / P2 / CLOSED at exact 3616ae02 after source-semantic closure plus actual cache-maintenance production-wiring test cases 2/2 executed and passed; canonical P2 count decreases by one"
+          },
+          {
+            "finding_id": "BUG-CACHE-02",
+            "disposition": "EXISTING / P2 / SOURCE-SEMANTIC FIXED / canonical OPEN on exact-final production root-switch execution-evidence gate; Terminal/cache-storage invocation executed zero tests due INSTALL_FAILED_INSUFFICIENT_STORAGE"
+          }
+        ]
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": {
+          "P0": 0,
+          "P1": 0,
+          "P2": -1,
+          "resulting_counts": {
+            "P0": 2,
+            "P1": 1,
+            "P2": 31
+          }
+        }
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "whole-document structural kind is not explicitly established by a supported source identity"
+    },
+    {
+      "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+      "finding_id": "BUG-CACHE-01",
+      "evidence": "source explicitly records BUG-CACHE-01 CLOSED at exact 3616ae02 and explains source + actual execution evidence for closure"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-CACHE-01",
+      "evidence": "source explicitly records canonical P2 delta -1 and resulting blocker count P0 2 / P1 1 / P2 31"
+    },
+    {
+      "type": "CONTRADICTORY_STATUS_LABELING",
+      "finding_id": "BUG-CACHE-02",
+      "evidence": "source explicitly records BUG-CACHE-02 source-semantic FIXED while canonical disposition remains OPEN because exact-final production-wiring execution evidence is incomplete"
+    },
+    {
+      "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+      "finding_id": "BUG-CACHE-02",
+      "evidence": "source preserves source-semantic fix separately from canonical execution-gate OPEN state and requests verification-only rerun rather than code change"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "finding_id": "BUG-CACHE-02",
+      "evidence": "Terminal/cache-storage instrumentation executed zero tests at exact final SHA due INSTALL_FAILED_INSUFFICIENT_STORAGE; independent reviewer execution is NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
