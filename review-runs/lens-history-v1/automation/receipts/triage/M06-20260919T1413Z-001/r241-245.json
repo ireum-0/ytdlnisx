@@ -1,0 +1,133 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "microsegment_rank_range": [
+    241,
+    245
+  ],
+  "data_head": "7189fbbefad1a5d187a96b077698c295aa8da599",
+  "complete_state_blob": "d700fa5f663c2ce95d30280ece084a1f86ae7cd2",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M06-20260919T1413Z-001/r241-245.json",
+    "blob_sha": "547f6f6f1543ec0f36ef5b4fd0766ba5a2d07dbf"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [
+    {
+      "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/r241-245-kind-effective-001.json",
+      "blob_sha": "d5a39d2f36c47e9e1fa826aae689cb18feac4200",
+      "semantic_effect": "rank 242 checkpoint.kind is effectively DERIVABLE SUBSTANTIVE_NON_FINAL under lens-history-v1/document-identity-v1; original immutable rank receipt and aggregate remain ancestry anchors"
+    }
+  ],
+  "exception_queue_blob": "ccaa24343ffa41862fd4961ff94c529427d01e16",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M06-20260919T1413Z-001/r236-240.json",
+    "blob_sha": "543f7fde3695c7503103a0aef13a2b904d72898f"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 241,
+      "path": "review-runs/checkpoints/2026-09-12T192600Z__909d6e68__checkpoint.md",
+      "source_blob": "b7d9419f1f6bc12b7b086f5b49dc79b4e311fffa",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic structural kind as NOT_VERIFIED and P0 2 / P1 1 / P2 29 as provisional; BUG-BACKUP-04 remains only provisionally OPEN while exact publication identity, consumer/effect closure, execution evidence and final recount are explicitly unresolved."
+    },
+    {
+      "rank": 242,
+      "path": "review-runs/checkpoints/2026-09-13__909d6e68__backup04-exact-publication-identity-addendum.md",
+      "source_blob": "5e4d95de4a48ac9ef8760ecccfe628eb1f4c50b0",
+      "independent_exception_triggers": [
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "effective_checkpoint_kind": {
+        "state": "DERIVABLE",
+        "value": "SUBSTANTIVE_NON_FINAL",
+        "rule": "lens-history-v1/document-identity-v1"
+      },
+      "human_decision_needed": "Apply the bound append-only kind remediation: this addendum is effectively SUBSTANTIVE_NON_FINAL, not a DIRECT structural ADDENDUM kind. Preserve the stale-sibling exact-publication identity issue as an additional same-root BUG-BACKUP-04 residual, count delta 0, with independent execution explicitly NOT EXECUTED."
+    },
+    {
+      "rank": 243,
+      "path": "review-runs/checkpoints/2026-09-13__a12c5805-909d6e68__backup04-publication-outcome-residual.md",
+      "source_blob": "213c6446144f51f2f79f25404108f8146f18b595",
+      "independent_exception_triggers": [
+        "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the process-global publication-outcome sidecar race as another residual of existing BUG-BACKUP-04 rather than a new root, count delta 0; keep CLEAN basis at the prior review base and distinguish implementation-agent tests from independent execution, which is explicitly NOT EXECUTED."
+    },
+    {
+      "rank": 244,
+      "path": "review-runs/checkpoints/2026-09-12T184100Z__a12c5805__checkpoint.md",
+      "source_blob": "95a9380d2184b6de4587484144c7e2300b65fa6d",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve final provisional P0 2 / P1 1 / P2 29 with BUG-BACKUP-02 OPEN/CONFIRMED and no material canonical change; BUG-DUPLICATE-ADMISSION-01 is only carried as previously FIXED-CLOSED on unchanged SHA, while runtime manifestation remains NOT_VERIFIED."
+    },
+    {
+      "rank": 245,
+      "path": "review-runs/checkpoints/2026-09-12T183700Z__a12c5805__checkpoint.md",
+      "source_blob": "51e19da04e24f14dc2d58e42c3a72ff57943bc85",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic checkpoint kind NOT_VERIFIED and provisional P0 2 / P1 1 / P2 29; preserve BUG-BACKUP-02 as the existing OPEN root, reject no separate cleanup root without stronger evidence, and keep runtime/device manifestation and final root-ownership reconciliation NOT_VERIFIED/pending."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      241,
+      242,
+      243,
+      244,
+      245
+    ],
+    "materializer_flagged_exception_ranks": [
+      241,
+      242,
+      243,
+      244,
+      245
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
