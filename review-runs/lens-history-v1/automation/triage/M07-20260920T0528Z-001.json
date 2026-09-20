@@ -1,0 +1,315 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "data_head": "87a0ac038b681911e491fffdcba3f4309bd957ce",
+  "complete_state_blob": "4b3b316639cb2c8312ba8ab8651b190d787d9a94",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "7797fc7588fea47e9d8f35d39dbc1a76a2fafe72",
+    "f4bde1dc7ce0d34d740339237ac528357b75299a",
+    "30bb8b88dd773871fd0f877346ee1f3b619fd540",
+    "df70230f4dda569ceabb6b46d8a9a76d0585d9fd",
+    "924dada30e98488a3879fb86a7d825adc524b0cb",
+    "07a815aac74b698e84054d1f54d5e5e8f5806b03",
+    "32b8cfc4f254526d7e6694e63f0001e252e9660b",
+    "c4431ab6c0369755554f4742ccbb523290330ef4"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M07-20260920T0528Z-001-materialization-271-310.json",
+    "blob_sha": "6b93778f99ed3b229df037a225c514cbe0f45d2e",
+    "status": "PASS"
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        271,
+        275
+      ],
+      "blob_sha": "89d19101b3dc6fe824f161e344c4deccf0f771bf"
+    },
+    {
+      "range": [
+        276,
+        280
+      ],
+      "blob_sha": "e9436a3e1a14d6d0a4c8c8c045e93db6e0c6f5b7"
+    },
+    {
+      "range": [
+        281,
+        285
+      ],
+      "blob_sha": "1d88e6aee15a53fbc0a2decd54be1e5854902841"
+    },
+    {
+      "range": [
+        286,
+        290
+      ],
+      "blob_sha": "5c5e42e5f27d7fceda1a92c9568572b0cc3b9077"
+    },
+    {
+      "range": [
+        291,
+        295
+      ],
+      "blob_sha": "acbf99ea56bad8f6d4d3a37f72658f64d808987d"
+    },
+    {
+      "range": [
+        296,
+        300
+      ],
+      "blob_sha": "a536f843cb7e21c4e788038f78475c33166bed54"
+    },
+    {
+      "range": [
+        301,
+        305
+      ],
+      "blob_sha": "c1fd9a5b96dbbc476c1df77d2e55b2964c7aa5da"
+    },
+    {
+      "range": [
+        306,
+        310
+      ],
+      "blob_sha": "ee13aa66cbcb5bb498870453ce8e614f01ca4024"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "da166ba551fe4bfc4812702c3b67c90fc5707757",
+  "materializer_exception_rank_count": 40,
+  "independent_exception_ranks": [
+    271,
+    272,
+    273,
+    274,
+    275,
+    276,
+    277,
+    278,
+    279,
+    280,
+    281,
+    282,
+    283,
+    284,
+    285,
+    286,
+    287,
+    288,
+    289,
+    290,
+    291,
+    292,
+    293,
+    294,
+    295,
+    296,
+    297,
+    298,
+    299,
+    300,
+    301,
+    302,
+    303,
+    304,
+    305,
+    306,
+    307,
+    308,
+    309,
+    310
+  ],
+  "independent_exception_rank_count": 40,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "human_review_packets": [
+    {
+      "topic": "historical same-root reconciliation and dependency boundaries",
+      "ranks": [
+        271,
+        272,
+        273,
+        274,
+        275,
+        276,
+        278,
+        282,
+        283,
+        287,
+        288,
+        289,
+        292,
+        293,
+        294,
+        297,
+        298,
+        299,
+        300,
+        301,
+        302,
+        303,
+        305
+      ],
+      "required_decision": "Preserve each existing root, residual/subcase, alias and prerequisite boundary exactly as recorded without manufacturing new blocker IDs or collapsing distinct roots. Count-delta-zero revalidations must remain zero."
+    },
+    {
+      "topic": "source-semantic/source-clean versus canonical OPEN execution gate",
+      "ranks": [
+        277,
+        279,
+        281,
+        304,
+        306,
+        307,
+        309,
+        310
+      ],
+      "required_decision": "Keep source-semantic FIXED or source-clean conclusions distinct from canonical OPEN whenever exact-SHA actual execution evidence is absent or blocked. Do not promote source closure into canonical FIXED-CLOSED without the required execution gate."
+    },
+    {
+      "topic": "explicit status/count/CLEAN-basis transitions",
+      "ranks": [
+        290,
+        295,
+        304
+      ],
+      "required_decision": "Preserve exact historical status and count transitions at their own bases, including BUG-CACHE-02 OPEN -> FIXED-CLOSED with P2 31 -> 30, later CLEAN-basis advancement, and BUG-CACHE-01 closure with P2 -1 -> 31. Do not back-propagate later closures to older checkpoints."
+    },
+    {
+      "topic": "generic checkpoint kind ambiguity",
+      "ranks": [
+        271,
+        272,
+        273,
+        274,
+        275,
+        276,
+        278,
+        279,
+        280,
+        281,
+        282,
+        283,
+        285,
+        286,
+        287,
+        288,
+        289,
+        291,
+        292,
+        293,
+        294,
+        295,
+        296,
+        297,
+        298,
+        299,
+        300,
+        301,
+        302,
+        303,
+        304,
+        305,
+        307,
+        308,
+        310
+      ],
+      "required_decision": "Preserve NOT_VERIFIED structural kind whenever the exact source lacks a supported positive whole-document identity. Filename, commit message, chronology and vague implication are not sufficient structural evidence."
+    },
+    {
+      "topic": "provisional historical blocker counts",
+      "ranks": [
+        277,
+        279,
+        280,
+        281,
+        284,
+        285,
+        286,
+        291,
+        296,
+        304,
+        305,
+        306,
+        307,
+        308,
+        309,
+        310
+      ],
+      "required_decision": "Preserve each P0/P1/P2 inventory at its exact historical basis and never rewrite old counts using later closure evidence. Provisional counts remain provisional where the source says so."
+    },
+    {
+      "topic": "NOT_VERIFIED and execution provenance",
+      "ranks": [
+        271,
+        272,
+        273,
+        274,
+        275,
+        276,
+        277,
+        278,
+        279,
+        280,
+        281,
+        282,
+        283,
+        284,
+        285,
+        286,
+        287,
+        288,
+        289,
+        290,
+        291,
+        292,
+        293,
+        294,
+        295,
+        296,
+        297,
+        298,
+        299,
+        300,
+        301,
+        302,
+        303,
+        304,
+        305,
+        306,
+        307,
+        308,
+        309,
+        310
+      ],
+      "required_decision": "Do not convert absent independent execution, empty GitHub status/check evidence, source-only reasoning, or blocked instrumentation into deterministic runtime PASS/CLOSED. Explicit external exact-final execution evidence must remain separately attributed from independent reviewer execution."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_271_310": true,
+    "triage_correction_applied": false,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
