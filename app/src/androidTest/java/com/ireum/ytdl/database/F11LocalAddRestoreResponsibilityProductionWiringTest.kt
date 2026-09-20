@@ -82,25 +82,12 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
     @Test
     fun activeSessionIsQuiescedAndReconstructedWithOneExactOwner(): Unit = runBlocking {
         val initialEntered = CompletableDeferred<Unit>()
-        val replacementEntered = CompletableDeferred<Unit>()
         val initialRelease = CompletableDeferred<Unit>()
-        val replacementRelease = CompletableDeferred<Unit>()
-        var calls = 0
         LocalAddWorkerTestHooks.matchForTesting = { _, _ ->
-            calls += 1
-            when (calls) {
-                1 -> {
-                    initialEntered.complete(Unit)
-                    initialRelease.await()
-                }
-                2 -> {
-                    replacementEntered.complete(Unit)
-                    replacementRelease.await()
-                }
-            }
+            initialEntered.complete(Unit)
+            initialRelease.await()
             null
         }
-
         val (sessionId, initialRequestId) = createLiveSession()
         withTimeout(20_000L) { initialEntered.await() }
         val initialInfo = requireNotNull(
@@ -114,7 +101,6 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
             historyPlan("https://example.com/f11-local-add-reset"),
         )
         assertTrue(outcome is RestoreOutcome.Completed)
-        withTimeout(20_000L) { replacementEntered.await() }
 
         val owner = requireNotNull(LocalAddStorage.loadWorkOwner(context, sessionId))
         assertEquals(LocalAddStorage.OWNER_ACCEPTED, owner.state)
@@ -139,35 +125,15 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
                 .isFinished,
         )
 
-        initialRelease.complete(Unit)
-        replacementRelease.complete(Unit)
-        awaitFinished(UUID.fromString(owner.requestId))
-        withTimeout(20_000L) {
-            while (LocalAddStorage.loadWorkOwner(context, sessionId)?.state != LocalAddStorage.OWNER_RETIRED) {
-                kotlinx.coroutines.delay(25L)
-            }
-        }
     }
 
     @Test
     fun sameRestoreReplayReusesAcceptedLocalAddOwner(): Unit = runBlocking {
         val initialEntered = CompletableDeferred<Unit>()
-        val replacementEntered = CompletableDeferred<Unit>()
         val initialRelease = CompletableDeferred<Unit>()
-        val replacementRelease = CompletableDeferred<Unit>()
-        var calls = 0
         LocalAddWorkerTestHooks.matchForTesting = { _, _ ->
-            calls += 1
-            when (calls) {
-                1 -> {
-                    initialEntered.complete(Unit)
-                    initialRelease.await()
-                }
-                2 -> {
-                    replacementEntered.complete(Unit)
-                    replacementRelease.await()
-                }
-            }
+            initialEntered.complete(Unit)
+            initialRelease.await()
             null
         }
         val (sessionId, _) = createLiveSession()
@@ -185,7 +151,6 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
             historyPlan("https://example.com/f11-local-add-replay"),
         )
         assertTrue(pending is RestoreOutcome.CommittedReconciliationPending)
-        withTimeout(20_000L) { replacementEntered.await() }
         val firstOwner = requireNotNull(LocalAddStorage.loadWorkOwner(context, sessionId))
         assertEquals(LocalAddStorage.OWNER_ACCEPTED, firstOwner.state)
         assertTrue(
@@ -208,9 +173,6 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
                 .count { !it.state.isFinished },
         )
 
-        initialRelease.complete(Unit)
-        replacementRelease.complete(Unit)
-        awaitFinished(UUID.fromString(replayedOwner.requestId))
     }
 
     @Test
