@@ -204,43 +204,46 @@ internal object WorkManagerHandoffRecovery {
         val canonicalIdentity = "$sourceId|$confirmedUrl|$configFingerprint|" +
             ObserveRetryDecisionReceiver.ACTION_DOWNLOAD
         val handoffId = UUID.nameUUIDFromBytes(canonicalIdentity.toByteArray(StandardCharsets.UTF_8)).toString()
-        val dao = database(context).workManagerHandoffCarrierDao
-        val existing = blocking {
-            dao.getOutstandingObserveRetry(
+        return RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
+            val dao = database(context).workManagerHandoffCarrierDao
+            check(!RestoreGate.isRestoreInProgress(context)) {
+                "Restore transaction is active"
+            }
+            val existing = blocking {
+                dao.getOutstandingObserveRetry(
+                    sourceId = sourceId,
+                    confirmedUrl = confirmedUrl,
+                    decision = ObserveRetryDecisionReceiver.ACTION_DOWNLOAD,
+                    configFingerprint = configFingerprint,
+                )
+            }
+            if (existing != null) {
+                return@withOrdinaryMutationBlocking existing.handoffId
+            }
+
+            val now = System.currentTimeMillis()
+            val carrier = WorkManagerHandoffCarrier(
+                handoffId = handoffId,
+                kind = WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD,
+                generationId = handoffId,
+                requestId = UUID.randomUUID().toString(),
+                uniqueWorkName = "OBSERVE$sourceId",
                 sourceId = sourceId,
                 confirmedUrl = confirmedUrl,
                 decision = ObserveRetryDecisionReceiver.ACTION_DOWNLOAD,
                 configFingerprint = configFingerprint,
+                createdAt = now,
+                updatedAt = now,
             )
-        }
-        if (existing != null) return existing.handoffId
-
-        check(!RestoreGate.isRestoreInProgress(context)) {
-            "Restore transaction is active"
-        }
-        val now = System.currentTimeMillis()
-        val carrier = WorkManagerHandoffCarrier(
-            handoffId = handoffId,
-            kind = WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD,
-            generationId = handoffId,
-            requestId = UUID.randomUUID().toString(),
-            uniqueWorkName = "OBSERVE$sourceId",
-            sourceId = sourceId,
-            confirmedUrl = confirmedUrl,
-            decision = ObserveRetryDecisionReceiver.ACTION_DOWNLOAD,
-            configFingerprint = configFingerprint,
-            createdAt = now,
-            updatedAt = now,
-        )
-        blocking {
-            check(!RestoreGate.isRestoreInProgress(context)) {
-                "Restore transaction is active"
+            blocking {
+                check(!RestoreGate.isRestoreInProgress(context)) {
+                    "Restore transaction is active"
+                }
+                dao.insert(carrier)
             }
-            dao.insert(carrier)
+            blocking { dao.get(handoffId) }?.handoffId ?: handoffId
         }
-        return blocking { dao.get(handoffId) }?.handoffId ?: handoffId
     }
-
     fun prepareLegacySchedulerBoundary(context: Context, boundary: String): String =
         prepareSchedulerBoundary(context, boundary, System.currentTimeMillis())
 
@@ -289,6 +292,24 @@ internal object WorkManagerHandoffRecovery {
         convergenceScope.launch {
             enqueueAndAwaitForRestore(context, handoffId, authority).await()
         }
+    }
+
+    /**
+     * Restore-owned callers must not retire the Restore pointer while an
+     * exact-alarm failure still has only an in-memory retry. This suspend
+     * boundary returns only after WorkManager Operation.result has accepted
+     * the delayed successor and the carrier has been durably acknowledged.
+     */
+    internal suspend fun ensureConvergenceForRestoreAndAwait(
+        context: Context,
+        handoffId: String,
+        authority: RestoreReconciliationAuthority,
+    ): EnqueueOutcome {
+        val outcome = enqueueAndAwaitForRestore(context, handoffId, authority).await()
+        check(outcome.accepted) {
+            "Restore scheduler successor was not accepted: ${outcome.kind}"
+        }
+        return outcome
     }
 
     internal fun clearForTesting() {
@@ -344,7 +365,9 @@ internal object WorkManagerHandoffRecovery {
         val appContext = context.applicationContext
         if (RestoreGate.isRestoreInProgress(appContext)) return
         val dao = database(appContext).workManagerHandoffCarrierDao
-        dao.deleteResolved()
+        RestoreMutationAdmission.withOrdinaryMutation(appContext) {
+            dao.deleteResolved()
+        }
         dao.getOutstanding().forEach { carrier ->
             reconcileCarrier(appContext, carrier)
         }
@@ -356,16 +379,20 @@ internal object WorkManagerHandoffRecovery {
         requestId: String,
     ): Boolean {
         if (RestoreGate.isRestoreInProgress(context)) return false
-        val dao = database(context).workManagerHandoffCarrierDao
-        val changed = dao.markResolved(handoffId, requestId, System.currentTimeMillis())
-        if (changed == 0) {
-            val current = dao.get(handoffId)
-            if (current == null || current.state == WorkManagerHandoffCarrier.RESOLVED) return true
-            return false
+        return RestoreMutationAdmission.withOrdinaryMutation(context) {
+            val dao = database(context).workManagerHandoffCarrierDao
+            val changed = dao.markResolved(handoffId, requestId, System.currentTimeMillis())
+            if (changed == 0) {
+                val current = dao.get(handoffId)
+                if (current == null || current.state == WorkManagerHandoffCarrier.RESOLVED) {
+                    return@withOrdinaryMutation true
+                }
+                return@withOrdinaryMutation false
+            }
+            dao.delete(handoffId)
+            retryJobs.remove(handoffId)?.cancel()
+            true
         }
-        dao.delete(handoffId)
-        retryJobs.remove(handoffId)?.cancel()
-        return true
     }
 
     fun observeConfigFingerprint(source: ObserveSourcesItem): String {
@@ -413,10 +440,12 @@ internal object WorkManagerHandoffRecovery {
                     retryAfterFailure(context, carrier, null)
                 }
                 carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD -> {
-                    database(context).workManagerHandoffCarrierDao.deleteAccepted(
-                        carrier.handoffId,
-                        carrier.requestId,
-                    )
+                    withCarrierMutation(context, null) {
+                        database(context).workManagerHandoffCarrierDao.deleteAccepted(
+                            carrier.handoffId,
+                            carrier.requestId,
+                        )
+                    }
                 }
             }
             return
@@ -427,17 +456,22 @@ internal object WorkManagerHandoffRecovery {
             WorkInfo.State.RUNNING,
             WorkInfo.State.BLOCKED,
             WorkInfo.State.SUCCEEDED -> {
-                val accepted = database(context).workManagerHandoffCarrierDao.markAccepted(
-                    carrier.handoffId,
-                    carrier.requestId,
-                    System.currentTimeMillis(),
-                )
-                if (accepted > 0 && carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
-                    database(context).workManagerHandoffCarrierDao.deleteAccepted(
+                val accepted = withCarrierMutation(context, null) {
+                    val dao = database(context).workManagerHandoffCarrierDao
+                    val changed = dao.markAccepted(
                         carrier.handoffId,
                         carrier.requestId,
+                        System.currentTimeMillis(),
                     )
-                } else if (
+                    if (changed > 0 && carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
+                        dao.deleteAccepted(
+                            carrier.handoffId,
+                            carrier.requestId,
+                        )
+                    }
+                    changed
+                }
+                if (
                     accepted > 0 &&
                     carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD &&
                     workInfo.state == WorkInfo.State.SUCCEEDED
@@ -448,6 +482,25 @@ internal object WorkManagerHandoffRecovery {
             WorkInfo.State.FAILED,
             WorkInfo.State.CANCELLED -> retryAfterFailure(context, carrier, null)
             null -> scheduleRetry(context, carrier.handoffId)
+        }
+    }
+
+    /**
+     * Protects only the final Room/carrier mutation. WorkManager enqueue and
+     * Operation.result observation remain outside this boundary.
+     */
+    private suspend fun <T> withCarrierMutation(
+        context: Context,
+        authority: RestoreReconciliationAuthority?,
+        block: suspend () -> T,
+    ): T = if (authority == null) {
+        RestoreMutationAdmission.withOrdinaryMutation(context) {
+            block()
+        }
+    } else {
+        RestoreMutationAdmission.withRestoreMutation {
+            RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+            block()
         }
     }
 
@@ -484,7 +537,7 @@ internal object WorkManagerHandoffRecovery {
             )
         }
         val remainingDelay = carrier.notBeforeAt - System.currentTimeMillis()
-        if (remainingDelay > 0L) {
+        if (remainingDelay > 0L && authority == null) {
             scheduleRetry(context, handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING)
         }
@@ -496,15 +549,34 @@ internal object WorkManagerHandoffRecovery {
         }
 
         return try {
-            val operation = synchronized(boundaryLock(carrier)) {
-                if (!schedulerAuthorityAvailable(context, authority) || !isCurrentGeneration(carrier)) {
-                    null
-                } else {
-                    enqueueUniqueWork(
-                        context = context,
-                        uniqueWorkName = carrier.uniqueWorkName,
-                        request = request,
-                    )
+            val operation = if (authority == null) {
+                RestoreMutationAdmission.withOrdinaryMutation(context) {
+                    synchronized(boundaryLock(carrier)) {
+                        if (!schedulerAuthorityAvailable(context, null) || !isCurrentGeneration(carrier)) {
+                            null
+                        } else {
+                            enqueueUniqueWork(
+                                context = context,
+                                uniqueWorkName = carrier.uniqueWorkName,
+                                request = request,
+                            )
+                        }
+                    }
+                }
+            } else {
+                RestoreMutationAdmission.withRestoreMutation {
+                    RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+                    synchronized(boundaryLock(carrier)) {
+                        if (!schedulerAuthorityAvailable(context, authority) || !isCurrentGeneration(carrier)) {
+                            null
+                        } else {
+                            enqueueUniqueWork(
+                                context = context,
+                                uniqueWorkName = carrier.uniqueWorkName,
+                                request = request,
+                            )
+                        }
+                    }
                 }
             } ?: if (!schedulerAuthorityAvailable(context, authority)) {
                 scheduleRetry(context, handoffId, authority)
@@ -516,35 +588,44 @@ internal object WorkManagerHandoffRecovery {
             if (failure != null) {
                 retryAfterFailure(context, carrier, failure, authority)
             } else {
-                if (!isCurrentGeneration(carrier)) {
-                    return EnqueueOutcome(OutcomeKind.SUPERSEDED)
-                }
-                val accepted = dao.markAccepted(
-                    carrier.handoffId,
-                    carrier.requestId,
-                    System.currentTimeMillis(),
-                )
-                if (accepted == 0) {
-                    val current = dao.get(carrier.handoffId)
-                    if (current == null || current.requestId != carrier.requestId || !isCurrentGeneration(carrier)) {
-                        EnqueueOutcome(OutcomeKind.SUPERSEDED)
-                    } else {
-                        EnqueueOutcome(OutcomeKind.ACCEPTED)
-                    }
-                } else {
-                    if (carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
-                        dao.deleteAccepted(carrier.handoffId, carrier.requestId)
-                    }
-                    retryJobs.remove(carrier.handoffId)?.cancel()
-                    if (!isCurrentGeneration(carrier)) {
-                        EnqueueOutcome(OutcomeKind.SUPERSEDED)
-                    } else {
-                        EnqueueOutcome(OutcomeKind.ACCEPTED)
-                    }
-                }
+                finalizeAccepted(context, carrier, authority)
             }
         } catch (failure: Throwable) {
             retryAfterFailure(context, carrier, failure, authority)
+        }
+    }
+
+    private suspend fun finalizeAccepted(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+        authority: RestoreReconciliationAuthority?,
+    ): EnqueueOutcome = withCarrierMutation(context, authority) {
+        if (!isCurrentGeneration(carrier)) {
+            return@withCarrierMutation EnqueueOutcome(OutcomeKind.SUPERSEDED)
+        }
+        val dao = database(context).workManagerHandoffCarrierDao
+        val accepted = dao.markAccepted(
+            carrier.handoffId,
+            carrier.requestId,
+            System.currentTimeMillis(),
+        )
+        if (accepted == 0) {
+            val current = dao.get(carrier.handoffId)
+            if (current == null || current.requestId != carrier.requestId || !isCurrentGeneration(carrier)) {
+                EnqueueOutcome(OutcomeKind.SUPERSEDED)
+            } else {
+                EnqueueOutcome(OutcomeKind.ACCEPTED)
+            }
+        } else {
+            if (carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
+                dao.deleteAccepted(carrier.handoffId, carrier.requestId)
+            }
+            retryJobs.remove(carrier.handoffId)?.cancel()
+            if (!isCurrentGeneration(carrier)) {
+                EnqueueOutcome(OutcomeKind.SUPERSEDED)
+            } else {
+                EnqueueOutcome(OutcomeKind.ACCEPTED)
+            }
         }
     }
 
@@ -558,63 +639,108 @@ internal object WorkManagerHandoffRecovery {
             scheduleRetry(context, carrier.handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING, failure)
         }
-        val dao = database(context).workManagerHandoffCarrierDao
-        if (!isCurrentGeneration(carrier)) {
-            return EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
-        }
+
         val existingWork = workInfo(context, carrier.requestId)
-        if (existingWork != null && existingWork.state !in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED)) {
-            val accepted = dao.markAccepted(
-                carrier.handoffId,
-                carrier.requestId,
-                System.currentTimeMillis(),
-            )
-            if (accepted > 0 && carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
-                dao.deleteAccepted(carrier.handoffId, carrier.requestId)
+        if (existingWork != null &&
+            existingWork.state !in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED)
+        ) {
+            val outcome = try {
+                withCarrierMutation(context, authority) {
+                    if (!isCurrentGeneration(carrier)) {
+                        return@withCarrierMutation EnqueueOutcome(
+                            OutcomeKind.SUPERSEDED,
+                            failure,
+                        )
+                    }
+                    val dao = database(context).workManagerHandoffCarrierDao
+                    val accepted = dao.markAccepted(
+                        carrier.handoffId,
+                        carrier.requestId,
+                        System.currentTimeMillis(),
+                    )
+                    if (accepted > 0 && carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
+                        dao.deleteAccepted(carrier.handoffId, carrier.requestId)
+                    }
+                    if (accepted > 0) {
+                        if (isCurrentGeneration(carrier)) {
+                            EnqueueOutcome(OutcomeKind.ACCEPTED, failure)
+                        } else {
+                            EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
+                        }
+                    } else {
+                        val current = dao.get(carrier.handoffId)
+                        if (
+                            current == null ||
+                            current.requestId != carrier.requestId ||
+                            !isCurrentGeneration(carrier)
+                        ) {
+                            // A newer REPLACE generation owns the exact
+                            // semantic request.
+                            EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
+                        } else {
+                            EnqueueOutcome(OutcomeKind.ACCEPTED, failure)
+                        }
+                    }
+                }
+            } catch (blocked: IllegalStateException) {
+                if (authority == null && blocked.message == "Restore transaction is active") {
+                    scheduleRetry(context, carrier.handoffId, authority)
+                    return EnqueueOutcome(OutcomeKind.RETRYING, failure)
+                }
+                throw blocked
             }
-            if (accepted > 0) {
-                return if (isCurrentGeneration(carrier)) {
-                    EnqueueOutcome(OutcomeKind.ACCEPTED, failure)
+            return outcome
+        }
+
+        val outcome = try {
+            withCarrierMutation(context, authority) {
+                val dao = database(context).workManagerHandoffCarrierDao
+                val current = dao.get(carrier.handoffId)
+                    ?: return@withCarrierMutation EnqueueOutcome(
+                        OutcomeKind.SUPERSEDED,
+                        failure,
+                    )
+                if (current.requestId != carrier.requestId || !isCurrentGeneration(carrier)) {
+                    return@withCarrierMutation EnqueueOutcome(
+                        OutcomeKind.SUPERSEDED,
+                        failure,
+                    )
+                }
+                val newRequestId = UUID.randomUUID().toString()
+                val advanced = dao.advanceRetry(
+                    handoffId = carrier.handoffId,
+                    oldRequestId = carrier.requestId,
+                    newRequestId = newRequestId,
+                    attempt = carrier.attempt + 1,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                if (advanced == 0) {
+                    val latest = dao.get(carrier.handoffId)
+                    if (
+                        latest == null ||
+                        latest.requestId != carrier.requestId ||
+                        !isCurrentGeneration(carrier)
+                    ) {
+                        EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
+                    } else {
+                        EnqueueOutcome(OutcomeKind.RETRYING, failure)
+                    }
                 } else {
-                    EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
+                    EnqueueOutcome(OutcomeKind.RETRYING, failure)
                 }
             }
-            val current = dao.get(carrier.handoffId)
-            return if (current == null || current.requestId != carrier.requestId || !isCurrentGeneration(carrier)) {
-                // A newer REPLACE generation owns the exact semantic request.
-                // An old Operation/WorkInfo callback cannot report acceptance
-                // for that successor.
-                EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
-            } else {
-                EnqueueOutcome(OutcomeKind.ACCEPTED, failure)
+        } catch (blocked: IllegalStateException) {
+            if (authority == null && blocked.message == "Restore transaction is active") {
+                scheduleRetry(context, carrier.handoffId, authority)
+                return EnqueueOutcome(OutcomeKind.RETRYING, failure)
             }
+            throw blocked
         }
-
-        val current = dao.get(carrier.handoffId)
-            ?: return EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
-        if (current.requestId != carrier.requestId || !isCurrentGeneration(carrier)) {
-            return EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
+        if (outcome.kind == OutcomeKind.RETRYING) {
+            scheduleRetry(context, carrier.handoffId, authority)
         }
-        val newRequestId = UUID.randomUUID().toString()
-        val advanced = dao.advanceRetry(
-            handoffId = carrier.handoffId,
-            oldRequestId = carrier.requestId,
-            newRequestId = newRequestId,
-            attempt = carrier.attempt + 1,
-            updatedAt = System.currentTimeMillis(),
-        )
-        if (advanced == 0) {
-            val latest = dao.get(carrier.handoffId)
-            return if (latest == null || latest.requestId != carrier.requestId || !isCurrentGeneration(carrier)) {
-                EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
-            } else {
-                EnqueueOutcome(OutcomeKind.RETRYING, failure)
-            }
-        }
-        scheduleRetry(context, carrier.handoffId, authority)
-        return EnqueueOutcome(OutcomeKind.RETRYING, failure)
+        return outcome
     }
-
     private fun scheduleRetry(
         context: Context,
         handoffId: String,
@@ -656,6 +782,20 @@ internal object WorkManagerHandoffRecovery {
     }
 
     private fun replaceOutstandingAndInsert(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+        restoreAuthority: RestoreReconciliationAuthority? = null,
+    ) {
+        if (restoreAuthority == null) {
+            RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
+                replaceOutstandingAndInsertLocked(context, carrier, null)
+            }
+        } else {
+            replaceOutstandingAndInsertLocked(context, carrier, restoreAuthority)
+        }
+    }
+
+    private fun replaceOutstandingAndInsertLocked(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
         restoreAuthority: RestoreReconciliationAuthority? = null,
@@ -711,9 +851,9 @@ internal object WorkManagerHandoffRecovery {
         kind: String,
         boundary: String,
     ) {
-        synchronized(boundaryLock(kind, boundary)) {
-            if (RestoreGate.isRestoreInProgress(context)) return
-            val dao = database(context).workManagerHandoffCarrierDao
+        RestoreMutationAdmission.tryOrdinaryMutationBlocking(context) {
+            synchronized(boundaryLock(kind, boundary)) {
+                val dao = database(context).workManagerHandoffCarrierDao
             val carrier = blocking { dao.getOutstandingForBoundary(kind, boundary) }
             carrier?.let {
                 retryJobs.remove(it.handoffId)?.cancel()
@@ -722,7 +862,8 @@ internal object WorkManagerHandoffRecovery {
             blocking { dao.deleteOutstandingForBoundary(kind, boundary) }
             // A tombstone prevents an already-running old attempt from
             // treating a concurrent cancellation as a process-death reset.
-            latestGenerationByBoundary[boundaryKey(kind, boundary)] = CANCELLED_GENERATION
+                latestGenerationByBoundary[boundaryKey(kind, boundary)] = CANCELLED_GENERATION
+            }
         }
     }
 

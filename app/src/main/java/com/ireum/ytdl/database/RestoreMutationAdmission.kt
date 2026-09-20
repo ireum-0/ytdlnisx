@@ -56,6 +56,22 @@ internal object RestoreMutationAdmission {
         withOrdinaryMutation(context) { block() }
     }
 
+    /**
+     * Preserves existing cancellation/no-op semantics while making the
+     * actual carrier deletion participate in the ordinary admission boundary.
+     */
+    fun tryOrdinaryMutationBlocking(
+        context: Context,
+        block: () -> Unit,
+    ): Boolean = try {
+        withOrdinaryMutationBlocking(context) {
+            block()
+        }
+        true
+    } catch (error: IllegalStateException) {
+        if (error.message == "Restore transaction is active") false else throw error
+    }
+
     suspend fun <T> withRestorePublication(block: suspend () -> T): T = withHeld {
         restorePublicationAuthorityAcquiredForTesting?.invoke()
         block()
@@ -65,7 +81,9 @@ internal object RestoreMutationAdmission {
 
     fun applyOrdinaryPreferences(context: Context, editor: SharedPreferences.Editor) {
         withOrdinaryMutationBlocking(context) {
-            editor.apply()
+            check(editor.commit()) {
+                "Ordinary preference persistence was not durable"
+            }
         }
     }
 }

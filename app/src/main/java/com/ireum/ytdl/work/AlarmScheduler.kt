@@ -11,10 +11,17 @@ import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
 import com.ireum.ytdl.receiver.CancelScheduleAlarmReceiver
 import com.ireum.ytdl.receiver.ScheduleAlarmReceiver
+import kotlinx.coroutines.CancellationException
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
 class AlarmScheduler(private val context: Context) {
+
+    companion object {
+        @Volatile
+        internal var exactAlarmPublicationForTesting:
+            ((AlarmManager, Long, PendingIntent) -> Unit)? = null
+    }
 
     private val preferences = PreferenceManager.getDefaultSharedPreferences(context)
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
@@ -45,7 +52,7 @@ class AlarmScheduler(private val context: Context) {
             at,
             authority,
         )
-        setAlarm(
+        setAlarmForRestore(
             receiver = ScheduleAlarmReceiver::class.java,
             requestCode = 1,
             at = at,
@@ -125,41 +132,78 @@ class AlarmScheduler(private val context: Context) {
         requestCode: Int,
         at: Long,
         handoffId: String,
-        restoreAuthority: RestoreReconciliationAuthority? = null,
     ) {
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            requestCode,
-            Intent(context, receiver).putExtra(
-                WorkManagerHandoffRecovery.EXTRA_HANDOFF_ID,
-                handoffId,
-            ),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val pendingIntent = pendingIntent(receiver, requestCode, handoffId)
         try {
-            alarmManager?.setExactAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                at,
-                pendingIntent,
-            )
+            if (!publishExactAlarm(at, pendingIntent)) {
+                WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
+            }
         } catch (_: Throwable) {
             // The durable carrier remains the successor if exact-alarm
             // publication itself is unavailable.
-            if (restoreAuthority == null) {
-                WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
-            } else {
-                WorkManagerHandoffRecovery.ensureConvergenceForRestore(context, handoffId, restoreAuthority)
-            }
+            WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
         }
-        if (alarmManager == null) {
-            if (restoreAuthority == null) {
-                WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
-            } else {
-                WorkManagerHandoffRecovery.ensureConvergenceForRestore(context, handoffId, restoreAuthority)
+    }
+
+    private suspend fun setAlarmForRestore(
+        receiver: Class<out android.content.BroadcastReceiver>,
+        requestCode: Int,
+        at: Long,
+        handoffId: String,
+        restoreAuthority: RestoreReconciliationAuthority,
+    ) {
+        val pendingIntent = pendingIntent(receiver, requestCode, handoffId)
+        try {
+            if (!publishExactAlarm(at, pendingIntent)) {
+                WorkManagerHandoffRecovery.ensureConvergenceForRestoreAndAwait(
+                    context,
+                    handoffId,
+                    restoreAuthority,
+                )
+            }
+        } catch (failure: Throwable) {
+            if (failure is CancellationException) throw failure
+            try {
+                WorkManagerHandoffRecovery.ensureConvergenceForRestoreAndAwait(
+                    context,
+                    handoffId,
+                    restoreAuthority,
+                )
+            } catch (fallbackFailure: Throwable) {
+                fallbackFailure.addSuppressed(failure)
+                throw fallbackFailure
             }
         }
     }
 
+    private fun pendingIntent(
+        receiver: Class<out android.content.BroadcastReceiver>,
+        requestCode: Int,
+        handoffId: String,
+    ): PendingIntent = PendingIntent.getBroadcast(
+        context,
+        requestCode,
+        Intent(context, receiver).putExtra(
+            WorkManagerHandoffRecovery.EXTRA_HANDOFF_ID,
+            handoffId,
+        ),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    @SuppressLint("ScheduleExactAlarm")
+    private fun publishExactAlarm(
+        at: Long,
+        pendingIntent: PendingIntent,
+    ): Boolean {
+        val manager = alarmManager ?: return false
+        exactAlarmPublicationForTesting?.invoke(manager, at, pendingIntent)
+            ?: manager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                at,
+                pendingIntent,
+            )
+        return true
+    }
     private fun calculateNextTime(c: Calendar) : Calendar {
         val calendar = Calendar.getInstance()
         if (c.get(Calendar.HOUR_OF_DAY) < calendar.get(Calendar.HOUR_OF_DAY)){

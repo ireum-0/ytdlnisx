@@ -77,6 +77,13 @@ import java.util.Locale
 
 
 class MainSettingsFragment : PreferenceFragmentCompat() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        preferenceManager.preferenceDataStore =
+            RestoreAwarePreferenceDataStore(requireContext().applicationContext)
+    }
+
+
     private var backup : Preference? = null
     private var restore : Preference? = null
     private var backupPath : Preference? = null

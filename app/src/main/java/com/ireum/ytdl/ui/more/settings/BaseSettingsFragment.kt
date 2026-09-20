@@ -1,6 +1,7 @@
 package com.ireum.ytdl.ui.more.settings
 
 import android.content.SharedPreferences
+import android.os.Bundle
 import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.preference.EditTextPreference
@@ -21,6 +22,12 @@ import com.google.android.material.textfield.TextInputLayout
 
 abstract class BaseSettingsFragment : PreferenceFragmentCompat() {
     abstract val title: Int
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        preferenceManager.preferenceDataStore =
+            RestoreAwarePreferenceDataStore(requireContext().applicationContext)
+    }
 
     override fun onStart() {
         super.onStart()
