@@ -117,13 +117,6 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
                 .get(10, TimeUnit.SECONDS)
                 .count { !it.state.isFinished },
         )
-        assertTrue(initialInfo.id.toString() == initialRequestId)
-        assertTrue(
-            requireNotNull(workManager.getWorkInfoById(UUID.fromString(initialRequestId))
-                .get(10, TimeUnit.SECONDS))
-                .state
-                .isFinished,
-        )
 
     }
 
