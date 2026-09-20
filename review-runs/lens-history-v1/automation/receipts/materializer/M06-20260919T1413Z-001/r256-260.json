@@ -1,0 +1,193 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M06-20260919T1413Z-001",
+  "stage": "MATERIALIZE_231_270",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "segment_range": [
+    256,
+    260
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6dd62519edf788db869c87eb9d001b393065781a",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M06-20260919T1413Z-001/r251-255.json",
+    "blob_sha": "b5e470d72eae33515a67da936c3e68aca902a33b"
+  },
+  "rank_receipts": [
+    {
+      "rank": 256,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r256.json",
+      "blob_sha": "e243ba1c5fc51936206e09348ab3f6a11b7cabc3"
+    },
+    {
+      "rank": 257,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r257.json",
+      "blob_sha": "9c8bdd7a25c56ed7f6e1796a12b173b6b3fe1af0"
+    },
+    {
+      "rank": 258,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r258.json",
+      "blob_sha": "6ba9d159512d009c0cd40a0cb1837e8116639436"
+    },
+    {
+      "rank": 259,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r259.json",
+      "blob_sha": "de6e47990a5ca4cf3a77eb3258f2c22d7e98b994"
+    },
+    {
+      "rank": 260,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M06-20260919T1413Z-001/r260.json",
+      "blob_sha": "474a779c7818a338e9d0a0035e7347c0fa850ba3"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      256,
+      257,
+      258,
+      259,
+      260
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity",
+        "rank": 256,
+        "source_blob_sha": "618cf262a3e72d48fd8b7de3aefec1dc135eec2a"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records current provisional blocker counts P0 2 / P1 1 / P2 30",
+        "rank": 256,
+        "source_blob_sha": "618cf262a3e72d48fd8b7de3aefec1dc135eec2a"
+      },
+      {
+        "type": "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source confirms fixed duplicate-admission invariants but explicitly leaves canonical closure contingent on exact-final-SHA execution evidence",
+        "rank": 256,
+        "source_blob_sha": "618cf262a3e72d48fd8b7de3aefec1dc135eec2a"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "exact implementation status/check-runs/Actions are all zero and independent device/runtime execution is NOT EXECUTED",
+        "rank": 256,
+        "source_blob_sha": "618cf262a3e72d48fd8b7de3aefec1dc135eec2a"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity",
+        "rank": 257,
+        "source_blob_sha": "a16644828572d0800443192c97909a6bf8180202"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 30 as provisional and subject to final recount",
+        "rank": 257,
+        "source_blob_sha": "a16644828572d0800443192c97909a6bf8180202"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source says previous independent final checkpoint is loaded only as historical context and current source-semantic conclusions will be re-proved",
+        "rank": 257,
+        "source_blob_sha": "a16644828572d0800443192c97909a6bf8180202"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "duplicate-admission end-to-end source revalidation, exact-SHA execution evidence, canonical disposition change, and any new P0/P1/P2 root remain open questions",
+        "rank": 257,
+        "source_blob_sha": "a16644828572d0800443192c97909a6bf8180202"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records final provisional blocker counts P0 2 / P1 1 / P2 30",
+        "rank": 258,
+        "source_blob_sha": "03e9936f60790a09d65cb6d5a7b59fe4ef76bce9"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source records source-semantic FIXED / SOURCE CLEAN but canonical OPEN, while final verdict states no material canonical change",
+        "rank": 258,
+        "source_blob_sha": "03e9936f60790a09d65cb6d5a7b59fe4ef76bce9"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "remaining focused claim/ownership regression, configuration duplicate policy, full JVM suite, KSP and debug Kotlin evidence is parent-SHA only and independent runtime execution is NOT EXECUTED",
+        "rank": 258,
+        "source_blob_sha": "03e9936f60790a09d65cb6d5a7b59fe4ef76bce9"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity",
+        "rank": 259,
+        "source_blob_sha": "80e7b64696734cb2d3741c82ebed26b9a43e0daf"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional blocker state P0 2 / P1 1 / P2 30",
+        "rank": 259,
+        "source_blob_sha": "80e7b64696734cb2d3741c82ebed26b9a43e0daf"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source records source-semantic FIXED/SOURCE CLEAN but canonical OPEN and states no material canonical status change",
+        "rank": 259,
+        "source_blob_sha": "80e7b64696734cb2d3741c82ebed26b9a43e0daf"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "remaining exact-final-SHA JVM/KSP/debug-compile evidence was not re-executed at the frozen child SHA; closure remains blocked by execution-governance evidence",
+        "rank": 259,
+        "source_blob_sha": "80e7b64696734cb2d3741c82ebed26b9a43e0daf"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity; commit message is insufficient",
+        "rank": 260,
+        "source_blob_sha": "e4ae3fd7c4265d213e4a76fb976b16bb10c35362"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 2 / P1 1 / P2 30 as provisional blocker state",
+        "rank": 260,
+        "source_blob_sha": "e4ae3fd7c4265d213e4a76fb976b16bb10c35362"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source compares prior reviewed state only to identify semantic-delta scope and explicitly says current production correctness will be re-opened; no status change is yet established",
+        "rank": 260,
+        "source_blob_sha": "e4ae3fd7c4265d213e4a76fb976b16bb10c35362"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "duplicate-admission end-to-end re-evaluation, exact-SHA execution sufficiency, governance state promotions/closures, blocker recount, and final verdict remain pending",
+        "rank": 260,
+        "source_blob_sha": "e4ae3fd7c4265d213e4a76fb976b16bb10c35362"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 231-270 is receipted"
+  }
+}
