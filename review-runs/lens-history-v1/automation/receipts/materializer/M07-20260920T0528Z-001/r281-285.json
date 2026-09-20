@@ -1,0 +1,217 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M07-20260920T0528Z-001",
+  "stage": "MATERIALIZE_271_310",
+  "logical_rank_range": [
+    271,
+    310
+  ],
+  "segment_range": [
+    281,
+    285
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "3ec0c900d1e1e1b2d3c53962f4dff072f8c5adbd",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M07-20260920T0528Z-001/r276-280.json",
+    "blob_sha": "f4bde1dc7ce0d34d740339237ac528357b75299a"
+  },
+  "rank_receipts": [
+    {
+      "rank": 281,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r281.json",
+      "blob_sha": "82d18a41b50f809e5ce10e13fc806fd343213eac"
+    },
+    {
+      "rank": 282,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r282.json",
+      "blob_sha": "3fd2b3a1e7cf06dd7767b5a08e5ad9a1144c8cc3"
+    },
+    {
+      "rank": 283,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r283.json",
+      "blob_sha": "de2a93372316ae865228fca4f7dcb7274cf2d7cb"
+    },
+    {
+      "rank": 284,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r284.json",
+      "blob_sha": "5ed537d5b65289138981bd6c5fb0403fd6fe33a1"
+    },
+    {
+      "rank": 285,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M07-20260920T0528Z-001/r285.json",
+      "blob_sha": "e6027b0bec260a48f82351688a15a45c6217991b"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      281,
+      282,
+      283,
+      284,
+      285
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity sufficient to select a document-identity-v1 kind",
+        "rank": 281,
+        "source_blob_sha": "261979981fe22fffd89fc6d2652b7f24ef95a2b4"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source re-reviews the full original stale-negative admission root plus the rejected-wave post-insert ownership residual, preserves F19 and explicit-bypass boundaries, and treats the resulting source-clean state as one existing root rather than a new blocker",
+        "rank": 281,
+        "source_blob_sha": "261979981fe22fffd89fc6d2652b7f24ef95a2b4"
+      },
+      {
+        "type": "CONTRADICTORY_STATUS_LABELING",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source declares no remaining source blocker and a source-clean closure candidate while canonical disposition remains OPEN solely because exact-final-SHA execution evidence is incomplete",
+        "rank": 281,
+        "source_blob_sha": "261979981fe22fffd89fc6d2652b7f24ef95a2b4"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and canonical count P0 2 / P1 1 / P2 30",
+        "rank": 281,
+        "source_blob_sha": "261979981fe22fffd89fc6d2652b7f24ef95a2b4"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "exact remote 8c5db3c7 has no commit statuses/check-runs/Actions evidence and independent execution is explicitly NOT EXECUTED; canonical closure remains verification-gated",
+        "rank": 281,
+        "source_blob_sha": "261979981fe22fffd89fc6d2652b7f24ef95a2b4"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 282,
+        "source_blob_sha": "ed3e213fd92ac7a8e7d02e99cd6d1a6e20af58ec"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-06",
+        "evidence": "source explicitly reconciles restored Download Observe provenance and legacy Observe-source keyword assignment as two consumers of the same F6 portable imported-ID authority root, while keeping restore-wide BUG-BACKUP-03 separate",
+        "rank": 282,
+        "source_blob_sha": "ed3e213fd92ac7a8e7d02e99cd6d1a6e20af58ec"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-06",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and canonical blocker count P0 2 / P1 1 / P2 30",
+        "rank": 282,
+        "source_blob_sha": "ed3e213fd92ac7a8e7d02e99cd6d1a6e20af58ec"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED",
+        "rank": 282,
+        "source_blob_sha": "ed3e213fd92ac7a8e7d02e99cd6d1a6e20af58ec"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 283,
+        "source_blob_sha": "b37853caae73c0d492ecb9822bebf951e6ba4731"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source explicitly preserves the narrower F5 custom-thumbnail publication/aliasing root as distinct from restore-wide BUG-BACKUP-03 while revalidating the same collision mechanism at the current CLEAN basis",
+        "rank": 283,
+        "source_blob_sha": "b37853caae73c0d492ecb9822bebf951e6ba4731"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and canonical blocker count P0 2 / P1 1 / P2 30",
+        "rank": 283,
+        "source_blob_sha": "b37853caae73c0d492ecb9822bebf951e6ba4731"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED",
+        "rank": 283,
+        "source_blob_sha": "b37853caae73c0d492ecb9822bebf951e6ba4731"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source records final provisional/canonical blocker state P0 2 / P1 1 / P2 30 and overall NOT_CLEAN",
+        "rank": 284,
+        "source_blob_sha": "60199f6793ab07d677ddc571d2487214ded432c0"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source explicitly says the original repository check-then-separate-insert race is fixed while a post-insert Observe stale full-row ownership race remains under the same existing root",
+        "rank": 284,
+        "source_blob_sha": "60199f6793ab07d677ddc571d2487214ded432c0"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source reconciles repository-transaction closure with downstream Observe consumer/effect authority and assigns the surviving regression to the existing root rather than a new canonical root",
+        "rank": 284,
+        "source_blob_sha": "60199f6793ab07d677ddc571d2487214ded432c0"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "runtime manifestation remains NOT_VERIFIED, exact SHA status/check-runs/Actions are all zero, and independent execution is NOT EXECUTED",
+        "rank": 284,
+        "source_blob_sha": "60199f6793ab07d677ddc571d2487214ded432c0"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint source lacks positive structural identity",
+        "rank": 285,
+        "source_blob_sha": "f3b1f6296c5516cabfa28922d47c8f2146ad3588"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source records provisional blocker state P0 2 / P1 1 / P2 30",
+        "rank": 285,
+        "source_blob_sha": "f3b1f6296c5516cabfa28922d47c8f2146ad3588"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source closes the original repository transaction race but source-closes the downstream Observe stale producer overwrite interleaving as a surviving residual within the same root",
+        "rank": 285,
+        "source_blob_sha": "f3b1f6296c5516cabfa28922d47c8f2146ad3588"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+        "evidence": "source explicitly assigns the observed downstream regression to the existing duplicate-admission root and rejects a separate new canonical root",
+        "rank": 285,
+        "source_blob_sha": "f3b1f6296c5516cabfa28922d47c8f2146ad3588"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "exact SHA statuses/check-runs/Actions are all zero and independent execution is NOT EXECUTED",
+        "rank": 285,
+        "source_blob_sha": "f3b1f6296c5516cabfa28922d47c8f2146ad3588"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 271-310 is receipted"
+  }
+}
