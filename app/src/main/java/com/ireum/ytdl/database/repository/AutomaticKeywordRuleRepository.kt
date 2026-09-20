@@ -3,6 +3,7 @@ package com.ireum.ytdl.database.repository
 import android.content.Context
 import androidx.room.withTransaction
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.models.AutomaticKeywordRule
 import com.ireum.ytdl.database.models.AutomaticKeywordRuleKeyword
 import com.ireum.ytdl.database.models.AutomaticKeywordRuleSummary
@@ -34,7 +35,7 @@ class AutomaticKeywordRuleRepository(
         dao.getRuleKeywords(ruleId).map { it.keyword }
 
     suspend fun save(input: AutomaticKeywordRuleInput): Long {
-        checkRestoreAdmission()
+        return RestoreMutationAdmission.withOrdinaryMutation(context) {
         val conditionValue = requireNotNull(
             AutomaticKeywordNormalizer.canonicalPlaylistUrl(input.playlistUrl)
         ) { "Invalid playlist URL" }
@@ -125,12 +126,13 @@ class AutomaticKeywordRuleRepository(
             AutomaticKeywordRuleScheduler.cancel(context, ruleId)
         }
         AutomaticKeywordObservationCoverage(context, db).reconcile()
-        return ruleId
+            ruleId
+        }
     }
 
     suspend fun setEnabled(ruleId: Long, enabled: Boolean) {
-        checkRestoreAdmission()
-        val rule = dao.getRule(ruleId) ?: return
+        RestoreMutationAdmission.withOrdinaryMutation(context) {
+        val rule = dao.getRule(ruleId) ?: return@withOrdinaryMutation
         val needsSync = enabled && (!rule.baselineComplete || rule.pendingApplyToExisting)
         dao.updateRule(
             rule.copy(
@@ -165,19 +167,21 @@ class AutomaticKeywordRuleRepository(
                 }
             )
         }
-        AutomaticKeywordObservationCoverage(context, db).reconcile()
+            AutomaticKeywordObservationCoverage(context, db).reconcile()
+        }
     }
 
     suspend fun delete(ruleId: Long) {
-        checkRestoreAdmission()
+        RestoreMutationAdmission.withOrdinaryMutation(context) {
         assignments.deleteRuleAndAssignments(ruleId)
         AutomaticKeywordRuleScheduler.cancel(context, ruleId)
-        AutomaticKeywordObservationCoverage(context, db).reconcile()
+            AutomaticKeywordObservationCoverage(context, db).reconcile()
+        }
     }
 
     suspend fun syncNow(ruleId: Long): Boolean {
-        checkRestoreAdmission()
-        if (dao.requestApplyExistingSync(ruleId, System.currentTimeMillis()) == 0) return false
+        return RestoreMutationAdmission.withOrdinaryMutation(context) {
+        if (dao.requestApplyExistingSync(ruleId, System.currentTimeMillis()) == 0) return@withOrdinaryMutation false
         if (
             AutomaticKeywordRuleScheduler.enqueue(
                 context,
@@ -185,14 +189,11 @@ class AutomaticKeywordRuleRepository(
                 AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING
             ) == null
         ) {
-            return false
+            return@withOrdinaryMutation false
         }
-        return true
+            true
+        }
     }
 
-    private fun checkRestoreAdmission() {
-        check(!com.ireum.ytdl.database.RestoreGate.isRestoreInProgress(context)) {
-            "Restore transaction is active"
-        }
-    }
+
 }

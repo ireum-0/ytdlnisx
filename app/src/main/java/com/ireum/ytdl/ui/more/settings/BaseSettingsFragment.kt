@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.ui.more.settings
+package com.ireum.ytdl.ui.more.settings
 
 import android.content.SharedPreferences
 import android.view.inputmethod.InputMethodManager
@@ -13,6 +13,7 @@ import androidx.preference.PreferenceGroup
 import androidx.preference.PreferenceManager
 import androidx.preference.PreferenceScreen
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.databinding.TextinputBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputLayout
@@ -47,7 +48,7 @@ abstract class BaseSettingsFragment : PreferenceFragmentCompat() {
         getPreferences(preferenceScreen, mutableListOf()).forEach {
             if (it.key !in excludedKeys) editor.remove(it.key)
         }
-        editor.apply()
+        RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor)
         PreferenceManager.setDefaultValues(requireActivity().applicationContext, key, true)
     }
 

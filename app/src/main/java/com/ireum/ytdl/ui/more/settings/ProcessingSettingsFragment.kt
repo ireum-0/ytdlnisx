@@ -10,6 +10,7 @@ import androidx.preference.PreferenceManager
 import androidx.preference.SwitchPreferenceCompat
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.work.HardSubScanWorker
 
@@ -38,7 +39,7 @@ class ProcessingSettingsFragment : BaseSettingsFragment() {
         subtitleLanguages?.setOnPreferenceClickListener {
             UiUtil.showSubtitleLanguagesDialog(requireActivity(), listOf(), prefs.getString("subs_lang", "en.*,.*-orig")!!){
                 editor.putString("subs_lang", it)
-                editor.apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor)
                 subtitleLanguages.summary = it
             }
             true
@@ -118,7 +119,10 @@ class ProcessingSettingsFragment : BaseSettingsFragment() {
             setOnPreferenceClickListener {
                 currentValue = prefs.getString("audio_bitrate", "")!!
                 UiUtil.showAudioBitrateDialog(requireActivity(), currentValue) {
-                    editor.putString("audio_bitrate", it).apply()
+                    RestoreMutationAdmission.applyOrdinaryPreferences(
+                        requireContext(),
+                        editor.putString("audio_bitrate", it),
+                    )
                     summary = if (it.isNotBlank()) {
                         entries[entryValues.indexOf(it)]
                     }else {

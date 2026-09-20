@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.database.repository
+package com.ireum.ytdl.database.repository
 
 import android.content.Context
 import com.ireum.ytdl.database.DBManager.SORTING
@@ -475,13 +475,12 @@ class HistoryRepository(
         }
     }
 
-    private inline fun <T> withRestoreAdmission(block: () -> T): T {
-        if (context != null) {
-            check(!RestoreGate.isRestoreInProgress(context)) {
-                "Restore transaction is active"
-            }
+    private fun <T> withRestoreAdmission(block: () -> T): T {
+        val app = context?.applicationContext
+            ?: runCatching { com.ireum.ytdl.App.instance }.getOrNull()
+        return if (app == null) block() else {
+            HistoryReferenceMutationCoordinator.withLockBlocking(block)
         }
-        return block()
     }
 
     enum class HistorySortType {

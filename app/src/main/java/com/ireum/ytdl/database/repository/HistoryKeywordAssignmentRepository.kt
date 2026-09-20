@@ -3,7 +3,7 @@ package com.ireum.ytdl.database.repository
 import androidx.room.withTransaction
 import com.ireum.ytdl.App
 import com.ireum.ytdl.database.DBManager
-import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.HistoryItem
@@ -125,13 +125,9 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
 
     private val dao = db.automaticKeywordRuleDao
 
-    private fun ensureRestoreAdmission() {
-        val app = runCatching { App.instance }.getOrNull() ?: return
-        check(!RestoreGate.isRestoreInProgress(app)) {
-            "Restore transaction is active"
-        }
-    }
 
+    private suspend fun <T> withOrdinaryMutation(block: suspend () -> T): T =
+        RestoreMutationAdmission.withOrdinaryMutation(App.instance, block)
     suspend fun initializeManualAssignments(historyItemId: Long, keywords: String) {
         replaceManualKeywords(historyItemId, AutomaticKeywordNormalizer.parseKeywords(keywords))
     }
@@ -146,7 +142,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
     }
 
     suspend fun addManualKeywords(historyItemId: Long, keywords: Collection<String>) {
-        ensureRestoreAdmission()
+        withOrdinaryMutation {
         db.withTransaction {
             val existing = dao.getAssignmentsForHistorySource(
                 historyItemId,
@@ -161,10 +157,11 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             )
         }
     }
+        }
 
     suspend fun removeEditableKeywords(historyItemId: Long, normalizedKeywords: Set<String>) {
-        ensureRestoreAdmission()
-        if (normalizedKeywords.isEmpty()) return
+        withOrdinaryMutation {
+        if (normalizedKeywords.isEmpty()) return@withOrdinaryMutation
         db.withTransaction {
             dao.getAssignmentsForHistory(historyItemId)
                 .filter { it.sourceType.isUserEditableSource() }
@@ -181,6 +178,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 }
         }
     }
+        }
 
     /**
      * Adapts the legacy editor, which displays the materialized union, without
@@ -190,8 +188,8 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         historyItemId: Long,
         requestedKeywords: Collection<String>
     ): Int {
-        ensureRestoreAdmission()
-        return db.withTransaction {
+        return withOrdinaryMutation {
+        db.withTransaction {
             // A stale UI target must not create assignment state after the
             // History row has been deleted.  Keep the existence check inside
             // the same transaction as the assignment/materialization writes.
@@ -244,9 +242,10 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                 .count { it !in requestedByKey }
         }
     }
+        }
 
     suspend fun removeRuleAssignmentsForHistory(historyItemId: Long) {
-        ensureRestoreAdmission()
+        withOrdinaryMutation {
         db.withTransaction {
             dao.getAssignmentsForHistory(historyItemId)
                 .asSequence()
@@ -263,6 +262,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             materializeInTransaction(historyItemId)
         }
     }
+        }
 
     suspend fun replaceSourceKeywords(
         historyItemId: Long,
@@ -270,15 +270,16 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         sourceId: Long,
         keywords: Collection<String>
     ) {
-        ensureRestoreAdmission()
+        withOrdinaryMutation {
         requireSourceIdentity(sourceType, sourceId)
         db.withTransaction {
             replaceSourceKeywordsInTransaction(historyItemId, sourceType, sourceId, keywords)
         }
     }
+        }
 
     suspend fun removeSourceAssignments(sourceType: String, sourceId: Long) {
-        ensureRestoreAdmission()
+        withOrdinaryMutation {
         requireSourceIdentity(sourceType, sourceId)
         db.withTransaction {
             val historyIds = dao.getHistoryIdsForSource(sourceType, sourceId)
@@ -286,12 +287,13 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             historyIds.forEach { materializeInTransaction(it) }
         }
     }
+        }
 
     suspend fun replaceRuleAssignmentsForExistingHistories(
         ruleId: Long,
         keywords: Collection<String>
     ) {
-        ensureRestoreAdmission()
+        return withOrdinaryMutation {
         db.withTransaction {
             dao.getHistoryIdsForSource(HistoryKeywordAssignmentSources.RULE, ruleId).forEach {
                 replaceSourceKeywordsInTransaction(
@@ -303,9 +305,10 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             }
         }
     }
+        }
 
     suspend fun deleteRuleAndAssignments(ruleId: Long) {
-        ensureRestoreAdmission()
+        withOrdinaryMutation {
         db.withTransaction {
             val historyIds = dao.getHistoryIdsForSource(
                 HistoryKeywordAssignmentSources.RULE,
@@ -316,10 +319,11 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             historyIds.forEach { materializeInTransaction(it) }
         }
     }
+        }
 
     suspend fun mergeHistoryAssignments(fromHistoryItemId: Long, toHistoryItemId: Long) {
-        ensureRestoreAdmission()
-        if (fromHistoryItemId == toHistoryItemId) return
+        withOrdinaryMutation {
+        if (fromHistoryItemId == toHistoryItemId) return@withOrdinaryMutation
         db.withTransaction {
             val copied = dao.getAssignmentsRaw(fromHistoryItemId).map {
                 it.copy(historyItemId = toHistoryItemId)
@@ -328,6 +332,7 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             materializeInTransaction(toHistoryItemId)
         }
     }
+        }
 
     suspend fun insertHistory(item: HistoryItem): Long =
         HistoryReferenceMutationCoordinator.withLock {
@@ -593,25 +598,25 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         assignmentSnapshot: List<HistoryKeywordAssignment>,
         preserveExistingRuleAssignments: Boolean = false
     ) {
-        ensureRestoreAdmission()
-        db.withTransaction {
-            val existingRuleAssignments = if (preserveExistingRuleAssignments) {
-                dao.getAssignmentsRaw(historyItemId).filter {
-                    it.sourceType == HistoryKeywordAssignmentSources.RULE
+        withOrdinaryMutation {
+            db.withTransaction {
+                val existingRuleAssignments = if (preserveExistingRuleAssignments) {
+                    dao.getAssignmentsRaw(historyItemId).filter {
+                        it.sourceType == HistoryKeywordAssignmentSources.RULE
+                    }
+                } else {
+                    emptyList()
                 }
-            } else {
-                emptyList()
+                dao.deleteAssignmentsForHistory(historyItemId)
+                val restorable = assignmentSnapshot
+                    .filter { it.historyItemId == historyItemId }
+                    .onEach { requireSourceIdentity(it.sourceType, it.sourceId) }
+                val merged = restorable + existingRuleAssignments
+                if (merged.isNotEmpty()) dao.insertAssignments(merged)
+                materializeInTransaction(historyItemId)
             }
-            dao.deleteAssignmentsForHistory(historyItemId)
-            val restorable = assignmentSnapshot
-                .filter { it.historyItemId == historyItemId }
-                .onEach { requireSourceIdentity(it.sourceType, it.sourceId) }
-            val merged = restorable + existingRuleAssignments
-            if (merged.isNotEmpty()) dao.insertAssignments(merged)
-            materializeInTransaction(historyItemId)
         }
     }
-
     /** Same semantics as [restoreAssignments] while an outer restore transaction is active. */
     internal suspend fun restoreAssignmentsWithinRestoreTransaction(
         historyItemId: Long,
@@ -665,10 +670,9 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
         replacementDownloadId: Long = 0L,
         replacementOperationId: String = "",
         expectedExecutionId: String = "",
-    ): HistoryReplacementAuthorization {
-        ensureRestoreAdmission()
+    ): HistoryReplacementAuthorization = withOrdinaryMutation {
         require(historyId > 0L)
-        return db.withTransaction {
+        db.withTransaction {
             authorizeHistoryReplacementInTransaction(
                 historyId = historyId,
                 expectedSourceUrl = expectedSourceUrl,
@@ -679,7 +683,6 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             )
         }
     }
-
     /**
      * Synchronous adapter for already-IO-bound worker code.  Keeping the suspend
      * transaction out of DownloadWorker's large coroutine state machine avoids

@@ -44,6 +44,7 @@ import com.ireum.ytdl.work.HardSubScanWorker
 import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
+import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.MoveCacheFilesWorker
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.HistoryDateFetchNotification
@@ -104,6 +105,8 @@ internal data class RestoreJournal(
     val historyDateFetchOperationIds: List<String> = emptyList(),
     val supersededDownloadNotificationIds: List<Long> = emptyList(),
     val supersededObserveSourceNotificationIds: List<Long> = emptyList(),
+    /** Exact WorkManager tags whose external owners were actually quiesced. */
+    val quiescedWorkTags: List<String>? = null,
     val sidecarsCaptured: Boolean = false,
 )
 
@@ -320,6 +323,33 @@ internal object RestoreGate {
  * operation over that same plan.
  */
 object RestoreTransactionCoordinator {
+    internal class RestoreReconciliationAuthority(
+        val operationId: String,
+    )
+
+    internal fun currentReconciliationAuthority(context: Context): RestoreReconciliationAuthority {
+        val record = RestoreOperationStore.load(context)
+            ?: error("Restore reconciliation has no active operation")
+        check(record.journal.phase == RestorePhase.RECONCILING.name) {
+            "Restore reconciliation authority requires RECONCILING phase"
+        }
+        return RestoreReconciliationAuthority(record.journal.operationId)
+    }
+
+    internal fun requireCurrentReconciliationAuthority(
+        context: Context,
+        authority: RestoreReconciliationAuthority,
+    ) {
+        val record = RestoreOperationStore.load(context)
+            ?: error("Restore reconciliation operation is no longer active")
+        check(record.journal.operationId == authority.operationId) {
+            "Restore reconciliation authority owner changed"
+        }
+        check(record.journal.phase == RestorePhase.RECONCILING.name) {
+            "Restore reconciliation authority is not active"
+        }
+    }
+
     private val operationMutex = Mutex()
 
     @Volatile
@@ -329,6 +359,9 @@ object RestoreTransactionCoordinator {
     internal var afterPreparedBeforeQuiescenceForTesting: (() -> Unit)? = null
 
     @Volatile
+    internal var afterQuiescedBeforeFilesReadyForTesting: (() -> Unit)? = null
+
+    @Volatile
     internal var afterFilesReadyBeforeApplyForTesting: (() -> Unit)? = null
 
     @Volatile
@@ -336,6 +369,15 @@ object RestoreTransactionCoordinator {
 
     @Volatile
     internal var afterRoomCommitBeforeJournalForTesting: (() -> Unit)? = null
+
+    @Volatile
+    internal var afterDataCommittedBeforeReconciliationForTesting: (() -> Unit)? = null
+
+    @Volatile
+    internal var afterCompleteBeforeRetirementForTesting: (() -> Unit)? = null
+
+    @Volatile
+    internal var afterReconciliationBeforeCompleteForTesting: (() -> Unit)? = null
 
     @Volatile
     internal var preferenceCommitOverrideForTesting: ((Boolean) -> Boolean)? = null
@@ -406,10 +448,12 @@ object RestoreTransactionCoordinator {
                 preparedJournal = journal
                 RestoreOperationStore.writeJournal(directory, journal)
                 beforeActivePublicationForTesting?.invoke()
-                RestoreOperationStore.publishActive(
-                    context,
-                    RestorePointer(operationId, journal.planDigest),
-                )
+                RestoreMutationAdmission.withRestorePublication {
+                    RestoreOperationStore.publishActive(
+                        context,
+                        RestorePointer(operationId, journal.planDigest),
+                    )
+                }
             } catch (error: Exception) {
                 RestoreOperationStore.clearActiveIfOwned(context, operationId)
                 directory.deleteRecursively()
@@ -454,6 +498,7 @@ object RestoreTransactionCoordinator {
                         afterPreparedBeforeQuiescenceForTesting?.invoke()
                         record = quiesce(context, record)
                         record = RestoreOperationStore.updatePhase(record, RestorePhase.QUIESCED)
+                        afterQuiescedBeforeFilesReadyForTesting?.invoke()
                     }
                     RestorePhase.QUIESCED -> {
                         publishRequiredFiles(context, record)
@@ -468,23 +513,31 @@ object RestoreTransactionCoordinator {
                         record = RestoreOperationStore.updatePhase(record, RestorePhase.APPLYING)
                         record = capturePostCommitSidecars(context, record)
                         val applied = applyAuthoritativeState(context, record)
-                        publishPreferences(context, record, applied)
+                        RestoreMutationAdmission.withRestoreMutation {
+                            publishPreferences(context, record, applied)
+                        }
                         afterRoomCommitBeforeJournalForTesting?.invoke()
                         record = RestoreOperationStore.updatePhase(record, RestorePhase.DATA_COMMITTED)
+                        afterDataCommittedBeforeReconciliationForTesting?.invoke()
                     }
                     RestorePhase.APPLYING -> {
                         record = capturePostCommitSidecars(context, record)
                         val applied = applyAuthoritativeState(context, record)
-                        publishPreferences(context, record, applied)
+                        RestoreMutationAdmission.withRestoreMutation {
+                            publishPreferences(context, record, applied)
+                        }
                         afterRoomCommitBeforeJournalForTesting?.invoke()
                         record = RestoreOperationStore.updatePhase(record, RestorePhase.DATA_COMMITTED)
+                        afterDataCommittedBeforeReconciliationForTesting?.invoke()
                     }
                     RestorePhase.DATA_COMMITTED -> {
                         record = RestoreOperationStore.updatePhase(record, RestorePhase.RECONCILING)
                     }
                     RestorePhase.RECONCILING -> {
                         reconcilePostCommit(context, record)
+                        afterReconciliationBeforeCompleteForTesting?.invoke()
                         record = RestoreOperationStore.updatePhase(record, RestorePhase.COMPLETE)
+                        afterCompleteBeforeRetirementForTesting?.invoke()
                         RestoreOperationStore.clearActiveIfOwned(context, record.journal.operationId)
                         RestoreOperationStore.retireOperation(record)
                         return RestoreOutcome.Completed(record.journal.operationId)
@@ -639,6 +692,17 @@ object RestoreTransactionCoordinator {
         }
         if (!quiesced) {
             throw IllegalStateException("Conflicting WorkManager work did not quiesce")
+        }
+        val quiescedTags = tags.distinct()
+        if (quiescedTags.isNotEmpty()) {
+            current = RestoreOperationStore.updateJournal(
+                current,
+                current.journal.copy(
+                    quiescedWorkTags = (
+                        (current.journal.quiescedWorkTags ?: emptyList()) + quiescedTags
+                    ).distinct().sorted(),
+                ),
+            )
         }
         if (capturesMembershipNotifications) {
             val finalIds = DBManager.getInstance(context)
@@ -1345,17 +1409,30 @@ object RestoreTransactionCoordinator {
         ) {
             HistoryDateFetchNotification(context).cancel()
         }
+
         val data = record.plan.data
-        val hasHistoryReset = data.downloads != null
-        val hasDownloadReset = hasHistoryReset || listOfNotNull(
-            data.queued,
-            data.paused,
-            data.scheduled,
-            data.cancelled,
-            data.errored,
-            data.saved,
-        ).isNotEmpty()
-        if (data.observeSources != null || data.automaticKeywordRules != null || hasDownloadReset) {
+        val quiescedTags = record.journal.quiescedWorkTags.orEmpty().toSet()
+        val downloadTags = setOf(
+            "DownloadWorker",
+            "download",
+            "cancelScheduledDownload",
+            "updateFormats",
+            "updateData",
+            MoveCacheFilesWorker.TAG,
+            "cacheFiles",
+        )
+        val downloadResponsibilityQuiesced = quiescedTags.any { it in downloadTags }
+        val observeResponsibilityQuiesced = "observeSources" in quiescedTags
+        val keywordResponsibilityQuiesced = "automaticKeywordRules" in quiescedTags
+        val lowQualityResponsibilityQuiesced = "low_quality_redownload" in quiescedTags
+        val authority = RestoreTransactionCoordinator.currentReconciliationAuthority(context)
+
+        if (
+            observeResponsibilityQuiesced ||
+                data.observeSources != null ||
+                data.automaticKeywordRules != null ||
+                downloadResponsibilityQuiesced
+        ) {
             observeSchedulingFailureForTesting?.invoke()
             val repository = ObserveSourcesRepository(
                 db.observeSourcesDao,
@@ -1363,30 +1440,34 @@ object RestoreTransactionCoordinator {
                 PreferenceManager.getDefaultSharedPreferences(context),
                 context,
             )
-            db.observeSourcesDao.getAllSources().filter {
-                it.observationPurpose == ObservationPurposes.USER &&
+            db.observeSourcesDao.getAllSourcesIncludingManaged()
+                .filter {
                     it.status == ObserveSourcesRepository.SourceStatus.ACTIVE
-            }.forEach { source ->
-                check(repository.observeTaskAndAwait(source, allowDuringRestore = true)) {
-                    "ObserveSource scheduling reconciliation was not accepted"
                 }
-            }
+                .forEach { source ->
+                    check(repository.observeTaskAndAwaitForRestore(source, authority)) {
+                        "ObserveSource scheduling reconciliation was not accepted"
+                    }
+                }
         }
-        if (hasHistoryReset || data.automaticKeywordRules != null || data.observeSources != null) {
+
+        if (
+            data.downloads != null ||
+                data.automaticKeywordRules != null ||
+                data.observeSources != null ||
+                observeResponsibilityQuiesced ||
+                keywordResponsibilityQuiesced
+        ) {
             automaticKeywordReconciliationFailureForTesting?.invoke()
-            AutomaticKeywordObservationCoverage(
-                context,
-                db,
-                allowDuringRestore = true,
-            ).reconcile()
+            AutomaticKeywordObservationCoverage(context, db).reconcileForRestore(authority)
             db.automaticKeywordRuleDao.getAllEnabledRules()
                 .filter { it.pendingApplyToExisting }
                 .forEach { rule ->
-                    val operation = AutomaticKeywordRuleScheduler.enqueue(
+                    val operation = AutomaticKeywordRuleScheduler.enqueueForRestore(
                         context,
                         rule.id,
                         AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING,
-                        allowDuringRestore = true,
+                        authority,
                     ) ?: error("Automatic keyword scheduling was not admitted")
                     operation.result.get(
                         QUIESCENCE_QUERY_TIMEOUT_MS,
@@ -1394,12 +1475,18 @@ object RestoreTransactionCoordinator {
                     )
                 }
         }
+
+        if (lowQualityResponsibilityQuiesced) {
+            LowQualityRedownloadManager.get(context).reconcileForRestore(authority)
+        }
+
         val downloadRepository = DownloadRepository(db)
-        // A Reset containing only persistent states (for example paused,
-        // cancelled, errored, or saved) must not manufacture runnable work.
-        // Reconstruct scheduler state only when the backup carried a runnable
-        // queue/schedule category, preserving absent-category semantics.
-        val hasRunnableDownloadReset = data.queued != null || data.scheduled != null
+        // Reconstruct responsibility from final authority whenever F11
+        // cancelled the Download namespace, even if the backup omitted the
+        // queued/scheduled categories. Persistent-only restores still produce
+        // no work when the final image has no runnable rows.
+        val hasRunnableDownloadReset =
+            downloadResponsibilityQuiesced || data.queued != null || data.scheduled != null
         if (hasRunnableDownloadReset) {
             val queued = db.downloadDao.getQueuedDownloadsList()
                 .filter { it.status == DownloadRepository.Status.Queued.name }
@@ -1408,12 +1495,12 @@ object RestoreTransactionCoordinator {
             if (runnableItems.isNotEmpty()) {
                 downloadSchedulingFailureForTesting?.invoke()
                 check(
-                    downloadRepository.startDownloadWorker(
+                    downloadRepository.startDownloadWorkerForRestore(
                         runnableItems,
                         context,
-                        allowDuringRestore = true,
+                        authority,
                         awaitAcceptance = true,
-                    ).isSuccess
+                    ).isSuccess,
                 ) {
                     "Download scheduling reconciliation was not accepted"
                 }
@@ -1423,7 +1510,6 @@ object RestoreTransactionCoordinator {
             CleanupScheduleCoordinator.reconcile(context)
         }
     }
-
     private const val QUIESCENCE_TIMEOUT_MS = 30_000L
     private const val QUIESCENCE_QUERY_TIMEOUT_MS = 5_000L
     private const val QUIESCENCE_POLL_MS = 100L

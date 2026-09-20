@@ -2,7 +2,6 @@ package com.ireum.ytdl.database.repository
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.preference.PreferenceManager
 import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
@@ -12,12 +11,16 @@ import androidx.work.Operation
 import androidx.work.WorkManager
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
+import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
 import com.ireum.ytdl.database.dao.ObserveSourcesDao
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.util.Extensions.calculateNextTimeForObserving
 import com.ireum.ytdl.work.ObserveSourceWorker
 import kotlinx.coroutines.flow.Flow
 import java.util.concurrent.TimeUnit
+
 private const val RESTORE_SCHEDULER_ACCEPTANCE_TIMEOUT_MS = 5_000L
 
 class ObserveSourcesRepository(
@@ -26,7 +29,8 @@ class ObserveSourcesRepository(
     private val sharedPreferences: SharedPreferences,
     private val context: Context? = null,
 ) {
-    val items : Flow<List<ObserveSourcesItem>> = observeSourcesDao.getAllSourcesFlow()
+    val items: Flow<List<ObserveSourcesItem>> = observeSourcesDao.getAllSourcesFlow()
+
     enum class SourceStatus {
         ACTIVE, STOPPED
     }
@@ -40,50 +44,35 @@ class ObserveSourcesRepository(
             EveryCategory.HOUR to R.string.hour,
             EveryCategory.DAY to R.string.day,
             EveryCategory.WEEK to R.string.week,
-            EveryCategory.MONTH to R.string.month
+            EveryCategory.MONTH to R.string.month,
         )
     }
 
+    fun getAll(): List<ObserveSourcesItem> = observeSourcesDao.getAllSources()
 
-    fun getAll() : List<ObserveSourcesItem> {
-        return observeSourcesDao.getAllSources()
-    }
+    fun getByURL(url: String): ObserveSourcesItem = observeSourcesDao.getByURL(url)
 
-    fun getByURL(url: String) : ObserveSourcesItem {
-        return observeSourcesDao.getByURL(url)
-    }
+    fun getByID(id: Long): ObserveSourcesItem = observeSourcesDao.getByID(id)
 
-    fun getByID(id: Long) : ObserveSourcesItem {
-        return observeSourcesDao.getByID(id)
-    }
+    fun getByIDOrNull(id: Long): ObserveSourcesItem? = observeSourcesDao.getByIDOrNull(id)
 
-    fun getByIDOrNull(id: Long): ObserveSourcesItem? {
-        return observeSourcesDao.getByIDOrNull(id)
-    }
-
-
-    suspend fun insert(item: ObserveSourcesItem) : Long {
-        checkRestoreAdmission()
-        if (!observeSourcesDao.checkIfExistsWithSameURL(item.url)){
-            return observeSourcesDao.insert(item)
+    suspend fun insert(item: ObserveSourcesItem): Long = withOrdinaryMutation {
+        if (!observeSourcesDao.checkIfExistsWithSameURL(item.url)) {
+            return@withOrdinaryMutation observeSourcesDao.insert(item)
         }
-        return -1
+        return@withOrdinaryMutation -1
     }
 
-    suspend fun delete(item: ObserveSourcesItem): List<Long> {
-        checkRestoreAdmission()
-        return observeSourcesDao.deleteAndCancelWaiting(item.id)
+    suspend fun delete(item: ObserveSourcesItem): List<Long> = withOrdinaryMutation {
+        observeSourcesDao.deleteAndCancelWaiting(item.id)
     }
 
-
-    suspend fun deleteAll(): List<Long> {
-        checkRestoreAdmission()
-        return observeSourcesDao.deleteAllAndCancelWaiting()
+    suspend fun deleteAll(): List<Long> = withOrdinaryMutation {
+        observeSourcesDao.deleteAllAndCancelWaiting()
     }
 
-    suspend fun update(item: ObserveSourcesItem): List<Long> {
-        checkRestoreAdmission()
-        return if (item.status == SourceStatus.STOPPED) {
+    suspend fun update(item: ObserveSourcesItem): List<Long> = withOrdinaryMutation {
+        if (item.status == SourceStatus.STOPPED) {
             observeSourcesDao.updateAndCancelWaiting(item)
         } else {
             observeSourcesDao.update(item)
@@ -91,39 +80,82 @@ class ObserveSourcesRepository(
         }
     }
 
-    fun cancelObservationTaskByID(id: Long, allowDuringRestore: Boolean = false) {
-        if (!allowDuringRestore && context != null && RestoreGate.isRestoreInProgress(context)) return
+    fun cancelObservationTaskByID(id: Long) {
+        val appContext = context?.applicationContext ?: return
+        RestoreMutationAdmission.withOrdinaryMutationBlocking(appContext) {
+            cancelObservationTaskByIDInternal(id)
+        }
+    }
+
+    fun observeTask(it: ObserveSourcesItem) {
+        val appContext = context?.applicationContext
+        if (appContext == null) {
+            enqueueObservation(it, null)
+        } else {
+            RestoreMutationAdmission.withOrdinaryMutationBlocking(appContext) {
+                enqueueObservation(it, null)
+            }
+        }
+    }
+
+    /** Ordinary callers receive only the enqueue acceptance boundary. */
+    suspend fun observeTaskAndAwait(it: ObserveSourcesItem): Boolean =
+        withOrdinaryMutation {
+            val operation = enqueueObservation(it, null) ?: return@withOrdinaryMutation false
+            operation.result.get(
+                RESTORE_SCHEDULER_ACCEPTANCE_TIMEOUT_MS,
+                TimeUnit.MILLISECONDS,
+            )
+            true
+        }
+
+    internal suspend fun cancelObservationTaskByIDForRestore(
+        id: Long,
+        authority: RestoreReconciliationAuthority,
+    ) {
+        RestoreMutationAdmission.withRestoreMutation {
+            RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(
+                requireNotNull(context).applicationContext,
+                authority,
+            )
+            cancelObservationTaskByIDInternal(id)
+        }
+    }
+
+    internal suspend fun observeTaskAndAwaitForRestore(
+        it: ObserveSourcesItem,
+        authority: RestoreReconciliationAuthority,
+    ): Boolean = RestoreMutationAdmission.withRestoreMutation {
+        val appContext = requireNotNull(context).applicationContext
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(appContext, authority)
+        val operation = enqueueObservation(it, authority) ?: return@withRestoreMutation false
+        operation.result.get(
+            RESTORE_SCHEDULER_ACCEPTANCE_TIMEOUT_MS,
+            TimeUnit.MILLISECONDS,
+        )
+        true
+    }
+
+    private fun cancelObservationTaskByIDInternal(id: Long) {
         workManager.cancelUniqueWork("OBSERVE$id")
         workManager.cancelAllWorkByTag("observation_$id")
         workManager.cancelAllWorkByTag(id.toString())
     }
 
-    fun observeTask(it: ObserveSourcesItem, allowDuringRestore: Boolean = false) {
-        enqueueObservation(it, allowDuringRestore)
-    }
-
-    /**
-     * Post-commit Reset reconciliation uses the WorkManager operation result
-     * as its finite acceptance boundary. Ordinary callers retain the
-     * fire-and-return API above.
-     */
-    suspend fun observeTaskAndAwait(
-        it: ObserveSourcesItem,
-        allowDuringRestore: Boolean = false,
-    ): Boolean {
-        val operation = enqueueObservation(it, allowDuringRestore) ?: return false
-        operation.result.get(RESTORE_SCHEDULER_ACCEPTANCE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        return true
-    }
-
     private fun enqueueObservation(
         it: ObserveSourcesItem,
-        allowDuringRestore: Boolean,
+        authority: RestoreReconciliationAuthority?,
     ): Operation? {
-        if (!allowDuringRestore && context != null && RestoreGate.isRestoreInProgress(context)) {
-            return null
+        val appContext = context?.applicationContext
+        if (authority == null) {
+            if (appContext != null && RestoreGate.isRestoreInProgress(appContext)) return null
+        } else {
+            RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(
+                requireNotNull(appContext),
+                authority,
+            )
         }
-        cancelObservationTaskByID(it.id, allowDuringRestore)
+        cancelObservationTaskByIDInternal(it.id)
 
         val nextRunAt = it.calculateNextTimeForObserving()
         val initialDelay = (nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
@@ -151,12 +183,10 @@ class ObserveSourcesRepository(
         )
     }
 
-    private fun checkRestoreAdmission() {
-        if (context != null) {
-            check(!RestoreGate.isRestoreInProgress(context)) {
-                "Restore transaction is active"
-            }
+    private suspend fun <T> withOrdinaryMutation(block: suspend () -> T): T {
+        val appContext = context?.applicationContext
+        return if (appContext == null) block() else {
+            RestoreMutationAdmission.withOrdinaryMutation(appContext, block)
         }
     }
-
 }

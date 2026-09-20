@@ -20,6 +20,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.work.AlarmScheduler
@@ -149,7 +150,10 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
                 val hr = it.get(Calendar.HOUR_OF_DAY)
                 val mn = it.get(Calendar.MINUTE)
                 val formattedTime = String.format("%02d", hr) + ":" + String.format("%02d", mn)
-                preferences.edit().putString("schedule_start",formattedTime).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(
+                    requireContext(),
+                    preferences.edit().putString("schedule_start", formattedTime),
+                )
                 scheduleStart.summary = formattedTime
 
                 scheduler.schedule()
@@ -163,7 +167,10 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
                 val hr = it.get(Calendar.HOUR_OF_DAY)
                 val mn = it.get(Calendar.MINUTE)
                 val formattedTime = String.format("%02d", hr) + ":" + String.format("%02d", mn)
-                preferences.edit().putString("schedule_end",formattedTime).apply()
+                RestoreMutationAdmission.applyOrdinaryPreferences(
+                    requireContext(),
+                    preferences.edit().putString("schedule_end", formattedTime),
+                )
                 scheduleEnd.summary = formattedTime
 
                 scheduler.schedule()
@@ -330,7 +337,7 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
             val preferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
             val editor = preferences.edit()
             editor.putString("download_archive_path", path)
-            editor.apply()
+            RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor)
             archivePath.summary = FileUtil.getDownloadArchivePath(requireContext())
         }
     }

@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.util.Base64
 import androidx.preference.PreferenceManager
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -14,20 +15,30 @@ import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
+import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
+import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
+import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
+import com.ireum.ytdl.database.models.observeSources.ObservationPurposes
+import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.viewmodel.SettingsViewModel
 import com.ireum.ytdl.work.CleanUpLeftoverDownloads
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.work.CleanupSchedulePolicy
+import com.ireum.ytdl.work.LowQualityRedownloadWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -43,11 +54,16 @@ class BackupResetTransactionProductionWiringTest {
     private lateinit var context: Context
     private lateinit var database: DBManager
     private lateinit var preferences: android.content.SharedPreferences
+    private var originalAlarmPreferencePresent = false
+    private var originalAlarmPreference = false
 
     @Before
     fun setUp() = runBlocking<Unit> {
         context = ApplicationProvider.getApplicationContext()
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        originalAlarmPreferencePresent = preferences.contains("use_alarm_for_scheduling")
+        originalAlarmPreference = preferences.getBoolean("use_alarm_for_scheduling", false)
+        preferences.edit().putBoolean("use_alarm_for_scheduling", false).commit()
         WorkManager.getInstance(context).cancelAllWork().result.get(20, TimeUnit.SECONDS)
         clearHooks()
         runCatching { RestoreTransactionCoordinator.recover(context) }
@@ -55,6 +71,9 @@ class BackupResetTransactionProductionWiringTest {
         database = DBManager.getInstance(context)
         database.historyDao.nuke()
         database.downloadDao.deleteAll()
+        database.openHelper.writableDatabase.execSQL("DELETE FROM low_quality_redownload_items")
+        database.openHelper.writableDatabase.execSQL("DELETE FROM low_quality_redownload_operations")
+        database.openHelper.writableDatabase.execSQL("DELETE FROM sources")
         preferences.edit().remove("f11_reset_marker").commit()
     }
 
@@ -62,9 +81,19 @@ class BackupResetTransactionProductionWiringTest {
     fun tearDown() = runBlocking<Unit> {
         clearHooks()
         runCatching { RestoreTransactionCoordinator.recover(context) }
+        WorkManager.getInstance(context).cancelAllWork().result.get(20, TimeUnit.SECONDS)
         database.historyDao.nuke()
         database.downloadDao.deleteAll()
-        preferences.edit().remove("f11_reset_marker").commit()
+        database.openHelper.writableDatabase.execSQL("DELETE FROM low_quality_redownload_items")
+        database.openHelper.writableDatabase.execSQL("DELETE FROM low_quality_redownload_operations")
+        database.openHelper.writableDatabase.execSQL("DELETE FROM sources")
+        preferences.edit().remove("f11_reset_marker").apply {
+            if (originalAlarmPreferencePresent) {
+                putBoolean("use_alarm_for_scheduling", originalAlarmPreference)
+            } else {
+                remove("use_alarm_for_scheduling")
+            }
+        }.commit()
         RestoreOperationStore.root(context).deleteRecursively()
     }
 
@@ -509,17 +538,355 @@ class BackupResetTransactionProductionWiringTest {
         assertEquals(1, database.historyDao.getCount())
     }
 
+    @Test
+    fun quiescedRestartRollsForwardFromDurableBoundary() = runBlocking {
+        RestoreTransactionCoordinator.afterQuiescedBeforeFilesReadyForTesting = {
+            error("F11 simulated restart after QUIESCED")
+        }
+
+        val pending = RestoreTransactionCoordinator.begin(
+            context,
+            plan(history(101L, "https://example.com/quiesced-restart")),
+        )
+        assertTrue(pending is RestoreOutcome.RecoveryPending)
+        assertEquals(RestorePhase.QUIESCED, (pending as RestoreOutcome.RecoveryPending).phase)
+        assertEquals(
+            RestorePhase.QUIESCED.name,
+            requireNotNull(RestoreOperationStore.load(context)).journal.phase,
+        )
+        assertTrue(database.historyDao.getCount() == 0)
+
+        RestoreTransactionCoordinator.afterQuiescedBeforeFilesReadyForTesting = null
+        assertTrue(RestoreTransactionCoordinator.recover(context) is RestoreOutcome.Completed)
+        assertEquals(
+            listOf("https://example.com/quiesced-restart"),
+            database.historyDao.getAll().map { it.url },
+        )
+        assertFalse(RestoreGate.isRestoreInProgress(context))
+    }
+
+    @Test
+    fun dataCommittedRestartResumesReconciliationWithoutReapplyingData() = runBlocking {
+        RestoreTransactionCoordinator.afterDataCommittedBeforeReconciliationForTesting = {
+            error("F11 simulated restart after DATA_COMMITTED")
+        }
+
+        val pending = RestoreTransactionCoordinator.begin(
+            context,
+            plan(history(102L, "https://example.com/data-committed-restart")),
+        )
+        assertTrue(pending is RestoreOutcome.CommittedReconciliationPending)
+        assertEquals(
+            RestorePhase.DATA_COMMITTED.name,
+            requireNotNull(RestoreOperationStore.load(context)).journal.phase,
+        )
+        assertEquals(
+            listOf("https://example.com/data-committed-restart"),
+            database.historyDao.getAll().map { it.url },
+        )
+
+        RestoreTransactionCoordinator.afterDataCommittedBeforeReconciliationForTesting = null
+        assertTrue(RestoreTransactionCoordinator.recover(context) is RestoreOutcome.Completed)
+        assertEquals(1, database.historyDao.getCount())
+        assertEquals(
+            listOf("https://example.com/data-committed-restart"),
+            database.historyDao.getAll().map { it.url },
+        )
+        assertFalse(RestoreGate.isRestoreInProgress(context))
+    }
+
+    @Test
+    fun completeBeforeRetirementRestartOnlyRetiresCompletedOperation() = runBlocking {
+        RestoreTransactionCoordinator.afterCompleteBeforeRetirementForTesting = {
+            error("F11 simulated restart after COMPLETE")
+        }
+
+        val pending = RestoreTransactionCoordinator.begin(
+            context,
+            plan(history(103L, "https://example.com/complete-restart")),
+        )
+        assertTrue(pending is RestoreOutcome.RecoveryPending)
+        assertEquals(
+            RestorePhase.COMPLETE,
+            (pending as RestoreOutcome.RecoveryPending).phase,
+        )
+        assertNotNull(RestoreOperationStore.load(context))
+        assertEquals(1, database.historyDao.getCount())
+
+        RestoreTransactionCoordinator.afterCompleteBeforeRetirementForTesting = null
+        assertTrue(RestoreTransactionCoordinator.recover(context) is RestoreOutcome.Completed)
+        assertNull(RestoreOperationStore.load(context))
+        assertFalse(RestoreGate.isRestoreInProgress(context))
+        assertEquals(1, database.historyDao.getCount())
+    }
+
+    @Test
+    fun acceptedRestoreSchedulingReplaysWithOneCurrentOwner() = runBlocking {
+        val startAt = System.currentTimeMillis() + 300_000L
+        RestoreTransactionCoordinator.afterReconciliationBeforeCompleteForTesting = {
+            error("F11 simulated restart after accepted scheduling")
+        }
+
+        val pending = RestoreTransactionCoordinator.begin(
+            context,
+            plan(scheduled = listOf(scheduledDownload(104L, startAt))),
+        )
+        assertTrue(pending is RestoreOutcome.CommittedReconciliationPending)
+        val operationId = (pending as RestoreOutcome.CommittedReconciliationPending).operationId
+        val workName = "scheduledDownload-restore-$operationId-$startAt"
+        assertEquals(1, unfinishedWork(workName).size)
+
+        RestoreTransactionCoordinator.afterReconciliationBeforeCompleteForTesting = null
+        assertTrue(RestoreTransactionCoordinator.recover(context) is RestoreOutcome.Completed)
+        assertEquals(1, unfinishedWork(workName).size)
+        assertFalse(RestoreGate.isRestoreInProgress(context))
+    }
+
+    @Test
+    fun pausedOnlyResetPreservesQueuedStateAndReconstructsDownloadOwner() = runBlocking {
+        val startAt = System.currentTimeMillis() + 300_000L
+        val insertedId = database.downloadDao.insert(queuedDownload(105L).copy(downloadStartTime = startAt))
+        val existing = database.downloadDao.getQueuedDownloadsList().single { it.id == insertedId }
+        assertTrue(
+            DownloadRepository(database)
+                .startDownloadWorker(listOf(existing), context, awaitAcceptance = true)
+                .isSuccess,
+        )
+
+        val outcome = RestoreTransactionCoordinator.begin(
+            context,
+            plan(
+                paused = listOf(
+                    queuedDownload(106L).copy(
+                        status = DownloadRepository.Status.Paused.name,
+                        downloadStartTime = 0L,
+                    ),
+                ),
+            ),
+        )
+        assertTrue(outcome is RestoreOutcome.Completed)
+        assertEquals(1, database.downloadDao.getQueuedDownloadsList().count { it.id == insertedId })
+        val operationId = (outcome as RestoreOutcome.Completed).operationId
+        assertEquals(1, unfinishedWork("scheduledDownload-restore-$operationId-$startAt").size)
+    }
+
+    @Test
+    fun historyOnlyResetPreservesQueuedStateAndReconstructsDownloadOwner() = runBlocking {
+        val startAt = System.currentTimeMillis() + 300_000L
+        val insertedId = database.downloadDao.insert(queuedDownload(107L).copy(downloadStartTime = startAt))
+        val existing = database.downloadDao.getQueuedDownloadsList().single { it.id == insertedId }
+        assertTrue(
+            DownloadRepository(database)
+                .startDownloadWorker(listOf(existing), context, awaitAcceptance = true)
+                .isSuccess,
+        )
+
+        val outcome = RestoreTransactionCoordinator.begin(
+            context,
+            plan(history(108L, "https://example.com/history-only")),
+        )
+        assertTrue(outcome is RestoreOutcome.Completed)
+        assertEquals(1, database.downloadDao.getQueuedDownloadsList().count { it.id == insertedId })
+        val operationId = (outcome as RestoreOutcome.Completed).operationId
+        assertEquals(1, unfinishedWork("scheduledDownload-restore-$operationId-$startAt").size)
+    }
+
+    @Test
+    fun persistentOnlyResetDoesNotManufactureDownloadWork() = runBlocking {
+        val outcome = RestoreTransactionCoordinator.begin(
+            context,
+            plan(settings = listOf(BackupSettingsItem("f11_reset_marker", "persistent", "String"))),
+        )
+        assertTrue(outcome is RestoreOutcome.Completed)
+        assertTrue(
+            WorkManager.getInstance(context)
+                .getWorkInfosByTag("download")
+                .get(20, TimeUnit.SECONDS)
+                .none { !it.state.isFinished },
+        )
+    }
+
+    @Test
+    fun managedKeywordSourceRegainsOwnerAfterDownloadQuiescence() = runBlocking {
+        val sourceId = database.observeSourcesDao.insert(managedKeywordSource(109L))
+        assertTrue(sourceId > 0L)
+
+        val outcome = RestoreTransactionCoordinator.begin(
+            context,
+            plan(
+                paused = listOf(
+                    queuedDownload(110L).copy(
+                        status = DownloadRepository.Status.Paused.name,
+                    ),
+                ),
+            ),
+        )
+        assertTrue(outcome is RestoreOutcome.Completed)
+        assertEquals(
+            1,
+            unfinishedWork("OBSERVE$sourceId").size,
+        )
+    }
+
+    @Test
+    fun survivingLowQualityOperationRegainsRecoveryOwnerOrTerminates() = runBlocking {
+        val operationId = "f11-low-quality-survivor"
+        database.lowQualityRedownloadDao.insertOperation(
+            LowQualityRedownloadOperation(
+                operationId = operationId,
+                phase = LowQualityRedownloadPhase.SCANNING.name,
+                state = "RUNNING",
+                createdAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis(),
+            ),
+        )
+        database.lowQualityRedownloadDao.upsertItem(
+            LowQualityRedownloadItem(
+                operationId = operationId,
+                historyId = 111L,
+                intendedSourceUrl = "https://example.com/low-quality",
+                intendedType = DownloadType.video.name,
+                selected = true,
+                itemState = LowQualityRedownloadItemState.PENDING.name,
+            ),
+        )
+
+        val outcome = RestoreTransactionCoordinator.begin(
+            context,
+            plan(
+                paused = listOf(
+                    queuedDownload(112L).copy(
+                        status = DownloadRepository.Status.Paused.name,
+                    ),
+                ),
+            ),
+        )
+        assertTrue(outcome is RestoreOutcome.Completed)
+
+        withTimeout(20_000L) {
+            while (true) {
+                val operation = database.lowQualityRedownloadDao.getOperation(operationId)
+                val work = unfinishedWork(LowQualityRedownloadWorker.uniqueWorkName(operationId))
+                if (operation?.stateValue?.isTerminal == true || work.isNotEmpty()) {
+                    return@withTimeout
+                }
+                delay(25L)
+            }
+        }
+        val finalOperation = requireNotNull(database.lowQualityRedownloadDao.getOperation(operationId))
+        val finalWork = unfinishedWork(LowQualityRedownloadWorker.uniqueWorkName(operationId))
+        assertTrue(finalOperation.stateValue.isTerminal || finalWork.isNotEmpty())
+    }
+
+    @Test
+    fun ordinaryMutationAuthorityWinsBeforeRestorePublication() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val first = AtomicBoolean(true)
+        RestoreMutationAdmission.ordinaryAuthorityAcquiredForTesting = {
+            if (first.compareAndSet(true, false)) {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS)) {
+                    "ordinary mutation authority did not release"
+                }
+            }
+        }
+
+        val writer = async(Dispatchers.IO) {
+            DownloadRepository(database).insert(queuedDownload(113L))
+        }
+        assertTrue(entered.await(10, TimeUnit.SECONDS))
+        val reset = async(Dispatchers.IO) {
+            RestoreTransactionCoordinator.begin(
+                context,
+                plan(settings = listOf(BackupSettingsItem("f11_reset_marker", "writer-won", "String"))),
+            )
+        }
+        assertFalse(reset.isCompleted)
+        release.countDown()
+        assertTrue(writer.await() > 0L)
+        assertTrue(reset.await() is RestoreOutcome.Completed)
+        assertEquals(
+            1,
+            database.downloadDao.getQueuedDownloadsList().count {
+                it.url == "https://example.com/queued-113"
+            },
+        )
+    }
+
+    @Test
+    fun restoreAuthorityRejectsDownloadObserveAndPreferenceMutation() = runBlocking {
+        val publicationEntered = CountDownLatch(1)
+        val releasePublication = CountDownLatch(1)
+        val preparedEntered = CountDownLatch(1)
+        val releasePrepared = CountDownLatch(1)
+        RestoreMutationAdmission.restorePublicationAuthorityAcquiredForTesting = {
+            publicationEntered.countDown()
+            check(releasePublication.await(10, TimeUnit.SECONDS)) {
+                "restore publication authority did not release"
+            }
+        }
+        RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = {
+            preparedEntered.countDown()
+            check(releasePrepared.await(10, TimeUnit.SECONDS)) {
+                "prepared restore boundary did not release"
+            }
+        }
+
+        val reset = async(Dispatchers.IO) {
+            RestoreTransactionCoordinator.begin(
+                context,
+                plan(settings = listOf(BackupSettingsItem("f11_reset_marker", "restore-won", "String"))),
+            )
+        }
+        assertTrue(publicationEntered.await(10, TimeUnit.SECONDS))
+        releasePublication.countDown()
+        assertTrue(preparedEntered.await(10, TimeUnit.SECONDS))
+
+        val downloadFailure = runCatching {
+            DownloadRepository(database).insert(queuedDownload(114L))
+        }.exceptionOrNull()
+        assertTrue(downloadFailure is IllegalStateException)
+        val sourceFailure = runCatching {
+            ObserveSourcesRepository(
+                database.observeSourcesDao,
+                WorkManager.getInstance(context),
+                preferences,
+                context,
+            ).insert(managedKeywordSource(115L))
+        }.exceptionOrNull()
+        assertTrue(sourceFailure is IllegalStateException)
+        val preferenceFailure = runCatching {
+            RestoreMutationAdmission.applyOrdinaryPreferences(
+                context,
+                preferences.edit().putString("f11_reset_marker", "ordinary-writer"),
+            )
+        }.exceptionOrNull()
+        assertTrue(preferenceFailure is IllegalStateException)
+        assertNull(preferences.getString("f11_reset_marker", null))
+
+        releasePrepared.countDown()
+        assertTrue(reset.await() is RestoreOutcome.Completed)
+        assertEquals("restore-won", preferences.getString("f11_reset_marker", null))
+        assertTrue(database.downloadDao.getQueuedDownloadsList().none { it.url.endsWith("114") })
+    }
     private fun plan(
         history: HistoryItem? = null,
         thumbnail: BackupCustomThumbItem? = null,
         settings: List<BackupSettingsItem>? = null,
         queued: List<DownloadItem>? = null,
+        paused: List<DownloadItem>? = null,
+        scheduled: List<DownloadItem>? = null,
+        observeSources: List<ObserveSourcesItem>? = null,
     ) = com.ireum.ytdl.database.BackupRestoreParser.fromTyped(
         RestoreAppDataItem(
             downloads = history?.let(::listOf),
             customThumbnails = thumbnail?.let(::listOf),
             settings = settings,
             queued = queued,
+            paused = paused,
+            scheduled = scheduled,
+            observeSources = observeSources,
         ),
     )
 
@@ -566,6 +933,44 @@ class BackupResetTransactionProductionWiringTest {
         customThumb = "",
     )
 
+    private fun scheduledDownload(index: Long, startAt: Long) =
+        queuedDownload(index).copy(
+            status = DownloadRepository.Status.Scheduled.name,
+            downloadStartTime = startAt,
+        )
+
+    private fun managedKeywordSource(index: Long): ObserveSourcesItem {
+        val startsAt = System.currentTimeMillis() + 300_000L
+        return ObserveSourcesItem(
+            id = 0L,
+            name = "F11 managed $index",
+            url = "https://example.com/managed-$index",
+            downloadItemTemplate = queuedDownload(index),
+            everyNr = 1,
+            everyCategory = ObserveSourcesRepository.EveryCategory.DAY,
+            everyTime = startsAt,
+            weeklyConfig = null,
+            monthlyConfig = null,
+            status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+            startsTime = startsAt,
+            endsDate = 0L,
+            endsAfterCount = 0,
+            runCount = 0,
+            getOnlyNewUploads = true,
+            retryMissingDownloads = false,
+            ignoredLinks = mutableListOf(),
+            alreadyProcessedLinks = mutableListOf(),
+            syncWithSource = false,
+            observationPurpose = ObservationPurposes.KEYWORD_DISCOVERY,
+            managedConditionKey = "f11-managed-$index",
+        )
+    }
+
+    private fun unfinishedWork(name: String): List<WorkInfo> =
+        WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWork(name)
+            .get(20, TimeUnit.SECONDS)
+            .filter { !it.state.isFinished }
     private fun assertThrows(block: () -> Unit) {
         try {
             block()
@@ -588,6 +993,12 @@ class BackupResetTransactionProductionWiringTest {
         RestoreTransactionCoordinator.downloadSchedulingFailureForTesting = null
         RestoreTransactionCoordinator.finalFilePublicationFailureForTesting = null
         RestoreTransactionCoordinator.roomApplyFailureForTesting = null
+        RestoreTransactionCoordinator.afterQuiescedBeforeFilesReadyForTesting = null
+        RestoreTransactionCoordinator.afterDataCommittedBeforeReconciliationForTesting = null
+        RestoreTransactionCoordinator.afterCompleteBeforeRetirementForTesting = null
+        RestoreTransactionCoordinator.afterReconciliationBeforeCompleteForTesting = null
+        RestoreMutationAdmission.ordinaryAuthorityAcquiredForTesting = null
+        RestoreMutationAdmission.restorePublicationAuthorityAcquiredForTesting = null
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = null
         CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = null
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = null

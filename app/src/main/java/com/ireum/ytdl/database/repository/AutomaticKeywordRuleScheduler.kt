@@ -1,17 +1,19 @@
 package com.ireum.ytdl.database.repository
 
 import android.content.Context
-import androidx.work.Constraints
+import androidx.preference.PreferenceManager
 import androidx.work.BackoffPolicy
+import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.Operation
 import androidx.work.WorkManager
-import androidx.preference.PreferenceManager
-import com.ireum.ytdl.work.AutomaticKeywordRuleSyncWorker
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
+import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
+import com.ireum.ytdl.work.AutomaticKeywordRuleSyncWorker
 import java.util.concurrent.TimeUnit
 
 object AutomaticKeywordRuleScheduler {
@@ -23,9 +25,26 @@ object AutomaticKeywordRuleScheduler {
         context: Context,
         ruleId: Long,
         mode: Mode,
-        allowDuringRestore: Boolean = false,
     ): Operation? {
-        if (!allowDuringRestore && RestoreGate.isRestoreInProgress(context)) return null
+        if (RestoreGate.isRestoreInProgress(context)) return null
+        return enqueueInternal(context, ruleId, mode)
+    }
+
+    internal fun enqueueForRestore(
+        context: Context,
+        ruleId: Long,
+        mode: Mode,
+        authority: RestoreReconciliationAuthority,
+    ): Operation? {
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+        return enqueueInternal(context, ruleId, mode)
+    }
+
+    private fun enqueueInternal(
+        context: Context,
+        ruleId: Long,
+        mode: Mode,
+    ): Operation {
         val allowMeteredNetworks = PreferenceManager
             .getDefaultSharedPreferences(context)
             .getBoolean("metered_networks", true)
@@ -38,7 +57,7 @@ object AutomaticKeywordRuleScheduler {
                 Data.Builder()
                     .putLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, ruleId)
                     .putString(AutomaticKeywordRuleSyncWorker.INPUT_MODE, mode.name)
-                    .build()
+                    .build(),
             )
             .addTag("automaticKeywordRules")
             .addTag("automaticKeywordRule_$ruleId")
@@ -46,7 +65,7 @@ object AutomaticKeywordRuleScheduler {
         return WorkManager.getInstance(context).enqueueUniqueWork(
             workName(ruleId),
             ExistingWorkPolicy.REPLACE,
-            request
+            request,
         )
     }
 

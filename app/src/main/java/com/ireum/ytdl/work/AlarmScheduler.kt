@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.work
+package com.ireum.ytdl.work
 
 import android.annotation.SuppressLint
 import android.app.AlarmManager
@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
+import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
 import com.ireum.ytdl.receiver.CancelScheduleAlarmReceiver
 import com.ireum.ytdl.receiver.ScheduleAlarmReceiver
 import java.util.Calendar
@@ -34,6 +35,24 @@ class AlarmScheduler(private val context: Context) {
     }
 
 
+    internal suspend fun scheduleAtForRestore(
+        at: Long,
+        authority: RestoreReconciliationAuthority,
+    ) {
+        val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundaryForRestore(
+            context,
+            WorkManagerHandoffCarrier.START_BOUNDARY,
+            at,
+            authority,
+        )
+        setAlarm(
+            receiver = ScheduleAlarmReceiver::class.java,
+            requestCode = 1,
+            at = at,
+            handoffId = handoffId,
+            restoreAuthority = authority,
+        )
+    }
     @SuppressLint("ScheduleExactAlarm")
     fun schedule() {
         cancel()
@@ -106,6 +125,7 @@ class AlarmScheduler(private val context: Context) {
         requestCode: Int,
         at: Long,
         handoffId: String,
+        restoreAuthority: RestoreReconciliationAuthority? = null,
     ) {
         val pendingIntent = PendingIntent.getBroadcast(
             context,
@@ -125,10 +145,18 @@ class AlarmScheduler(private val context: Context) {
         } catch (_: Throwable) {
             // The durable carrier remains the successor if exact-alarm
             // publication itself is unavailable.
-            WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
+            if (restoreAuthority == null) {
+                WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
+            } else {
+                WorkManagerHandoffRecovery.ensureConvergenceForRestore(context, handoffId, restoreAuthority)
+            }
         }
         if (alarmManager == null) {
-            WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
+            if (restoreAuthority == null) {
+                WorkManagerHandoffRecovery.ensureConvergence(context, handoffId)
+            } else {
+                WorkManagerHandoffRecovery.ensureConvergenceForRestore(context, handoffId, restoreAuthority)
+            }
         }
     }
 

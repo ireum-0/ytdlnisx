@@ -11,6 +11,9 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
+import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperationState
@@ -43,43 +46,44 @@ class LowQualityRedownloadManager private constructor(
     private val notification = LowQualityRedownloadNotification(appContext)
 
     fun startOrReconnect() {
-        if (RestoreGate.isRestoreInProgress(appContext)) return
         scope.launch {
-            val operation = repository.createOrReconnect()
-            dispatchRecovery(operation)
+            RestoreMutationAdmission.withOrdinaryMutation(appContext) {
+                val operation = repository.createOrReconnect()
+                dispatchRecovery(operation)
+            }
         }
     }
 
     fun setSelected(operationId: String, historyId: Long, selected: Boolean) {
-        if (RestoreGate.isRestoreInProgress(appContext)) return
-        scope.launch { repository.setSelected(operationId, historyId, selected) }
+        scope.launch {
+            RestoreMutationAdmission.withOrdinaryMutation(appContext) {
+                repository.setSelected(operationId, historyId, selected)
+            }
+        }
     }
 
     fun confirm(operationId: String) {
-        if (RestoreGate.isRestoreInProgress(appContext)) return
         scope.launch {
-            confirmAndEnqueueLowQualityRedownload(
-                operationId = operationId,
-                transition = repository::confirmSelection,
-                enqueueSuccessor = { confirmedId, policy ->
-                    enqueue(confirmedId, networkRequired = true, policy = policy)
-                }
-            )
+            RestoreMutationAdmission.withOrdinaryMutation(appContext) {
+                confirmAndEnqueueLowQualityRedownload(
+                    operationId = operationId,
+                    transition = repository::confirmSelection,
+                    enqueueSuccessor = { confirmedId, policy ->
+                        enqueue(confirmedId, networkRequired = true, policy = policy)
+                    },
+                )
+            }
         }
     }
 
     fun cancel(operationId: String, onComplete: (() -> Unit)? = null) {
-        if (RestoreGate.isRestoreInProgress(appContext)) return
         scope.launch {
             try {
-                repository.requestCancellation(operationId)
+                RestoreMutationAdmission.withOrdinaryMutation(appContext) {
+                    repository.requestCancellation(operationId)
+                }
                 completeCancellation(operationId)
             } catch (cancelled: CancellationException) {
-                // requestCancellation() may already have committed the
-                // durable revocation before coroutine cancellation interrupts
-                // phase two.  Keep an exact-state convergence owner alive so
-                // cancellation cannot strand that operation or leave a stale
-                // enqueue retry responsible for it.
                 LowQualityRedownloadLedger.scheduleCancellationConvergence(
                     appContext,
                     operationId,
@@ -87,10 +91,6 @@ class LowQualityRedownloadManager private constructor(
                 )
                 throw cancelled
             } catch (error: Exception) {
-                // The phase-one transaction may have committed even though a
-                // later publication/phase-two step failed.  Schedule a
-                // durable-state-driven retry; the convergence owner itself
-                // exits if the revocation did not commit.
                 LowQualityRedownloadLedger.scheduleCancellationConvergence(
                     appContext,
                     operationId,
@@ -108,17 +108,21 @@ class LowQualityRedownloadManager private constructor(
     }
 
     suspend fun reconcile() {
-        if (RestoreGate.isRestoreInProgress(appContext)) return
-        val operation = repository.getActiveOperation() ?: return
-        dispatchRecovery(operation)
+        RestoreMutationAdmission.withOrdinaryMutation(appContext) {
+            val operation = repository.getActiveOperation() ?: return@withOrdinaryMutation
+            dispatchRecovery(operation)
+        }
     }
 
-    /**
-     * Owns only the durable phase-one cancellation debt.  This deliberately
-     * does not open the normal scan/preparation/download reconciliation gate;
-     * cancellation convergence must remain discoverable after optional
-     * runtime initialization fails.
-     */
+    internal suspend fun reconcileForRestore(
+        authority: RestoreReconciliationAuthority,
+    ) {
+        val operation = RestoreMutationAdmission.withRestoreMutation {
+            RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(appContext, authority)
+            repository.getActiveOperation()
+        } ?: return
+        dispatchRecovery(operation, authority)
+    }
     suspend fun reconcileCancellationDebt(
         dbManager: DBManager = database,
     ): Boolean {
@@ -140,12 +144,19 @@ class LowQualityRedownloadManager private constructor(
         return true
     }
 
-    private suspend fun dispatchRecovery(operation: LowQualityRedownloadOperation) {
+    private suspend fun dispatchRecovery(
+        operation: LowQualityRedownloadOperation,
+        authority: RestoreReconciliationAuthority? = null,
+    ) {
         dispatchLowQualityRedownloadRecovery(
             operation = operation,
-            completeCancellation = ::completeCancellation,
-            enqueuePhase = ::enqueue,
-            reconcileDownloads = ::reconcileOperation,
+            completeCancellation = { operationId ->
+                completeCancellation(operationId, restoreAuthority = authority)
+            },
+            enqueuePhase = { operationId, networkRequired ->
+                enqueue(operationId, networkRequired, authority = authority)
+            },
+            reconcileDownloads = { operationId -> reconcileOperation(operationId, authority) },
             refreshNotification = { operationId ->
                 repository.progress(operationId)?.let { notification.update(it) }
             }
@@ -156,9 +167,13 @@ class LowQualityRedownloadManager private constructor(
         operationId: String,
         dbManager: DBManager = database,
         recoveryRepository: LowQualityRedownloadRepository = repository,
+        restoreAuthority: RestoreReconciliationAuthority? = null,
     ) {
-        if (RestoreGate.isRestoreInProgress(appContext)) {
+        if (restoreAuthority == null && RestoreGate.isRestoreInProgress(appContext)) {
             return
+        }
+        restoreAuthority?.let {
+            RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(appContext, it)
         }
         try {
             LowQualityRedownloadLedger.cancelEnqueueConvergence(operationId)
@@ -210,15 +225,40 @@ class LowQualityRedownloadManager private constructor(
         }
     }
 
-    private suspend fun reconcileOperation(operationId: String) {
-        val downloads = repository.reconcileLinkedDownloads(operationId)
-        val operation = repository.getOperation(operationId)
+    private suspend fun reconcileOperation(
+        operationId: String,
+        authority: RestoreReconciliationAuthority? = null,
+    ) {
+        val downloads = if (authority == null) {
+            repository.reconcileLinkedDownloads(operationId)
+        } else {
+            RestoreMutationAdmission.withRestoreMutation {
+                RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(appContext, authority)
+                repository.reconcileLinkedDownloads(operationId)
+            }
+        }
+        val operation = if (authority == null) {
+            repository.getOperation(operationId)
+        } else {
+            RestoreMutationAdmission.withRestoreMutation {
+                RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(appContext, authority)
+                repository.getOperation(operationId)
+            }
+        }
         if (
             operation?.stateValue == LowQualityRedownloadOperationState.RUNNING &&
             !operation.cancelRequested &&
             downloads.any { it.status == DownloadRepository.Status.Queued.name }
         ) {
-            DownloadRepository(database).startDownloadWorker(emptyList(), appContext)
+            if (authority == null) {
+                DownloadRepository(database).startDownloadWorker(emptyList(), appContext)
+            } else {
+                DownloadRepository(database).startDownloadWorkerForRestore(
+                    emptyList(),
+                    appContext,
+                    authority,
+                )
+            }
         }
         repository.progress(operationId)?.let { notification.update(it) }
     }
@@ -226,8 +266,12 @@ class LowQualityRedownloadManager private constructor(
     private fun enqueue(
         operationId: String,
         networkRequired: Boolean,
-        policy: ExistingWorkPolicy = LowQualityRedownloadEnqueuePolicy.RECOVERY.workPolicy
+        policy: ExistingWorkPolicy = LowQualityRedownloadEnqueuePolicy.RECOVERY.workPolicy,
+        authority: RestoreReconciliationAuthority? = null,
     ) {
+        authority?.let {
+            RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(appContext, it)
+        }
         val constraints = Constraints.Builder().apply {
             if (networkRequired) setRequiredNetworkType(NetworkType.CONNECTED)
         }.build()

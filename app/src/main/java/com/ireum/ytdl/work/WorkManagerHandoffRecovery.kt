@@ -14,6 +14,9 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
+import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
@@ -153,6 +156,38 @@ internal object WorkManagerHandoffRecovery {
         return handoffId
     }
 
+    internal suspend fun prepareSchedulerBoundaryForRestore(
+        context: Context,
+        boundary: String,
+        notBeforeAt: Long,
+        authority: RestoreReconciliationAuthority,
+    ): String = RestoreMutationAdmission.withRestoreMutation {
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+        val kind = when (boundary) {
+            WorkManagerHandoffCarrier.START_BOUNDARY -> WorkManagerHandoffCarrier.SCHEDULE_START
+            WorkManagerHandoffCarrier.END_BOUNDARY -> WorkManagerHandoffCarrier.SCHEDULE_END
+            else -> error("Unknown scheduler boundary: $boundary")
+        }
+        val identity = "restore-scheduler|${authority.operationId}|$boundary"
+        val handoffId = UUID.nameUUIDFromBytes(identity.toByteArray(StandardCharsets.UTF_8)).toString()
+        val now = System.currentTimeMillis()
+        val carrier = WorkManagerHandoffCarrier(
+            handoffId = handoffId,
+            kind = kind,
+            generationId = handoffId,
+            requestId = UUID.randomUUID().toString(),
+            uniqueWorkName = when (kind) {
+                WorkManagerHandoffCarrier.SCHEDULE_START -> START_WORK_NAME
+                else -> END_WORK_NAME
+            },
+            boundary = boundary,
+            notBeforeAt = notBeforeAt,
+            createdAt = now,
+            updatedAt = now,
+        )
+        replaceOutstandingAndInsert(context, carrier, authority)
+        handoffId
+    }
     /**
      * The notification action is deterministic for one source/config/url so a
      * duplicate PendingIntent cannot create two semantic Download decisions.
@@ -246,6 +281,16 @@ internal object WorkManagerHandoffRecovery {
         }
     }
 
+    internal fun ensureConvergenceForRestore(
+        context: Context,
+        handoffId: String,
+        authority: RestoreReconciliationAuthority,
+    ) {
+        convergenceScope.launch {
+            enqueueAndAwaitForRestore(context, handoffId, authority).await()
+        }
+    }
+
     internal fun clearForTesting() {
         attemptJobs.values.toList().forEach { it.cancel() }
         retryJobs.values.toList().forEach { it.cancel() }
@@ -264,10 +309,25 @@ internal object WorkManagerHandoffRecovery {
     suspend fun enqueueAndAwait(
         context: Context,
         handoffId: String,
+    ): Deferred<EnqueueOutcome> = enqueueAndAwaitInternal(context, handoffId, null)
+
+    internal suspend fun enqueueAndAwaitForRestore(
+        context: Context,
+        handoffId: String,
+        authority: RestoreReconciliationAuthority,
+    ): Deferred<EnqueueOutcome> {
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+        return enqueueAndAwaitInternal(context, handoffId, authority)
+    }
+
+    private suspend fun enqueueAndAwaitInternal(
+        context: Context,
+        handoffId: String,
+        authority: RestoreReconciliationAuthority?,
     ): Deferred<EnqueueOutcome> {
         attemptJobs[handoffId]?.let { return it }
         val candidate = convergenceScope.async(start = CoroutineStart.LAZY) {
-            performAttempt(context.applicationContext, handoffId)
+            performAttempt(context.applicationContext, handoffId, authority)
         }
         val existing = attemptJobs.putIfAbsent(handoffId, candidate)
         if (existing != null) {
@@ -391,14 +451,24 @@ internal object WorkManagerHandoffRecovery {
         }
     }
 
+    private fun schedulerAuthorityAvailable(
+        context: Context,
+        authority: RestoreReconciliationAuthority?,
+    ): Boolean {
+        if (authority == null) return !RestoreGate.isRestoreInProgress(context)
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+        return true
+    }
+
     private suspend fun performAttempt(
         context: Context,
         handoffId: String,
+        authority: RestoreReconciliationAuthority?,
     ): EnqueueOutcome {
         val dao = database(context).workManagerHandoffCarrierDao
         val carrier = dao.get(handoffId) ?: return EnqueueOutcome(OutcomeKind.SUPERSEDED)
-        if (RestoreGate.isRestoreInProgress(context)) {
-            scheduleRetry(context, handoffId)
+        if (!schedulerAuthorityAvailable(context, authority)) {
+            scheduleRetry(context, handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING)
         }
         if (!isCurrentGeneration(carrier)) {
@@ -415,19 +485,19 @@ internal object WorkManagerHandoffRecovery {
         }
         val remainingDelay = carrier.notBeforeAt - System.currentTimeMillis()
         if (remainingDelay > 0L) {
-            scheduleRetry(context, handoffId)
+            scheduleRetry(context, handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING)
         }
 
         val request = try {
             buildRequest(context, carrier)
         } catch (failure: Throwable) {
-            return retryAfterFailure(context, carrier, failure)
+            return retryAfterFailure(context, carrier, failure, authority)
         }
 
         return try {
             val operation = synchronized(boundaryLock(carrier)) {
-                if (RestoreGate.isRestoreInProgress(context) || !isCurrentGeneration(carrier)) {
+                if (!schedulerAuthorityAvailable(context, authority) || !isCurrentGeneration(carrier)) {
                     null
                 } else {
                     enqueueUniqueWork(
@@ -436,15 +506,15 @@ internal object WorkManagerHandoffRecovery {
                         request = request,
                     )
                 }
-            } ?: if (RestoreGate.isRestoreInProgress(context)) {
-                scheduleRetry(context, handoffId)
+            } ?: if (!schedulerAuthorityAvailable(context, authority)) {
+                scheduleRetry(context, handoffId, authority)
                 return EnqueueOutcome(OutcomeKind.RETRYING)
             } else {
                 return EnqueueOutcome(OutcomeKind.SUPERSEDED)
             }
             val failure = awaitOperation(operation)
             if (failure != null) {
-                retryAfterFailure(context, carrier, failure)
+                retryAfterFailure(context, carrier, failure, authority)
             } else {
                 if (!isCurrentGeneration(carrier)) {
                     return EnqueueOutcome(OutcomeKind.SUPERSEDED)
@@ -474,7 +544,7 @@ internal object WorkManagerHandoffRecovery {
                 }
             }
         } catch (failure: Throwable) {
-            retryAfterFailure(context, carrier, failure)
+            retryAfterFailure(context, carrier, failure, authority)
         }
     }
 
@@ -482,9 +552,10 @@ internal object WorkManagerHandoffRecovery {
         context: Context,
         carrier: WorkManagerHandoffCarrier,
         failure: Throwable?,
+        authority: RestoreReconciliationAuthority? = null,
     ): EnqueueOutcome {
-        if (RestoreGate.isRestoreInProgress(context)) {
-            scheduleRetry(context, carrier.handoffId)
+        if (!schedulerAuthorityAvailable(context, authority)) {
+            scheduleRetry(context, carrier.handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING, failure)
         }
         val dao = database(context).workManagerHandoffCarrierDao
@@ -540,11 +611,15 @@ internal object WorkManagerHandoffRecovery {
                 EnqueueOutcome(OutcomeKind.RETRYING, failure)
             }
         }
-        scheduleRetry(context, carrier.handoffId)
+        scheduleRetry(context, carrier.handoffId, authority)
         return EnqueueOutcome(OutcomeKind.RETRYING, failure)
     }
 
-    private fun scheduleRetry(context: Context, handoffId: String) {
+    private fun scheduleRetry(
+        context: Context,
+        handoffId: String,
+        authority: RestoreReconciliationAuthority? = null,
+    ) {
         val retryJob = convergenceScope.launch {
             var backoff = RETRY_INITIAL_BACKOFF_MS
             var firstAttempt = true
@@ -566,7 +641,7 @@ internal object WorkManagerHandoffRecovery {
                 }
                 firstAttempt = false
 
-                val outcome = enqueueAndAwait(context, handoffId).await()
+                val outcome = enqueueAndAwaitInternal(context, handoffId, authority).await()
                 if (outcome.accepted || outcome.superseded) return@launch
                 delay(backoff)
                 backoff = (backoff * 2L).coerceAtMost(RETRY_MAX_BACKOFF_MS)
@@ -583,22 +658,42 @@ internal object WorkManagerHandoffRecovery {
     private fun replaceOutstandingAndInsert(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
+        restoreAuthority: RestoreReconciliationAuthority? = null,
     ) {
-        check(!RestoreGate.isRestoreInProgress(context)) {
-            "Restore transaction is active"
+        if (restoreAuthority == null) {
+            check(!RestoreGate.isRestoreInProgress(context)) {
+                "Restore transaction is active"
+            }
+        } else {
+            RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, restoreAuthority)
         }
         synchronized(boundaryLock(carrier.kind, carrier.boundary)) {
+            if (restoreAuthority == null) {
+                check(!RestoreGate.isRestoreInProgress(context)) {
+                    "Restore transaction is active"
+                }
+            } else {
+                RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, restoreAuthority)
+            }
             val dao = database(context).workManagerHandoffCarrierDao
             val oldCarrier = blocking {
                 dao.getOutstandingForBoundary(carrier.kind, carrier.boundary)
+            }
+            if (oldCarrier?.handoffId == carrier.handoffId) {
+                latestGenerationByBoundary[boundaryKey(carrier.kind, carrier.boundary)] = carrier.handoffId
+                return
             }
             oldCarrier?.let {
                 retryJobs.remove(it.handoffId)?.cancel()
                 attemptJobs.remove(it.handoffId)?.cancel()
             }
             val inserted = blocking {
-                check(!RestoreGate.isRestoreInProgress(context)) {
-                    "Restore transaction is active"
+                if (restoreAuthority == null) {
+                    check(!RestoreGate.isRestoreInProgress(context)) {
+                        "Restore transaction is active"
+                    }
+                } else {
+                    RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, restoreAuthority)
                 }
                 database(context).withTransaction {
                     dao.deleteOutstandingForBoundary(carrier.kind, carrier.boundary)
@@ -611,7 +706,6 @@ internal object WorkManagerHandoffRecovery {
             latestGenerationByBoundary[boundaryKey(carrier.kind, carrier.boundary)] = carrier.handoffId
         }
     }
-
     private fun cancelBoundary(
         context: Context,
         kind: String,

@@ -1,10 +1,7 @@
 package com.ireum.ytdl.util.storage
 
 import com.ireum.ytdl.App
-import com.ireum.ytdl.database.RestoreGate
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import com.ireum.ytdl.database.RestoreMutationAdmission
 
 /**
  * Serializes History reference changes with the final filesystem deletion
@@ -12,19 +9,11 @@ import kotlinx.coroutines.sync.withLock
  * external file operation that follows a retained-reference snapshot.
  */
 object HistoryReferenceMutationCoordinator {
-    private val mutex = Mutex()
+    suspend fun <T> withLock(block: suspend () -> T): T =
+        RestoreMutationAdmission.withOrdinaryMutation(App.instance, block)
 
-    suspend fun <T> withLock(block: suspend () -> T): T = mutex.withLock {
-        check(!restoreIsActive()) { "Restore transaction is active" }
-        block()
-    }
-
-    fun <T> withLockBlocking(block: () -> T): T = runBlocking {
-        mutex.withLock {
-            check(!restoreIsActive()) { "Restore transaction is active" }
-            block()
-        }
-    }
+    fun <T> withLockBlocking(block: () -> T): T =
+        RestoreMutationAdmission.withOrdinaryMutationBlocking(App.instance, block)
 
     /**
      * Restore owns the same relationship lock while its outer Room
@@ -32,9 +21,6 @@ object HistoryReferenceMutationCoordinator {
      * restore coordinator may use it, while ordinary History/UI writers fail
      * closed at the shared admission boundary above.
      */
-    suspend fun <T> withRestoreLock(block: suspend () -> T): T = mutex.withLock { block() }
-
-    private fun restoreIsActive(): Boolean = runCatching {
-        RestoreGate.isRestoreInProgress(App.instance)
-    }.getOrDefault(false)
+    suspend fun <T> withRestoreLock(block: suspend () -> T): T =
+        RestoreMutationAdmission.withRestoreMutation(block)
 }

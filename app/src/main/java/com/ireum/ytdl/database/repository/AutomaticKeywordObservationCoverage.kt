@@ -5,7 +5,9 @@ import androidx.preference.PreferenceManager
 import androidx.work.WorkManager
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.DBManager
-import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
+import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
@@ -25,10 +27,25 @@ import kotlinx.coroutines.sync.withLock
 class AutomaticKeywordObservationCoverage(
     private val context: Context,
     private val db: DBManager = DBManager.getInstance(context),
-    private val allowDuringRestore: Boolean = false,
 ) {
-    suspend fun reconcile() = reconciliationMutex.withLock {
-        if (!allowDuringRestore && RestoreGate.isRestoreInProgress(context)) return@withLock
+    suspend fun reconcile() = RestoreMutationAdmission.withOrdinaryMutation(context) {
+        reconciliationMutex.withLock {
+            reconcileInternal(null)
+        }
+    }
+
+    internal suspend fun reconcileForRestore(
+        authority: RestoreReconciliationAuthority,
+    ) = RestoreMutationAdmission.withRestoreMutation {
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+        reconciliationMutex.withLock {
+            reconcileInternal(authority)
+        }
+    }
+
+    private suspend fun reconcileInternal(
+        authority: RestoreReconciliationAuthority?,
+    ) {
         val observeDao = db.observeSourcesDao
         val repository = ObserveSourcesRepository(
             observeDao,
@@ -52,7 +69,7 @@ class AutomaticKeywordObservationCoverage(
             .values
             .forEach { duplicates ->
                 duplicates.drop(1).forEach {
-                    repository.cancelObservationTaskByID(it.id, allowDuringRestore)
+                    cancelObservation(repository, it.id, authority)
                     observeDao.deleteRecord(it.id)
                 }
             }
@@ -60,11 +77,14 @@ class AutomaticKeywordObservationCoverage(
         observeDao.getAllSourcesIncludingManaged()
             .filter { it.observationPurpose == ObservationPurposes.KEYWORD_DISCOVERY }
             .forEach { managed ->
-            if (managed.managedConditionKey !in requiredByKey || managed.managedConditionKey in publicActiveKeys) {
-                repository.cancelObservationTaskByID(managed.id, allowDuringRestore)
-                observeDao.deleteRecord(managed.id)
+                if (
+                    managed.managedConditionKey !in requiredByKey ||
+                    managed.managedConditionKey in publicActiveKeys
+                ) {
+                    cancelObservation(repository, managed.id, authority)
+                    observeDao.deleteRecord(managed.id)
+                }
             }
-        }
 
         val remaining = observeDao.getAllSourcesIncludingManaged()
         requiredByKey.forEach { (conditionKey, rules) ->
@@ -79,11 +99,11 @@ class AutomaticKeywordObservationCoverage(
                 managedSource(
                     rules.first().conditionValue,
                     rules.first().playlistName,
-                    conditionKey
+                    conditionKey,
                 ).let { candidate ->
                     val id = observeDao.insert(candidate)
                     if (id > 0) {
-                        check(repository.observeTaskAndAwait(candidate.copy(id = id), allowDuringRestore)) {
+                        check(scheduleObservation(repository, candidate.copy(id = id), authority)) {
                             "Managed ObserveSource scheduling was not accepted"
                         }
                     }
@@ -91,11 +111,49 @@ class AutomaticKeywordObservationCoverage(
             } else if (existing.status != ObserveSourcesRepository.SourceStatus.ACTIVE) {
                 val active = existing.copy(status = ObserveSourcesRepository.SourceStatus.ACTIVE)
                     .also { observeDao.update(it) }
-                check(repository.observeTaskAndAwait(active, allowDuringRestore)) {
+                check(scheduleObservation(repository, active, authority)) {
                     "Managed ObserveSource scheduling was not accepted"
                 }
             }
         }
+
+        // A Reset may have cancelled the ObserveSource namespace even though
+        // the managed source was already ACTIVE and therefore needed no DB
+        // transition above. Reconstruct its owner from final authority.
+        if (authority != null) {
+            observeDao.getAllSourcesIncludingManaged()
+                .filter {
+                    it.observationPurpose == ObservationPurposes.KEYWORD_DISCOVERY &&
+                        it.status == ObserveSourcesRepository.SourceStatus.ACTIVE
+                }
+                .forEach { managed ->
+                    check(scheduleObservation(repository, managed, authority)) {
+                        "Active managed ObserveSource scheduling was not accepted"
+                    }
+                }
+        }
+    }
+
+    private suspend fun cancelObservation(
+        repository: ObserveSourcesRepository,
+        id: Long,
+        authority: RestoreReconciliationAuthority?,
+    ) {
+        if (authority == null) {
+            repository.cancelObservationTaskByID(id)
+        } else {
+            repository.cancelObservationTaskByIDForRestore(id, authority)
+        }
+    }
+
+    private suspend fun scheduleObservation(
+        repository: ObserveSourcesRepository,
+        source: ObserveSourcesItem,
+        authority: RestoreReconciliationAuthority?,
+    ): Boolean = if (authority == null) {
+        repository.observeTaskAndAwait(source)
+    } else {
+        repository.observeTaskAndAwaitForRestore(source, authority)
     }
 
     private companion object {
@@ -107,7 +165,7 @@ class AutomaticKeywordObservationCoverage(
             id = 0,
             name = context.getString(
                 R.string.automatic_keyword_managed_source_name,
-                playlistName.ifBlank { url }
+                playlistName.ifBlank { url },
             ),
             url = url,
             downloadItemTemplate = discoveryOnlyTemplate(url),
@@ -128,7 +186,7 @@ class AutomaticKeywordObservationCoverage(
             syncWithSource = false,
             excludeShorts = false,
             observationPurpose = ObservationPurposes.KEYWORD_DISCOVERY,
-            managedConditionKey = conditionKey
+            managedConditionKey = conditionKey,
         )
 
     private fun discoveryOnlyTemplate(url: String) = DownloadItem(
@@ -154,6 +212,6 @@ class AutomaticKeywordObservationCoverage(
         SaveThumb = false,
         status = DownloadRepository.Status.Cancelled.toString(),
         downloadStartTime = 0,
-        logID = null
+        logID = null,
     )
 }
