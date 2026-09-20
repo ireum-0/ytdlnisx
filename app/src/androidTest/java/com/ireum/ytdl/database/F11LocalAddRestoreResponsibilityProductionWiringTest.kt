@@ -300,7 +300,7 @@ class F11LocalAddRestoreResponsibilityProductionWiringTest {
         RestoreAppDataItem(
             downloads = listOf(
                 HistoryItem(
-                    id = 0L,
+                    id = 1L,
                     url = url,
                     title = "F11 LocalAdd Reset",
                     author = "F11",
