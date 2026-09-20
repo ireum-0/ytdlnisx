@@ -1,0 +1,129 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "rank": 338,
+  "materializer_state_blob": "8b298ac0ca4ed7f616c71d10c8d3887c56d09004",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "08c50d7f1e1fa393b059a255b2a5c1301258b32f",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M08-20260920T1554Z-001/r337.json",
+    "blob_sha": "0071e69c3308c62c102182669c3126d6653cf128"
+  },
+  "history": {
+    "commit_sha": "d56771c10371be7df1625a5df34a71365db381a2",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=338"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12__9edd3e23__date03-current-basis-revalidation.md",
+        "status": "added",
+        "source_blob_sha": "a26eb781f4ce4b3063fc6d854187ec62aba76aec",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "a26eb781f4ce4b3063fc6d854187ec62aba76aec",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12__9edd3e23__date03-current-basis-revalidation.md",
+    "status": "added",
+    "source_blob_sha": "a26eb781f4ce4b3063fc6d854187ec62aba76aec",
+    "frozen_blob_sha": "a26eb781f4ce4b3063fc6d854187ec62aba76aec",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9edd3e2344caa9da0e576611eeb7d69e3cfd2d71",
+      "evidence": "source explicitly records CLEAN review basis"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "source is a BUG-DATE-03 current-basis revalidation record, but it has no explicit checkpoint_kind/equivalent field and does not unambiguously self-identify the whole document as a document-identity-v1 finding/addendum/reconciliation/scope-expansion record or final checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-DATE-03"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "EXISTING / P2 / OPEN / NOT_CLEAN at CLEAN basis 9edd3e2344caa9da0e576611eeb7d69e3cfd2d71; blocker delta 0"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "source lacks a positive whole-document structural identity recognized by document-identity-v1"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-DATE-03",
+      "evidence": "source revalidates the current exact production handoff boundary and distinguishes KEEP duplicate-prevention semantics from confirmed scheduler acceptance/durable scheduling-debt semantics"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-DATE-03",
+      "evidence": "source explicitly records blocker delta 0 and canonical blocker count P0 2 / P1 1 / P2 34"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "independent execution is explicitly NOT EXECUTED; in-progress implementation diff was not inspected; no focused test proves enqueue acceptance/failure repair"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
