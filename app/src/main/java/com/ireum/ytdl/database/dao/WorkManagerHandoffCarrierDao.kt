@@ -68,6 +68,28 @@ interface WorkManagerHandoffCarrierDao {
     )
     suspend fun deleteOutstandingForKinds(kinds: List<String>): Int
 
+    @Query("SELECT * FROM work_manager_handoff_carriers WHERE state = 'SUPERSEDED' ORDER BY updatedAt, handoffId")
+    suspend fun getSuperseded(): List<WorkManagerHandoffCarrier>
+
+    @Query(
+        "UPDATE work_manager_handoff_carriers SET state = 'SUPERSEDED', updatedAt = :updatedAt " +
+            "WHERE handoffId = :handoffId AND requestId = :requestId " +
+            "AND state IN ('PENDING_ENQUEUE', 'ACCEPTED')"
+    )
+    suspend fun markSuperseded(
+        handoffId: String,
+        requestId: String,
+        updatedAt: Long,
+    ): Int
+
+    @Query(
+        "UPDATE work_manager_handoff_carriers SET state = 'SUPERSEDED', updatedAt = :updatedAt " +
+            "WHERE kind IN (:kinds) AND state IN ('PENDING_ENQUEUE', 'ACCEPTED')"
+    )
+    suspend fun markSupersededForKinds(kinds: List<String>, updatedAt: Long): Int
+
+    @Query("DELETE FROM work_manager_handoff_carriers WHERE handoffId = :handoffId AND requestId = :requestId")
+    suspend fun deleteExact(handoffId: String, requestId: String): Int
     @Query("DELETE FROM work_manager_handoff_carriers WHERE handoffId = :handoffId")
     suspend fun delete(handoffId: String): Int
 

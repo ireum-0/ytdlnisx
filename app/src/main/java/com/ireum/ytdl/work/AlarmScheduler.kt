@@ -7,6 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.preference.PreferenceManager
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
@@ -82,7 +86,7 @@ class AlarmScheduler(private val context: Context) {
     }
 
     @SuppressLint("ScheduleExactAlarm")
-    private fun scheduleWithinOrdinaryMutation() {
+    internal fun scheduleWithinOrdinaryMutation() {
         WorkManagerHandoffRecovery.cancelScheduledHandoffsWithinOrdinaryMutation(context)
         cancelAlarmsWithinOrdinaryMutation()
 
@@ -125,6 +129,62 @@ class AlarmScheduler(private val context: Context) {
         )
     }
 
+    internal fun updateSchedulerEnabled(enabled: Boolean): Boolean = try {
+        RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
+            check(preferences.edit().putBoolean("use_scheduler", enabled).commit()) {
+                "Scheduler preference persistence was not durable"
+            }
+            if (enabled) {
+                scheduleWithinOrdinaryMutation()
+            } else {
+                cancelWithinOrdinaryMutation()
+                val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
+                    .addTag("download")
+                    .setConstraints(Constraints.Builder().build())
+                    .setInitialDelay(1000L, TimeUnit.MILLISECONDS)
+                    .build()
+                WorkManager.getInstance(context)
+                    .enqueueUniqueWork(
+                        System.currentTimeMillis().toString(),
+                        ExistingWorkPolicy.REPLACE,
+                        workRequest,
+                    )
+                    .result
+                    .get(10L, TimeUnit.SECONDS)
+            }
+        }
+        true
+    } catch (blocked: IllegalStateException) {
+        if (blocked.message == "Restore transaction is active") false else throw blocked
+    }
+
+    internal fun updateScheduleBoundary(
+        key: String,
+        value: String,
+    ): Boolean = try {
+        RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
+            updateScheduleBoundaryWithinOrdinaryMutation(key, value)
+        }
+        true
+    } catch (blocked: IllegalStateException) {
+        if (blocked.message == "Restore transaction is active") false else throw blocked
+    }
+    /**
+     * Commits one schedule boundary and republishes both external scheduler
+     * effects while the same ordinary admission is held by the caller.
+     */
+    internal fun updateScheduleBoundaryWithinOrdinaryMutation(
+        key: String,
+        value: String,
+    ) {
+        check(key == "schedule_start" || key == "schedule_end") {
+            "Unsupported scheduler preference $key"
+        }
+        check(preferences.edit().putString(key, value).commit()) {
+            "Scheduler preference persistence was not durable"
+        }
+        scheduleWithinOrdinaryMutation()
+    }
     fun cancel() {
         RestoreMutationAdmission.tryOrdinaryMutationBlocking(context) {
             cancelWithinOrdinaryMutation()

@@ -6,12 +6,15 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.repository.DownloadRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
+import java.util.concurrent.TimeUnit
 
 
 class CancelScheduledDownloadWorker(
@@ -21,12 +24,39 @@ class CancelScheduledDownloadWorker(
     @SuppressLint("RestrictedApi")
     override suspend fun doWork(): Result {
         if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
+        val handoffId = inputData.getString("handoffId").orEmpty()
+        val requestId = inputData.getString("handoffRequestId").orEmpty()
+        if (handoffId.isBlank() || requestId.isBlank()) return Result.success()
+        when (
+            WorkManagerHandoffRecovery.schedulerWorkRequestDisposition(
+                context = applicationContext,
+                handoffId = handoffId,
+                requestId = requestId,
+                generationId = inputData.getString(WorkManagerHandoffRecovery.INPUT_GENERATION_ID).orEmpty(),
+                boundary = inputData.getString(WorkManagerHandoffRecovery.INPUT_BOUNDARY).orEmpty(),
+                kind = WorkManagerHandoffCarrier.SCHEDULE_END,
+                workRequestId = id.toString(),
+            )
+        ) {
+            WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.STALE -> return Result.success()
+            WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.PENDING -> return Result.retry()
+            WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.CURRENT -> Unit
+        }
+        try {
+            RestoreMutationAdmission.withOrdinaryMutation(applicationContext) {
+                WorkManager.getInstance(context).cancelAllWorkByTag("download")
+                    .result
+                    .get(10L, TimeUnit.SECONDS)
+            }
+        } catch (blocked: IllegalStateException) {
+            if (blocked.message == "Restore transaction is active") return Result.retry()
+            throw blocked
+        }
         if (isStopped) return Result.success()
         val dbManager = DBManager.getInstance(context)
         val dao = dbManager.downloadDao
         val repository = DownloadRepository(dbManager)
 
-        WorkManager.getInstance(context).cancelAllWorkByTag("download")
         withContext(Dispatchers.IO + NonCancellable) {
             // Snapshot under the global claim/publication lock, then release
             // it before waiting for a per-download side-effect lease.  Holding
@@ -160,6 +190,11 @@ class CancelScheduledDownloadWorker(
             }
             firstFailure?.let { throw it }
         }
+        WorkManagerHandoffRecovery.retireSchedulerWorkRequest(
+            context = applicationContext,
+            handoffId = handoffId,
+            requestId = requestId,
+        )
         return Result.success()
     }
 }

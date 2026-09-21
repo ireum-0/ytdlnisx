@@ -964,12 +964,13 @@ object RestoreTransactionCoordinator {
                         db.lowQualityRedownloadDao.deleteItemsForDownloadIds(batch)
                     }
                 }
-                if (resetDownloadStatuses.isNotEmpty()) {
-                    db.workManagerHandoffCarrierDao.deleteOutstandingForKinds(
+                if (data.downloads != null || resetDownloadStatuses.isNotEmpty()) {
+                    db.workManagerHandoffCarrierDao.markSupersededForKinds(
                         listOf(
                             WorkManagerHandoffCarrier.SCHEDULE_START,
                             WorkManagerHandoffCarrier.SCHEDULE_END,
                         ),
+                        System.currentTimeMillis(),
                     )
                 }
                 data.queued?.let {

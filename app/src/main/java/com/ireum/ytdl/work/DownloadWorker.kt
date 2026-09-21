@@ -29,6 +29,7 @@ import com.ireum.ytdl.database.dao.DownloadDao
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.models.LogItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
@@ -1115,6 +1116,24 @@ class DownloadWorker(
 
     override suspend fun doWork(): Result {
         if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
+        val schedulerHandoffId = inputData.getString("handoffId").orEmpty()
+        if (schedulerHandoffId.isNotBlank()) {
+            when (
+                WorkManagerHandoffRecovery.schedulerWorkRequestDisposition(
+                    context = applicationContext,
+                    handoffId = schedulerHandoffId,
+                    requestId = inputData.getString("handoffRequestId").orEmpty(),
+                    generationId = inputData.getString(WorkManagerHandoffRecovery.INPUT_GENERATION_ID).orEmpty(),
+                    boundary = inputData.getString(WorkManagerHandoffRecovery.INPUT_BOUNDARY).orEmpty(),
+                    kind = WorkManagerHandoffCarrier.SCHEDULE_START,
+                    workRequestId = id.toString(),
+                )
+            ) {
+                WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.STALE -> return Result.success()
+                WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.PENDING -> return Result.retry()
+                WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.CURRENT -> Unit
+            }
+        }
         return try {
             doWorkSerialized()
         } catch (cancelled: CancellationException) {
@@ -1373,6 +1392,11 @@ class DownloadWorker(
             }
         }
 
+        WorkManagerHandoffRecovery.retireSchedulerWorkRequest(
+            context = applicationContext,
+            handoffId = inputData.getString("handoffId").orEmpty(),
+            requestId = inputData.getString("handoffRequestId").orEmpty(),
+        )
         return Result.success()
     }
 

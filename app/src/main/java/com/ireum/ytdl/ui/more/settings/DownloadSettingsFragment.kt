@@ -14,10 +14,6 @@ import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceManager
 import androidx.preference.SwitchPreferenceCompat
-import androidx.work.Constraints
-import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.RestoreMutationAdmission
@@ -25,12 +21,10 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
-import com.ireum.ytdl.work.DownloadWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Calendar
-import java.util.concurrent.TimeUnit
 
 
 class DownloadSettingsFragment : BaseSettingsFragment() {
@@ -111,82 +105,45 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
         val scheduleEnd = findPreference<Preference>("schedule_end")
         scheduleEnd?.summary = preferences.getString("schedule_end", "05:00")
 
-        useScheduler?.setOnPreferenceChangeListener { preference, newValue ->
-            if (RestoreGate.isRestoreInProgress(requireContext())) {
+        useScheduler?.setOnPreferenceChangeListener { _, newValue ->
+            val enabled = newValue as Boolean
+            if (enabled && !scheduler.canSchedule() && Build.VERSION.SDK_INT >= 31) {
+                Intent().also { intent ->
+                    intent.action = Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM
+                    requireContext().startActivity(intent)
+                }
                 return@setOnPreferenceChangeListener false
             }
-            var allowChange = true
-            if (newValue as Boolean){
-                if (!scheduler.canSchedule() && Build.VERSION.SDK_INT >= 31){
-                    Intent().also { intent ->
-                        intent.action = Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM
-                        requireContext().startActivity(intent)
-                    }
-                    allowChange = false
-                }else{
-                    scheduler.schedule()
-                }
-            }else{
-                allowChange = RestoreMutationAdmission.tryOrdinaryMutationBlocking(requireContext()) {
-                    scheduler.cancelWithinOrdinaryMutation()
-                    // Start a worker for leftover downloads while the same
-                    // ordinary scheduler authority still owns the external
-                    // enqueue. Restore cannot publish between cancellation
-                    // and this successor acceptance.
-                    val workConstraints = Constraints.Builder()
-                    val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
-                        .addTag("download")
-                        .setConstraints(workConstraints.build())
-                        .setInitialDelay(1000L, TimeUnit.MILLISECONDS)
-                        .build()
-                    WorkManager.getInstance(requireContext())
-                        .enqueueUniqueWork(
-                            System.currentTimeMillis().toString(),
-                            ExistingWorkPolicy.REPLACE,
-                            workRequest,
-                        )
-                        .result
-                        .get(10L, TimeUnit.SECONDS)
-                    true
-                }
-            }
-            allowChange
+            val changed = scheduler.updateSchedulerEnabled(enabled)
+            if (changed) useScheduler?.isChecked = enabled
+            // The actual durable write already occurred inside the shared
+            // authority transition; prevent AndroidX from persisting again
+            // after the listener returns.
+            false
         }
-
         scheduleStart?.setOnPreferenceClickListener {
-            UiUtil.showTimePicker(parentFragmentManager, preferences){
-                if (RestoreGate.isRestoreInProgress(requireContext())) return@showTimePicker
+            UiUtil.showTimePicker(parentFragmentManager, preferences) {
                 val hr = it.get(Calendar.HOUR_OF_DAY)
                 val mn = it.get(Calendar.MINUTE)
                 val formattedTime = String.format("%02d", hr) + ":" + String.format("%02d", mn)
-                RestoreMutationAdmission.applyOrdinaryPreferences(
-                    requireContext(),
-                    preferences.edit().putString("schedule_start", formattedTime),
-                )
-                scheduleStart.summary = formattedTime
-
-                scheduler.schedule()
+                if (scheduler.updateScheduleBoundary("schedule_start", formattedTime)) {
+                    scheduleStart.summary = formattedTime
+                }
             }
             true
         }
 
         scheduleEnd?.setOnPreferenceClickListener {
-            UiUtil.showTimePicker(parentFragmentManager, preferences){
-                if (RestoreGate.isRestoreInProgress(requireContext())) return@showTimePicker
+            UiUtil.showTimePicker(parentFragmentManager, preferences) {
                 val hr = it.get(Calendar.HOUR_OF_DAY)
                 val mn = it.get(Calendar.MINUTE)
                 val formattedTime = String.format("%02d", hr) + ":" + String.format("%02d", mn)
-                RestoreMutationAdmission.applyOrdinaryPreferences(
-                    requireContext(),
-                    preferences.edit().putString("schedule_end", formattedTime),
-                )
-                scheduleEnd.summary = formattedTime
-
-                scheduler.schedule()
+                if (scheduler.updateScheduleBoundary("schedule_end", formattedTime)) {
+                    scheduleEnd.summary = formattedTime
+                }
             }
             true
         }
-
 
         findPreference<EditTextPreference>("proxy")?.apply {
             val s = getString(R.string.socks5_proxy_summary)

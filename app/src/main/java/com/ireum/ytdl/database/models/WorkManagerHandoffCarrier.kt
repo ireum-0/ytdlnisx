@@ -49,5 +49,7 @@ data class WorkManagerHandoffCarrier(
         const val PENDING_ENQUEUE = "PENDING_ENQUEUE"
         const val ACCEPTED = "ACCEPTED"
         const val RESOLVED = "RESOLVED"
+        /** A durable tombstone for a request that must never become a live owner. */
+        const val SUPERSEDED = "SUPERSEDED"
     }
 }
