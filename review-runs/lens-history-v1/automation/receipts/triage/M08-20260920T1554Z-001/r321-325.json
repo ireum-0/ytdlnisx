@@ -1,0 +1,125 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "microsegment_rank_range": [
+    321,
+    325
+  ],
+  "data_head": "f2574edc7bc8d5b36b0f1ad6042479ace4197d69",
+  "complete_state_blob": "0ad10ba5514603a69a5e2b509cd7e616ec963d20",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M08-20260920T1554Z-001/r321-325.json",
+    "blob_sha": "4ac404e05910c4d6e0d864d4412c1867a4a95616"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "2dd6e95d12cfea985756d32136bc708c45b13971",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M08-20260920T1554Z-001/r316-320.json",
+    "blob_sha": "509a06aeb36c1b6cd47b22f6d4e943e7d5ff88f8"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 321,
+      "path": "review-runs/checkpoints/2026-09-12__6cb93d12__cache01-cumulative-closure.md",
+      "source_blob": "eb74f649b8390fd33961f80c69bff591a2f90cb4",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "STATUS_TRANSITION_OR_CLOSURE_NUANCE",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep cumulative-closure document kind NOT_VERIFIED. Preserve canonical BUG-CACHE-01 closure at 6cb93d12, P2 -1 to P0 2 / P1 1 / P2 32, and CLEAN-basis advance 93d01d2a -> 6cb93d12. Reconcile earlier scheduled source-semantic FIXED/canonical hold with later execution evidence without treating reported tests as independent execution; DownloadWorkerCleanup had zero tests executed, while CacheMaintenanceProductionWiringTest execution remains external implementation evidence."
+    },
+    {
+      "rank": 322,
+      "path": "review-runs/checkpoints/2026-09-12T042500Z__6cb93d12__checkpoint.md",
+      "source_blob": "3f9eb09e42c9e3177eaa7ff3d59227f82edf8eb5",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve final P0 2 / P1 1 / P2 33 NOT_CLEAN with no material change at this historical round. BUG-CACHE-01 is source-semantically FIXED but canonically P2 OPEN because exact production-path runtime evidence is NOT_VERIFIED; independent execution is NOT EXECUTED."
+    },
+    {
+      "rank": 323,
+      "path": "review-runs/checkpoints/2026-09-12T042219Z__6cb93d12__checkpoint.md",
+      "source_blob": "20660923899e4ddb5677d8b94125072b794a5523",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic kind NOT_VERIFIED and P0 2 / P1 1 / P2 33 provisional. Preserve unchanged-tree source-semantic FIXED evidence for BUG-CACHE-01 separately from canonical OPEN/execution NOT_VERIFIED; this checkpoint relies on the preceding full-path trace rather than establishing a new material disposition."
+    },
+    {
+      "rank": 324,
+      "path": "review-runs/checkpoints/2026-09-12T034500Z__6cb93d12__checkpoint.md",
+      "source_blob": "02bc53a7fd709f66b2c68b34f00f0f20d8107864",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve P0 2 / P1 1 / P2 33 NOT_CLEAN and BUG-CACHE-01 source-semantic FIXED/canonical OPEN due missing exact-SHA execution. Favorable source-level collateral changes for BUG-CACHE-05, BUG-TERMINAL-06, and BUG-CLEANUP-02 must remain non-closed because their closure matrices and execution requirements are broader."
+    },
+    {
+      "rank": 325,
+      "path": "review-runs/checkpoints/2026-09-12T033900Z__6cb93d12__checkpoint.md",
+      "source_blob": "68a68fcd5785058c15c6f82be42c4651b6426c59",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "CONTRADICTORY_STATUS_LABELING",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic kind NOT_VERIFIED and P0 2 / P1 1 / P2 33 without decrement. Preserve source-level FIXED candidates for BUG-CACHE-01, BUG-CACHE-05, BUG-TERMINAL-06 and BUG-CLEANUP-02 separately from canonical OPEN/execution NOT_VERIFIED, while retaining their separate root identities under the shared maintenance/admission authority."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      321,
+      322,
+      323,
+      324,
+      325
+    ],
+    "materializer_flagged_exception_ranks": [
+      321,
+      322,
+      323,
+      324,
+      325
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
