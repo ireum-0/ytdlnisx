@@ -1,0 +1,123 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "microsegment_rank_range": [
+    346,
+    350
+  ],
+  "data_head": "f2574edc7bc8d5b36b0f1ad6042479ace4197d69",
+  "complete_state_blob": "0ad10ba5514603a69a5e2b509cd7e616ec963d20",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M08-20260920T1554Z-001/r346-350.json",
+    "blob_sha": "de4a6c8df6506c84069f89725e7a1f3ae899887f"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "2dd6e95d12cfea985756d32136bc708c45b13971",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M08-20260920T1554Z-001/r341-345.json",
+    "blob_sha": "049a1159ca3959b254d74844ee9c84886150ba1e"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 346,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__backup07-playlists-current-basis-revalidation.md",
+      "source_blob": "1bf9fc5f43d5963a38a01130dd0eeb8cd2bc7a6d",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-BACKUP-07 as the existing F9 P2 playlist/playlist-group graph backup/restore root at 9edd3e23. F4 and F6 remain hard prerequisites and F11 remains blocked. Count delta 0, P0 2 / P1 1 / P2 34, independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 347,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__backup05-paused-current-basis-revalidation.md",
+      "source_blob": "9246f5b43e0abb451762c01719ed91507a2d4533",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-BACKUP-05 as the existing F8 P2 paused-Download backup/restore root. Paused is durable state but absent from backup/restore payloads; F4/F6 prerequisites and F11 dependency remain. Count delta 0, P2 34, independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 348,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__backup08-preference-types-current-basis-revalidation.md",
+      "source_blob": "c61438314c140304860d6e7edec46b467dd2c9b6",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-BACKUP-08 as the existing F7 P2 SharedPreferences type-round-trip root. Backup admits Long/Float while restore silently drops them and unknown non-Set types; F6 portable/transient policy remains prerequisite. Count delta 0, P2 34, independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 349,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__backup06-portable-id-current-basis-revalidation.md",
+      "source_blob": "8ca269870e0fa54930cd066618e51510621d4fc8",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-BACKUP-06 as the existing F6 P2 portable imported-ID authority root. Destination numeric coincidence can falsely bind imported Observe provenance or legacy assignment source IDs; F6 remains prerequisite for F7/F8/F9/F11. Count delta 0, P2 34, independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 350,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__backup02-thumbnail-current-basis-revalidation.md",
+      "source_blob": "dd51d6f2f9a4399955e3909ca1f9c6aeddc9ec72",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-BACKUP-02 as the existing F5 P2 restored-thumbnail staging/ownership root. Backup-local History ID is still used as live filename before destination identity allocation, permitting cross-import aliasing/overwrite; F11 remains blocked. Count delta 0, P2 34, independent execution NOT EXECUTED."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      346,
+      347,
+      348,
+      349,
+      350
+    ],
+    "materializer_flagged_exception_ranks": [
+      346,
+      347,
+      348,
+      349,
+      350
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
