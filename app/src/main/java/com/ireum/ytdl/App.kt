@@ -17,6 +17,7 @@ import com.ireum.ytdl.work.LowQualityRedownloadManager
 import com.ireum.ytdl.work.HistoryDateFetchManager
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.WorkManagerHandoffRecovery
+import com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator
 import com.ireum.ytdl.work.LocalAddResponsibilityReconciler
 import com.ireum.ytdl.work.TerminalPublicationRecovery
 import com.ireum.ytdl.work.TerminalExecutionRecovery
@@ -60,13 +61,17 @@ class App : Application() {
         val restoreRecovery = applicationScope.async(Dispatchers.IO) {
             RestoreTransactionCoordinator.recover(this@App)
         }
+        val schedulerTransitionRecovery = applicationScope.async(Dispatchers.IO) {
+            restoreRecovery.await()
+            check(!RestoreGate.isRestoreInProgress(this@App)) {
+                "Restore recovery remains pending before scheduler transition recovery"
+            }
+            SchedulerSettingsTransitionCoordinator.reconcile(this@App)
+        }
         val runtimeReadiness = applicationScope.async(Dispatchers.IO) {
             runStartupInitialization(
                 initialize = {
-                    restoreRecovery.await()
-                    check(!RestoreGate.isRestoreInProgress(this@App)) {
-                        "Restore recovery remains pending at startup"
-                    }
+                    schedulerTransitionRecovery.await()
                     setDefaultValues()
                     createNotificationChannels()
                     initLibraries()
@@ -167,7 +172,7 @@ class App : Application() {
         }
         applicationScope.launch(Dispatchers.IO) {
             try {
-                restoreRecovery.await()
+                schedulerTransitionRecovery.await()
                 if (RestoreGate.isRestoreInProgress(this@App)) return@launch
                 // One-shot click/alarm/notification handoffs are independent
                 // of optional native/runtime initialization.

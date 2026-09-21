@@ -9,6 +9,7 @@ import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.SearchHistoryRepository
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
+import com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator
 import com.ireum.ytdl.database.dao.KeywordGroupDao
 import com.ireum.ytdl.database.dao.YoutuberGroupDao
 import com.ireum.ytdl.database.dao.YoutuberMetaDao
@@ -44,7 +45,8 @@ object BackupSettingsUtil {
             !key.startsWith(PLAYBACK_POSITION_CACHE_PREFIX) &&
             !key.startsWith(LOCAL_ADD_RUNTIME_PREFIX) &&
             !key.startsWith(UNDO_INTENT_FALLBACK_PREFIX) &&
-            !key.startsWith(YOUTUBE_API_RUNTIME_PREFIX)
+            !key.startsWith(YOUTUBE_API_RUNTIME_PREFIX) &&
+            !SchedulerSettingsTransitionCoordinator.isRuntimePreferenceKey(key)
 
     /**
      * A successful empty array is meaningful backup state.  Capture failures

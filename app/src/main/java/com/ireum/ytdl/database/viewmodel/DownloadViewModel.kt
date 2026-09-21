@@ -2419,7 +2419,7 @@ class DownloadViewModel private constructor(
                 queuedItems.removeAll { candidate -> persisted.none { it === candidate } }
                 alarmScheduler.scheduleSuspending()
             }else{
-                RestoreMutationAdmission.applyOrdinaryPreferences(context, sharedPreferences.edit().putBoolean("use_scheduler", false))
+                alarmScheduler.disableForImmediateQueueStart()
                 result.succeeded = false
                 result.message = context.getString(R.string.enable_alarm_permission)
             }

@@ -341,6 +341,14 @@ object RestoreTransactionCoordinator {
         return RestoreReconciliationAuthority(record.journal.operationId)
     }
 
+    internal fun currentReconciliationAuthorityOrNull(
+        context: Context,
+    ): RestoreReconciliationAuthority? {
+        val record = RestoreOperationStore.load(context) ?: return null
+        if (record.journal.phase != RestorePhase.RECONCILING.name) return null
+        return RestoreReconciliationAuthority(record.journal.operationId)
+    }
+
     internal fun requireCurrentReconciliationAuthority(
         context: Context,
         authority: RestoreReconciliationAuthority,
@@ -1431,6 +1439,13 @@ object RestoreTransactionCoordinator {
 
     private suspend fun reconcilePostCommit(context: Context, record: RestoreRecord) {
         reconciliationFailureForTesting?.invoke()
+        val authority = RestoreTransactionCoordinator.currentReconciliationAuthority(context)
+        // A scheduler transition that predates this Restore is destination
+        // runtime authority, not portable settings.  Once the restored
+        // preference image is authoritative, supersede that old transition
+        // explicitly before publishing any replacement scheduler owners.
+        com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator
+            .supersedeForRestore(context, authority)
         val notificationUtil = NotificationUtil(context)
         record.journal.supersededDownloadNotificationIds.forEach { id ->
             notificationUtil.cancelDownloadNotifications(id.toInt())
@@ -1473,8 +1488,6 @@ object RestoreTransactionCoordinator {
         val observeResponsibilityQuiesced = "observeSources" in quiescedTags
         val keywordResponsibilityQuiesced = "automaticKeywordRules" in quiescedTags
         val lowQualityResponsibilityQuiesced = "low_quality_redownload" in quiescedTags
-        val authority = RestoreTransactionCoordinator.currentReconciliationAuthority(context)
-
         if (
             observeResponsibilityQuiesced ||
                 data.observeSources != null ||

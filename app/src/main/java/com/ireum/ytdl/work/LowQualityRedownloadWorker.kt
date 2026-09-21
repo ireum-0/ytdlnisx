@@ -466,7 +466,9 @@ class LowQualityRedownloadWorker(
             LowQualityQueueStartDecision.START_NOW_DISABLE_SCHEDULER -> {
                 // Match the normal queue's permission fallback. apply() changes the in-memory
                 // value synchronously, so the DownloadWorker cannot immediately self-stop.
-                RestoreMutationAdmission.applyOrdinaryPreferences(context, preferences.edit().putBoolean("use_scheduler", false))
+                check(scheduler.disableForImmediateQueueStart()) {
+                    "Restore transaction is active"
+                }
                 DownloadRepository(database).startDownloadWorker(queued, context)
             }
             LowQualityQueueStartDecision.START_NOW ->

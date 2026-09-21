@@ -10,6 +10,7 @@ import androidx.preference.PreferenceManager
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
@@ -18,6 +19,8 @@ import com.ireum.ytdl.receiver.CancelScheduleAlarmReceiver
 import com.ireum.ytdl.receiver.ScheduleAlarmReceiver
 import kotlinx.coroutines.CancellationException
 import java.util.Calendar
+import java.nio.charset.StandardCharsets
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 class AlarmScheduler(private val context: Context) {
@@ -26,6 +29,20 @@ class AlarmScheduler(private val context: Context) {
         @Volatile
         internal var exactAlarmPublicationForTesting:
             ((AlarmManager, Long, PendingIntent) -> Unit)? = null
+
+        @Volatile
+        internal var schedulerTransitionStepForTesting: ((String) -> Unit)? = null
+
+        @Volatile
+        internal var beforeDisableSuccessorEnqueueForTesting:
+            ((SchedulerSettingsTransitionCoordinator.Transition) -> Unit)? = null
+
+        internal const val TRANSITION_STEP_AFTER_CANCELLATION =
+            "after_scheduler_cancellation"
+        internal const val TRANSITION_STEP_AFTER_START_PUBLICATION =
+            "after_scheduler_start_publication"
+        internal const val TRANSITION_STEP_AFTER_END_PUBLICATION =
+            "after_scheduler_end_publication"
     }
 
     private val preferences = PreferenceManager.getDefaultSharedPreferences(context)
@@ -33,6 +50,9 @@ class AlarmScheduler(private val context: Context) {
 
 
     suspend fun scheduleAt(at: Long) = RestoreMutationAdmission.withOrdinaryMutation(context) {
+        SchedulerSettingsTransitionCoordinator.reconcilePendingWithinOrdinaryMutation(context) {
+            applySchedulerTransitionEffectWithinOrdinaryMutation(it)
+        }
         val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundaryWithinOrdinaryMutation(
             context,
             WorkManagerHandoffCarrier.START_BOUNDARY,
@@ -77,11 +97,17 @@ class AlarmScheduler(private val context: Context) {
     @SuppressLint("ScheduleExactAlarm")
     fun schedule() {
         RestoreMutationAdmission.tryOrdinaryMutationBlocking(context) {
+            SchedulerSettingsTransitionCoordinator.reconcilePendingWithinOrdinaryMutation(context) {
+                applySchedulerTransitionEffectWithinOrdinaryMutation(it)
+            }
             scheduleWithinOrdinaryMutation()
         }
     }
 
     internal suspend fun scheduleSuspending() = RestoreMutationAdmission.withOrdinaryMutation(context) {
+        SchedulerSettingsTransitionCoordinator.reconcilePendingWithinOrdinaryMutation(context) {
+            applySchedulerTransitionEffectWithinOrdinaryMutation(it)
+        }
         scheduleWithinOrdinaryMutation()
     }
 
@@ -89,6 +115,7 @@ class AlarmScheduler(private val context: Context) {
     internal fun scheduleWithinOrdinaryMutation() {
         WorkManagerHandoffRecovery.cancelScheduledHandoffsWithinOrdinaryMutation(context)
         cancelAlarmsWithinOrdinaryMutation()
+        schedulerTransitionStepForTesting?.invoke(TRANSITION_STEP_AFTER_CANCELLATION)
 
         val startingTime = preferences.getString("schedule_start", "00:00")!!
         val sTime = Calendar.getInstance()
@@ -108,6 +135,7 @@ class AlarmScheduler(private val context: Context) {
             at = time.timeInMillis,
             handoffId = startHandoffId,
         )
+        schedulerTransitionStepForTesting?.invoke(TRANSITION_STEP_AFTER_START_PUBLICATION)
 
         val endingTime = preferences.getString("schedule_end", "05:00")!!
         val eTime = Calendar.getInstance()
@@ -127,31 +155,39 @@ class AlarmScheduler(private val context: Context) {
             at = calendar.timeInMillis,
             handoffId = endHandoffId,
         )
+        schedulerTransitionStepForTesting?.invoke(TRANSITION_STEP_AFTER_END_PUBLICATION)
     }
 
     internal fun updateSchedulerEnabled(enabled: Boolean): Boolean = try {
-        RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
-            check(preferences.edit().putBoolean("use_scheduler", enabled).commit()) {
-                "Scheduler preference persistence was not durable"
-            }
-            if (enabled) {
-                scheduleWithinOrdinaryMutation()
-            } else {
-                cancelWithinOrdinaryMutation()
-                val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
-                    .addTag("download")
-                    .setConstraints(Constraints.Builder().build())
-                    .setInitialDelay(1000L, TimeUnit.MILLISECONDS)
-                    .build()
-                WorkManager.getInstance(context)
-                    .enqueueUniqueWork(
-                        System.currentTimeMillis().toString(),
-                        ExistingWorkPolicy.REPLACE,
-                        workRequest,
-                    )
-                    .result
-                    .get(10L, TimeUnit.SECONDS)
-            }
+        SchedulerSettingsTransitionCoordinator.runOrdinaryTransition(
+            context = context,
+            kind = SchedulerSettingsTransitionCoordinator.Kind.USE_SCHEDULER,
+            targetScheduleStart = { preferences.getString("schedule_start", "00:00")!! },
+            targetScheduleEnd = { preferences.getString("schedule_end", "05:00")!! },
+            targetUseScheduler = { enabled },
+        ) { transition ->
+            applySchedulerTransitionEffectWithinOrdinaryMutation(transition)
+        }
+        true
+    } catch (blocked: IllegalStateException) {
+        if (blocked.message == "Restore transaction is active") false else throw blocked
+    }
+
+    /**
+     * Used by queue producers that immediately start their own durable queue
+     * after exact-alarm permission is unavailable.  Scheduler authority is
+     * still disabled through the same restart-safe transition, but the caller
+     * remains the owner of that already-existing queue-start operation.
+     */
+    internal fun disableForImmediateQueueStart(): Boolean = try {
+        SchedulerSettingsTransitionCoordinator.runOrdinaryTransition(
+            context = context,
+            kind = SchedulerSettingsTransitionCoordinator.Kind.USE_SCHEDULER,
+            targetScheduleStart = { preferences.getString("schedule_start", "00:00")!! },
+            targetScheduleEnd = { preferences.getString("schedule_end", "05:00")!! },
+            targetUseScheduler = { false },
+        ) {
+            cancelWithinOrdinaryMutation()
         }
         true
     } catch (blocked: IllegalStateException) {
@@ -160,35 +196,105 @@ class AlarmScheduler(private val context: Context) {
 
     internal fun updateScheduleBoundary(
         key: String,
-        value: String,
+    value: String,
     ): Boolean = try {
-        RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
-            updateScheduleBoundaryWithinOrdinaryMutation(key, value)
+        check(key == "schedule_start" || key == "schedule_end") {
+            "Unsupported scheduler preference $key"
+        }
+        SchedulerSettingsTransitionCoordinator.runOrdinaryTransition(
+            context = context,
+            kind = if (key == "schedule_start") {
+                SchedulerSettingsTransitionCoordinator.Kind.SCHEDULE_START
+            } else {
+                SchedulerSettingsTransitionCoordinator.Kind.SCHEDULE_END
+            },
+            targetScheduleStart = {
+                if (key == "schedule_start") value
+                else preferences.getString("schedule_start", "00:00")!!
+            },
+            targetScheduleEnd = {
+                if (key == "schedule_end") value
+                else preferences.getString("schedule_end", "05:00")!!
+            },
+            targetUseScheduler = { preferences.getBoolean("use_scheduler", false) },
+        ) { transition ->
+            applySchedulerTransitionEffectWithinOrdinaryMutation(transition)
         }
         true
     } catch (blocked: IllegalStateException) {
         if (blocked.message == "Restore transaction is active") false else throw blocked
     }
-    /**
-     * Commits one schedule boundary and republishes both external scheduler
-     * effects while the same ordinary admission is held by the caller.
-     */
-    internal fun updateScheduleBoundaryWithinOrdinaryMutation(
-        key: String,
-        value: String,
-    ) {
-        check(key == "schedule_start" || key == "schedule_end") {
-            "Unsupported scheduler preference $key"
-        }
-        check(preferences.edit().putString(key, value).commit()) {
-            "Scheduler preference persistence was not durable"
-        }
-        scheduleWithinOrdinaryMutation()
-    }
     fun cancel() {
         RestoreMutationAdmission.tryOrdinaryMutationBlocking(context) {
+            SchedulerSettingsTransitionCoordinator.reconcilePendingWithinOrdinaryMutation(context) {
+                applySchedulerTransitionEffectWithinOrdinaryMutation(it)
+            }
             cancelWithinOrdinaryMutation()
         }
+    }
+
+    /** Applies one durable scheduler-settings transition while admission is held. */
+    internal fun applySchedulerTransitionEffectWithinOrdinaryMutation(
+        transition: SchedulerSettingsTransitionCoordinator.Transition,
+    ) {
+        when (transition.checkedKind()) {
+            SchedulerSettingsTransitionCoordinator.Kind.SCHEDULE_START,
+            SchedulerSettingsTransitionCoordinator.Kind.SCHEDULE_END,
+            -> scheduleWithinOrdinaryMutation()
+
+            SchedulerSettingsTransitionCoordinator.Kind.USE_SCHEDULER -> {
+                if (transition.targetUseScheduler) {
+                    scheduleWithinOrdinaryMutation()
+                } else {
+                    cancelWithinOrdinaryMutation()
+                    schedulerTransitionStepForTesting?.invoke(TRANSITION_STEP_AFTER_CANCELLATION)
+                    enqueueDisableSuccessorWithinOrdinaryMutation(transition)
+                }
+            }
+        }
+    }
+
+    /**
+     * The disable successor belongs to the durable transition, not to the
+     * wall-clock invocation that happened to publish it.  Stable identity plus
+     * KEEP makes replay after request/acceptance process death idempotent.
+     */
+    private fun enqueueDisableSuccessorWithinOrdinaryMutation(
+        transition: SchedulerSettingsTransitionCoordinator.Transition,
+    ) {
+        val identity = "scheduler-disable-successor|${transition.id}|${transition.successorAttempt}"
+        val requestId = UUID.nameUUIDFromBytes(identity.toByteArray(StandardCharsets.UTF_8))
+        val uniqueName = "scheduler-disable-${transition.id}-${transition.successorAttempt}"
+        val manager = WorkManager.getInstance(context)
+        val existing = runCatching {
+            manager.getWorkInfoById(requestId).get(5L, TimeUnit.SECONDS)
+        }.getOrElse { failure ->
+            throw IllegalStateException("Could not inspect scheduler disable successor", failure)
+        }
+        if (existing != null && !existing.state.isFinished) return
+        if (existing?.state == WorkInfo.State.SUCCEEDED) return
+        if (existing != null) {
+            val next = transition.copy(successorAttempt = transition.successorAttempt + 1)
+            SchedulerSettingsTransitionCoordinator.advanceSuccessorAttemptWithinOrdinaryMutation(
+                context,
+                next,
+            )
+            enqueueDisableSuccessorWithinOrdinaryMutation(next)
+            return
+        }
+
+        val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .setId(requestId)
+            .addTag("download")
+            .setConstraints(Constraints.Builder().build())
+            .setInitialDelay(1000L, TimeUnit.MILLISECONDS)
+            .build()
+        beforeDisableSuccessorEnqueueForTesting?.invoke(transition)
+        manager.enqueueUniqueWork(
+            uniqueName,
+            ExistingWorkPolicy.KEEP,
+            workRequest,
+        ).result.get(10L, TimeUnit.SECONDS)
     }
 
     internal fun cancelWithinOrdinaryMutation() {
