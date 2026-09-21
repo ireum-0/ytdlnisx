@@ -1,0 +1,194 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "segment_range": [
+    366,
+    370
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4d4fc8e97753310c2e06fe827ebbdcf9ab17d67a",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M09-20260921T1143Z-001/r361-365.json",
+    "blob_sha": "6ff60ba4f81fc7720ca05d83d538b9caba6a7f83"
+  },
+  "rank_receipts": [
+    {
+      "rank": 366,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r366.json",
+      "blob_sha": "afe90c32ca20e153c1f479811b22ea562277c2ef"
+    },
+    {
+      "rank": 367,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r367.json",
+      "blob_sha": "e0aa68415d022910807f21cc3e668d5aeec855fc"
+    },
+    {
+      "rank": 368,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r368.json",
+      "blob_sha": "93d839f5b45948ac7cc9c349d486cd2cf6326f58"
+    },
+    {
+      "rank": 369,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r369.json",
+      "blob_sha": "29362cf7c2a00862e966dc0fcbcd91b8a768d06a"
+    },
+    {
+      "rank": 370,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r370.json",
+      "blob_sha": "b42c61a3a4b9f19c18c22b8d9e2a2e9878b0a35a"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      366,
+      367,
+      368,
+      369,
+      370
+    ],
+    "triggers": [
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional P0 2 / P1 1 / P2 34 with no new canonical finding or disposition/severity change",
+        "rank": 366,
+        "source_blob_sha": "e6da5f7a465d604bd308f71d70e4025d70367e7b"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "evidence": "source independently retraces existing BUG-OBSERVE-02 and BUG-KEYWORD-04 roots on current canonical production and records candidate-vs-canonical separation",
+        "rank": 366,
+        "source_blob_sha": "e6da5f7a465d604bd308f71d70e4025d70367e7b"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "adjacent Observe edit/start/stop lifecycle ownership and tests remain open review scope before final verdict",
+        "rank": 366,
+        "source_blob_sha": "e6da5f7a465d604bd308f71d70e4025d70367e7b"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional canonical inventory P0 2 / P1 1 / P2 34 and no new finding/disposition change yet",
+        "rank": 367,
+        "source_blob_sha": "df19286ea163e9bac387907a68bab83701c64763"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "latest divergent BUG-OBSERVE-02 candidate governance is treated as starting governance state only; canonical production reconfirmation is still in progress",
+        "rank": 367,
+        "source_blob_sha": "df19286ea163e9bac387907a68bab83701c64763"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "BUG-OBSERVE-02 and adjacent Observe full-row mutation/lifecycle questions remain open review scope at this bootstrap checkpoint",
+        "rank": 367,
+        "source_blob_sha": "df19286ea163e9bac387907a68bab83701c64763"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "candidate-review document lacks an allowed explicit whole-document structural identity",
+        "rank": 368,
+        "source_blob_sha": "f601de08a3825cfac478f043fa55a6d04a1f75f2"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-02",
+        "evidence": "source reviews an isolated candidate for the existing Observe edit-writer root, preserves the configuration-only DB correction, and identifies omitted edit-side scheduling/notification residuals without creating a new root",
+        "rank": 368,
+        "source_blob_sha": "f601de08a3825cfac478f043fa55a6d04a1f75f2"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-02",
+        "evidence": "source explicitly records canonical count delta 0 and P0 2 / P1 1 / P2 34",
+        "rank": 368,
+        "source_blob_sha": "f601de08a3825cfac478f043fa55a6d04a1f75f2"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED and candidate remains divergent/unintegrated",
+        "rank": 368,
+        "source_blob_sha": "f601de08a3825cfac478f043fa55a6d04a1f75f2"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "candidate-review document lacks an allowed explicit whole-document structural identity",
+        "rank": 369,
+        "source_blob_sha": "c9029fdce20e23f2a6f7156db177336afe826a91"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-KEYWORD-04",
+        "evidence": "source independently revalidates an isolated candidate for the existing stale-candidate keyword root, records the candidate clean for its root, and preserves canonical OPEN status until separate integration",
+        "rank": 369,
+        "source_blob_sha": "c9029fdce20e23f2a6f7156db177336afe826a91"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-KEYWORD-04",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 2 / P1 1 / P2 34",
+        "rank": 369,
+        "source_blob_sha": "c9029fdce20e23f2a6f7156db177336afe826a91"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "broader persistence/instrumentation test outcomes are reported by the implementation agent and are not independently executed in this review",
+        "rank": 369,
+        "source_blob_sha": "c9029fdce20e23f2a6f7156db177336afe826a91"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "candidate remains divergent/unintegrated and independent execution is explicitly NOT EXECUTED",
+        "rank": 369,
+        "source_blob_sha": "c9029fdce20e23f2a6f7156db177336afe826a91"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-FORMAT-02",
+        "evidence": "source explicitly records BUG-FORMAT-02 as an existing historical finding newly promoted into current canonical inventory while remaining OPEN / CONFIRMED",
+        "rank": 370,
+        "source_blob_sha": "4758b7e3ea994fc8554b589b30de1a5587ee4ff1"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-FORMAT-02",
+        "evidence": "source explicitly records delta from preceding user-visible run P2 33 -> 34 via promotion of existing historical BUG-FORMAT-02 and final inventory P0 2 / P1 1 / P2 34",
+        "rank": 370,
+        "source_blob_sha": "4758b7e3ea994fc8554b589b30de1a5587ee4ff1"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "exact implementation has zero GitHub commit-status contexts and zero check-runs; independent Gradle/JVM/device execution was NOT EXECUTED and runtime manifestation remains NOT_VERIFIED",
+        "rank": 370,
+        "source_blob_sha": "4758b7e3ea994fc8554b589b30de1a5587ee4ff1"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "actual correction/execution evidence remains future work and no additional distinct P0/P1/P2 root was confirmed",
+        "rank": 370,
+        "source_blob_sha": "4758b7e3ea994fc8554b589b30de1a5587ee4ff1"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 351-390 is receipted"
+  }
+}
