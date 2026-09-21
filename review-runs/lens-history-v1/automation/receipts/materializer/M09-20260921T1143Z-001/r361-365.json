@@ -1,0 +1,192 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "segment_range": [
+    361,
+    365
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4d4fc8e97753310c2e06fe827ebbdcf9ab17d67a",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M09-20260921T1143Z-001/r356-360.json",
+    "blob_sha": "0f8c41ce50f97fd63394cc50c0e0f977c1a2f0c0"
+  },
+  "rank_receipts": [
+    {
+      "rank": 361,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r361.json",
+      "blob_sha": "cc747e795e9019f1b066ca46db4f7faf003026ec"
+    },
+    {
+      "rank": 362,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r362.json",
+      "blob_sha": "6ebd3a2fafe67fc8689b565b8ebdf6214293265f"
+    },
+    {
+      "rank": 363,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r363.json",
+      "blob_sha": "3460132323985fe879f2f4cb935b6c375400c982"
+    },
+    {
+      "rank": 364,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r364.json",
+      "blob_sha": "cc12d5b8bf21d0a99fbcc0542423bae8cdbf5b68"
+    },
+    {
+      "rank": 365,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r365.json",
+      "blob_sha": "8f184055870e25ca1f67aa7d328b28709b826476"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      361,
+      362,
+      363,
+      364,
+      365
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "candidate-review document lacks an allowed explicit whole-document structural identity",
+        "rank": 361,
+        "source_blob_sha": "52c62f6e79ee19d1d8c091853f4f4a8aa7f9272e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source independently revalidates an isolated candidate for the existing cache authority root, records it CLEAN FOR ROOT while explicitly preserving canonical OPEN status until replay/reimplementation",
+        "rank": 361,
+        "source_blob_sha": "52c62f6e79ee19d1d8c091853f4f4a8aa7f9272e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CACHE-02",
+        "evidence": "source explicitly records canonical count delta 0 and P0 2 / P1 1 / P2 34",
+        "rank": 361,
+        "source_blob_sha": "52c62f6e79ee19d1d8c091853f4f4a8aa7f9272e"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "focused instrumentation 2/2, JVM 610/610, compile, and diff-check results are implementation-agent evidence only; no tests were independently executed in this review",
+        "rank": 361,
+        "source_blob_sha": "52c62f6e79ee19d1d8c091853f4f4a8aa7f9272e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "candidate remains isolated/not integrated; UX custom-cache selection and retained SAF permission notes are non-blocking follow-ups and independent execution is NOT EXECUTED",
+        "rank": 361,
+        "source_blob_sha": "52c62f6e79ee19d1d8c091853f4f4a8aa7f9272e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final provisional blocker state P0 2 / P1 1 / P2 34, no material delta, no new canonical findings, and no canonical disposition changes",
+        "rank": 362,
+        "source_blob_sha": "e56ac37abdbb23e241f952d94a034744fbbf81b9"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "GitHub commit status has zero statuses and independent Gradle/device execution was not performed; runtime manifestations requiring execution remain NOT_VERIFIED",
+        "rank": 362,
+        "source_blob_sha": "e56ac37abdbb23e241f952d94a034744fbbf81b9"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "candidate-only fixes for BUG-KEYWORD-04, BUG-OBSERVE-02, and BUG-CACHE-01 remain isolated from canonical production and are not counted as fixed",
+        "rank": 362,
+        "source_blob_sha": "e56ac37abdbb23e241f952d94a034744fbbf81b9"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional canonical blocker state P0 2 / P1 1 / P2 34 and provisional NOT_CLEAN disposition",
+        "rank": 363,
+        "source_blob_sha": "82f8b977fb448848a53110487325eb5e3501c472"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "candidate review outcomes are governance inputs only and no candidate remediation is integrated into frozen canonical production",
+        "rank": 363,
+        "source_blob_sha": "82f8b977fb448848a53110487325eb5e3501c472"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "canonical production paths for BUG-KEYWORD-04, BUG-OBSERVE-02, and BUG-CACHE-01 remain open re-trace scope before final verdict",
+        "rank": 363,
+        "source_blob_sha": "82f8b977fb448848a53110487325eb5e3501c472"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "candidate-review document lacks an allowed explicit whole-document structural identity",
+        "rank": 364,
+        "source_blob_sha": "4d63626f31e149341c31b068c5e211afb1d5feb0"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source independently revalidates an isolated candidate for the existing cache live-owner root, records it clean for the root, and explicitly preserves canonical OPEN status until cumulative replay/reimplementation",
+        "rank": 364,
+        "source_blob_sha": "4d63626f31e149341c31b068c5e211afb1d5feb0"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CACHE-01",
+        "evidence": "source explicitly records canonical count delta 0 and P0 2 / P1 1 / P2 34",
+        "rank": 364,
+        "source_blob_sha": "4d63626f31e149341c31b068c5e211afb1d5feb0"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "reported JVM/focused/compile/diff-check results are implementation-agent evidence; one real-worker wiring test timed out and independent execution was NOT EXECUTED",
+        "rank": 364,
+        "source_blob_sha": "4d63626f31e149341c31b068c5e211afb1d5feb0"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "candidate remains isolated on an older queue basis and requires separate replay/reimplementation plus cumulative re-review before canonical closure",
+        "rank": 364,
+        "source_blob_sha": "4d63626f31e149341c31b068c5e211afb1d5feb0"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final P0 2 / P1 1 / P2 34 with no material change, no new canonical finding, no severity/disposition change, and no blocker-count change",
+        "rank": 365,
+        "source_blob_sha": "0a9c85fb38406bfa40ce0accdd504349c700bcee"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "exact frozen implementation has no commit status contexts or associated workflow runs and independent Gradle/device execution was NOT EXECUTED",
+        "rank": 365,
+        "source_blob_sha": "0a9c85fb38406bfa40ce0accdd504349c700bcee"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "ordinary-edit startsTime/schedule-anchor rewriting remains a stronger claim left NOT_VERIFIED rather than promoted to a distinct finding; divergent candidate repairs remain unintegrated",
+        "rank": 365,
+        "source_blob_sha": "0a9c85fb38406bfa40ce0accdd504349c700bcee"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 351-390 is receipted"
+  }
+}
