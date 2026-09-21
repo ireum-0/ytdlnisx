@@ -3769,9 +3769,8 @@ class DownloadRepository(private val database: DBManager) {
         @Suppress("UNUSED_PARAMETER")
         originalStatus: Status,
         owner: UndoPresentationOwner,
-    ): PendingCancellationResolution = withOrdinaryMutation {
+    ): PendingCancellationResolution =
         undoPendingCancellationInternal(id, token, originalStatus, owner)
-    }
 
     private suspend fun undoPendingCancellationInternal(
         id: Long,
@@ -3801,7 +3800,8 @@ class DownloadRepository(private val database: DBManager) {
         return try {
             pendingCancellationResolverClaimedForTesting?.invoke()
             pendingCancellationRestoreFailureForTesting?.invoke()?.let { throw it }
-            val result = database.withTransaction {
+            val result = withOrdinaryMutation {
+                database.withTransaction {
             val ledgerDao = database.lowQualityRedownloadDao
             val ledgerItem = ledgerDao.getItemByDownloadId(id)
                 ?: run {
@@ -3886,6 +3886,7 @@ class DownloadRepository(private val database: DBManager) {
                 // it is never silently converted into COMMIT.
                 PendingCancellationResolution()
             }
+                }
             }
             pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
             if (result.restoredStatus != null || !hasExactPendingCancellation(id, token)) {
@@ -3910,9 +3911,8 @@ class DownloadRepository(private val database: DBManager) {
         id: Long,
         token: String,
         owner: UndoPresentationOwner,
-    ): Set<String> = withOrdinaryMutation {
+    ): Set<String> =
         commitPendingCancellationInternal(id, token, owner)
-    }
 
     private suspend fun commitPendingCancellationInternal(
         id: Long,
@@ -3932,13 +3932,15 @@ class DownloadRepository(private val database: DBManager) {
         val pendingTokensToRelease = linkedSetOf<String>()
         return try {
             pendingCancellationResolverClaimedForTesting?.invoke()
-            val result = database.withTransaction {
+            val result = withOrdinaryMutation {
+                database.withTransaction {
                 commitPendingCancellationLocked(
                     id = id,
                     token = token,
                     publications = publications,
                     pendingTokensToRelease = pendingTokensToRelease,
                 )
+                }
             }
             pendingTokensToRelease.forEach(::releaseLivePendingCancellationToken)
             if (!hasExactPendingCancellation(id, token)) {
