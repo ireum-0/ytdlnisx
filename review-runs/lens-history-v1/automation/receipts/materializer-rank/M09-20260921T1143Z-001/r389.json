@@ -1,0 +1,151 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "rank": 389,
+  "materializer_state_blob": "7a51ddfd1fa0f050d4e04e07793b654f806fb231",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4d4fc8e97753310c2e06fe827ebbdcf9ab17d67a",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r388.json",
+    "blob_sha": "bf4389dcffc3a1f3df98d5d43429e9f5693689bf"
+  },
+  "history": {
+    "commit_sha": "e2c9fff158faf3cf070282f0bc1b8465ceae3fbf",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=389"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-11T173600Z__9edd3e23__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-11T173600Z__9edd3e23__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1",
+    "frozen_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9edd3e2344caa9da0e576611eeb7d69e3cfd2d71",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic Independent correctness review checkpoint lacks explicit whole-document structural identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-METADATA-01 / F14"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "source semantics revalidated as fixed; latest frozen governance closes the P1 root; provisional disposition FIXED-CLOSED"
+          }
+        },
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-DUPLICATE-03"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "independently reproduced as P2 at frozen implementation; existing historical root newly promoted into current canonical blocker inventory / OPEN"
+          }
+        }
+      ],
+      "count_delta": {
+        "state": "NOT_VERIFIED",
+        "reason": "source records provisional canonical count P0 2 / P1 1 / P2 30 but does not state a single prior-count delta"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint lacks positive structural identity recognized by document-identity-v1"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-METADATA-01 / F14",
+      "evidence": "source explicitly records latest frozen governance closes the P1 root / provisional FIXED-CLOSED"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-DUPLICATE-03",
+      "evidence": "source explicitly records existing historical P2 newly promoted into current canonical blocker inventory / OPEN"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records provisional canonical count P0 2 / P1 1 / P2 30"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "F14 execution evidence and closure are read from frozen governance; GitHub status/check-run collections themselves are empty"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "final canonical recount and final checkpoint remain open at this checkpoint"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
