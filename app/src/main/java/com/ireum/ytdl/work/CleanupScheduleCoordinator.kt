@@ -25,6 +25,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Calendar
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -2063,6 +2064,27 @@ internal object CleanupScheduleCoordinator {
 
     internal fun resetReplayOwnerForTesting() = synchronized(lock) {
         stopReplayOwnerLocked()
+    }
+
+    /**
+     * Test-only bounded quiescence for the process-local replay owner.  The
+     * cancellation and bookkeeping reset must share the coordinator lock, but
+     * joining the cancelled coroutine must happen after that lock is released
+     * because replay recovery can reacquire it while unwinding.
+     */
+    internal suspend fun awaitReplayOwnerStoppedForTesting(
+        timeoutMillis: Long = 5_000L,
+    ): Boolean {
+        val job = synchronized(lock) {
+            val current = replayJob
+            stopReplayOwnerLocked()
+            replayBootstrapIntent = null
+            current
+        }
+        return job == null || withTimeoutOrNull(timeoutMillis.coerceAtLeast(1L)) {
+            job.join()
+            true
+        } == true
     }
 
     /** Returns the last coordinator-confirmed cadence for the settings UI. */

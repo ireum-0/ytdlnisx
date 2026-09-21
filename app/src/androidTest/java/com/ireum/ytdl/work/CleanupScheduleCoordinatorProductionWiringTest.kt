@@ -3766,90 +3766,46 @@ class CleanupScheduleCoordinatorProductionWiringTest {
         val previousReplayInitialDelay =
             CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting
         val previousReplayMaxDelay = CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting
-        CleanupScheduleCoordinator.initialDelayOverrideForTesting =
-            TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting =
-            TimeUnit.DAYS.toMillis(2)
-        CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting =
-            TimeUnit.DAYS.toMillis(2)
         try {
+            clearTestSeams()
+            assertTrue(
+                CleanupScheduleCoordinator.awaitReplayOwnerStoppedForTesting(),
+            )
+            CleanupScheduleCoordinator.initialDelayOverrideForTesting =
+                TimeUnit.DAYS.toMillis(2)
+            CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting =
+                TimeUnit.DAYS.toMillis(2)
+            CleanupScheduleCoordinator.replayMaxDelayOverrideForTesting =
+                TimeUnit.DAYS.toMillis(2)
+            clearSchedulePreferences()
+            workManager.cancelAllWorkByTag(CleanupScheduleCoordinator.TAG)
+                .result.get(20, TimeUnit.SECONDS)
+            awaitTaggedCleanupWorkIdle()
+            workManager.pruneWork().result.get(20, TimeUnit.SECONDS)
+
             assertTrue(
                 legacyPreferences.edit()
                     .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
                     .commit(),
             )
-            CleanupScheduleCoordinator.reconcile(context)
-
-            val seedGeneration = requireNotNull(
-                preferences.getString("cleanup_leftover_downloads_generation", null),
-            )
-            assertTrue(
-                awaitPreference(timeoutMs = WORKER_WAIT_TIMEOUT_MILLIS) {
-                    preferences.getString(
-                        "cleanup_leftover_downloads_generation",
-                        null,
-                    ) == seedGeneration &&
-                        preferences.getString(
-                            "cleanup_leftover_downloads_pending_generation",
-                            null,
-                        ) == null &&
-                        preferences.getString(
-                            "cleanup_leftover_downloads_active_generation",
-                            null,
-                        ) == seedGeneration
-                },
-            )
-            awaitMainLooperIdle()
-            assertEquals(
-                CleanupSchedulePolicy.DAILY,
-                preferences.getString("cleanup_leftover_downloads", null),
-            )
-            assertEquals(
-                seedGeneration,
-                preferences.getString("cleanup_leftover_downloads_generation", null),
-            )
-            assertNull(
-                preferences.getString("cleanup_leftover_downloads_pending_generation", null)
-            )
-            assertEquals(
-                seedGeneration,
-                preferences.getString("cleanup_leftover_downloads_active_generation", null),
-            )
-
-            workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
-            awaitTaggedCleanupWorkIdle()
-            workManager.pruneWork().result.get(20, TimeUnit.SECONDS)
-            assertTrue(unfinishedCurrentWork().isEmpty())
-
             assertTrue(
                 preferences.edit()
-                    .remove("cleanup_leftover_downloads_generation")
-                    .remove("cleanup_leftover_downloads_anchor_day")
-                    .remove("cleanup_leftover_downloads_pending_generation")
-                    .remove("cleanup_leftover_downloads_pending_cadence")
-                    .remove("cleanup_leftover_downloads_pending_anchor_day")
-                    .remove("cleanup_leftover_downloads_pending_occurrence_at")
-                    .remove("cleanup_leftover_downloads_pending_effect_phase")
-                    .remove("cleanup_leftover_downloads_active_generation")
-                    .remove("cleanup_leftover_downloads_active_cadence")
-                    .remove("cleanup_leftover_downloads_active_anchor_day")
-                    .remove("cleanup_leftover_downloads_active_occurrence_at")
-                    .remove("cleanup_leftover_downloads_active_effect_phase")
-                    .remove("cleanup_leftover_downloads_effect_journal")
+                    .putInt("cleanup_leftover_downloads_critical_store_version", 1)
+                    .putString("cleanup_leftover_downloads", CleanupSchedulePolicy.DAILY)
                     .commit(),
             )
-            CleanupScheduleCoordinator.resetReplayOwnerForTesting()
             assertEquals(
                 CleanupSchedulePolicy.DAILY,
                 preferences.getString("cleanup_leftover_downloads", null),
             )
+            assertEquals(1, preferences.getInt("cleanup_leftover_downloads_critical_store_version", -1))
             assertNull(preferences.getString("cleanup_leftover_downloads_generation", null))
             assertNull(
                 preferences.getString("cleanup_leftover_downloads_pending_generation", null)
             )
-            assertNull(
-                preferences.getString("cleanup_leftover_downloads_active_generation", null)
-            )
+            assertNull(preferences.getString("cleanup_leftover_downloads_pending_cadence", null))
+            assertNull(preferences.getString("cleanup_leftover_downloads_active_generation", null))
+            assertNull(preferences.getString("cleanup_leftover_downloads_effect_journal", null))
             assertTrue(unfinishedCurrentWork().isEmpty())
         } finally {
             CleanupScheduleCoordinator.initialDelayOverrideForTesting = previousInitialDelay
