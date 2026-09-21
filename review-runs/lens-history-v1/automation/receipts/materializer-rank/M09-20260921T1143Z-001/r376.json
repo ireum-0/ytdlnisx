@@ -1,0 +1,141 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "rank": 376,
+  "materializer_state_blob": "d3ae46c146f011cf354c6c5dcea4366a7b78b632",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4d4fc8e97753310c2e06fe827ebbdcf9ab17d67a",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r375.json",
+    "blob_sha": "dfb26858ec0adf7a5d90d414324decdb6223ae3d"
+  },
+  "history": {
+    "commit_sha": "6f99260445ddd74253487591aa52ab2ace73292c",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=376"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-11T202300Z__9edd3e23__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "d07ae757c1a8a17b2df6e9fd60711d49ea406ad4",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "d07ae757c1a8a17b2df6e9fd60711d49ea406ad4",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-11T202300Z__9edd3e23__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "d07ae757c1a8a17b2df6e9fd60711d49ea406ad4",
+    "frozen_blob_sha": "d07ae757c1a8a17b2df6e9fd60711d49ea406ad4",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9edd3e2344caa9da0e576611eeb7d69e3cfd2d71",
+      "evidence": "source explicitly records frozen exact implementation basis"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic Independent correctness review checkpoint lacks an explicit checkpoint_kind/equivalent structural field or positive whole-document structural identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-TERMINAL-05"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "historical P2 root newly promoted by governance; independent current-source validation still pending"
+          }
+        },
+        {
+          "finding_id": {
+            "state": "DIRECT",
+            "value": "BUG-FORMAT-01"
+          },
+          "finding_disposition": {
+            "state": "DIRECT",
+            "value": "historical P2 root newly promoted by governance; independent current-source validation still pending"
+          }
+        }
+      ],
+      "count_delta": {
+        "state": "NOT_VERIFIED",
+        "reason": "source records governance-provisional P2 33 including two promotions but does not explicitly state the prior canonical count in this checkpoint"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint lacks positive whole-document structural identity recognized by document-identity-v1"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly labels P2 33 governance-provisional and including the two post-previous-run promotions"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "two promoted roots are identified from governance delta and still require independent current-source validation"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "full production validation, root alias reconciliation, adjacent invariant search, upstream semantic verification, execution evidence, recount, and final checkpoint remain open"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
