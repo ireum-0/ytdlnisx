@@ -18,7 +18,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 
 /** Exercises portable SharedPreferences capture and restore through SettingsViewModel. */
 @RunWith(AndroidJUnit4::class)
@@ -76,7 +75,7 @@ class BackupPreferenceProductionWiringTest {
 
     @After
     fun tearDown() {
-        publishedBackup?.let { File(it).delete() }
+        publishedBackup?.let { BackupPublicationTestSupport.delete(context, it) }
         val editor = preferences.edit()
         keys.forEach { key ->
             editor.remove(key)
@@ -111,9 +110,10 @@ class BackupPreferenceProductionWiringTest {
             .backup(listOf("settings"))
         assertTrue(backupResult.isSuccess)
         publishedBackup = backupResult.getOrNull()
-        val backupFile = publishedBackup?.let(::File)
-        assertNotNull(backupFile)
-        val root = JsonParser.parseString(backupFile!!.readText()).asJsonObject
+        assertNotNull(publishedBackup)
+        val root = JsonParser.parseString(
+            BackupPublicationTestSupport.readText(context, publishedBackup!!)
+        ).asJsonObject
         val items = Gson().fromJson(
             root.getAsJsonArray("settings"),
             Array<BackupSettingsItem>::class.java,
@@ -181,7 +181,9 @@ class BackupPreferenceProductionWiringTest {
         assertTrue(result.isSuccess)
         publishedBackup = result.getOrThrow()
         val items = Gson().fromJson(
-            JsonParser.parseString(File(publishedBackup!!).readText())
+            JsonParser.parseString(
+                BackupPublicationTestSupport.readText(context, publishedBackup!!)
+            )
                 .asJsonObject
                 .getAsJsonArray("settings"),
             Array<BackupSettingsItem>::class.java,

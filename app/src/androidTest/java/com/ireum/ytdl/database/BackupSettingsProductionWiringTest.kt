@@ -58,7 +58,7 @@ class BackupSettingsProductionWiringTest {
     fun tearDown() = runBlocking {
         SettingsViewModel.backupCaptureReadHookForTesting = null
         SettingsViewModel.backupStagingWriteHookForTesting = null
-        publishedBackup?.let { File(it).delete() }
+        publishedBackup?.let { BackupPublicationTestSupport.delete(context, it) }
         staleBackup?.delete()
         historyRepository.deleteAllRecords()
         database.keywordGroupDao.clearMembers()
@@ -85,11 +85,17 @@ class BackupSettingsProductionWiringTest {
             .backup(listOf("downloads"))
 
         assertTrue(result.isSuccess)
-        val published = result.getOrNull()?.let(::File)
-        assertTrue(published?.exists() == true)
-        assertTrue(published?.readText().orEmpty().contains("YTDLnisX_backup"))
+        val published = result.getOrNull()
+        assertTrue(published?.let { BackupPublicationTestSupport.exists(context, it) } == true)
+        assertTrue(
+            published?.let { BackupPublicationTestSupport.readText(context, it) }
+                .orEmpty().contains("YTDLnisX_backup")
+        )
         assertTrue(staleBackup?.exists() == true)
-        assertFalse(published?.readText().orEmpty().contains("stale"))
+        assertFalse(
+            published?.let { BackupPublicationTestSupport.readText(context, it) }
+                .orEmpty().contains("stale")
+        )
         publishedBackup = result.getOrNull()
     }
 
@@ -133,8 +139,12 @@ class BackupSettingsProductionWiringTest {
             keywordPath = keywordResult.getOrThrow()
             assertTrue(downloadsPath != keywordPath)
 
-            val downloadsJson = JsonParser.parseString(File(downloadsPath!!).readText()).asJsonObject
-            val keywordJson = JsonParser.parseString(File(keywordPath!!).readText()).asJsonObject
+            val downloadsJson = JsonParser.parseString(
+                BackupPublicationTestSupport.readText(context, downloadsPath!!)
+            ).asJsonObject
+            val keywordJson = JsonParser.parseString(
+                BackupPublicationTestSupport.readText(context, keywordPath!!)
+            ).asJsonObject
             assertTrue(downloadsJson.has("downloads"))
             assertFalse(downloadsJson.has("keyword_groups"))
             assertTrue(keywordJson.has("keyword_groups"))
@@ -142,8 +152,8 @@ class BackupSettingsProductionWiringTest {
         } finally {
             SettingsViewModel.backupStagingWriteHookForTesting = null
             releaseWrites.countDown()
-            downloadsPath?.let { File(it).delete() }
-            keywordPath?.let { File(it).delete() }
+            downloadsPath?.let { BackupPublicationTestSupport.delete(context, it) }
+            keywordPath?.let { BackupPublicationTestSupport.delete(context, it) }
         }
     }
 
@@ -157,7 +167,9 @@ class BackupSettingsProductionWiringTest {
 
         assertFalse(result.isSuccess)
         assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("thumbnail", ignoreCase = true))
-        assertFalse(result.getOrNull()?.let(::File)?.exists() == true)
+        assertFalse(
+            result.getOrNull()?.let { BackupPublicationTestSupport.exists(context, it) } == true
+        )
     }
 
     @Test
@@ -224,10 +236,14 @@ class BackupSettingsProductionWiringTest {
             writer.await()
             assertTrue(result.isSuccess)
             val published = result.getOrNull()
-            assertTrue(published?.let(::File)?.isFile == true)
+            assertTrue(
+                published?.let { BackupPublicationTestSupport.exists(context, it) } == true
+            )
             publishedBackup = published
 
-            val root = JsonParser.parseString(File(published!!).readText()).asJsonObject
+            val root = JsonParser.parseString(
+                BackupPublicationTestSupport.readText(context, published!!)
+            ).asJsonObject
             val groupNames = root["keyword_groups"].asJsonArray
                 .map { it.asJsonObject["name"].asString }
                 .toSet()

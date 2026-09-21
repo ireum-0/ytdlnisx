@@ -25,7 +25,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 import java.util.concurrent.TimeUnit
 
 /** Exercises paused Download capture/restore through SettingsViewModel. */
@@ -54,7 +53,7 @@ class BackupPausedProductionWiringTest {
     @After
     fun tearDown() {
         runBlocking {
-            publishedBackup?.let { File(it).delete() }
+            publishedBackup?.let { BackupPublicationTestSupport.delete(context, it) }
             workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
             database.downloadDao.deleteAll()
         }
@@ -75,7 +74,9 @@ class BackupPausedProductionWiringTest {
             .backup(listOf("paused"))
         assertTrue(backupResult.isSuccess)
         publishedBackup = backupResult.getOrThrow()
-        val json = JsonParser.parseString(File(publishedBackup!!).readText()).asJsonObject
+        val json = JsonParser.parseString(
+            BackupPublicationTestSupport.readText(context, publishedBackup!!)
+        ).asJsonObject
         val encoded = json["paused"].asJsonArray.single()
         val encodedItem = Gson().fromJson(encoded, DownloadItem::class.java)
         assertEquals(DownloadRepository.Status.Paused.name, encodedItem.status)
@@ -114,7 +115,9 @@ class BackupPausedProductionWiringTest {
         val result = SettingsViewModel(context as Application).backup()
         assertTrue(result.isSuccess)
         publishedBackup = result.getOrThrow()
-        val json = JsonParser.parseString(File(publishedBackup!!).readText()).asJsonObject
+        val json = JsonParser.parseString(
+            BackupPublicationTestSupport.readText(context, publishedBackup!!)
+        ).asJsonObject
         assertTrue(json.has("paused"))
         assertEquals(1, json["paused"].asJsonArray.size())
         assertEquals(4, json["backup_format_version"].asInt)
