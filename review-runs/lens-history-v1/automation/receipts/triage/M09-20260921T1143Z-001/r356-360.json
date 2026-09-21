@@ -1,0 +1,122 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "microsegment_rank_range": [
+    356,
+    360
+  ],
+  "data_head": "befc4342bb5e886ed3856f0a1f53b84420722bb5",
+  "complete_state_blob": "4e4a75e33db9933c02501ec9c69feb4e6d6be3f9",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M09-20260921T1143Z-001/r356-360.json",
+    "blob_sha": "0f8c41ce50f97fd63394cc50c0e0f977c1a2f0c0"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "bab79139c31be652c4fca24ca242e1313f8c2d9e",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M09-20260921T1143Z-001/r351-355.json",
+    "blob_sha": "9a4a62521e9ee99e05185a62c5fd4b1e6aadf8f3"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 356,
+      "path": "review-runs/checkpoints/2026-09-12T003300Z__9edd3e23__checkpoint.md",
+      "source_blob": "9614b8340b58ece581456d84a6ea15d2fa9305b2",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic checkpoint kind NOT_VERIFIED and P0 2 / P1 1 / P2 34 provisional. BUG-CLEANUP-01 remains existing P2 OPEN; final recount and final checkpoint remain pending."
+    },
+    {
+      "rank": 357,
+      "path": "review-runs/checkpoints/2026-09-12T002800Z__9edd3e23__checkpoint.md",
+      "source_blob": "030fb5d75e854dceb59d96c6f7db5b8bd7d1ac6e",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic checkpoint kind NOT_VERIFIED. The P0 2 / P1 1 / P2 34 state is governance-derived starting context and current-production revalidation remains open at this checkpoint."
+    },
+    {
+      "rank": 358,
+      "path": "review-runs/checkpoints/2026-09-12__e280bf75__cleanup01-candidate-sequential-review.md",
+      "source_blob": "ef889e9a079dd6ad00e6141a44a8bf5419e45cc7",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep candidate review kind NOT_VERIFIED. Preserve residual successor/self-REPLACE and retry gaps as same BUG-CLEANUP-01 root with count delta 0; candidate is NOT_CLEAN and not integrated."
+    },
+    {
+      "rank": 359,
+      "path": "review-runs/checkpoints/2026-09-12__c5364c66__player01-candidate-sequential-review.md",
+      "source_blob": "fce662f3dbf2c71b0f897a5b587dbd5d82394bd7",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep candidate review kind NOT_VERIFIED. Preserve cached-zero/resume-authority residual as same BUG-PLAYER-01 P2 root with count delta 0; process-scoped ordered writer improvements do not close the canonical root."
+    },
+    {
+      "rank": 360,
+      "path": "review-runs/checkpoints/2026-09-12__7adf9c63__localadd01-candidate-sequential-review.md",
+      "source_blob": "7eae4df62c34220a5844230198e96f7769953c3e",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep candidate review kind NOT_VERIFIED. Preserve final durable-admission race as same BUG-LOCALADD-01 P2 root with count delta 0; candidate identity-policy improvements do not establish closure."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      356,
+      357,
+      358,
+      359,
+      360
+    ],
+    "materializer_flagged_exception_ranks": [
+      356,
+      357,
+      358,
+      359,
+      360
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
