@@ -1,0 +1,123 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "microsegment_rank_range": [
+    336,
+    340
+  ],
+  "data_head": "f2574edc7bc8d5b36b0f1ad6042479ace4197d69",
+  "complete_state_blob": "0ad10ba5514603a69a5e2b509cd7e616ec963d20",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M08-20260920T1554Z-001/r336-340.json",
+    "blob_sha": "4bc770bdec1a1497b8c04448743ae29aeb27f1da"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "2dd6e95d12cfea985756d32136bc708c45b13971",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M08-20260920T1554Z-001/r331-335.json",
+    "blob_sha": "24dce731e44e9e8b13a31055faac071739ceedc3"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 336,
+      "path": "review-runs/checkpoints/2026-09-12__93d01d2a__keyword04-cumulative-closure.md",
+      "source_blob": "ea2b588b5a52e13e2acc0a1fcee3fc91b9425cab",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep whole-document kind NOT_VERIFIED because 'cumulative canonical closure review' is not an allowed document-identity-v1 structural class. Preserve BUG-KEYWORD-04 CLEAN/CLOSED, count delta P2 -1, resulting P0 2 / P1 1 / P2 33 and CLEAN-basis advance to 93d01d2a. Implementation-agent execution evidence is preserved separately from independent execution, which is NOT EXECUTED; two documented unrelated instrumentation failures remain outside this root."
+    },
+    {
+      "rank": 337,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__observe03-current-basis-revalidation.md",
+      "source_blob": "05ac12c0238d3ad2df0cd3abf606cd9ef4075e72",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep kind NOT_VERIFIED; preserve BUG-OBSERVE-03 as the existing P2 ordinary-successor-carrier root separate from P0 BUG-OBSERVE-HANDOFF-01. Durable run completion can precede unconfirmed WorkManager successor acceptance; count delta 0, P2 34 at this historical basis, and independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 338,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__date03-current-basis-revalidation.md",
+      "source_blob": "a26eb781f4ce4b3063fc6d854187ec62aba76aec",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep kind NOT_VERIFIED; preserve BUG-DATE-03 as the existing P2 scheduler-acceptance/durable scheduling-debt root. ExistingWorkPolicy.KEEP is duplicate prevention, not proof of carrier acceptance; count delta 0, P2 34 at this historical basis, and independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 339,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__migration01-current-basis-revalidation.md",
+      "source_blob": "27233e58e3bb54ee96c69762e46bea61d9160a08",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep kind NOT_VERIFIED; preserve BUG-MIGRATION-01 as the existing durable filesystem-to-Room publication/recovery root while narrowing the stale full-row metadata-overwrite subcase out of current evidence. Count delta 0, P2 34 at this historical basis, and independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 340,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__pause03-current-basis-revalidation.md",
+      "source_blob": "e4f9987d400d71f0530eec24adfce4d9121ca74e",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep kind NOT_VERIFIED; preserve BUG-PAUSE-03 as the same existing P2 target-set/broad transport-cancellation authority root. The snapshot-to-admission race plus final tag-wide cancellation can stop a newly admitted execution lacking durable USER_PAUSE authority; count delta 0, P2 34 at this historical basis, and independent execution NOT EXECUTED."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      336,
+      337,
+      338,
+      339,
+      340
+    ],
+    "materializer_flagged_exception_ranks": [
+      336,
+      337,
+      338,
+      339,
+      340
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
