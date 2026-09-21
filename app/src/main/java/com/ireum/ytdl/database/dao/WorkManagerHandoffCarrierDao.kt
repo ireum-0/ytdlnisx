@@ -56,6 +56,13 @@ interface WorkManagerHandoffCarrierDao {
 
     @Query(
         "DELETE FROM work_manager_handoff_carriers " +
+            "WHERE kind = :kind AND boundary = :boundary " +
+            "AND state = 'SUPERSEDED'"
+    )
+    suspend fun deleteSupersededForBoundary(kind: String, boundary: String): Int
+
+    @Query(
+        "DELETE FROM work_manager_handoff_carriers " +
             "WHERE kind = 'OBSERVE_RETRY_DOWNLOAD' AND sourceId IN (:sourceIds) " +
             "AND state IN ('PENDING_ENQUEUE', 'ACCEPTED')"
     )

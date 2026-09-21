@@ -1143,8 +1143,12 @@ internal object WorkManagerHandoffRecovery {
     ) {
         synchronized(boundaryLock(kind, boundary)) {
             blocking {
-                database(context).workManagerHandoffCarrierDao
-                    .deleteOutstandingForBoundary(kind, boundary)
+                val db = database(context)
+                db.withTransaction {
+                    val dao = db.workManagerHandoffCarrierDao
+                    dao.deleteOutstandingForBoundary(kind, boundary)
+                    dao.deleteSupersededForBoundary(kind, boundary)
+                }
             }
         }
     }

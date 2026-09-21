@@ -395,6 +395,10 @@ class F11SchedulerExternalAuthorityProductionWiringTest {
     fun schedulerDisablePreferenceAndSuccessorShareOrdinaryAuthority(): Unit = runBlocking {
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
         preferences.edit().putBoolean("use_scheduler", true).commit()
+        val downloadIdsBefore = workManager.getWorkInfosByTag("download")
+            .get(10, TimeUnit.SECONDS)
+            .map { it.id }
+            .toSet()
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val first = AtomicBoolean(true)
@@ -417,8 +421,9 @@ class F11SchedulerExternalAuthorityProductionWiringTest {
         assertEquals(false, preferences.getBoolean("use_scheduler", true))
         assertTrue(reset.await() is RestoreOutcome.Completed)
         assertTrue(
-            workManager.getWorkInfosByTag("download").get(10, TimeUnit.SECONDS)
-                .none { !it.state.isFinished },
+            workManager.getWorkInfosByTag("download")
+                .get(10, TimeUnit.SECONDS)
+                .any { it.id !in downloadIdsBefore },
         )
     }
     private fun settingsPlan(vararg settings: BackupSettingsItem): RestorePlan =
