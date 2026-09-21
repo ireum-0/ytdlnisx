@@ -1,0 +1,136 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "rank": 377,
+  "materializer_state_blob": "d3ae46c146f011cf354c6c5dcea4366a7b78b632",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4d4fc8e97753310c2e06fe827ebbdcf9ab17d67a",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r376.json",
+    "blob_sha": "6695cfdb26cd3cdff2ec053b07d51b11e874ad40"
+  },
+  "history": {
+    "commit_sha": "7cc586926628b613985a3109af638c9c2789a3dc",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=377"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12__9edd3e23__bulk-format-partial-success-broader-promotion.md",
+        "status": "added",
+        "source_blob_sha": "e6cfa2642a158008696e8b41d846c054337ac7c5",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "e6cfa2642a158008696e8b41d846c054337ac7c5",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12__9edd3e23__bulk-format-partial-success-broader-promotion.md",
+    "status": "added",
+    "source_blob_sha": "e6cfa2642a158008696e8b41d846c054337ac7c5",
+    "frozen_blob_sha": "e6cfa2642a158008696e8b41d846c054337ac7c5",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9edd3e2344caa9da0e576611eeb7d69e3cfd2d71",
+      "evidence": "source explicitly records Independently CLEAN implementation basis"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "source positively identifies itself as BUG-FORMAT-01 finding/promotion record, records finding/status/count reconciliation, and does not claim to be a run-final checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is structurally excluded from cumulative structured-final effectiveness by document-identity-v1"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-FORMAT-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "CONFIRMED / PROMOTED P2 at exact CLEAN basis 9edd3e2344caa9da0e576611eeb7d69e3cfd2d71; existing broader-registry root counted once"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 1
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-FORMAT-01",
+      "evidence": "source explicitly records CONFIRMED / PROMOTED P2 at the exact CLEAN basis"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-FORMAT-01",
+      "evidence": "source explicitly records P0 delta 0 / P1 delta 0 / P2 delta +1, resulting P0 2 / P1 1 / P2 33"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-FORMAT-01",
+      "evidence": "source reconciles the root against BUG-FORMAT-02, metadata refresh roots, and generic Download execution ownership"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "independent Gradle/JVM/instrumentation execution was NOT EXECUTED"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "required correction and deterministic execution evidence remain future work"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
