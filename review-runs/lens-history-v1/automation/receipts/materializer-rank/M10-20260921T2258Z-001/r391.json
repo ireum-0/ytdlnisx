@@ -1,0 +1,133 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M10-20260921T2258Z-001",
+  "stage": "MATERIALIZE_391_440",
+  "logical_rank_range": [
+    391,
+    440
+  ],
+  "rank": 391,
+  "materializer_state_blob": "2bba8e00f9620173b7cda11f5df48affc338c6f7",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "f8ecfa77cc39c0993e463e024e85d5132c6ff665",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": null,
+  "history": {
+    "commit_sha": "4652df32468e0981e3474d8c10125dcea2e40f49",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=391"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-12__9edd3e23__download-archive-saf-authority-promotion.md",
+        "status": "added",
+        "source_blob_sha": "6a1e55d644a35a461ee82b9a3d0bd1747c31defd",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "6a1e55d644a35a461ee82b9a3d0bd1747c31defd",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-12__9edd3e23__download-archive-saf-authority-promotion.md",
+    "status": "added",
+    "source_blob_sha": "6a1e55d644a35a461ee82b9a3d0bd1747c31defd",
+    "frozen_blob_sha": "6a1e55d644a35a461ee82b9a3d0bd1747c31defd",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9edd3e2344caa9da0e576611eeb7d69e3cfd2d71",
+      "evidence": "source explicitly records Independently CLEAN basis"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "explicit BUG-DUPLICATE-03 promotion/finding record with verdict, count delta, root reconciliation and correction boundary; no run-final identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is excluded from cumulative structured-final effectiveness"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-DUPLICATE-03"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "historical P2 independently reproduced at exact current CLEAN basis and promoted into current canonical blocker inventory / OPEN"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 1
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-DUPLICATE-03",
+      "evidence": "historical P2 independently reproduced and promoted into current canonical blocker inventory"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-DUPLICATE-03",
+      "evidence": "P2 +1; resulting canonical P0 2 / P1 1 / P2 30"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-DUPLICATE-03",
+      "evidence": "distinct from cache-authority and Terminal-destination roots"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "independent execution explicitly NOT EXECUTED"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "runtime/provider manifestation and correction execution remain unverified"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
