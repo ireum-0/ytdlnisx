@@ -1,0 +1,126 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "microsegment_rank_range": [
+    371,
+    375
+  ],
+  "data_head": "befc4342bb5e886ed3856f0a1f53b84420722bb5",
+  "complete_state_blob": "4e4a75e33db9933c02501ec9c69feb4e6d6be3f9",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M09-20260921T1143Z-001/r371-375.json",
+    "blob_sha": "619fc81f45629d496b660a144d4bd8375077755d"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "bab79139c31be652c4fca24ca242e1313f8c2d9e",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M09-20260921T1143Z-001/r366-370.json",
+    "blob_sha": "cd198871cf112fb46524d1b859f6a766eeb15086"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 371,
+      "path": "review-runs/checkpoints/2026-09-11T214200Z__9edd3e23__checkpoint.md",
+      "source_blob": "a27f13487f1b22e6e8daab3e4d99a1044e4f4230",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "MATERIAL_STATUS_TRANSITION",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic checkpoint kind NOT_VERIFIED. Preserve BUG-FORMAT-02 as existing historical P2/current promotion, provisionally CONFIRMED at P0 2 / P1 1 / P2 34; execution remains NOT EXECUTED and final alias/recount work remains open."
+    },
+    {
+      "rank": 372,
+      "path": "review-runs/checkpoints/2026-09-11T212500Z__9edd3e23__checkpoint.md",
+      "source_blob": "b73b4dfd5d820948ce335ef6a359e331548a275c",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic checkpoint kind NOT_VERIFIED and P0 2 / P1 1 / P2 34 provisional. Governance promotion is starting context only; full production re-trace and external/platform semantics remain open at this checkpoint."
+    },
+    {
+      "rank": 373,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__format-notification-stale-authority-broader-promotion.md",
+      "source_blob": "fabd1c2b0b722e20f48ae35ce6e7b7cf83f5b5e7",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve explicit BUG-FORMAT-02 promotion P2 +1 to P0 2 / P1 1 / P2 34 and its separation from BUG-FORMAT-01, BUG-QUEUE-02 and F14 metadata publication. Independent execution remains NOT EXECUTED."
+    },
+    {
+      "rank": 374,
+      "path": "review-runs/checkpoints/2026-09-11T204200Z__9edd3e23__final-checkpoint.md",
+      "source_blob": "57592d2f0af7b653539a12e0872e7aa0d2df10a2",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve explicit final promotion of two existing historical P2 roots, BUG-TERMINAL-05 and BUG-FORMAT-01, with material delta P2 31 -> 33. No brand-new canonical root is claimed; independent execution remains NOT EXECUTED."
+    },
+    {
+      "rank": 375,
+      "path": "review-runs/checkpoints/2026-09-11T203400Z__9edd3e23__checkpoint.md",
+      "source_blob": "7757c2c54878e04e56947d179050b12a9117e1d0",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep generic checkpoint kind NOT_VERIFIED. Preserve BUG-TERMINAL-05 and BUG-FORMAT-01 as provisional existing historical P2 OPEN roots at P0 2 / P1 1 / P2 33 while final alias checks, execution evidence and recount remain pending."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      371,
+      372,
+      373,
+      374,
+      375
+    ],
+    "materializer_flagged_exception_ranks": [
+      371,
+      372,
+      373,
+      374,
+      375
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
