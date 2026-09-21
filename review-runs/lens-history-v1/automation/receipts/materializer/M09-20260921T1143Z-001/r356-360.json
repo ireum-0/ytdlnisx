@@ -1,0 +1,194 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "segment_range": [
+    356,
+    360
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4d4fc8e97753310c2e06fe827ebbdcf9ab17d67a",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M09-20260921T1143Z-001/r351-355.json",
+    "blob_sha": "90d0bf779a123dc78176b1785e7c72876ebe604f"
+  },
+  "rank_receipts": [
+    {
+      "rank": 356,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r356.json",
+      "blob_sha": "9e04aeef7d0ec76401ac3663d71455a0241bdebe"
+    },
+    {
+      "rank": 357,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r357.json",
+      "blob_sha": "7c7826379a3cf8f99c20f85e0e767457aba24b87"
+    },
+    {
+      "rank": 358,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r358.json",
+      "blob_sha": "12beeaed1801606dbcb677066dc0d1429d9ad937"
+    },
+    {
+      "rank": 359,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r359.json",
+      "blob_sha": "fd0d00bf691dc21db7bd7cd497f8bee91fa16f25"
+    },
+    {
+      "rank": 360,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r360.json",
+      "blob_sha": "6e13910f02b45b465096a2b262579fabf384d251"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      356,
+      357,
+      358,
+      359,
+      360
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive whole-document structural identity",
+        "rank": 356,
+        "source_blob_sha": "9614b8340b58ece581456d84a6ea15d2fa9305b2"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels finding state provisional and records P0 2 / P1 1 / P2 34",
+        "rank": 356,
+        "source_blob_sha": "9614b8340b58ece581456d84a6ea15d2fa9305b2"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "final exact-SHA recount and final checkpoint remain outstanding; candidate remediation residuals remain outside frozen production target",
+        "rank": 356,
+        "source_blob_sha": "9614b8340b58ece581456d84a6ea15d2fa9305b2"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive whole-document structural identity",
+        "rank": 357,
+        "source_blob_sha": "030fb5d75e854dceb59d96c6f7db5b8bd7d1ac6e"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels finding state provisional and carries P0 2 / P1 1 / P2 34",
+        "rank": 357,
+        "source_blob_sha": "030fb5d75e854dceb59d96c6f7db5b8bd7d1ac6e"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "latest governance count and cleanup candidate disposition are read as starting governance state; current-production revalidation is still pending",
+        "rank": 357,
+        "source_blob_sha": "030fb5d75e854dceb59d96c6f7db5b8bd7d1ac6e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "current-production path, disposition changes, upstream semantics, final recount, and final checkpoint remain open review scope",
+        "rank": 357,
+        "source_blob_sha": "030fb5d75e854dceb59d96c6f7db5b8bd7d1ac6e"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "candidate-review document lacks an allowed explicit whole-document structural identity",
+        "rank": 358,
+        "source_blob_sha": "ef889e9a079dd6ad00e6141a44a8bf5419e45cc7"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source reviews an isolated remediation candidate for the existing cleanup root, preserves reusable pieces, and records residual worker-successor ownership and retry subcases without creating a new root",
+        "rank": 358,
+        "source_blob_sha": "ef889e9a079dd6ad00e6141a44a8bf5419e45cc7"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source explicitly records count delta 0 and canonical P0 2 / P1 1 / P2 34",
+        "rank": 358,
+        "source_blob_sha": "ef889e9a079dd6ad00e6141a44a8bf5419e45cc7"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED and instrumentation availability is not converted into PASS",
+        "rank": 358,
+        "source_blob_sha": "ef889e9a079dd6ad00e6141a44a8bf5419e45cc7"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "candidate-review document lacks an allowed explicit whole-document structural identity",
+        "rank": 359,
+        "source_blob_sha": "fce662f3dbf2c71b0f897a5b587dbd5d82394bd7"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-PLAYER-01",
+        "evidence": "source reviews an isolated candidate for the existing player root, preserves the process-scoped ordered writer, and identifies a residual zero-reset/resume-authority subcase without creating a new root",
+        "rank": 359,
+        "source_blob_sha": "fce662f3dbf2c71b0f897a5b587dbd5d82394bd7"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-PLAYER-01",
+        "evidence": "source explicitly records count delta 0 and canonical P0 2 / P1 1 / P2 34",
+        "rank": 359,
+        "source_blob_sha": "fce662f3dbf2c71b0f897a5b587dbd5d82394bd7"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED and the candidate remains isolated/not integrated",
+        "rank": 359,
+        "source_blob_sha": "fce662f3dbf2c71b0f897a5b587dbd5d82394bd7"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "candidate-review document lacks an allowed explicit whole-document structural identity",
+        "rank": 360,
+        "source_blob_sha": "7eae4df62c34220a5844230198e96f7769953c3e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source reviews an isolated candidate for the existing LocalAdd identity root, preserves the shared exact-identity policy, and identifies final durable admission/revalidation race residuals without creating a new root",
+        "rank": 360,
+        "source_blob_sha": "7eae4df62c34220a5844230198e96f7769953c3e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source explicitly records count delta 0 and canonical P0 2 / P1 1 / P2 34",
+        "rank": 360,
+        "source_blob_sha": "7eae4df62c34220a5844230198e96f7769953c3e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "independent execution is explicitly NOT EXECUTED and the candidate remains isolated/not integrated",
+        "rank": 360,
+        "source_blob_sha": "7eae4df62c34220a5844230198e96f7769953c3e"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 351-390 is receipted"
+  }
+}
