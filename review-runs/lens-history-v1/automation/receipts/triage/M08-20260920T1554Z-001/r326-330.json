@@ -1,0 +1,123 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "microsegment_rank_range": [
+    326,
+    330
+  ],
+  "data_head": "f2574edc7bc8d5b36b0f1ad6042479ace4197d69",
+  "complete_state_blob": "0ad10ba5514603a69a5e2b509cd7e616ec963d20",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M08-20260920T1554Z-001/r326-330.json",
+    "blob_sha": "d96d0b5c0675ec6e4e6d25acaa65a70b095a8bac"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "2dd6e95d12cfea985756d32136bc708c45b13971",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M08-20260920T1554Z-001/r321-325.json",
+    "blob_sha": "26df0ce1ad8c0636ed6980e6eb8217940e22680c"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 326,
+      "path": "review-runs/checkpoints/2026-09-12T032700Z__6cb93d12__checkpoint.md",
+      "source_blob": "799ce6dca434e0bde3cb4e2c8a8d1b608f54626f",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED and P0 2 / P1 1 / P2 33 provisional. The implementation commit declares BUG-CACHE-01 remediation, but this checkpoint explicitly has not independently established source-semantic closure or canonical count/status change; full authority-path review and exact-SHA production-wiring execution remain pending."
+    },
+    {
+      "rank": 327,
+      "path": "review-runs/checkpoints/2026-09-12__93d01d2a__history01-current-basis-revalidation.md",
+      "source_blob": "323b67c2a9e198766d80a47202020913e3383c91",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-HISTORY-01 as the existing F17 P2 relationship-atomicity root across playlist-reference deletion, History-row deletion, ordinary/bulk/file-backed deletion and Undo, with F18 dependency retained. Count delta remains 0; independent execution is NOT EXECUTED."
+    },
+    {
+      "rank": 328,
+      "path": "review-runs/checkpoints/2026-09-12__93d01d2a__date01-current-basis-revalidation.md",
+      "source_blob": "a9162e60b7758ea16386c8f2be1242f0da2c090b",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-DATE-01 as the existing F15 P2 root where minimal failure/ambiguity can collapse into nullable absence and durable NO_DATE, with F16 dependent on a typed child outcome. Count delta 0; neighboring tests do not close the specific semantic distinction and independent execution is NOT EXECUTED."
+    },
+    {
+      "rank": 329,
+      "path": "review-runs/checkpoints/2026-09-12__93d01d2a__cleanup01-current-basis-revalidation.md",
+      "source_blob": "413d0dca4afdbd34e3689a6601fa273eabe446c7",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-CLEANUP-01 as the same F10 P2 durable scheduling root while narrowing obsolete historical monthly=30-days evidence. Stable owner, calendar recurrence, generation fencing, retry/successor publication and startup reconciliation remain required; F11 stays prerequisite-blocked. Count delta 0 and independent execution NOT EXECUTED."
+    },
+    {
+      "rank": 330,
+      "path": "review-runs/checkpoints/2026-09-12__93d01d2a__download-delete-snapshot01-current-basis-revalidation.md",
+      "source_blob": "056996a5e2bebb2d4c08e5f547974ff8d437ca3e",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind NOT_VERIFIED; preserve BUG-DOWNLOAD-DELETE-SNAPSHOT-01 as the existing P2 stale status-snapshot authority root, while keeping explicit current-ID deletion as a distinct semantic contract. Final-boundary full-row/generation revalidation and mixed-batch sibling isolation remain future correction requirements; count delta 0 and independent execution NOT EXECUTED."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      326,
+      327,
+      328,
+      329,
+      330
+    ],
+    "materializer_flagged_exception_ranks": [
+      326,
+      327,
+      328,
+      329,
+      330
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
