@@ -132,10 +132,12 @@ class F11RestoreAlarmFallbackProductionWiringTest {
         assertEquals(beforeReplay.requestId, current.single().id.toString())
         assertTrue(operationId.isNotBlank())
 
-        // Once Restore ownership retires, ordinary handoff reconciliation can
-        // retire the carrier while the accepted WorkManager owner remains.
+        // Once Restore ownership retires, the accepted scheduler carrier remains
+        // the durable identity while its current WorkManager owner is unfinished.
         WorkManagerHandoffRecovery.reconcile(context)
-        assertTrue(database.workManagerHandoffCarrierDao.get(beforeReplay.handoffId) == null)
+        val retained = requireNotNull(database.workManagerHandoffCarrierDao.get(beforeReplay.handoffId))
+        assertEquals(com.ireum.ytdl.database.models.WorkManagerHandoffCarrier.ACCEPTED, retained.state)
+        assertEquals(beforeReplay.requestId, retained.requestId)
         assertEquals(1, currentUnfinished("scheduled_download_start").size)
     }
 
