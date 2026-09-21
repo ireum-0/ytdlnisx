@@ -1,0 +1,510 @@
+{
+  "schema_version": "lens-history-v1-auditor-receipt-v2",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "microsegment_rank_range": [
+    326,
+    330
+  ],
+  "complete_state_blob": "0ad10ba5514603a69a5e2b509cd7e616ec963d20",
+  "data_head": "f2574edc7bc8d5b36b0f1ad6042479ace4197d69",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "final_triage": {
+    "path": "review-runs/lens-history-v1/automation/triage/M08-20260920T1554Z-001.json",
+    "blob_sha": "75b412bf25e2d9147298773048086172b5b96b71"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M08-20260920T1554Z-001/r326-330.json",
+    "blob_sha": "d96d0b5c0675ec6e4e6d25acaa65a70b095a8bac"
+  },
+  "materializer_remediations": [],
+  "triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M08-20260920T1554Z-001/r326-330.json",
+    "blob_sha": "0a9b959ede3fe4b10cce8a50e1ab55b65ff9d909"
+  },
+  "triage_corrections": [],
+  "ledger": {
+    "path": "review-runs/lens-history-v1/ledger-batches/0036-newest-321-330.jsonl",
+    "blob_sha": "fe4a3161f108587b1d107dea66bb0ef28565f664"
+  },
+  "official_validation": {
+    "path": "review-runs/lens-history-v1/validation/ledger-batch-0036.json",
+    "blob_sha": "f083273818c3228a340770c0cf173dce0a9706a7",
+    "status": "PASS"
+  },
+  "previous_auditor_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/auditor/M08-20260920T1554Z-001/r321-325.json",
+    "blob_sha": "ba560a8ed20b6b953dc0720bbd21a423f5ca8bdb"
+  },
+  "rows": [
+    {
+      "rank": 326,
+      "history_commit": "e9103f5f66316a6c2a5c85947c094451aab326d7",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-12T032700Z__6cb93d12__checkpoint.md",
+        "status": "added",
+        "source_blob": "799ce6dca434e0bde3cb4e2c8a8d1b608f54626f",
+        "frozen_blob": "799ce6dca434e0bde3cb4e2c8a8d1b608f54626f",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "6cb93d12298427dbca2a596f5b6a6a6e82e41997",
+        "evidence": "source explicitly records exact implementation SHA"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "generic checkpoint source has no explicit checkpoint_kind/equivalent structural field and does not positively self-identify as a supported document-identity-v1 structural class; commit-message bootstrap wording is not structural evidence"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 6,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-CACHE-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "EXISTING / P2 / canonical count retained pending independent source-semantic review and required execution evidence; no decrement or new closure established"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "AMBIGUOUS_KIND",
+          "PROVISIONAL_COUNTS",
+          "STATUS_BASIS_HISTORICAL_ONLY",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 327,
+      "history_commit": "5003d0daa60e22e5e3c16cf225e21baa452802a2",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-12__93d01d2a__history01-current-basis-revalidation.md",
+        "status": "added",
+        "source_blob": "323b67c2a9e198766d80a47202020913e3383c91",
+        "frozen_blob": "323b67c2a9e198766d80a47202020913e3383c91",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "93d01d2afbce2cfa62dc17fad4478416b3d7cf6c",
+        "evidence": "source explicitly records Independently CLEAN review basis"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "source is a BUG-HISTORY-01 current-basis revalidation record, but it has no explicit checkpoint_kind/equivalent field and does not unambiguously self-identify the whole document as a supported document-identity-v1 structural class"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 7,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-HISTORY-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "EXISTING / P2 / OPEN / NOT_CLEAN; same F17 relationship-atomicity root; count delta 0; F18 BUG-KEYWORD-02 remains semantically dependent on the atomic HistoryUndoSnapshot contract"
+        },
+        "count_delta": {
+          "state": "DIRECT",
+          "value": 0
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "AMBIGUOUS_KIND",
+          "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+          "COUNT_RECONCILIATION",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 328,
+      "history_commit": "85e80aa7df17fca78ff6b6d80b5df89cba71deea",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-12__93d01d2a__date01-current-basis-revalidation.md",
+        "status": "added",
+        "source_blob": "a9162e60b7758ea16386c8f2be1242f0da2c090b",
+        "frozen_blob": "a9162e60b7758ea16386c8f2be1242f0da2c090b",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "93d01d2afbce2cfa62dc17fad4478416b3d7cf6c",
+        "evidence": "source explicitly records Independently CLEAN review basis"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "source is a BUG-DATE-01 current-basis revalidation record, but it has no explicit checkpoint_kind/equivalent field and does not unambiguously self-identify the whole document as a supported document-identity-v1 structural class"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 8,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-DATE-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "EXISTING / P2 / OPEN / NOT_CLEAN; same F15 root; count delta 0; F16 BUG-DATE-02 remains semantically dependent on the typed child lookup outcome"
+        },
+        "count_delta": {
+          "state": "DIRECT",
+          "value": 0
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "AMBIGUOUS_KIND",
+          "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+          "COUNT_RECONCILIATION",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 329,
+      "history_commit": "bed76f6c857391ccdb89727238baa5bba314715d",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-12__93d01d2a__cleanup01-current-basis-revalidation.md",
+        "status": "added",
+        "source_blob": "413d0dca4afdbd34e3689a6601fa273eabe446c7",
+        "frozen_blob": "413d0dca4afdbd34e3689a6601fa273eabe446c7",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "93d01d2afbce2cfa62dc17fad4478416b3d7cf6c",
+        "evidence": "source explicitly records Independently CLEAN review basis"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "source is a BUG-CLEANUP-01 current-basis revalidation record, but it has no explicit checkpoint_kind/equivalent field and does not unambiguously self-identify the whole document as a supported document-identity-v1 structural class"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 9,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-CLEANUP-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "EXISTING / P2 / OPEN / NOT_CLEAN; same F10 durable cleanup schedule root; count delta 0; F11 BUG-BACKUP-03 remains blocked by this hard prerequisite"
+        },
+        "count_delta": {
+          "state": "DIRECT",
+          "value": 0
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "AMBIGUOUS_KIND",
+          "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+          "COUNT_RECONCILIATION",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    },
+    {
+      "rank": 330,
+      "history_commit": "8fbfb184f874272c990d14d48a96e83956047139",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "explicit_empty_page_closure": {
+        "page": 2,
+        "proof": "files: []",
+        "verified": true
+      },
+      "checkpoint": {
+        "path": "review-runs/checkpoints/2026-09-12__93d01d2a__download-delete-snapshot01-current-basis-revalidation.md",
+        "status": "added",
+        "source_blob": "056996a5e2bebb2d4c08e5f547974ff8d437ca3e",
+        "frozen_blob": "056996a5e2bebb2d4c08e5f547974ff8d437ca3e",
+        "source_frozen_match": true
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "93d01d2afbce2cfa62dc17fad4478416b3d7cf6c",
+        "evidence": "source explicitly records Independently CLEAN review basis"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "source is a BUG-DOWNLOAD-DELETE-SNAPSHOT-01 current-basis revalidation record, but it has no explicit checkpoint_kind/equivalent field and does not unambiguously self-identify the whole document as a supported document-identity-v1 structural class"
+      },
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "structural kind is NOT_VERIFIED and no explicit structured effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "ledger_record_position": 10,
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "EXISTING / P2 / OPEN / NOT_CLEAN; stale status-selected snapshot can cross the final destructive boundary into a newer/current Download generation; count delta 0"
+        },
+        "count_delta": {
+          "state": "DIRECT",
+          "value": 0
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "exception_validation": {
+        "expected": [
+          "AMBIGUOUS_KIND",
+          "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+          "COUNT_RECONCILIATION",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+        ],
+        "triage_contains_rank": true,
+        "materializer_contains_rank": true
+      }
+    }
+  ],
+  "summary": {
+    "ranks_audited": 5,
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "implementation_sha_mismatches": 0,
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches": 0,
+    "ledger_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0,
+    "materializer_exception_misses": 0,
+    "triage_exception_misses": 0,
+    "auditor_only_missed_exception_ranks": [],
+    "exception_completeness": "PASS",
+    "result": "PASS"
+  }
+}
