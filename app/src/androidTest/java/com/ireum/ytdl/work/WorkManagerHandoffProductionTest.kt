@@ -37,6 +37,7 @@ class WorkManagerHandoffProductionTest {
     private val operations = Collections.synchronizedList(mutableListOf<ControlledOperation>())
     private val workNames = Collections.synchronizedList(mutableListOf<String>())
     private val policies = Collections.synchronizedList(mutableListOf<ExistingWorkPolicy>())
+    private val cancelledRequestIds = Collections.synchronizedList(mutableListOf<String>())
 
     @Before
     fun setUp() {
@@ -63,6 +64,7 @@ class WorkManagerHandoffProductionTest {
         operations.clear()
         workNames.clear()
         policies.clear()
+        cancelledRequestIds.clear()
     }
 
     @Test
@@ -256,6 +258,100 @@ class WorkManagerHandoffProductionTest {
         assertTrue(attempt.isCancelled || attempt.isCompleted)
     }
 
+    @Test
+    fun lateAcceptedSchedulerStartIsRevokedByDurableTombstone(): Unit = runBlocking {
+        lateAcceptedSchedulerRequestIsRevoked(WorkManagerHandoffCarrier.START_BOUNDARY)
+    }
+
+    @Test
+    fun lateAcceptedSchedulerEndIsRevokedByDurableTombstone(): Unit = runBlocking {
+        lateAcceptedSchedulerRequestIsRevoked(WorkManagerHandoffCarrier.END_BOUNDARY)
+    }
+
+    @Test
+    fun acceptedSchedulerCarrierMissingWorkInfoRetainsExactRequest(): Unit = runBlocking {
+        val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+            context,
+            WorkManagerHandoffCarrier.START_BOUNDARY,
+            0L,
+        )
+        val carrier = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        database.workManagerHandoffCarrierDao.markAccepted(
+            handoffId,
+            carrier.requestId,
+            System.currentTimeMillis(),
+        )
+
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = { null }
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        val afterRecovery = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        assertEquals(WorkManagerHandoffCarrier.ACCEPTED, afterRecovery.state)
+        assertEquals(carrier.requestId, afterRecovery.requestId)
+    }
+    @Test
+    fun supersededSchedulerRequestIsRetiredAfterProcessDeathRecovery(): Unit = runBlocking {
+        val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+            context,
+            WorkManagerHandoffCarrier.START_BOUNDARY,
+            0L,
+        )
+        val requestId = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId)).requestId
+        assertEquals(
+            1,
+            database.workManagerHandoffCarrierDao.markSuperseded(
+                handoffId,
+                requestId,
+                System.currentTimeMillis(),
+            ),
+        )
+
+        // Simulate a new process: only the durable tombstone remains authoritative.
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = { null }
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        assertNull(database.workManagerHandoffCarrierDao.get(handoffId))
+    }
+
+    private suspend fun lateAcceptedSchedulerRequestIsRevoked(boundary: String) {
+        val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+            context,
+            boundary,
+            0L,
+        )
+        val attempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, handoffId)
+        val operation = awaitOperation()
+        val carrier = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE, carrier.state)
+        assertEquals(
+            1,
+            database.workManagerHandoffCarrierDao.markSuperseded(
+                handoffId,
+                carrier.requestId,
+                System.currentTimeMillis(),
+            ),
+        )
+        WorkManagerHandoffRecovery.cancelWorkByIdOperationOverrideForTesting = { requestId ->
+            cancelledRequestIds += requestId
+            ControlledOperation().also { it.succeed() }
+        }
+
+        // The WorkManager acceptance arrives after Restore/quiescence has installed
+        // the exact durable stale-owner tombstone.
+        operation.succeed()
+        val outcome = withTimeout(2_000L) { attempt.await() }
+
+        assertEquals(WorkManagerHandoffRecovery.OutcomeKind.SUPERSEDED, outcome.kind)
+        assertEquals(listOf(carrier.requestId), cancelledRequestIds)
+        assertEquals(
+            WorkManagerHandoffCarrier.SUPERSEDED,
+            database.workManagerHandoffCarrierDao.get(handoffId)?.state,
+        )
+    }
     private suspend fun awaitOperation(): ControlledOperation {
         var operation: ControlledOperation? = null
         withTimeout(2_000L) {
