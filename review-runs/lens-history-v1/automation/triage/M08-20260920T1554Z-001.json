@@ -1,0 +1,313 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "data_head": "f2574edc7bc8d5b36b0f1ad6042479ace4197d69",
+  "complete_state_blob": "0ad10ba5514603a69a5e2b509cd7e616ec963d20",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "4db17cf57284c4f047c44f096c96587adce3fab5",
+    "f7364c595ce50c61873fc9a318f562f6735aa131",
+    "4ac404e05910c4d6e0d864d4412c1867a4a95616",
+    "d96d0b5c0675ec6e4e6d25acaa65a70b095a8bac",
+    "9aa5dd3a2440c307ae4f76232b724aed4fce74c8",
+    "4bc770bdec1a1497b8c04448743ae29aeb27f1da",
+    "3494d644451802123386ecfc4cead9f19264b152",
+    "de4a6c8df6506c84069f89725e7a1f3ae899887f"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M08-20260920T1554Z-001-materialization-311-350.json",
+    "blob_sha": "0f508b08b4d58743f05f9630f0f5aa3d1976e59e",
+    "status": "PASS"
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        311,
+        315
+      ],
+      "blob_sha": "df9a97763f4d230daaf075e1631d3d4f4c32c47c"
+    },
+    {
+      "range": [
+        316,
+        320
+      ],
+      "blob_sha": "509a06aeb36c1b6cd47b22f6d4e943e7d5ff88f8"
+    },
+    {
+      "range": [
+        321,
+        325
+      ],
+      "blob_sha": "26df0ce1ad8c0636ed6980e6eb8217940e22680c"
+    },
+    {
+      "range": [
+        326,
+        330
+      ],
+      "blob_sha": "0a9b959ede3fe4b10cce8a50e1ab55b65ff9d909"
+    },
+    {
+      "range": [
+        331,
+        335
+      ],
+      "blob_sha": "24dce731e44e9e8b13a31055faac071739ceedc3"
+    },
+    {
+      "range": [
+        336,
+        340
+      ],
+      "blob_sha": "fca8c414f32e2d704199a5fd241296f14df39f79"
+    },
+    {
+      "range": [
+        341,
+        345
+      ],
+      "blob_sha": "049a1159ca3959b254d74844ee9c84886150ba1e"
+    },
+    {
+      "range": [
+        346,
+        350
+      ],
+      "blob_sha": "6a20757f3d584fa455166be1d58db662b27a9fa8"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "2dd6e95d12cfea985756d32136bc708c45b13971",
+  "materializer_exception_rank_count": 40,
+  "independent_exception_ranks": [
+    311,
+    312,
+    313,
+    314,
+    315,
+    316,
+    317,
+    318,
+    319,
+    320,
+    321,
+    322,
+    323,
+    324,
+    325,
+    326,
+    327,
+    328,
+    329,
+    330,
+    331,
+    332,
+    333,
+    334,
+    335,
+    336,
+    337,
+    338,
+    339,
+    340,
+    341,
+    342,
+    343,
+    344,
+    345,
+    346,
+    347,
+    348,
+    349,
+    350
+  ],
+  "independent_exception_rank_count": 40,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "human_review_packets": [
+    {
+      "topic": "cache-root closure/reopen chronology and exact execution gates",
+      "ranks": [
+        311,
+        312,
+        313,
+        314,
+        315,
+        316,
+        317,
+        319,
+        320,
+        321,
+        322,
+        323,
+        324,
+        325,
+        326
+      ],
+      "required_decision": "Preserve each historical cache-root state exactly: source-semantic FIXED is distinct from canonical closure when exact-SHA execution is missing; BUG-CACHE-01 reopen/closure and CLEAN-basis rollback/advance must remain chronological rather than normalized backward. Implementation-agent execution evidence is not independent execution."
+    },
+    {
+      "topic": "historical canonical count and status transitions",
+      "ranks": [
+        315,
+        318,
+        320,
+        321,
+        333,
+        334,
+        335,
+        336,
+        341,
+        342,
+        343,
+        344,
+        345
+      ],
+      "required_decision": "Preserve the source-recorded P2 32/33/34 arithmetic, explicit +/-1 transitions, provisional inventories and final counts at each exact basis. Do not infer unstated deltas or back-propagate later closures into earlier checkpoints."
+    },
+    {
+      "topic": "BUG-KEYWORD-04 residual and closure chronology",
+      "ranks": [
+        333,
+        334,
+        335,
+        336,
+        341
+      ],
+      "required_decision": "Preserve the sequence from revalidation/provisional source-semantic closure through final FIXED-CLOSED/CLEAN at 93d01d2a, while retaining the earlier 8e7f466c stale-negative residual as NOT_CLEAN at its own historical basis. Kind remains NOT_VERIFIED where document-identity-v1 does not positively classify the whole document."
+    },
+    {
+      "topic": "same-root revalidations and dependency boundaries",
+      "ranks": [
+        327,
+        328,
+        329,
+        330,
+        331,
+        332,
+        337,
+        338,
+        339,
+        340,
+        345,
+        346,
+        347,
+        348,
+        349,
+        350
+      ],
+      "required_decision": "Preserve same-root/count-delta-zero reconciliation for History, Date, Cleanup, Download-delete, Player, LocalAdd, Observe, Migration, Pause and backup F5-F9 roots. Keep stated prerequisite/dependency boundaries and distinct root identities."
+    },
+    {
+      "topic": "structural-kind ambiguity and fail-closed classification",
+      "ranks": [
+        311,
+        313,
+        314,
+        316,
+        317,
+        318,
+        319,
+        320,
+        321,
+        323,
+        325,
+        326,
+        327,
+        328,
+        329,
+        330,
+        331,
+        332,
+        334,
+        335,
+        336,
+        337,
+        338,
+        339,
+        340,
+        341,
+        343,
+        344,
+        345,
+        346,
+        347,
+        348,
+        349,
+        350
+      ],
+      "required_decision": "Retain NOT_VERIFIED whenever exact source lacks a supported positive document-identity-v1 marker. Filename, commit message, chronology, bootstrap wording, cumulative-review wording or verdict headings must not be promoted to structural kind."
+    },
+    {
+      "topic": "execution-evidence and NOT_VERIFIED provenance",
+      "ranks": [
+        311,
+        312,
+        313,
+        314,
+        315,
+        316,
+        317,
+        318,
+        319,
+        320,
+        321,
+        322,
+        323,
+        324,
+        325,
+        326,
+        327,
+        328,
+        329,
+        330,
+        331,
+        332,
+        333,
+        334,
+        335,
+        336,
+        337,
+        338,
+        339,
+        340,
+        341,
+        342,
+        343,
+        344,
+        345,
+        346,
+        347,
+        348,
+        349,
+        350
+      ],
+      "required_decision": "Keep absent independent execution, missing hosted status/check evidence and source-only semantics distinct from verified runtime closure. Preserve external/implementation-agent execution records only with their exact provenance and never convert them into independent execution."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_311_350": true,
+    "triage_correction_applied": false,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
