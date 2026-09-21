@@ -1,0 +1,138 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "rank": 383,
+  "materializer_state_blob": "c1458fe4409ba02294e023ecc876580d5bf879f2",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4d4fc8e97753310c2e06fe827ebbdcf9ab17d67a",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r382.json",
+    "blob_sha": "76ae24e8255b6091588bb08fb90061f1c708cf2c"
+  },
+  "history": {
+    "commit_sha": "8ac01cfad6e43781ec3639f225d72b8d562b47f0",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=383"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-11T183420Z__9edd3e23__final-checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "a2f3e2ff29da41ff2614a77d85f309bd1294ce2e",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "a2f3e2ff29da41ff2614a77d85f309bd1294ce2e",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-11T183420Z__9edd3e23__final-checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "a2f3e2ff29da41ff2614a77d85f309bd1294ce2e",
+    "frozen_blob_sha": "a2f3e2ff29da41ff2614a77d85f309bd1294ce2e",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9edd3e2344caa9da0e576611eeb7d69e3cfd2d71",
+      "evidence": "source explicitly records exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source title explicitly identifies Independent correctness review final checkpoint and Remaining review scope is None"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit",
+      "reason": "FINAL is explicit and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-TERMINAL-03"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "EXISTING historical P2 / OPEN / newly current-promoted; independently reproduced at exact implementation SHA"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 1,
+        "evidence": "source explicitly records P2 +1, 30 -> 31"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-TERMINAL-03",
+      "evidence": "source explicitly records already-governance-promoted historical P2 independently reproduced and accepted into current canonical blocker inventory"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-TERMINAL-03",
+      "evidence": "source explicitly records P2 +1 (30 -> 31) and final provisional P0 2 / P1 1 / P2 31"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-TERMINAL-03",
+      "evidence": "source reconciles against BUG-CACHE-02, BUG-DUPLICATE-03, and BUG-MOVE-01"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "exact implementation has zero GitHub statuses/check-runs and independent device/instrumentation execution was NOT EXECUTED"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "provider-specific runtime manifestation remains NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
