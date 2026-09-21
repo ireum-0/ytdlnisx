@@ -90,6 +90,11 @@ class RealWorkManagerHandoffProductionTest {
 
         val startWork = awaitWorkInfo(startCarrier.requestId)
         assertTrue(startWork.tags.contains("scheduledDownload"))
+        if (!startWork.state.isFinished) {
+            assertEquals(startId, database.workManagerHandoffCarrierDao.get(startId)?.handoffId)
+        }
+        awaitWorkFinished(startCarrier.requestId)
+        WorkManagerHandoffRecovery.reconcile(context)
         awaitCarrierGone(startId)
 
         val endId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
@@ -105,6 +110,11 @@ class RealWorkManagerHandoffProductionTest {
 
         val endWork = awaitWorkInfo(endCarrier.requestId)
         assertTrue(endWork.tags.contains("cancelScheduledDownload"))
+        if (!endWork.state.isFinished) {
+            assertEquals(endId, database.workManagerHandoffCarrierDao.get(endId)?.handoffId)
+        }
+        awaitWorkFinished(endCarrier.requestId)
+        WorkManagerHandoffRecovery.reconcile(context)
         awaitCarrierGone(endId)
     }
 
@@ -135,6 +145,20 @@ class RealWorkManagerHandoffProductionTest {
             }
         }
         return checkNotNull(info)
+    }
+
+    private suspend fun awaitWorkFinished(requestId: String): WorkInfo = withTimeout(10_000L) {
+        val id = UUID.fromString(requestId)
+        var finished: WorkInfo? = null
+        while (finished == null) {
+            val info = workManager.getWorkInfoById(id).get(5, TimeUnit.SECONDS)
+            if (info?.state?.isFinished == true) {
+                finished = info
+            } else {
+                delay(25L)
+            }
+        }
+        checkNotNull(finished)
     }
 
     private suspend fun awaitCarrierGone(handoffId: String) = withTimeout(10_000L) {
