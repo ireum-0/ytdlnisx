@@ -1,0 +1,247 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "segment_range": [
+    386,
+    390
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "4d4fc8e97753310c2e06fe827ebbdcf9ab17d67a",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M09-20260921T1143Z-001/r381-385.json",
+    "blob_sha": "7c792d2b0923b98653ecf9d6ef310dcf18eff90d"
+  },
+  "rank_receipts": [
+    {
+      "rank": 386,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r386.json",
+      "blob_sha": "b827db8a656a02fcb6fd75a620bcdf9675d5dca4"
+    },
+    {
+      "rank": 387,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r387.json",
+      "blob_sha": "24f4cccffcdfdd73627c702270e447391a139b86"
+    },
+    {
+      "rank": 388,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r388.json",
+      "blob_sha": "bf4389dcffc3a1f3df98d5d43429e9f5693689bf"
+    },
+    {
+      "rank": 389,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r389.json",
+      "blob_sha": "d6eae3bc4bdb74d2a9c33681bb1e2b735839683f"
+    },
+    {
+      "rank": 390,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M09-20260921T1143Z-001/r390.json",
+      "blob_sha": "b5ac2eea461334c8d7273f1188af381cf12a5bc5"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      386,
+      387,
+      388,
+      389,
+      390
+    ],
+    "triggers": [
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-TERMINAL-03",
+        "evidence": "source explicitly records historical P2 independently reproduced and promoted into current canonical blocker inventory",
+        "rank": 386,
+        "source_blob_sha": "83b034a779605a62c78ad394135299cfb4eefb7f"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-TERMINAL-03",
+        "evidence": "source explicitly records P0 0 / P1 0 / P2 +1 and resulting P0 2 / P1 1 / P2 31",
+        "rank": 386,
+        "source_blob_sha": "83b034a779605a62c78ad394135299cfb4eefb7f"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-TERMINAL-03",
+        "evidence": "source keeps BUG-CACHE-02, BUG-DUPLICATE-03, BUG-MOVE-01, and terminal-state/bookkeeping roots distinct",
+        "rank": 386,
+        "source_blob_sha": "83b034a779605a62c78ad394135299cfb4eefb7f"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "independent execution was NOT EXECUTED",
+        "rank": 386,
+        "source_blob_sha": "83b034a779605a62c78ad394135299cfb4eefb7f"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "runtime/device reproduction remains unverified",
+        "rank": 386,
+        "source_blob_sha": "83b034a779605a62c78ad394135299cfb4eefb7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-METADATA-01 / F14",
+        "evidence": "source explicitly records EXISTING P1 FIXED-CLOSED and a status change from the preceding user-visible run",
+        "rank": 387,
+        "source_blob_sha": "618d23298d3737101e1090630b9124e579828753"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-DUPLICATE-03",
+        "evidence": "source explicitly records existing historical P2 independently reproduced and newly promoted into current canonical blocker inventory / OPEN",
+        "rank": 387,
+        "source_blob_sha": "618d23298d3737101e1090630b9124e579828753"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final canonical count P0 2 / P1 1 / P2 30",
+        "rank": 387,
+        "source_blob_sha": "618d23298d3737101e1090630b9124e579828753"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DUPLICATE-03",
+        "evidence": "source reconciles custom archive SAF authority across FileUtil, DownloadViewModel, ObserveSourceWorker, and yt-dlp --download-archive fallback",
+        "rank": 387,
+        "source_blob_sha": "618d23298d3737101e1090630b9124e579828753"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "exact-SHA GitHub status/check collections are empty; focused instrumentation/JVM execution evidence is implementation-agent evidence and independent execution by this reviewer was NOT EXECUTED",
+        "rank": 387,
+        "source_blob_sha": "618d23298d3737101e1090630b9124e579828753"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "provider-specific runtime manifestation remains NOT_VERIFIED",
+        "rank": 387,
+        "source_blob_sha": "618d23298d3737101e1090630b9124e579828753"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-METADATA-01 / F14",
+        "evidence": "source explicitly records EXISTING P1 -> FIXED-CLOSED at exact implementation SHA",
+        "rank": 388,
+        "source_blob_sha": "d2fe969b72cc97342670a6b2f6010a550a67192e"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-DUPLICATE-03",
+        "evidence": "source explicitly records existing historical P2 newly promoted into current canonical blocker inventory / OPEN",
+        "rank": 388,
+        "source_blob_sha": "d2fe969b72cc97342670a6b2f6010a550a67192e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final canonical count P0 2 / P1 1 / P2 30",
+        "rank": 388,
+        "source_blob_sha": "d2fe969b72cc97342670a6b2f6010a550a67192e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DUPLICATE-03",
+        "evidence": "source traces custom archive SAF authority through FileUtil, DownloadViewModel, ObserveSourceWorker, and yt-dlp --download-archive fallback",
+        "rank": 388,
+        "source_blob_sha": "d2fe969b72cc97342670a6b2f6010a550a67192e"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "GitHub commit status/check-run collections are empty; execution evidence comes from frozen review governance and independent execution was NOT EXECUTED",
+        "rank": 388,
+        "source_blob_sha": "d2fe969b72cc97342670a6b2f6010a550a67192e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "provider-specific runtime manifestation remains unverified",
+        "rank": 388,
+        "source_blob_sha": "d2fe969b72cc97342670a6b2f6010a550a67192e"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive structural identity recognized by document-identity-v1",
+        "rank": 389,
+        "source_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-METADATA-01 / F14",
+        "evidence": "source explicitly records latest frozen governance closes the P1 root / provisional FIXED-CLOSED",
+        "rank": 389,
+        "source_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-DUPLICATE-03",
+        "evidence": "source explicitly records existing historical P2 newly promoted into current canonical blocker inventory / OPEN",
+        "rank": 389,
+        "source_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional canonical count P0 2 / P1 1 / P2 30",
+        "rank": 389,
+        "source_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "F14 execution evidence and closure are read from frozen governance; GitHub status/check-run collections themselves are empty",
+        "rank": 389,
+        "source_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "final canonical recount and final checkpoint remain open at this checkpoint",
+        "rank": 389,
+        "source_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive structural identity recognized by document-identity-v1",
+        "rank": 390,
+        "source_blob_sha": "0456702ec05c716483e5c176a28d6b4e6cf7d4bb"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records carry-forward governance baseline pending fresh reconciliation audit: P0 2 / P1 2 / P2 29",
+        "rank": 390,
+        "source_blob_sha": "0456702ec05c716483e5c176a28d6b4e6cf7d4bb"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly says prior closures are not assumed without re-tracing and governance has advanced while implementation SHA is unchanged",
+        "rank": 390,
+        "source_blob_sha": "0456702ec05c716483e5c176a28d6b4e6cf7d4bb"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "F14 disposition, metadata-enrichment production path, F13 boundary, execution evidence, final recount, and final checkpoint remain open review scope",
+        "rank": 390,
+        "source_blob_sha": "0456702ec05c716483e5c176a28d6b4e6cf7d4bb"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": false,
+    "official_outputs_rule": "full logical range 351-390 is now receipted; official outputs may be written only after full-range validation"
+  }
+}
