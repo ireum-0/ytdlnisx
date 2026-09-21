@@ -1,0 +1,170 @@
+{
+  "schema_version": "lens-history-v1-materialization-validation-v1",
+  "run_id": "M08-20260920T1554Z-001",
+  "stage": "MATERIALIZE_311_350",
+  "logical_rank_range": [
+    311,
+    350
+  ],
+  "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c",
+    "start_progress_blob_sha": "08c50d7f1e1fa393b059a255b2a5c1301258b32f"
+  },
+  "rank_evidence_state": {
+    "path": "review-runs/lens-history-v1/automation/materializer-state.json",
+    "blob_sha": "f222e8d5e5a6868c9895ffc5cc148ede68a7a132",
+    "commit_sha": "8f440a729c2c189a019f848bdd97278c5fc7ddbb"
+  },
+  "materializer_receipts": [
+    {
+      "range": [
+        311,
+        315
+      ],
+      "blob_sha": "4db17cf57284c4f047c44f096c96587adce3fab5"
+    },
+    {
+      "range": [
+        316,
+        320
+      ],
+      "blob_sha": "f7364c595ce50c61873fc9a318f562f6735aa131"
+    },
+    {
+      "range": [
+        321,
+        325
+      ],
+      "blob_sha": "4ac404e05910c4d6e0d864d4412c1867a4a95616"
+    },
+    {
+      "range": [
+        326,
+        330
+      ],
+      "blob_sha": "d96d0b5c0675ec6e4e6d25acaa65a70b095a8bac"
+    },
+    {
+      "range": [
+        331,
+        335
+      ],
+      "blob_sha": "9aa5dd3a2440c307ae4f76232b724aed4fce74c8"
+    },
+    {
+      "range": [
+        336,
+        340
+      ],
+      "blob_sha": "4bc770bdec1a1497b8c04448743ae29aeb27f1da"
+    },
+    {
+      "range": [
+        341,
+        345
+      ],
+      "blob_sha": "3494d644451802123386ecfc4cead9f19264b152"
+    },
+    {
+      "range": [
+        346,
+        350
+      ],
+      "blob_sha": "de4a6c8df6506c84069f89725e7a1f3ae899887f"
+    }
+  ],
+  "materializer_remediations": [],
+  "official_output_batches": [
+    {
+      "range": [
+        311,
+        320
+      ],
+      "inventory_blob_sha": "73107d10e98da9c8a267e9c3a1b1ed2ede6583cc",
+      "ledger_blob_sha": "f33d4a5d1cccb75a1e852b2854db68c70f76208a",
+      "validation_blob_sha": "04682f5fd5afc447a3c1f40906eead0a585ee221"
+    },
+    {
+      "range": [
+        321,
+        330
+      ],
+      "inventory_blob_sha": "dfd129dc07806545c2441422bfd18fc0ed941563",
+      "ledger_blob_sha": "fe4a3161f108587b1d107dea66bb0ef28565f664",
+      "validation_blob_sha": "f083273818c3228a340770c0cf173dce0a9706a7"
+    },
+    {
+      "range": [
+        331,
+        340
+      ],
+      "inventory_blob_sha": "a9c7c82f0c553241c6ffe9bd52055cc7f7f8aaa0",
+      "ledger_blob_sha": "c8c143255d4cf0500daedd76dff088f4a8c4f97a",
+      "validation_blob_sha": "6da2d231f2665abe9da60c95a425a97910a5c99d"
+    },
+    {
+      "range": [
+        341,
+        350
+      ],
+      "inventory_blob_sha": "7e63e70c03c7055b262559e7820fe13648538b32",
+      "ledger_blob_sha": "dc665f879a948ed908e6e2035dbbe1d8a53e7c80",
+      "validation_blob_sha": "e5903cba725e539b89862204336914cd11e47b98"
+    }
+  ],
+  "official_output_ancestry": {
+    "rank_evidence_state_commit": "8f440a729c2c189a019f848bdd97278c5fc7ddbb",
+    "current_output_head": "7a3954ab2e6c34e4fe0aa18d56da496b594594db",
+    "compare_status": "ahead",
+    "commits_after_rank_evidence_state": 1,
+    "changed_paths_confined_to_official_inventory_ledger_validation": true
+  },
+  "exception_queue": {
+    "path": "review-runs/lens-history-v1/automation/exceptions/M08-20260920T1554Z-001.jsonl",
+    "blob_sha": "2dd6e95d12cfea985756d32136bc708c45b13971",
+    "factual_exception_ranks": 40
+  },
+  "checks": {
+    "rank_continuity_311_350": true,
+    "one_rank_receipt_count": 40,
+    "aggregate_receipt_count": 8,
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches": 0,
+    "official_ledger_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0,
+    "official_output_batch_count": 4,
+    "official_output_batch_validations_pass": 4,
+    "official_output_records": 40,
+    "official_output_source_frozen_matches": 40,
+    "official_output_batches_written_only_after_rank_311_350_evidence_complete": true,
+    "official_output_branch_suffix_contains_only_inventory_ledger_validation_paths": true,
+    "original_immutable_receipts_rewritten": false,
+    "original_immutable_aggregates_rewritten": false,
+    "progress_counter_changed_at_validation_time": false
+  },
+  "counts": {
+    "ranks": 40,
+    "base_receipts": 8,
+    "valid_materializer_remediations": 0,
+    "official_output_batches": 4,
+    "factual_exception_ranks": 40
+  },
+  "aggregate_result": {
+    "cumulative_eligible_structured_finals_in_range": 0,
+    "observed_measured_effectiveness_changed": false,
+    "historical_total_effectiveness": "NOT_VERIFIED"
+  },
+  "status": "PASS",
+  "requires_semantic_triage": true,
+  "requires_independent_audit": true
+}
