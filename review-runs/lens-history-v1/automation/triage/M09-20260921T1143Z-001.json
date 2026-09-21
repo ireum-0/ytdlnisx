@@ -1,0 +1,291 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M09-20260921T1143Z-001",
+  "stage": "MATERIALIZE_351_390",
+  "logical_rank_range": [
+    351,
+    390
+  ],
+  "data_head": "befc4342bb5e886ed3856f0a1f53b84420722bb5",
+  "complete_state_blob": "4e4a75e33db9933c02501ec9c69feb4e6d6be3f9",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "90d0bf779a123dc78176b1785e7c72876ebe604f",
+    "0f8c41ce50f97fd63394cc50c0e0f977c1a2f0c0",
+    "6ff60ba4f81fc7720ca05d83d538b9caba6a7f83",
+    "b7f4945e9a1216099b9fb3fff384920339c7c0ca",
+    "619fc81f45629d496b660a144d4bd8375077755d",
+    "9e8d8054d75d53474254af57765b490857794f35",
+    "7c792d2b0923b98653ecf9d6ef310dcf18eff90d",
+    "6bdf15a715345eb242a585b302924795bb6858a4"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M09-20260921T1143Z-001-materialization-351-390.json",
+    "blob_sha": "b7123ed44df2d75ec2eb662ba076982b6597a288",
+    "status": "PASS"
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        351,
+        355
+      ],
+      "blob_sha": "9a4a62521e9ee99e05185a62c5fd4b1e6aadf8f3"
+    },
+    {
+      "range": [
+        356,
+        360
+      ],
+      "blob_sha": "0366c0c7d54d687fe81755b3bac1792849b14ed3"
+    },
+    {
+      "range": [
+        361,
+        365
+      ],
+      "blob_sha": "9df5c16b60a7e1e90ef83d500666b4f99af74df0"
+    },
+    {
+      "range": [
+        366,
+        370
+      ],
+      "blob_sha": "cd198871cf112fb46524d1b859f6a766eeb15086"
+    },
+    {
+      "range": [
+        371,
+        375
+      ],
+      "blob_sha": "697439065358f507d2bc7db328e32a9462233db8"
+    },
+    {
+      "range": [
+        376,
+        380
+      ],
+      "blob_sha": "bb07c17fc5519476dbb016772dd50e5471943469"
+    },
+    {
+      "range": [
+        381,
+        385
+      ],
+      "blob_sha": "c68a78e3a127f1c0cf2d866dbda48c3ff7b9fa19"
+    },
+    {
+      "range": [
+        386,
+        390
+      ],
+      "blob_sha": "83be9232593f49f0a6067fa641c9871f4f115564"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "bab79139c31be652c4fca24ca242e1313f8c2d9e",
+  "materializer_exception_rank_count": 40,
+  "independent_exception_ranks": [
+    351,
+    352,
+    353,
+    354,
+    355,
+    356,
+    357,
+    358,
+    359,
+    360,
+    361,
+    362,
+    363,
+    364,
+    365,
+    366,
+    367,
+    368,
+    369,
+    370,
+    371,
+    372,
+    373,
+    374,
+    375,
+    376,
+    377,
+    378,
+    379,
+    380,
+    381,
+    382,
+    383,
+    384,
+    385,
+    386,
+    387,
+    388,
+    389,
+    390
+  ],
+  "independent_exception_rank_count": 40,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "human_review_packets": [
+    {
+      "topic": "candidate-versus-canonical root separation",
+      "ranks": [
+        354,
+        358,
+        359,
+        360,
+        361,
+        364,
+        368,
+        369
+      ],
+      "required_decision": "Keep candidate CLEAN/NOT_CLEAN outcomes separate from canonical production closure. Candidate-only repairs or residuals must not change canonical root count/status until integrated and independently reviewed."
+    },
+    {
+      "topic": "Terminal and format promotion/closure chronology",
+      "ranks": [
+        370,
+        371,
+        373,
+        374,
+        375,
+        376,
+        377,
+        378,
+        379,
+        380,
+        381,
+        382,
+        383,
+        384,
+        385,
+        386
+      ],
+      "required_decision": "Preserve each source-recorded promotion, closure and count transition at its exact historical basis: BUG-FORMAT-02, BUG-FORMAT-01, BUG-TERMINAL-05, BUG-TERMINAL-04 and BUG-TERMINAL-03 must remain distinct and chronological without backward normalization."
+    },
+    {
+      "topic": "F14 closure and archive-authority promotion",
+      "ranks": [
+        387,
+        388,
+        389,
+        390
+      ],
+      "required_decision": "Preserve F14 FIXED-CLOSED only with its recorded exact-task execution provenance, while BUG-DUPLICATE-03 remains the distinct newly promoted P2 archive-authority root. Earlier baseline counts remain historical/provisional."
+    },
+    {
+      "topic": "backup/observe/cleanup same-root and prerequisite semantics",
+      "ranks": [
+        351,
+        352,
+        353,
+        355,
+        356,
+        357,
+        362,
+        363,
+        365,
+        366,
+        367
+      ],
+      "required_decision": "Keep stated P0/P1/P2 roots and prerequisite/subcase boundaries without creating duplicate roots from residual manifestations or candidate-only evidence."
+    },
+    {
+      "topic": "structural-kind ambiguity and fail-closed classification",
+      "ranks": [
+        351,
+        352,
+        353,
+        354,
+        356,
+        357,
+        358,
+        359,
+        360,
+        361,
+        368,
+        369,
+        371,
+        372,
+        375,
+        376,
+        380,
+        381,
+        384,
+        385,
+        389,
+        390
+      ],
+      "required_decision": "Retain NOT_VERIFIED wherever the source lacks a supported positive whole-document identity. Filename, commit message, chronology or generic checkpoint wording must not establish structural kind."
+    },
+    {
+      "topic": "execution-evidence provenance and NOT_VERIFIED runtime state",
+      "ranks": [
+        351,
+        352,
+        353,
+        354,
+        355,
+        356,
+        357,
+        358,
+        359,
+        360,
+        361,
+        362,
+        363,
+        364,
+        365,
+        366,
+        367,
+        368,
+        369,
+        370,
+        371,
+        372,
+        373,
+        374,
+        375,
+        376,
+        377,
+        378,
+        379,
+        380,
+        381,
+        382,
+        383,
+        384,
+        385,
+        386,
+        387,
+        388,
+        389,
+        390
+      ],
+      "required_decision": "Keep independent execution, hosted status/check evidence and implementation-agent execution records distinct. Do not promote source-semantic evidence or implementation-agent test claims into independent runtime execution."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_351_390": true,
+    "triage_correction_applied": false,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
