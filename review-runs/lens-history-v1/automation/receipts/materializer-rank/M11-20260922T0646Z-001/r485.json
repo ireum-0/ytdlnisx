@@ -1,0 +1,109 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [441, 490],
+  "rank": 485,
+  "materializer_state_blob": "1faa4bb79bfe84ed5f26c2720d2e4ca6b9ab2f68",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r484.json",
+    "blob_sha": "cb97043b438141c23417ef9abdfc8def6ce8e598"
+  },
+  "history": {
+    "commit_sha": "a973dc0dad1e3bc06d561da42cb4e501fdc6df66",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=485"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [1, 2],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-11T042900Z__aa1616a2__final_checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "6c9e978cdce70fe768818ea496d02cf589094746",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "6c9e978cdce70fe768818ea496d02cf589094746",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-11T042900Z__aa1616a2__final_checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "6c9e978cdce70fe768818ea496d02cf589094746",
+    "frozen_blob_sha": "6c9e978cdce70fe768818ea496d02cf589094746",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "aa1616a2c7710b878c44949a5f74ad02c6706d8d",
+      "evidence": "source explicitly records implementation SHA under Frozen basis"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source explicitly identifies itself as Independent correctness review — final checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit",
+      "reason": "FINAL is explicitly established and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {"state": "NOT_VERIFIED"},
+    "primary_deep_lens": {"state": "NOT_VERIFIED"},
+    "lens_selection_reason": {"state": "NOT_VERIFIED"},
+    "lens_coverage_current_sha": {"state": "NOT_VERIFIED"},
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {"state": "DIRECT", "value": "BUG-HISTORY-01"},
+      "finding_disposition": {"state": "DIRECT", "value": "existing P2 / OPEN; root independently reconfirmed"},
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0,
+        "evidence": "source explicitly states no new P0/P1/P2 canonical finding and no status transition, and that existing F17 subcases do not change canonical counts"
+      },
+      "modern_primary_detecting_lens": {"state": "NOT_VERIFIED"}
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id": "BUG-HISTORY-01",
+      "evidence": "source explicitly preserves playlist-reference partial mutation, Undo missing playlist membership restoration, and external-file deletion before DB mutation as existing F17 subcases"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-HISTORY-01",
+      "evidence": "source revalidates the History deletion/Undo mutation family while explicitly preserving closed BUG-HISTORY-DUPLICATE-IDENTITY-01 as a separate root"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-HISTORY-01",
+      "evidence": "source records P0 3 / P1 3 / P2 25 and explicitly says the existing F17 subcases do not change canonical counts"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source-level current-SHA review is recorded and independent execution is explicitly NOT EXECUTED / NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {"state": "NOT_APPLICABLE", "reason": "new materialization range"},
+    "official_outputs_deferred": true
+  }
+}
