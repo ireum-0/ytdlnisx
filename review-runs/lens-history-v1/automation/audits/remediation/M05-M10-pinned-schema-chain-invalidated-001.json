@@ -1,0 +1,360 @@
+{
+  "schema_version": "lens-history-v1-audit-remediation-v1",
+  "status": "INVALIDATED_CHAIN",
+  "affected_runs": [
+    "M05-20260919T0449Z-001",
+    "M06-20260919T1413Z-001",
+    "M07-20260920T0528Z-001",
+    "M08-20260920T1554Z-001",
+    "M09-20260921T1143Z-001",
+    "M10-20260921T2258Z-001"
+  ],
+  "affected_rank_range": [
+    191,
+    440
+  ],
+  "reason": "A systemic official-ledger representation defect begins at batch 0023/rank 191. Canonical PASS audits M05-M10 and their materialization validations accepted ledger records that fail the exact pinned Draft 2020-12 stateValue schema. Therefore none of these PASS artifacts has current unlock authority.",
+  "governing_schema": {
+    "path": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "direct_rule": "DIRECT permits only state,value; additionalProperties=false",
+    "derivable_rule": "DERIVABLE permits only state,value,rule; additionalProperties=false"
+  },
+  "last_trusted_certification": {
+    "run_id": "M04-20260918T1657Z-001",
+    "path": "review-runs/lens-history-v1/automation/audits/M04-20260918T1657Z-001.json",
+    "blob_sha": "25a28b273ded38f00aec8d5bddd868cb0391712a",
+    "commit_sha": "64963ce0bbf600e9d226c1ee63db2e91541531a0",
+    "range": [
+      151,
+      190
+    ],
+    "unlock_allowed": true,
+    "boundary_evidence": "ledger batches 0019-0022 independently rechecked schema-valid; batch 0023 is the first invalid batch"
+  },
+  "prior_individual_invalidation": {
+    "path": "review-runs/lens-history-v1/automation/audits/remediation/M05-20260919T0449Z-001-invalidated-001.json",
+    "blob_sha": "d763735cb4e04e3c1172cbfde0dcaa0899e80e2f"
+  },
+  "runs": [
+    {
+      "run_id": "M05-20260919T0449Z-001",
+      "logical_rank_range": [
+        191,
+        230
+      ],
+      "canonical_audit": {
+        "path": "review-runs/lens-history-v1/automation/audits/M05-20260919T0449Z-001.json",
+        "blob_sha": "5e783c6397c8500fbcddbaa0c889eca651e8cf7e",
+        "recorded_status": "PASS",
+        "recorded_unlock_allowed": true
+      },
+      "materialization_validation": {
+        "path": "review-runs/lens-history-v1/automation/validations/M05-20260919T0449Z-001-materialization-191-230.json",
+        "blob_sha": "d4e68f6779fd7e1ca57f7658e1344fd7e0f485c4",
+        "recorded_status": "PASS"
+      },
+      "official_ledger_recheck": [
+        {
+          "batch": "0023",
+          "blob_sha": "e4a808050356ab11a8b53a2f9a87d05e60c5d7a2",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 18
+        },
+        {
+          "batch": "0024",
+          "blob_sha": "e7754747cc9efc0854b71af8cf0bec57a91ed808",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 18
+        },
+        {
+          "batch": "0025",
+          "blob_sha": "13c28942945d71cda2b4bd4610f40a381d50d9f9",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 19
+        },
+        {
+          "batch": "0026",
+          "blob_sha": "5f743283831ba4d11d78b21fad0ebe16a59124d2",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 18
+        }
+      ],
+      "totals": {
+        "invalid_rows": 40,
+        "state_value_schema_errors": 73
+      },
+      "unlock_allowed_from_canonical_audit": false
+    },
+    {
+      "run_id": "M06-20260919T1413Z-001",
+      "logical_rank_range": [
+        231,
+        270
+      ],
+      "canonical_audit": {
+        "path": "review-runs/lens-history-v1/automation/audits/M06-20260919T1413Z-001.json",
+        "blob_sha": "14300f725354253dbf48d9b40ed20239ee8ee4af",
+        "recorded_status": "PASS",
+        "recorded_unlock_allowed": true
+      },
+      "materialization_validation": {
+        "path": "review-runs/lens-history-v1/automation/validations/M06-20260919T1413Z-001-materialization-231-270.json",
+        "blob_sha": "8fe10e650ecec15e2dc2aac94427f5b1a0c77a7f",
+        "recorded_status": "PASS"
+      },
+      "official_ledger_recheck": [
+        {
+          "batch": "0027",
+          "blob_sha": "324a68b3ddc0e81a5e24d6432aa5f22d19037810",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 20
+        },
+        {
+          "batch": "0028",
+          "blob_sha": "c3e937df647436a59bd5073258700e85b29bc7e6",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 13
+        },
+        {
+          "batch": "0029",
+          "blob_sha": "23c2c50e5f31f58c9471a477f69f137f70d2687c",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 16
+        },
+        {
+          "batch": "0030",
+          "blob_sha": "2edc479db87d94bc0b9ec4695114c736e066d0fd",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 12
+        }
+      ],
+      "totals": {
+        "invalid_rows": 40,
+        "state_value_schema_errors": 61
+      },
+      "unlock_allowed_from_canonical_audit": false
+    },
+    {
+      "run_id": "M07-20260920T0528Z-001",
+      "logical_rank_range": [
+        271,
+        310
+      ],
+      "canonical_audit": {
+        "path": "review-runs/lens-history-v1/automation/audits/M07-20260920T0528Z-001.json",
+        "blob_sha": "d896217e7ac8dc119d1be6d029ed34d97efe204b",
+        "recorded_status": "PASS",
+        "recorded_unlock_allowed": true
+      },
+      "materialization_validation": {
+        "path": "review-runs/lens-history-v1/automation/validations/M07-20260920T0528Z-001-materialization-271-310.json",
+        "blob_sha": "6b93778f99ed3b229df037a225c514cbe0f45d2e",
+        "recorded_status": "PASS"
+      },
+      "official_ledger_recheck": [
+        {
+          "batch": "0031",
+          "blob_sha": "21d271db5fe75fbcf73bbf37482047c2e80bd89d",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 12
+        },
+        {
+          "batch": "0032",
+          "blob_sha": "deb7fcde821c9b00574f398d46314d544ff899fe",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 14
+        },
+        {
+          "batch": "0033",
+          "blob_sha": "4abdf3e7ef0144aeb2a91a2c32fa3e6c199c18ac",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 10
+        },
+        {
+          "batch": "0034",
+          "blob_sha": "1f9edd6bd02cf341b9100789a62e6361412f6213",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 14
+        }
+      ],
+      "totals": {
+        "invalid_rows": 40,
+        "state_value_schema_errors": 50
+      },
+      "unlock_allowed_from_canonical_audit": false
+    },
+    {
+      "run_id": "M08-20260920T1554Z-001",
+      "logical_rank_range": [
+        311,
+        350
+      ],
+      "canonical_audit": {
+        "path": "review-runs/lens-history-v1/automation/audits/M08-20260920T1554Z-001.json",
+        "blob_sha": "f62b077b47e3c3f9b3d9f1ce38d5a130615cab25",
+        "recorded_status": "PASS",
+        "recorded_unlock_allowed": true
+      },
+      "materialization_validation": {
+        "path": "review-runs/lens-history-v1/automation/validations/M08-20260920T1554Z-001-materialization-311-350.json",
+        "blob_sha": "0f508b08b4d58743f05f9630f0f5aa3d1976e59e",
+        "recorded_status": "PASS"
+      },
+      "official_ledger_recheck": [
+        {
+          "batch": "0035",
+          "blob_sha": "f33d4a5d1cccb75a1e852b2854db68c70f76208a",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 14
+        },
+        {
+          "batch": "0036",
+          "blob_sha": "fe4a3161f108587b1d107dea66bb0ef28565f664",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 14
+        },
+        {
+          "batch": "0037",
+          "blob_sha": "c8c143255d4cf0500daedd76dff088f4a8c4f97a",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 12
+        },
+        {
+          "batch": "0038",
+          "blob_sha": "dc665f879a948ed908e6e2035dbbe1d8a53e7c80",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 12
+        }
+      ],
+      "totals": {
+        "invalid_rows": 40,
+        "state_value_schema_errors": 52
+      },
+      "unlock_allowed_from_canonical_audit": false
+    },
+    {
+      "run_id": "M09-20260921T1143Z-001",
+      "logical_rank_range": [
+        351,
+        390
+      ],
+      "canonical_audit": {
+        "path": "review-runs/lens-history-v1/automation/audits/M09-20260921T1143Z-001.json",
+        "blob_sha": "cef3a9035daf2d0bb7dc6ee7e0fda5d0a08bd501",
+        "recorded_status": "PASS",
+        "recorded_unlock_allowed": true
+      },
+      "materialization_validation": {
+        "path": "review-runs/lens-history-v1/automation/validations/M09-20260921T1143Z-001-materialization-351-390.json",
+        "blob_sha": "b7123ed44df2d75ec2eb662ba076982b6597a288",
+        "recorded_status": "PASS"
+      },
+      "official_ledger_recheck": [
+        {
+          "batch": "0039",
+          "blob_sha": "e8ce205793080f9a63b6be9e82b183a53af9f51e",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 12
+        },
+        {
+          "batch": "0040",
+          "blob_sha": "d6200caece2d725eca697ce525a45bca01034e07",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 19
+        },
+        {
+          "batch": "0041",
+          "blob_sha": "ed35e025626815bbfc27cab8323e0aeab0930cf9",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 17
+        },
+        {
+          "batch": "0042",
+          "blob_sha": "71af8e5098c1879507beab4598a8cd6653ab9162",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 18
+        }
+      ],
+      "totals": {
+        "invalid_rows": 40,
+        "state_value_schema_errors": 66
+      },
+      "unlock_allowed_from_canonical_audit": false
+    },
+    {
+      "run_id": "M10-20260921T2258Z-001",
+      "logical_rank_range": [
+        391,
+        440
+      ],
+      "canonical_audit": {
+        "path": "review-runs/lens-history-v1/automation/audits/M10-20260921T2258Z-001.json",
+        "blob_sha": "65e84b3c3dbfdc30cc98f4442a215e827aac57f3",
+        "recorded_status": "PASS",
+        "recorded_unlock_allowed": true
+      },
+      "materialization_validation": {
+        "path": "review-runs/lens-history-v1/automation/validations/M10-20260921T2258Z-001-materialization-391-440.json",
+        "blob_sha": "9e5e53dcf14de20bde76976d4c5854707b3d0de7",
+        "recorded_status": "PASS"
+      },
+      "official_ledger_recheck": [
+        {
+          "batch": "0043",
+          "blob_sha": "b0d2cb150cb6fa2a8f09da9da912ba49ea6f80a0",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 19
+        },
+        {
+          "batch": "0044",
+          "blob_sha": "fe5d2a035384f650b93fef0e474901d0155bee86",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 12
+        },
+        {
+          "batch": "0045",
+          "blob_sha": "5e0ff8704a3d3d2d1db61b8377303aa84fbc6581",
+          "invalid_rows": 9,
+          "state_value_schema_errors": 9
+        },
+        {
+          "batch": "0046",
+          "blob_sha": "c5a4a709deedce270a62ae7dc22b61881ed11cbe",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 15
+        },
+        {
+          "batch": "0047",
+          "blob_sha": "0181f00251ab21a2a4361b3afc80568dc01bc793",
+          "invalid_rows": 10,
+          "state_value_schema_errors": 19
+        }
+      ],
+      "totals": {
+        "invalid_rows": 49,
+        "state_value_schema_errors": 74
+      },
+      "unlock_allowed_from_canonical_audit": false
+    }
+  ],
+  "aggregate_totals": {
+    "affected_official_ledger_rows": 250,
+    "invalid_rows": 249,
+    "state_value_schema_errors": 376
+  },
+  "descendant_effect": {
+    "M11_run_id": "M11-20260922T0646Z-001",
+    "M11_start_head": "0d4eb5008c9f10aba6aca63d5f047bca4fe479bc",
+    "M11_start_certification_run": "M10-20260921T2258Z-001",
+    "consequence": "M11 rank/aggregate receipts remain immutable historical evidence, but M11 may not finalize or unlock a next range until the certification chain from M05 onward is remediated and independently re-audited."
+  },
+  "unlock_allowed_from_invalidated_chain": false,
+  "preservation": "All original audits, Materializer/Triage/Auditor receipts, official outputs, validations and progress records remain immutable historical evidence. This artifact changes certification authority only; it does not rewrite any original object or silently repair any ledger row.",
+  "required_recovery": [
+    "define an explicitly scoped append-only official-output schema remediation that preserves pinned schema and original blobs",
+    "produce deterministic schema-conformant effective ledger evidence for affected ranges without changing semantic values",
+    "independently re-audit affected certification chain beginning with M05",
+    "issue superseding PASS certifications only after exact-binding hard gates pass"
+  ]
+}
