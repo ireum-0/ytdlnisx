@@ -1,0 +1,188 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "segment_range": [
+    461,
+    465
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r456-460.json",
+    "blob_sha": "b56a7ff13f02095727405d5b942b9182b9c1f47b"
+  },
+  "rank_receipts": [
+    {
+      "rank": 461,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r461.json",
+      "blob_sha": "cbd20d0ef13293a498c9e0085dc5106a3bd1375c"
+    },
+    {
+      "rank": 462,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r462.json",
+      "blob_sha": "9061296cb1a5d876c4da805f6d9db2d42254f334"
+    },
+    {
+      "rank": 463,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r463.json",
+      "blob_sha": "733768f1f450a22a2e8b55ec1d923b5c19622493"
+    },
+    {
+      "rank": 464,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r464.json",
+      "blob_sha": "d89440d97489266f115e51de2e5015842a2ac566"
+    },
+    {
+      "rank": 465,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r465.json",
+      "blob_sha": "39136caf9b87e15b48eacb1dfc4ec0c362eda662"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      461,
+      462,
+      463,
+      464,
+      465
+    ],
+    "triggers": [
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source revalidates restored-thumbnail staging/collision behavior at exact aa1616a2 and preserves BUG-BACKUP-04, BUG-BACKUP-03 and F6 mapping roots as distinct",
+        "rank": 461,
+        "source_blob_sha": "ae2030f1ae1b65ceb2103c349e8c27f965838543"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source explicitly records count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 461,
+        "source_blob_sha": "ae2030f1ae1b65ceb2103c349e8c27f965838543"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation test was executed",
+        "rank": 461,
+        "source_blob_sha": "ae2030f1ae1b65ceb2103c349e8c27f965838543"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly keeps required custom-thumbnail omission and mixed-time related Room capture as established F4 subcases without adding a new root",
+        "rank": 462,
+        "source_blob_sha": "e74e524b6b34767ecffb9aa548f097a095c332ca"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source revalidates selected-category false-success at exact aa1616a2 and preserves BUG-BACKUP-05, BUG-BACKUP-07 and BUG-BACKUP-03 as distinct downstream roots",
+        "rank": 462,
+        "source_blob_sha": "e74e524b6b34767ecffb9aa548f097a095c332ca"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-04",
+        "evidence": "source explicitly records count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 462,
+        "source_blob_sha": "e74e524b6b34767ecffb9aa548f097a095c332ca"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation test was executed",
+        "rank": 462,
+        "source_blob_sha": "e74e524b6b34767ecffb9aa548f097a095c332ca"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-HANDOFF-01",
+        "evidence": "source revalidates ordinary Observe configuration generation/supersession/revocation authority at exact aa1616a2 and preserves BUG-OBSERVE-01 and BUG-OBSERVE-SOURCE-IDENTITY-01 as distinct roots",
+        "rank": 463,
+        "source_blob_sha": "9a51694455dac08adea5a5157f812c241636172c"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-HANDOFF-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 3 / P1 3 / P2 25",
+        "rank": 463,
+        "source_blob_sha": "9a51694455dac08adea5a5157f812c241636172c"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation test was executed; source-level production wiring was reviewed at the fixed basis",
+        "rank": 463,
+        "source_blob_sha": "9a51694455dac08adea5a5157f812c241636172c"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-LINK-INPUT-01",
+        "evidence": "source revalidates Share external-input routing before durable Download admission at exact aa1616a2 and preserves download handoff, Observe source identity, command duplicate normalization, archive identity and later media identity as distinct roots",
+        "rank": 464,
+        "source_blob_sha": "c6656afca13786836ecf1564395da3794f06b77c"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LINK-INPUT-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 3 / P1 3 / P2 25",
+        "rank": 464,
+        "source_blob_sha": "c6656afca13786836ecf1564395da3794f06b77c"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation test was executed; source-level production wiring was reviewed at the fixed basis",
+        "rank": 464,
+        "source_blob_sha": "c6656afca13786836ecf1564395da3794f06b77c"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-OBSERVE-SOURCE-IDENTITY-01",
+        "evidence": "source explicitly preserves INSERT race, canonical-equivalent source rows, UPDATE collision, and cross-worker duplicate publication as consumers of one semantic identity/admission root",
+        "rank": 465,
+        "source_blob_sha": "0f44f1179c43421d1ff0ef4b786be2f353cc12ad"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-SOURCE-IDENTITY-01",
+        "evidence": "source revalidates both source-row ownership and enabled duplicate-policy one-winner publication at exact aa1616a2 while preserving BUG-OBSERVE-01, BUG-OBSERVE-HANDOFF-01 and BUG-DOWNLOAD-HANDOFF-01 as distinct roots",
+        "rank": 465,
+        "source_blob_sha": "0f44f1179c43421d1ff0ef4b786be2f353cc12ad"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-SOURCE-IDENTITY-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 3 / P1 3 / P2 25",
+        "rank": 465,
+        "source_blob_sha": "0f44f1179c43421d1ff0ef4b786be2f353cc12ad"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation test was executed; source-level production wiring was reviewed at the fixed basis",
+        "rank": 465,
+        "source_blob_sha": "0f44f1179c43421d1ff0ef4b786be2f353cc12ad"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 441-490 is receipted"
+  }
+}
