@@ -1,0 +1,200 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "segment_range": [
+    456,
+    460
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r451-455.json",
+    "blob_sha": "fc1bbc08607dabb8fbe2f79487b187c7c3d39c89"
+  },
+  "rank_receipts": [
+    {
+      "rank": 456,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r456.json",
+      "blob_sha": "00fcfbf3268b8f91a73471152acc8edd33d3c174"
+    },
+    {
+      "rank": 457,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r457.json",
+      "blob_sha": "1a294056dd81d6d2bb66b4422d9872bb5a3dff66"
+    },
+    {
+      "rank": 458,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r458.json",
+      "blob_sha": "169a84ed5fe059baf6a02e0d9b4868adc8d982c3"
+    },
+    {
+      "rank": 459,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r459.json",
+      "blob_sha": "492429439fd93cbaa0ce63a98e6fd94512712ce0"
+    },
+    {
+      "rank": 460,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r460.json",
+      "blob_sha": "5c9ea8e0fc3fa5e90fb4ffbfbeffa64612b45f6e"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      456,
+      457,
+      458,
+      459,
+      460
+    ],
+    "triggers": [
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source explicitly records CLEAN / P0 BUG-OBSERVE-01 FIXED-CLOSED at 9c5191c3",
+        "rank": 456,
+        "source_blob_sha": "b9f8cf38a5924c62b628dba557b65181c82c3865"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source explicitly records BUG-OBSERVE-01 closes exactly one existing P0 root and P0 3 -> 2, while P1 remains 3 and P2 remains 25",
+        "rank": 456,
+        "source_blob_sha": "b9f8cf38a5924c62b628dba557b65181c82c3865"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source reconciles the earlier b45eaa66 checkpoint, preserves separate keyword, Observe handoff and Observe source-identity roots, and advances the independently CLEAN review basis to 9c5191c3",
+        "rank": 456,
+        "source_blob_sha": "b9f8cf38a5924c62b628dba557b65181c82c3865"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "implementation-agent execution evidence is accepted with explicit provenance while independent execution remains NOT EXECUTED",
+        "rank": 456,
+        "source_blob_sha": "b9f8cf38a5924c62b628dba557b65181c82c3865"
+      },
+      {
+        "type": "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "evidence": "rank 456 explicitly binds implementation 9c5191c3... while rank 457 explicitly binds frozen implementation b45eaa66...",
+        "rank": 457,
+        "source_blob_sha": "f9cdc9ea1e0d75d766a858af16c8e6eb74c9c02c"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source records final P0 3 / P1 3 / P2 25, no new finding, no disposition change, and BUG-OBSERVE-01 remains OPEN",
+        "rank": 457,
+        "source_blob_sha": "f9cdc9ea1e0d75d766a858af16c8e6eb74c9c02c"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATE",
+        "evidence": "successful execution of ObserveSourceWorkerProductionWiringTest and frozen-SHA durable worker effects remain explicitly NOT_VERIFIED",
+        "rank": 457,
+        "source_blob_sha": "f9cdc9ea1e0d75d766a858af16c8e6eb74c9c02c"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "exact frozen SHA has zero commit statuses, check-runs and Actions runs; test source presence is not execution evidence",
+        "rank": 457,
+        "source_blob_sha": "f9cdc9ea1e0d75d766a858af16c8e6eb74c9c02c"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive whole-document structural identity",
+        "rank": 458,
+        "source_blob_sha": "e0987371ddb832c831590ddccf10f8a9d930aca9"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional P0 3 / P1 3 / P2 25",
+        "rank": 458,
+        "source_blob_sha": "e0987371ddb832c831590ddccf10f8a9d930aca9"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATE",
+        "evidence": "actual execution of the new Observe instrumentation suite on the frozen SHA remains explicitly NOT_VERIFIED",
+        "rank": 458,
+        "source_blob_sha": "e0987371ddb832c831590ddccf10f8a9d930aca9"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "exact SHA has zero commit statuses, zero check-runs and zero Actions workflow runs; presence of tests is not execution evidence",
+        "rank": 458,
+        "source_blob_sha": "e0987371ddb832c831590ddccf10f8a9d930aca9"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive whole-document structural identity",
+        "rank": 459,
+        "source_blob_sha": "65083fdfcc1460d81ea9867c9b36156777d6f7f7"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional P0 3 / P1 3 / P2 25",
+        "rank": 459,
+        "source_blob_sha": "65083fdfcc1460d81ea9867c9b36156777d6f7f7"
+      },
+      {
+        "type": "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "evidence": "source explicitly records production advanced from prior reviewed ebc3a4f7... to frozen b45eaa66...",
+        "rank": 459,
+        "source_blob_sha": "65083fdfcc1460d81ea9867c9b36156777d6f7f7"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "whether BUG-OBSERVE-01 has sufficient current-SHA actual execution evidence and whether worker-boundary tests exercised/reran the required durable effects remain open questions",
+        "rank": 459,
+        "source_blob_sha": "65083fdfcc1460d81ea9867c9b36156777d6f7f7"
+      },
+      {
+        "type": "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "evidence": "rank 459 explicitly binds frozen implementation b45eaa66... while rank 460 explicitly binds independently CLEAN basis aa1616a2...",
+        "rank": 460,
+        "source_blob_sha": "14083dd0ae474bf016518793bf8688f51e6ec7b3"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-METADATA-02",
+        "evidence": "source revalidates F13 at exact aa1616a2, preserves BUG-METADATA-01 as distinct dependency-gated root, and confirms both production lookup orders remain affected",
+        "rank": 460,
+        "source_blob_sha": "14083dd0ae474bf016518793bf8688f51e6ec7b3"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-METADATA-02",
+        "evidence": "source explicitly records count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 460,
+        "source_blob_sha": "14083dd0ae474bf016518793bf8688f51e6ec7b3"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation test was executed",
+        "rank": 460,
+        "source_blob_sha": "14083dd0ae474bf016518793bf8688f51e6ec7b3"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 441-490 is receipted"
+  }
+}
