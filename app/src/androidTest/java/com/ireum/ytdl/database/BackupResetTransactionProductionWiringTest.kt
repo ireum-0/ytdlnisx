@@ -497,14 +497,31 @@ class BackupResetTransactionProductionWiringTest {
                 WorkInfo.State.BLOCKED -> "UNFINISHED"
                 else -> "UNKNOWN"
             }
-            val occurrenceAt = info.inputData.getLong(
-                CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT,
-                Long.MIN_VALUE,
-            ).let { if (it == Long.MIN_VALUE) "<absent>" else it.toString() }
+            fun tagValues(prefix: String): List<String> = info.tags
+                .filter { it.startsWith(prefix) }
+                .map { it.removePrefix(prefix) }
+            fun uniqueValue(values: List<String>): String? = when (values.size) {
+                0 -> null
+                1 -> values.single().takeIf { it.isNotEmpty() }
+                else -> "AMBIGUOUS"
+            }
+            val generations = tagValues("${CleanupScheduleCoordinator.TAG}_generation_")
+            val cadences = tagValues("${CleanupScheduleCoordinator.TAG}_cadence_")
+            val occurrences = tagValues("${CleanupScheduleCoordinator.TAG}_occurrence_")
+            val generation = generations.singleOrNull()?.takeIf { it.isNotEmpty() }
+            // An occurrence belongs to the exact generation, not merely to the cleanup tag.
+            val occurrenceAt = when {
+                occurrences.isEmpty() -> null
+                generations.size > 1 -> "AMBIGUOUS"
+                generation == null -> null
+                occurrences.size > 1 || occurrences.any { !it.startsWith("${generation}_") } ->
+                    "AMBIGUOUS"
+                else -> occurrences.single().removePrefix("${generation}_").toLongOrNull()?.toString()
+            }
             "id=${info.id}, state=${info.state}, lifecycle=$lifecycle, tags=${info.tags.sorted()}, " +
                 "runAttemptCount=${info.runAttemptCount}, " +
-                "generation=${info.inputData.getString(CleanupScheduleCoordinator.INPUT_GENERATION)}, " +
-                "cadence=${info.inputData.getString(CleanupScheduleCoordinator.INPUT_CADENCE)}, " +
+                "generation=${uniqueValue(generations)}, " +
+                "cadence=${uniqueValue(cadences)}, " +
                 "occurrenceAt=$occurrenceAt"
         }
         return "$source=$entries"
