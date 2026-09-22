@@ -1,0 +1,127 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "rank": 444,
+  "materializer_state_blob": "3f55fd417b20db21d07c62b211d9a40dc366faae",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r443.json",
+    "blob_sha": "d8e00f6852019817957671ad0a7218cba484f43a"
+  },
+  "history": {
+    "commit_sha": "738bb1ed532a977d018ee2826f3538d8d36cefe7",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=444"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-11__9c5191c3__hardsub-generation-current-basis-revalidation.md",
+        "status": "added",
+        "source_blob_sha": "e4c8b1bf19ce291df5daa78583c576b000e08d25",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "e4c8b1bf19ce291df5daa78583c576b000e08d25",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-11__9c5191c3__hardsub-generation-current-basis-revalidation.md",
+    "status": "added",
+    "source_blob_sha": "e4c8b1bf19ce291df5daa78583c576b000e08d25",
+    "frozen_blob_sha": "e4c8b1bf19ce291df5daa78583c576b000e08d25",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9c5191c3539734fa1c9f1b63501def89f47b216a",
+      "evidence": "source explicitly records Fixed independently CLEAN Review Basis"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "source positively identifies BUG-HARDSUB-GENERATION-01, gives an explicit verdict, count delta, root reconciliation, correction boundary and execution status without claiming run-final identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is excluded from cumulative final-checkpoint effectiveness"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-HARDSUB-GENERATION-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P2 / OPEN"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-HARDSUB-GENERATION-01",
+      "evidence": "source revalidates worker-generation authority and atomic History-redownload reservation, and distinguishes ordinary Download/Observe/scheduler/subtitle roots"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-HARDSUB-GENERATION-01",
+      "evidence": "source explicitly records canonical blocker-count delta 0 and P0 2 / P1 3 / P2 25"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "no independent Gradle/JVM/instrumentation execution was performed"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
