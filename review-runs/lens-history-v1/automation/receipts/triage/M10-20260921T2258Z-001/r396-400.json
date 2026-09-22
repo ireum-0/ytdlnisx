@@ -1,0 +1,124 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M10-20260921T2258Z-001",
+  "stage": "MATERIALIZE_391_440",
+  "logical_rank_range": [
+    391,
+    440
+  ],
+  "microsegment_rank_range": [
+    396,
+    400
+  ],
+  "data_head": "59bddfaee6792b30478724521111a994c38514fa",
+  "complete_state_blob": "882af9eff293e727fc18c918cfd16519872177e1",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M10-20260921T2258Z-001/r396-400.json",
+    "blob_sha": "484956c95a211167c49030209a6471bbcfe188d9"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "583a707e1fc6b1b07bb96f79d41d53cd6a4214f7",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M10-20260921T2258Z-001/r391-395.json",
+    "blob_sha": "2575e8ec4edddb8a9a49cd4ecd7caefbdd92da7b"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 396,
+      "path": "review-runs/checkpoints/2026-09-12__36b43464__observe-stale-worker-alias-reconciliation.md",
+      "source_blob": "ab09011f54639084724cad5f8ccf6326c3065b18",
+      "independent_exception_triggers": [
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-OBSERVE-04 only as an alias/subcase of canonical P0 BUG-OBSERVE-HANDOFF-01 with count delta 0. Keep BUG-OBSERVE-03 distinct as current-generation carrier acceptance/recovery; independent execution remains not executed."
+    },
+    {
+      "rank": 397,
+      "path": "review-runs/checkpoints/2026-09-12__36b43464__observe-enqueue-loss-broader-promotion.md",
+      "source_blob": "7d03d8b4f65afd3e81f1a4ce315ea08f46dff429",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-OBSERVE-03 as a distinct historical P2 promoted at exact 36b43464 with P2 +1 and resulting P0 2 / P1 2 / P2 29. Do not merge it with generation/revocation authority BUG-OBSERVE-HANDOFF-01."
+    },
+    {
+      "rank": 398,
+      "path": "review-runs/checkpoints/2026-09-11T152500Z__36b43464__checkpoint.md",
+      "source_blob": "dae93a5fda0c25fb1ad75a8c8bd3b218368a32c0",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve bootstrap status and provisional P0 2 / P1 3 / P2 25 only as prior-review context. No fixed invariant is independently revalidated yet; current metadata paths and exact evidence remain open."
+    },
+    {
+      "rank": 399,
+      "path": "review-runs/checkpoints/2026-09-11__36b43464__metadata-stale-write-unblocked-revalidation.md",
+      "source_blob": "cc5a44c447227b114833ebf2ac07bddac0fe396c",
+      "independent_exception_triggers": [
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve F14 as the existing P1 stale full-row publication root, OPEN and implementation-eligible after F13 closure, with count delta 0 at P0 2 / P1 2 / P2 28. Keep F13 distinct."
+    },
+    {
+      "rank": 400,
+      "path": "review-runs/checkpoints/2026-09-11__36b43464__metadata-source-identity-closure.md",
+      "source_blob": "3335d055c7fde8c028850dbb3dbf6b65e277cb60",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve F13 BUG-METADATA-02 FIXED-CLOSED at exact 36b43464 with P2 -1 and post-closure P0 2 / P1 2 / P2 28. Keep F14 OPEN and distinct; implementation-agent execution is not independent execution."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      396,
+      397,
+      398,
+      399,
+      400
+    ],
+    "materializer_flagged_exception_ranks": [
+      396,
+      397,
+      398,
+      399,
+      400
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
