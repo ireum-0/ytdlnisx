@@ -1,0 +1,208 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "segment_range": [
+    451,
+    455
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r446-450.json",
+    "blob_sha": "22a0fbc27d9a89ec1e5c7d4ee77f9706e8e87cdc"
+  },
+  "rank_receipts": [
+    {
+      "rank": 451,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r451.json",
+      "blob_sha": "64e3ba99a306f34c9d0f527052c4651082bfc7d4"
+    },
+    {
+      "rank": 452,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r452.json",
+      "blob_sha": "ef27bdf1c7ae07786980fd71ad4212da7db6d55b"
+    },
+    {
+      "rank": 453,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r453.json",
+      "blob_sha": "d796db9676ce96a65ffe22b3abc4e44c0af8e667"
+    },
+    {
+      "rank": 454,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r454.json",
+      "blob_sha": "f25965a1b53edae49be2499f3478d61cd4623676"
+    },
+    {
+      "rank": 455,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r455.json",
+      "blob_sha": "b9b3f2f7f908de1ace7544a886ff2e2f1605281c"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      451,
+      452,
+      453,
+      454,
+      455
+    ],
+    "triggers": [
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-HANDOFF-01",
+        "evidence": "source revalidates ordinary Observe configuration generation/revocation authority after F3, preserves source-membership authority and source-identity roots as distinct, and retains destructive/successor publication subcases",
+        "rank": 451,
+        "source_blob_sha": "8ae4c571098bba10148cd6eb6818cd4ebe1b8ff3"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-HANDOFF-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 2 / P1 3 / P2 25",
+        "rank": 451,
+        "source_blob_sha": "8ae4c571098bba10148cd6eb6818cd4ebe1b8ff3"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation execution was performed",
+        "rank": 451,
+        "source_blob_sha": "8ae4c571098bba10148cd6eb6818cd4ebe1b8ff3"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source explicitly records existing P0 BUG-OBSERVE-01 as FIXED-CLOSED at the frozen implementation",
+        "rank": 452,
+        "source_blob_sha": "f169cd5df34bc6446d1a47f86a73c5bc0d8d90a9"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source reports final inventory P0 2 / P1 3 / P2 25 alongside BUG-OBSERVE-01 FIXED-CLOSED and no new finding; no numeric root-level count delta is explicitly bound to that closure",
+        "rank": 452,
+        "source_blob_sha": "f169cd5df34bc6446d1a47f86a73c5bc0d8d90a9"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATE",
+        "evidence": "BUG-KEYWORD-01 production-boundary execution and durable-effect closure remain explicitly NOT_VERIFIED at the frozen SHA",
+        "rank": 452,
+        "source_blob_sha": "f169cd5df34bc6446d1a47f86a73c5bc0d8d90a9"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "implementation-agent execution evidence is preserved with explicit provenance, while independent JVM/Gradle/instrumentation execution was not performed",
+        "rank": 452,
+        "source_blob_sha": "f169cd5df34bc6446d1a47f86a73c5bc0d8d90a9"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive whole-document structural identity",
+        "rank": 453,
+        "source_blob_sha": "64d01bc710b494342633831577dc6b4919c22848"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional P0 2 / P1 3 / P2 25",
+        "rank": 453,
+        "source_blob_sha": "64d01bc710b494342633831577dc6b4919c22848"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source records existing P0 BUG-OBSERVE-01 as a FIXED-CLOSED candidate confirmed source-semantically",
+        "rank": 453,
+        "source_blob_sha": "64d01bc710b494342633831577dc6b4919c22848"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATE",
+        "evidence": "BUG-KEYWORD-01 production-boundary execution/durable-effect closure remains open and exact-current production-boundary execution evidence is absent",
+        "rank": 453,
+        "source_blob_sha": "64d01bc710b494342633831577dc6b4919c22848"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "exact-current execution proof cited for F3 comes from immutable implementation-agent evidence; independent execution is NOT_EXECUTED",
+        "rank": 453,
+        "source_blob_sha": "64d01bc710b494342633831577dc6b4919c22848"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive whole-document structural identity",
+        "rank": 454,
+        "source_blob_sha": "504ac961756d3d8d2421a5382838c8ccd9fb4de8"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional canonical minimum P0 2 / P1 3 / P2 25",
+        "rank": 454,
+        "source_blob_sha": "504ac961756d3d8d2421a5382838c8ccd9fb4de8"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source records BUG-OBSERVE-01 as candidate FIXED-CLOSED pending independent completion of producer, durable-effect and evidence review",
+        "rank": 454,
+        "source_blob_sha": "504ac961756d3d8d2421a5382838c8ccd9fb4de8"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "F3 producer/durable-effect closure, F12 worker/baseline/discovery/revision/retry closure, and adjacent authority checks remain open review scope",
+        "rank": 454,
+        "source_blob_sha": "504ac961756d3d8d2421a5382838c8ccd9fb4de8"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "independent execution is explicitly NOT EXECUTED at this checkpoint",
+        "rank": 454,
+        "source_blob_sha": "504ac961756d3d8d2421a5382838c8ccd9fb4de8"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-KEYWORD-01",
+        "evidence": "source revalidates F12 after F3 closure, preserves scheduler handoff and BUG-KEYWORD-02 as distinct roots, and narrows the remaining closure gap to actual production authority-effect execution",
+        "rank": 455,
+        "source_blob_sha": "23eb61bdd1c6796fc2ca7a92a0c695f2722e7f2e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-KEYWORD-01",
+        "evidence": "source explicitly records count delta 0 and canonical P0 2 / P1 3 / P2 25",
+        "rank": 455,
+        "source_blob_sha": "23eb61bdd1c6796fc2ca7a92a0c695f2722e7f2e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATE",
+        "evidence": "required production worker/durable-state authority-effect execution remains missing even though source semantics are corrected",
+        "rank": 455,
+        "source_blob_sha": "23eb61bdd1c6796fc2ca7a92a0c695f2722e7f2e"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent JVM/Gradle/instrumentation execution was performed",
+        "rank": 455,
+        "source_blob_sha": "23eb61bdd1c6796fc2ca7a92a0c695f2722e7f2e"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 441-490 is receipted"
+  }
+}
