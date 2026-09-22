@@ -1,0 +1,212 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M10-20260921T2258Z-001",
+  "stage": "MATERIALIZE_391_440",
+  "logical_rank_range": [
+    391,
+    440
+  ],
+  "segment_range": [
+    401,
+    405
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "f8ecfa77cc39c0993e463e024e85d5132c6ff665",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M10-20260921T2258Z-001/r396-400.json",
+    "blob_sha": "484956c95a211167c49030209a6471bbcfe188d9"
+  },
+  "rank_receipts": [
+    {
+      "rank": 401,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r401.json",
+      "blob_sha": "a5431b01bf3a4e478a909fb6bf171ef79fd7b6fb"
+    },
+    {
+      "rank": 402,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r402.json",
+      "blob_sha": "62eb409379a7d83a7d9691c3ddcb6133123cbcfa"
+    },
+    {
+      "rank": 403,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r403.json",
+      "blob_sha": "f1f2bc6115ee098e7ccbd4b8541e0549994baedd"
+    },
+    {
+      "rank": 404,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r404.json",
+      "blob_sha": "ae9bb93a23d569bdf55366bd580503f825268d69"
+    },
+    {
+      "rank": 405,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r405.json",
+      "blob_sha": "e5df6f678186c1fc97493507fe1f59945c4916a9"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      401,
+      402,
+      403,
+      404,
+      405
+    ],
+    "triggers": [
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-OBSERVE-02",
+        "rank": 401,
+        "source_blob_sha": "7f6ae15da73c1ceac328fa82dd403e6cebe3348e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-02",
+        "rank": 401,
+        "source_blob_sha": "7f6ae15da73c1ceac328fa82dd403e6cebe3348e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-02",
+        "rank": 401,
+        "source_blob_sha": "7f6ae15da73c1ceac328fa82dd403e6cebe3348e"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "rank": 401,
+        "source_blob_sha": "7f6ae15da73c1ceac328fa82dd403e6cebe3348e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "rank": 401,
+        "source_blob_sha": "7f6ae15da73c1ceac328fa82dd403e6cebe3348e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-01",
+        "evidence": "historical numeric History-marker corruption path is disproved by exact restore remap and final source/type authorization while unrelated backup roots remain distinct",
+        "rank": 402,
+        "source_blob_sha": "613b5f1038047435e52edde9fd6cef453b9150ac"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-01",
+        "evidence": "severity/count delta 0; canonical P0 2 / P1 2 / P2 28",
+        "rank": 402,
+        "source_blob_sha": "613b5f1038047435e52edde9fd6cef453b9150ac"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "historical hypothesis is revalidated against exact source; independent execution NOT EXECUTED",
+        "rank": 402,
+        "source_blob_sha": "613b5f1038047435e52edde9fd6cef453b9150ac"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "runtime execution is not independently verified",
+        "rank": 402,
+        "source_blob_sha": "613b5f1038047435e52edde9fd6cef453b9150ac"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OUTPUT-01",
+        "evidence": "historical mtime-based output adoption path absent; current privileged output authorization is provenance-bound and adjacent roots remain distinct",
+        "rank": 403,
+        "source_blob_sha": "58732bc4f9543977102d07bbc03e347c04ffcf50"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OUTPUT-01",
+        "evidence": "delta 0; canonical P0 2 / P1 2 / P2 28",
+        "rank": 403,
+        "source_blob_sha": "58732bc4f9543977102d07bbc03e347c04ffcf50"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "historical hypothesis revalidated against exact source; independent execution NOT EXECUTED",
+        "rank": 403,
+        "source_blob_sha": "58732bc4f9543977102d07bbc03e347c04ffcf50"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "runtime execution remains unverified",
+        "rank": 403,
+        "source_blob_sha": "58732bc4f9543977102d07bbc03e347c04ffcf50"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-02",
+        "evidence": "shared History-reference mutation coordinator closes reviewed retained-reference race while adjacent History/Download/cache roots remain distinct",
+        "rank": 404,
+        "source_blob_sha": "a32f397d45cc403ee62aee9fab98bd8a38a378f8"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-02",
+        "evidence": "delta 0; canonical P0 2 / P1 2 / P2 28",
+        "rank": 404,
+        "source_blob_sha": "a32f397d45cc403ee62aee9fab98bd8a38a378f8"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "historical hypothesis revalidated against exact source; independent execution NOT EXECUTED",
+        "rank": 404,
+        "source_blob_sha": "a32f397d45cc403ee62aee9fab98bd8a38a378f8"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "runtime execution remains unverified",
+        "rank": 404,
+        "source_blob_sha": "a32f397d45cc403ee62aee9fab98bd8a38a378f8"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-METADATA-02",
+        "evidence": "new subcase remains inside existing root",
+        "rank": 405,
+        "source_blob_sha": "d4740b8b4ce017d74646e43a8f357f3ff5d90e60"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-METADATA-02",
+        "evidence": "delta 0; P0 2 / P1 3 / P2 25",
+        "rank": 405,
+        "source_blob_sha": "d4740b8b4ce017d74646e43a8f357f3ff5d90e60"
+      },
+      {
+        "type": "CHECKLIST_GAP_OR_CHANGE",
+        "evidence": "source records checklist gap and proposed identity-component review expansion",
+        "rank": 405,
+        "source_blob_sha": "d4740b8b4ce017d74646e43a8f357f3ff5d90e60"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "independent execution NOT EXECUTED",
+        "rank": 405,
+        "source_blob_sha": "d4740b8b4ce017d74646e43a8f357f3ff5d90e60"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "other normalization dimensions remain NOT_VERIFIED",
+        "rank": 405,
+        "source_blob_sha": "d4740b8b4ce017d74646e43a8f357f3ff5d90e60"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 391-440 is receipted"
+  }
+}
