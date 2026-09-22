@@ -307,6 +307,51 @@
       "state_output_flags_remain_false": true,
       "reason": "PASS validation and COMPLETE transition are forbidden while pinned-schema contradiction is unresolved"
     },
-    "hold_note": "Stop before creating ledger-batch validations, exception queue, automation materialization PASS validation, progress update, or COMPLETE state. Resume requires an append-only, explicitly governed resolution for the schema/output representation and re-evaluation of the prior M10 unlock certification; do not rewrite immutable rank or aggregate receipts and do not silently treat the prior PASS as sufficient."
+    "hold_note": "Remain HOLD. Canonical PASS chain M05-M10 has append-only invalidation evidence and no current unlock authority. Do not create M11 PASS validations/progress/COMPLETE/Triage/Audit. Next safe action is to define and bind a narrow append-only official-ledger schema remediation that projects invalid stateValue objects to the exact pinned schema without changing semantic values, then remediate and independently re-audit from M05 forward.",
+    "certification_chain_invalidation": {
+      "last_trusted_certification": {
+        "run_id": "M04-20260918T1657Z-001",
+        "path": "review-runs/lens-history-v1/automation/audits/M04-20260918T1657Z-001.json",
+        "blob_sha": "25a28b273ded38f00aec8d5bddd868cb0391712a",
+        "commit_sha": "64963ce0bbf600e9d226c1ee63db2e91541531a0",
+        "rank_through": 190
+      },
+      "first_invalid_official_batch": {
+        "batch": "0023",
+        "range": [
+          191,
+          200
+        ],
+        "ledger_path": "review-runs/lens-history-v1/ledger-batches/0023-newest-191-200.jsonl",
+        "ledger_blob_sha": "e4a808050356ab11a8b53a2f9a87d05e60c5d7a2"
+      },
+      "M05_individual_invalidation": {
+        "path": "review-runs/lens-history-v1/automation/audits/remediation/M05-20260919T0449Z-001-invalidated-001.json",
+        "blob_sha": "d763735cb4e04e3c1172cbfde0dcaa0899e80e2f"
+      },
+      "systemic_chain_invalidation": {
+        "path": "review-runs/lens-history-v1/automation/audits/remediation/M05-M10-pinned-schema-chain-invalidated-001.json",
+        "blob_sha": "21f1043f48ab11aed514ccb2098c4ab46660a84f",
+        "affected_runs": [
+          "M05-20260919T0449Z-001",
+          "M06-20260919T1413Z-001",
+          "M07-20260920T0528Z-001",
+          "M08-20260920T1554Z-001",
+          "M09-20260921T1143Z-001",
+          "M10-20260921T2258Z-001"
+        ],
+        "affected_rank_range": [
+          191,
+          440
+        ],
+        "unlock_allowed": false
+      },
+      "descendant_M11_authority": {
+        "rank_receipts_and_aggregates_preserved": true,
+        "official_output_candidates_0048_0052_preserved": true,
+        "finalization_authorized": false,
+        "reason": "M11 was started from now-invalidated M10 certification; no descendant unlock is valid until M05-M10 chain receives governed output remediation and independent superseding re-audits."
+      }
+    }
   }
 }
