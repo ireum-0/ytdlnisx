@@ -1,0 +1,228 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "segment_range": [
+    481,
+    485
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r476-480.json",
+    "blob_sha": "6f74a5e57064fd9a092144b565fe092856b60210"
+  },
+  "rank_receipts": [
+    {
+      "rank": 481,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r481.json",
+      "blob_sha": "35c1284dac0a194c848712eb2b04047433f88d7e"
+    },
+    {
+      "rank": 482,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r482.json",
+      "blob_sha": "920722b82d0f832583acf78c306f940091906c71"
+    },
+    {
+      "rank": 483,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r483.json",
+      "blob_sha": "2f1b97677a3a7c3b913330050ec6c42369a5d830"
+    },
+    {
+      "rank": 484,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r484.json",
+      "blob_sha": "cb97043b438141c23417ef9abdfc8def6ce8e598"
+    },
+    {
+      "rank": 485,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r485.json",
+      "blob_sha": "4eeb830d941153f08ebc8a74e7a86dbd0d8c41f0"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      481,
+      482,
+      483,
+      484,
+      485
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive whole-document structural identity",
+        "rank": 481,
+        "source_blob_sha": "c97ef6f0910e425caef49d6b55e3abf70e066b18"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels P0 3 / P1 3 / P2 25 as Provisional blocker state",
+        "rank": 481,
+        "source_blob_sha": "c97ef6f0910e425caef49d6b55e3abf70e066b18"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source says the original destructive-absence subcase appears fixed while BUG-OBSERVE-01 remains OPEN provisionally because a same-root lifecycle residual is confirmed",
+        "rank": 481,
+        "source_blob_sha": "c97ef6f0910e425caef49d6b55e3abf70e066b18"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source explicitly describes the PARTIAL yt-dlp first-run baseline/runCount/endsAfterCount lifecycle residual under the existing root",
+        "rank": 481,
+        "source_blob_sha": "c97ef6f0910e425caef49d6b55e3abf70e066b18"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATE",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "remaining downstream Observe, AutomaticKeywordRuleSyncWorker, non-regression and final gate checks were still open at this checkpoint",
+        "rank": 481,
+        "source_blob_sha": "c97ef6f0910e425caef49d6b55e3abf70e066b18"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level review is recorded and independent JVM/instrumentation/emulator/device execution is NOT_VERIFIED",
+        "rank": 481,
+        "source_blob_sha": "c97ef6f0910e425caef49d6b55e3abf70e066b18"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source explicitly preserves the PARTIAL yt-dlp getOnlyNewUploads/runCount/endsAfterCount lifecycle residual inside existing BUG-OBSERVE-01",
+        "rank": 482,
+        "source_blob_sha": "6052b8fc66877b77ac588c955ca7495b2f0fa299"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION_OR_REOPEN_OR_CLOSURE_CORRECTION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source records the original destructive-absence path as fixed while retaining the canonical P0 root OPEN because the lifecycle residual remains",
+        "rank": 482,
+        "source_blob_sha": "6052b8fc66877b77ac588c955ca7495b2f0fa299"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source reconciles explicit source authority, ResultRepository propagation, Observe lifecycle behavior and dependent automatic-keyword behavior while preserving BUG-KEYWORD-01 and BUG-OBSERVE-HANDOFF-01 as distinct roots",
+        "rank": 482,
+        "source_blob_sha": "6052b8fc66877b77ac588c955ca7495b2f0fa299"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source explicitly records count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 482,
+        "source_blob_sha": "6052b8fc66877b77ac588c955ca7495b2f0fa299"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "review is source-level at the fixed implementation basis and independent execution is explicitly NOT EXECUTED",
+        "rank": 482,
+        "source_blob_sha": "6052b8fc66877b77ac588c955ca7495b2f0fa299"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-QUEUE-01",
+        "evidence": "source preserves direct, inverted, select-all, select-between and mixed queued/waiting contextual selection paths as concrete consumers of the same reorder-authority root",
+        "rank": 483,
+        "source_blob_sha": "bf1889a19448ea773256c7b55a81e23973057adb"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-QUEUE-01",
+        "evidence": "source reconciles contextual selection eligibility with already-correct per-item/drag restrictions and explicitly keeps BUG-QUEUE-03 / BUG-DOWNLOAD-HANDOFF-01 separate",
+        "rank": 483,
+        "source_blob_sha": "bf1889a19448ea773256c7b55a81e23973057adb"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-QUEUE-01",
+        "evidence": "source explicitly records P0/P1/P2 blocker-count delta 0 and canonical P0 3 / P1 3 / P2 25 while preserving the existing P3 root",
+        "rank": 483,
+        "source_blob_sha": "bf1889a19448ea773256c7b55a81e23973057adb"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level review was performed at the fixed CLEAN basis and independent execution was NOT EXECUTED",
+        "rank": 483,
+        "source_blob_sha": "bf1889a19448ea773256c7b55a81e23973057adb"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-PLAYER-01",
+        "evidence": "source preserves out-of-order Room writes, completion-zero stale overwrite, lifecycle-scope cancellation and Activity recreation ordering as concrete consumers/subcases of the same playback-position persistence root",
+        "rank": 484,
+        "source_blob_sha": "cc6e80ca55be90bb377a7230d05797712268635e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-PLAYER-01",
+        "evidence": "source explicitly keeps the ordered persistence root distinct from the player timeline/index crash family and refines the required ordered/coalescing ownership boundary",
+        "rank": 484,
+        "source_blob_sha": "cc6e80ca55be90bb377a7230d05797712268635e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-PLAYER-01",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 484,
+        "source_blob_sha": "cc6e80ca55be90bb377a7230d05797712268635e"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level review was performed at the fixed CLEAN basis and independent execution was NOT EXECUTED",
+        "rank": 484,
+        "source_blob_sha": "cc6e80ca55be90bb377a7230d05797712268635e"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source explicitly preserves playlist-reference partial mutation, Undo missing playlist membership restoration, and external-file deletion before DB mutation as existing F17 subcases",
+        "rank": 485,
+        "source_blob_sha": "6c9e978cdce70fe768818ea496d02cf589094746"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source revalidates the History deletion/Undo mutation family while explicitly preserving closed BUG-HISTORY-DUPLICATE-IDENTITY-01 as a separate root",
+        "rank": 485,
+        "source_blob_sha": "6c9e978cdce70fe768818ea496d02cf589094746"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source records P0 3 / P1 3 / P2 25 and explicitly says the existing F17 subcases do not change canonical counts",
+        "rank": 485,
+        "source_blob_sha": "6c9e978cdce70fe768818ea496d02cf589094746"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level current-SHA review is recorded and independent execution is explicitly NOT EXECUTED / NOT_VERIFIED",
+        "rank": 485,
+        "source_blob_sha": "6c9e978cdce70fe768818ea496d02cf589094746"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 441-490 is receipted"
+  }
+}
