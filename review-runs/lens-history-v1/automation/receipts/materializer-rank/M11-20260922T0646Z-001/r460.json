@@ -1,0 +1,132 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "rank": 460,
+  "materializer_state_blob": "968b37011ba2047fb4b5cec3bf7713bbd59c6936",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r459.json",
+    "blob_sha": "492429439fd93cbaa0ce63a98e6fd94512712ce0"
+  },
+  "history": {
+    "commit_sha": "3eb6c14b68bffb0e462be10ba8efa48bc77b6511",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=460"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-11__aa1616a2__metadata-source-identity-revalidation.md",
+        "status": "added",
+        "source_blob_sha": "14083dd0ae474bf016518793bf8688f51e6ec7b3",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "14083dd0ae474bf016518793bf8688f51e6ec7b3",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-11__aa1616a2__metadata-source-identity-revalidation.md",
+    "status": "added",
+    "source_blob_sha": "14083dd0ae474bf016518793bf8688f51e6ec7b3",
+    "frozen_blob_sha": "14083dd0ae474bf016518793bf8688f51e6ec7b3",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "aa1616a2c7710b878c44949a5f74ad02c6706d8d",
+      "evidence": "source explicitly records Fixed independently CLEAN Review Basis"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "source positively identifies BUG-METADATA-02, records an explicit existing-root verdict, root/dependency reconciliation and correction boundary, and does not claim run-final checkpoint identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is excluded from cumulative final-checkpoint effectiveness"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-METADATA-02"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P2 / OPEN"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0,
+        "evidence": "source explicitly records Count delta: 0 and canonical P0 3 / P1 3 / P2 25"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "IMPLEMENTATION_TRANSITION_BOUNDARY",
+      "evidence": "rank 459 explicitly binds frozen implementation b45eaa66... while rank 460 explicitly binds independently CLEAN basis aa1616a2..."
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-METADATA-02",
+      "evidence": "source revalidates F13 at exact aa1616a2, preserves BUG-METADATA-01 as distinct dependency-gated root, and confirms both production lookup orders remain affected"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-METADATA-02",
+      "evidence": "source explicitly records count delta 0 and canonical P0 3 / P1 3 / P2 25"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "no independent Gradle/JVM/instrumentation test was executed"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
