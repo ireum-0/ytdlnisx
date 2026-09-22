@@ -1,0 +1,196 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M10-20260921T2258Z-001",
+  "stage": "MATERIALIZE_391_440",
+  "logical_rank_range": [
+    391,
+    440
+  ],
+  "data_head": "59bddfaee6792b30478724521111a994c38514fa",
+  "complete_state_blob": "882af9eff293e727fc18c918cfd16519872177e1",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "9a513e323075c961d66e76989f068f4f7074c6af",
+    "484956c95a211167c49030209a6471bbcfe188d9",
+    "e1506738982edc2c6baa7231c2976c8dc8329791",
+    "49b341d8e1a7876b67ba9c1918c3e693a8213bbb",
+    "dce7ad08d880846556da021ec8d408d6ab821e04",
+    "d7ba2b7e6d3ee20dc683ed4a89942ced219a4f51",
+    "6a819298e53ad96571ebf9dac4ca0f6ab265f513",
+    "222ca9fd3d19c837179fa82b7b00e265ef780b9f",
+    "f45b8f08c906e8ddb4b77d8a03a6926563766f98",
+    "5680f67b8cda6ebe9765a0beed27448235f0088f"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M10-20260921T2258Z-001-materialization-391-440.json",
+    "blob_sha": "9e5e53dcf14de20bde76976d4c5854707b3d0de7",
+    "status": "PASS"
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        391,
+        395
+      ],
+      "blob_sha": "2575e8ec4edddb8a9a49cd4ecd7caefbdd92da7b"
+    },
+    {
+      "range": [
+        396,
+        400
+      ],
+      "blob_sha": "be17f89ab1a658f5e9d34e855be7d416d2316c35"
+    },
+    {
+      "range": [
+        401,
+        405
+      ],
+      "blob_sha": "3ae7ea222655a970e1a9c6ea5cde54d93714f7b4"
+    },
+    {
+      "range": [
+        406,
+        410
+      ],
+      "blob_sha": "d84609eb50507c5158d438d720613dcb68999934"
+    },
+    {
+      "range": [
+        411,
+        415
+      ],
+      "blob_sha": "026ab0be1c891554187008fada2b4006c822b34f"
+    },
+    {
+      "range": [
+        416,
+        420
+      ],
+      "blob_sha": "77bf24e22147c183333d5671f96798faf8f5bf7a"
+    },
+    {
+      "range": [
+        421,
+        425
+      ],
+      "blob_sha": "1e9f2d56114bb0324ea3106b14ed7c693f1364b7"
+    },
+    {
+      "range": [
+        426,
+        430
+      ],
+      "blob_sha": "535949c47ac10a1d32e9e508267ed21b1ddaeb1c"
+    },
+    {
+      "range": [
+        431,
+        435
+      ],
+      "blob_sha": "cc5309d97938b61f2a97851059b63bdd5742a4e4"
+    },
+    {
+      "range": [
+        436,
+        440
+      ],
+      "blob_sha": "c1375b234a8fa25184b85f02ca998483bef6c3ea"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "583a707e1fc6b1b07bb96f79d41d53cd6a4214f7",
+  "materializer_exception_rank_count": 50,
+  "independent_exception_ranks": [
+    391,
+    392,
+    393,
+    394,
+    395,
+    396,
+    397,
+    398,
+    399,
+    400,
+    401,
+    402,
+    403,
+    404,
+    405,
+    406,
+    407,
+    408,
+    409,
+    410,
+    411,
+    412,
+    413,
+    414,
+    415,
+    416,
+    417,
+    418,
+    419,
+    420,
+    421,
+    422,
+    423,
+    424,
+    425,
+    426,
+    427,
+    428,
+    429,
+    430,
+    431,
+    432,
+    433,
+    434,
+    435,
+    436,
+    437,
+    438,
+    439,
+    440
+  ],
+  "independent_exception_rank_count": 50,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "preservation_packets": [
+    {
+      "topic": "chronology_and_root_boundaries",
+      "rank_range": [
+        391,
+        440
+      ],
+      "requirement": "Preserve each receipt's exact historical status/count/root-boundary decision without backward normalization or duplicate-root creation."
+    },
+    {
+      "topic": "fail_closed_and_execution_provenance",
+      "rank_range": [
+        391,
+        440
+      ],
+      "requirement": "Preserve NOT_VERIFIED structural/runtime states and keep source semantics, implementation-agent evidence, hosted status evidence, and independent execution distinct."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_391_440": true,
+    "triage_correction_applied": false,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
