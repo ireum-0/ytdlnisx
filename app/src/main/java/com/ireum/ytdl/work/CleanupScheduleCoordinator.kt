@@ -14,6 +14,9 @@ import androidx.work.Operation
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.google.gson.Gson
+import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
+import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -106,6 +109,10 @@ internal object CleanupScheduleCoordinator {
     private const val REPLAY_MAX_DELAY_MS = 60_000L
 
     private val lock = Any()
+    // Only bridges in-process request -> acceptance. Durable occurrence debt
+    // remains the recovery authority; after process death accepted work is
+    // discoverable by TAG and an unaccepted in-process call cannot run later.
+    private val pendingEnqueues = mutableMapOf<UUID, Operation>()
     /**
      * Serializes durable authority transitions with the destructive cleanup
      * effect itself.  This is a coroutine mutex rather than a JVM monitor so
@@ -255,6 +262,7 @@ internal object CleanupScheduleCoordinator {
             synchronized(lock) {
                 val appContext = context.applicationContext
                 val normalizedCadence = cadence?.takeIf(CleanupSchedulePolicy::isEnabled)
+                if (RestoreGate.isRestoreInProgress(appContext)) return@synchronized false
                 val preferences = criticalPreferencesOrNull(appContext)
                     ?: run {
                         ensureCriticalStoreReplayOwnerLocked(appContext)
@@ -335,10 +343,46 @@ internal object CleanupScheduleCoordinator {
         reconcileSuspending(context)
     }
 
-    private suspend fun reconcileSuspending(context: Context) {
+    /** Only the current Restore driver may reconstruct work under its active pointer. */
+    internal suspend fun reconcileForRestore(
+        context: Context,
+        authority: RestoreReconciliationAuthority,
+    ) {
+        reconcileSuspending(context, authority)
+        awaitPendingEnqueues()
+        synchronized(lock) {
+            RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+            val preferences = checkNotNull(criticalPreferencesOrNull(context))
+            if (CleanupSchedulePolicy.isEnabled(criticalString(preferences, PREF_CADENCE))) {
+                val debt = checkNotNull(readSchedulingDebt(preferences) ?: readActiveSchedulingDebt(preferences)) {
+                    "Cleanup reconciliation has no durable occurrence owner"
+                }
+                val current = checkNotNull(queryCurrentWork(workManager(context)))
+                    .filter(::isUnfinished)
+                check(current.size == 1 && current.single().matchesOccurrence(debt) &&
+                    current.single().tags.contains(generationTag(debt.generation)) &&
+                    current.single().tags.contains(cadenceTag(debt.cadence))) {
+                    "Cleanup reconciliation has not accepted the exact current occurrence"
+                }
+                check(promotePendingDebtLocked(context, debt)) {
+                    "Cleanup reconciliation occurrence promotion remains pending"
+                }
+            }
+        }
+    }
+
+    private suspend fun reconcileSuspending(
+        context: Context,
+        authority: RestoreReconciliationAuthority? = null,
+    ) {
         destructiveEffectMutex.withLock {
             synchronized(lock) {
                 val appContext = context.applicationContext
+                if (authority == null) {
+                    if (RestoreGate.isRestoreInProgress(appContext)) return@synchronized
+                } else {
+                    RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(appContext, authority)
+                }
                 val preferences = criticalPreferencesOrNull(appContext)
                     ?: run {
                         ensureCriticalStoreReplayOwnerLocked(appContext)
@@ -349,8 +393,10 @@ internal object CleanupScheduleCoordinator {
                 val workManager = workManager(appContext)
 
                 if (!CleanupSchedulePolicy.isEnabled(cadence)) {
-                    workManager.cancelAllWorkByTag(TAG)
-                    retirePendingDebtLocked(preferences)
+                    val cancellation = workManager.cancelAllWorkByTag(TAG)
+                    if (authority != null) cancellation.result.get(5, TimeUnit.SECONDS)
+                    val retired = retirePendingDebtLocked(preferences)
+                    if (authority != null) check(retired) { "Cleanup disabled authority retirement remains pending" }
                     return@synchronized
                 }
 
@@ -680,7 +726,7 @@ internal object CleanupScheduleCoordinator {
         // Retire timestamp-named legacy requests without touching the current
         // stable chain, which may include a running occurrence.
         runCatching {
-            workManager.getWorkInfosByTag(TAG).get()
+            workManager.getWorkInfosByTag(TAG).get(5, TimeUnit.SECONDS)
                 .filter { info -> isUnfinished(info) && info.id !in currentIds }
                 .forEach { info -> workManager.cancelWorkById(info.id) }
         }
@@ -707,10 +753,16 @@ internal object CleanupScheduleCoordinator {
      * legacy image; otherwise the migration owner remains responsible and
      * the caller must leave the default file untouched.
      */
-    internal suspend fun prepareForSettingsReset(context: Context): Boolean =
+    internal suspend fun prepareForRestore(context: Context, settingsReset: Boolean): Boolean =
         destructiveEffectMutex.withLock {
-            synchronized(lock) {
+            val prepared = synchronized(lock) {
                 val appContext = context.applicationContext
+                check(RestoreGate.isRestoreInProgress(appContext))
+                // The durable pointer fences new actors. Taking both cleanup
+                // locks drains effects/publications admitted before it; a
+                // cancelled replay actor can no longer republish afterward.
+                stopReplayOwnerLocked()
+                if (!settingsReset) return@synchronized true
                 val preferences = criticalPreferencesOrNull(appContext)
                 if (preferences == null || !criticalStoreIsInitialized(preferences)) {
                     ensureCriticalStoreReplayOwnerLocked(appContext)
@@ -722,7 +774,22 @@ internal object CleanupScheduleCoordinator {
                 )
                 true
             }
+            if (prepared) awaitPendingEnqueues()
+            prepared
         }
+
+    private fun awaitPendingEnqueues() {
+        val operations = synchronized(lock) {
+            pendingEnqueues.entries.removeAll { it.value.result.isDone }
+            pendingEnqueues.values.toList()
+        }
+        // Never hold the coordinator monitor or Restore admission while
+        // waiting. Publication is already fenced by the durable pointer.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        operations.forEach { operation ->
+            operation.result.get((deadline - System.nanoTime()).coerceAtLeast(1), TimeUnit.NANOSECONDS)
+        }
+    }
 
     /** Canonical coordinator-owned namespace used by backup/restore filters. */
     internal fun isCoordinatorOwnedPreferenceKey(key: String): Boolean =
@@ -748,6 +815,7 @@ internal object CleanupScheduleCoordinator {
         ) : DestructiveEffectResult<Nothing>
 
         data object PhaseUnavailable : DestructiveEffectResult<Nothing>
+        data object RestoreDeferred : DestructiveEffectResult<Nothing>
         data object Stale : DestructiveEffectResult<Nothing>
     }
 
@@ -775,7 +843,9 @@ internal object CleanupScheduleCoordinator {
         prepare: suspend () -> CleanupEffectJournal,
         effect: suspend (CleanupEffectJournal) -> T,
     ): DestructiveEffectResult<T> = destructiveEffectMutex.withLock {
-        if (!isCurrentOccurrenceLocked(context, generation, cadence)) {
+        if (RestoreGate.isRestoreInProgress(context)) {
+            DestructiveEffectResult.RestoreDeferred
+        } else if (!isCurrentOccurrenceLocked(context, generation, cadence)) {
             DestructiveEffectResult.Stale
         } else {
             val ownedOccurrence = currentEffectOccurrence(
@@ -899,6 +969,7 @@ internal object CleanupScheduleCoordinator {
     ): Boolean {
         val appContext = context.applicationContext
         val handle = synchronized(lock) {
+            if (RestoreGate.isRestoreInProgress(appContext)) return@synchronized null
             val preferences = criticalPreferencesOrNull(appContext)
                 ?: run {
                     ensureCriticalStoreReplayOwnerLocked(appContext)
@@ -1017,10 +1088,13 @@ internal object CleanupScheduleCoordinator {
 
         val policy = if (append) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE
         return try {
+            val operation = enqueueOverrideForTesting?.invoke(WORK_NAME, policy, request)
+                ?: workManager.enqueueUniqueWork(WORK_NAME, policy, request)
+            pendingEnqueues.entries.removeAll { it.value.result.isDone }
+            pendingEnqueues[request.id] = operation
             EnqueueHandle(
                 request = request,
-                operation = enqueueOverrideForTesting?.invoke(WORK_NAME, policy, request)
-                    ?: workManager.enqueueUniqueWork(WORK_NAME, policy, request),
+                operation = operation,
                 generation = generation,
                 cadence = cadence,
                 monthlyAnchorDay = monthlyAnchorDay,
@@ -1101,6 +1175,7 @@ internal object CleanupScheduleCoordinator {
      */
     private fun ensureCriticalStoreReplayOwnerLocked(context: Context): Boolean {
         val appContext = context.applicationContext
+        if (RestoreGate.isRestoreInProgress(appContext)) return false
         if (criticalStoreIsInitialized(criticalPreferences(appContext))) {
             if (replayCriticalStoreCadence != null) stopReplayOwnerLocked()
             return true
@@ -1123,6 +1198,7 @@ internal object CleanupScheduleCoordinator {
             val maxBackoff = replayMaxDelayOverrideForTesting ?: REPLAY_MAX_DELAY_MS
             while (currentCoroutineContext().isActive) {
                 delay(backoff.coerceAtLeast(1L))
+                if (RestoreGate.isRestoreInProgress(appContext)) return@launch
                 val stillNeedsMigration = synchronized(lock) {
                     val currentLegacyCadence = PreferenceManager
                         .getDefaultSharedPreferences(appContext)
@@ -1479,7 +1555,7 @@ internal object CleanupScheduleCoordinator {
 
     private fun queryCurrentWork(workManager: WorkManager): List<WorkInfo>? = runCatching {
         workInfoQueryOverrideForTesting?.invoke()
-            ?: workManager.getWorkInfosForUniqueWork(WORK_NAME).get()
+            ?: workManager.getWorkInfosForUniqueWork(WORK_NAME).get(5, TimeUnit.SECONDS)
     }.getOrNull()
 
     private suspend fun awaitAcceptance(context: Context, handle: EnqueueHandle): Boolean =
@@ -1493,6 +1569,7 @@ internal object CleanupScheduleCoordinator {
 
     private fun promoteAcceptedDebt(context: Context, handle: EnqueueHandle) {
         synchronized(lock) {
+            if (RestoreGate.isRestoreInProgress(context)) return@synchronized
             promotePendingDebtLocked(
                 context,
                 SchedulingDebt(
@@ -1514,6 +1591,7 @@ internal object CleanupScheduleCoordinator {
         context: Context,
         fallbackDebt: SchedulingDebt? = null,
     ): Boolean {
+        if (RestoreGate.isRestoreInProgress(context)) return false
         val preferences = criticalPreferencesOrNull(context.applicationContext)
             ?: return ensureCriticalStoreReplayOwnerLocked(context.applicationContext)
         // An explicit fallback is used only when it is the exact persisted
@@ -1550,6 +1628,7 @@ internal object CleanupScheduleCoordinator {
         cadence: String,
         intent: BootstrapRecoveryIntent? = null,
     ): Boolean {
+        if (RestoreGate.isRestoreInProgress(context)) return false
         if (!CleanupSchedulePolicy.isEnabled(cadence)) {
             stopReplayOwnerLocked()
             return false
@@ -1572,6 +1651,7 @@ internal object CleanupScheduleCoordinator {
             val maxBackoff = replayMaxDelayOverrideForTesting ?: REPLAY_MAX_DELAY_MS
             while (currentCoroutineContext().isActive) {
                 delay(backoff.coerceAtLeast(1L))
+                if (RestoreGate.isRestoreInProgress(context)) return@launch
                 val stillNeedsBootstrap = synchronized(lock) {
                     val preferences = criticalPreferencesOrNull(context.applicationContext)
                         ?: return@synchronized true
@@ -1608,6 +1688,7 @@ internal object CleanupScheduleCoordinator {
         val maxBackoff = replayMaxDelayOverrideForTesting ?: REPLAY_MAX_DELAY_MS
         while (currentCoroutineContext().isActive) {
             delay(backoff.coerceAtLeast(1L))
+            if (RestoreGate.isRestoreInProgress(context)) return
             if (!isSchedulingDebtCurrent(context, expected)) return
             if (!isSchedulingDebtPersistedOrRepaired(context, expected)) {
                 backoff = (backoff * 2L).coerceAtMost(maxBackoff.coerceAtLeast(backoff))
@@ -1647,6 +1728,7 @@ internal object CleanupScheduleCoordinator {
         context: Context,
         expected: SchedulingDebt,
     ): Boolean = synchronized(lock) {
+        if (RestoreGate.isRestoreInProgress(context)) return@synchronized false
         val preferences = criticalPreferencesOrNull(context.applicationContext)
             ?: return@synchronized false
         if (readSchedulingDebt(preferences) == expected ||

@@ -302,8 +302,10 @@ class BackupResetTransactionProductionWiringTest {
         database.historyDao.insertAndGetIdRaw(existing)
         val admissionEntered = CountDownLatch(1)
         val releaseAdmission = CountDownLatch(1)
-        val phaseTimeline = mutableListOf<String>()
+        val phaseTimeline = java.util.Collections.synchronizedList(mutableListOf<String>())
         var cleanupWorkInfoSnapshot = "<not observed yet>"
+        val cleanupEffects = java.util.concurrent.atomic.AtomicInteger(0)
+        val reachedQuiesced = AtomicBoolean(false)
         fun recordPhase(phase: String, outcome: RestoreOutcome? = null) {
             val restoreGate = runCatching { RestoreGate.isRestoreInProgress(context).toString() }
                 .getOrElse { "unavailable(${diagnosticError(it)})" }
@@ -313,7 +315,7 @@ class BackupResetTransactionProductionWiringTest {
                     "RestoreOutcome=$outcomeSummary"
         }
 
-        CleanUpLeftoverDownloads.cleanupOverrideForTesting = {}
+        CleanUpLeftoverDownloads.cleanupOverrideForTesting = { cleanupEffects.incrementAndGet(); Unit }
         CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = {
             admissionEntered.countDown()
             check(releaseAdmission.await(10, TimeUnit.SECONDS)) {
@@ -336,6 +338,53 @@ class BackupResetTransactionProductionWiringTest {
         )
         cleanupWorkInfoSnapshot = captureCleanupWorkInfoSnapshot()
         recordPhase("cleanup admission entered")
+        val workManager = WorkManager.getInstance(context)
+        val oldOwner = workManager.getWorkInfosByTag(CleanupScheduleCoordinator.TAG)
+            .get(3, TimeUnit.SECONDS).single { !it.state.isFinished }
+        val critical = CleanupScheduleCoordinator.criticalPreferencesForTesting(context)
+        val generation = requireNotNull(critical.getString("cleanup_leftover_downloads_generation", null))
+        val occurrenceAt = oldOwner.tags.single {
+            it.startsWith("${CleanupScheduleCoordinator.TAG}_occurrence_${generation}_")
+        }.removePrefix("${CleanupScheduleCoordinator.TAG}_occurrence_${generation}_").toLong()
+        val anchor = critical.getInt("cleanup_leftover_downloads_anchor_day", -1)
+        // The zero-delay seam belongs only to the predecessor, never its restored owner.
+        CleanupScheduleCoordinator.initialDelayOverrideForTesting = null
+        RestoreTransactionCoordinator.afterQuiescedBeforeFilesReadyForTesting = {
+            runBlocking {
+                val record = requireNotNull(RestoreOperationStore.load(context))
+                assertEquals(RestorePhase.QUIESCED.name, record.journal.phase)
+                assertTrue(RestoreGate.isRestoreInProgress(context))
+                assertEquals(0, cleanupEffects.get())
+                assertEquals(
+                    CleanupScheduleCoordinator.DestructiveEffectResult.RestoreDeferred,
+                    CleanupScheduleCoordinator.withCurrentDestructiveEffect(
+                        context, generation, CleanupSchedulePolicy.DAILY, anchor, occurrenceAt,
+                        prepare = { error("Restore must fence cleanup preparation") },
+                        effect = { error("Restore must fence cleanup effects") },
+                    ),
+                )
+                assertFalse(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.WEEKLY))
+                assertFalse(CleanupScheduleCoordinator.scheduleSuccessor(
+                    context, generation, CleanupSchedulePolicy.DAILY, anchor, occurrenceAt,
+                ))
+                // Exercise ordinary startup/replay entry after dropping process-local replay state.
+                assertTrue(CleanupScheduleCoordinator.awaitReplayOwnerStoppedForTesting())
+                CleanupScheduleCoordinator.reconcile(context)
+                assertTrue(runCatching {
+                    CleanupScheduleCoordinator.reconcileForRestore(
+                        context,
+                        RestoreTransactionCoordinator.RestoreReconciliationAuthority(record.journal.operationId),
+                    )
+                }.isFailure)
+                val infos = workManager.getWorkInfosByTag(CleanupScheduleCoordinator.TAG)
+                    .get(3, TimeUnit.SECONDS)
+                cleanupWorkInfoSnapshot = renderCleanupWorkInfos("QUIESCED", infos)
+                recordPhase("QUIESCED ordinary publication attempts fenced")
+                android.util.Log.i("F11CleanupQuiescence", cleanupWorkInfoSnapshot)
+                assertTrue("$cleanupWorkInfoSnapshot\n$phaseTimeline", infos.none { !it.state.isFinished })
+                reachedQuiesced.set(true)
+            }
+        }
 
         val reset = async(Dispatchers.IO) {
             RestoreTransactionCoordinator.begin(
@@ -406,6 +455,20 @@ class BackupResetTransactionProductionWiringTest {
             listOf("https://example.com/quiescence-imported"),
             database.historyDao.getAll().map { it.url },
         )
+        assertTrue("QUIESCED boundary was not observed: $phaseTimeline", reachedQuiesced.get())
+        assertEquals(generation, critical.getString("cleanup_leftover_downloads_generation", null))
+        assertEquals(CleanupSchedulePolicy.DAILY, critical.getString("cleanup_leftover_downloads", null))
+        val restoredDebtAt = critical.getLong("cleanup_leftover_downloads_active_occurrence_at", -1)
+        val restoredOwners = workManager.getWorkInfosByTag(CleanupScheduleCoordinator.TAG)
+            .get(3, TimeUnit.SECONDS).filter { !it.state.isFinished }
+        val restoredSnapshot = renderCleanupWorkInfos("after Restore Completed", restoredOwners)
+        android.util.Log.i("F11CleanupQuiescence", "${describeRestoreOutcome(outcome)}; $restoredSnapshot")
+        assertEquals(restoredSnapshot, 1, restoredOwners.size)
+        val restoredOwner = restoredOwners.single()
+        assertTrue(restoredSnapshot, restoredOwner.id != oldOwner.id)
+        assertTrue(restoredSnapshot, restoredOwner.tags.contains("${CleanupScheduleCoordinator.TAG}_generation_$generation"))
+        assertTrue(restoredSnapshot, restoredOwner.tags.contains("${CleanupScheduleCoordinator.TAG}_cadence_daily"))
+        assertTrue(restoredSnapshot, restoredOwner.tags.contains("${CleanupScheduleCoordinator.TAG}_occurrence_${generation}_$restoredDebtAt"))
     }
 
     private data class BackupResetFailureDiagnostics(

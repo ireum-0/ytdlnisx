@@ -87,6 +87,9 @@ class CleanUpLeftoverDownloads(
                 },
             )
             ) {
+                CleanupScheduleCoordinator.DestructiveEffectResult.RestoreDeferred -> {
+                    return Result.retry()
+                }
                 CleanupScheduleCoordinator.DestructiveEffectResult.Stale -> {
                     return Result.success(workDataOf("cleanup_schedule_stale" to true))
                 }

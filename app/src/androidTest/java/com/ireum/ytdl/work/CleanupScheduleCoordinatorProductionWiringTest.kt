@@ -3538,6 +3538,74 @@ class CleanupScheduleCoordinatorProductionWiringTest {
                         ?.isNotBlank() == true
             }
         )
+
+        // Repeat the real producer's request/acceptance boundary across Restore.
+        // Only this exact operation is delayed; restoration uses real WorkManager.
+        val originalPreferences = snapshotPreferences(legacyPreferences)
+        val pending = ControlledOperation().also { controlledOperations += it }
+        val drainObserved = CountDownLatch(1)
+        val deferredOperation = object : Operation by pending {
+            override fun getResult(): ListenableFuture<Operation.State.SUCCESS> {
+                if (com.ireum.ytdl.database.RestoreGate.isRestoreInProgress(context)) {
+                    drainObserved.countDown()
+                }
+                return pending.getResult()
+            }
+        }
+        var acceptExactRequest: (() -> Unit)? = null
+        var requestId: UUID? = null
+        CleanupScheduleCoordinator.replayInitialDelayOverrideForTesting = TimeUnit.DAYS.toMillis(1)
+        CleanupScheduleCoordinator.enqueueOverrideForTesting = { name, policy, request ->
+            requestId = request.id
+            acceptExactRequest = { workManager.enqueueUniqueWork(name, policy, request).result.get(5, TimeUnit.SECONDS) }
+            deferredOperation
+        }
+        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
+        val generation = requireNotNull(preferences.getString("cleanup_leftover_downloads_generation", null))
+        val exactOccurrence = preferences.getLong("cleanup_leftover_downloads_pending_occurrence_at", -1)
+        val quiesced = AtomicBoolean(false)
+        RestoreTransactionCoordinator.afterQuiescedBeforeFilesReadyForTesting = {
+            assertTrue(pending.getResult().isDone)
+            assertTrue(workManager.getWorkInfosByTag(CleanupScheduleCoordinator.TAG)
+                .get(5, TimeUnit.SECONDS).none { !it.state.isFinished })
+            runBlocking {
+                CleanupScheduleCoordinator.simulateProcessRestartForTesting(context)
+                CleanupScheduleCoordinator.reconcile(context)
+            }
+            assertTrue(unfinishedCurrentWork().isEmpty())
+            quiesced.set(true)
+        }
+        try {
+            val reset = async(Dispatchers.IO) {
+                SettingsViewModel(context as android.app.Application).restoreData(
+                    RestoreAppDataItem(settings = listOf(BackupSettingsItem("f11_cleanup_drain", "restored", "String"))),
+                    context,
+                    resetData = true,
+                )
+            }
+            try {
+                assertTrue("Restore did not reach the pending acceptance drain", drainObserved.await(5, TimeUnit.SECONDS))
+                assertFalse(reset.isCompleted)
+                CleanupScheduleCoordinator.enqueueOverrideForTesting = null
+                requireNotNull(acceptExactRequest).invoke()
+                pending.succeed()
+            } finally {
+                pending.failIfPending()
+            }
+            val outcome = reset.await()
+            assertTrue("Restore outcome=$outcome", outcome is RestoreOutcome.Completed)
+            assertTrue(quiesced.get())
+            val owner = unfinishedCurrentWork().single()
+            assertTrue(owner.id != requestId)
+            assertTrue(owner.tags.contains(generationTag(generation)))
+            assertTrue(owner.tags.contains(cadenceTag(CleanupSchedulePolicy.DAILY)))
+            assertTrue(owner.tags.contains(occurrenceTag(generation, exactOccurrence)))
+        } finally {
+            pending.failIfPending()
+            RestoreTransactionCoordinator.afterQuiescedBeforeFilesReadyForTesting = null
+            CleanupScheduleCoordinator.enqueueOverrideForTesting = null
+            restorePreferences(legacyPreferences, originalPreferences)
+        }
     }
 
     @Test

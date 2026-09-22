@@ -629,10 +629,12 @@ object RestoreTransactionCoordinator {
         // F10's coordinator remains the sole cleanup authority.  Its
         // settings-reset handoff is made only after the durable Reset owner
         // exists, so a failed pre-publication preparation cannot alter it.
+        // Cleanup can touch the Download/cache graph even in a partial Reset
+        // without settings. Drain that effect lease before any Reset mutation.
+        check(CleanupScheduleCoordinator.prepareForRestore(context, current.plan.data.settings != null)) {
+            "Cleanup authority is not durably quiescent"
+        }
         if (current.plan.data.settings != null) {
-            check(CleanupScheduleCoordinator.prepareForSettingsReset(context)) {
-                "Cleanup authority is not durably quiescent"
-            }
             current = RestoreOperationStore.updateJournal(
                 current,
                 current.journal.copy(
@@ -670,7 +672,7 @@ object RestoreTransactionCoordinator {
             }
             if (hasSourceReset) add("observeSources")
             if (hasKeywordReset) add("automaticKeywordRules")
-            if (record.plan.data.settings != null) add(CleanupScheduleCoordinator.TAG)
+            add(CleanupScheduleCoordinator.TAG)
             if (hasDownloadReset) add("low_quality_redownload")
         }
         // Capture explicit owner markers plus only provably-live legacy
@@ -1577,8 +1579,8 @@ object RestoreTransactionCoordinator {
                 }
             }
         }
-        if (data.settings != null) {
-            CleanupScheduleCoordinator.reconcile(context)
+        if (data.settings != null || CleanupScheduleCoordinator.TAG in quiescedTags) {
+            CleanupScheduleCoordinator.reconcileForRestore(context, authority)
         }
     }
     private const val QUIESCENCE_TIMEOUT_MS = 30_000L
