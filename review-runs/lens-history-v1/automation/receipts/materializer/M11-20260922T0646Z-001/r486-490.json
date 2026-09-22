@@ -1,0 +1,221 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "segment_range": [
+    486,
+    490
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r481-485.json",
+    "blob_sha": "1bf1e9c525261391bdbccebfc770a9fa4e028ee8"
+  },
+  "rank_receipts": [
+    {
+      "rank": 486,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r486.json",
+      "blob_sha": "83173972690b4aadc216823d5ad2856548b955b1"
+    },
+    {
+      "rank": 487,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r487.json",
+      "blob_sha": "5a75ff391daf325cd0db4a25ab3d75ca8da34c0b"
+    },
+    {
+      "rank": 488,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r488.json",
+      "blob_sha": "5246ed94bc640657de71ea01976da7fc3867750a"
+    },
+    {
+      "rank": 489,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r489.json",
+      "blob_sha": "945957633465bc7351db0bee312e44cf4458a056"
+    },
+    {
+      "rank": 490,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r490.json",
+      "blob_sha": "45c2ddcb3af294df999a13d9c94c22bdbc5ef599"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      486,
+      487,
+      488,
+      489,
+      490
+    ],
+    "triggers": [
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source preserves basename suppression, provider-local document-ID collision, same-pass earlier accepted same-name suppression, and unresolved display-name drop as subfindings/evidence of the existing LocalAdd identity/admission root",
+        "rank": 486,
+        "source_blob_sha": "292e941bad382ebe8d1b293a254781aac9df80b2"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source reconciles LocalAdd identity/admission suppression boundaries and explicitly preserves BUG-LOCALADD-HANDOFF-01 as a distinct durability/locator/payload handoff root",
+        "rank": 486,
+        "source_blob_sha": "292e941bad382ebe8d1b293a254781aac9df80b2"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 486,
+        "source_blob_sha": "292e941bad382ebe8d1b293a254781aac9df80b2"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level review was performed at the fixed CLEAN basis and independent execution was NOT EXECUTED",
+        "rank": 486,
+        "source_blob_sha": "292e941bad382ebe8d1b293a254781aac9df80b2"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive whole-document structural identity",
+        "rank": 487,
+        "source_blob_sha": "b4501fcf7d26ef3cd25edb42e0a67b00f553a0d9"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels canonical minimum P0 3 / P1 3 / P2 25 and BUG-HISTORY-01 disposition as provisional in this checkpoint",
+        "rank": 487,
+        "source_blob_sha": "b4501fcf7d26ef3cd25edb42e0a67b00f553a0d9"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source reopens the History mutation/Undo atomicity review scope while preserving BUG-HISTORY-DUPLICATE-IDENTITY-01 as separately closed unless contrary evidence emerges",
+        "rank": 487,
+        "source_blob_sha": "b4501fcf7d26ef3cd25edb42e0a67b00f553a0d9"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATE",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "Undo snapshot ownership, file-backed deletion crash consistency, bypass consumers and broader v6 sampling remained open review questions",
+        "rank": 487,
+        "source_blob_sha": "b4501fcf7d26ef3cd25edb42e0a67b00f553a0d9"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source explicitly records canonical count delta 0",
+        "rank": 487,
+        "source_blob_sha": "b4501fcf7d26ef3cd25edb42e0a67b00f553a0d9"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level current-SHA review is recorded and independent execution is NOT EXECUTED",
+        "rank": 487,
+        "source_blob_sha": "b4501fcf7d26ef3cd25edb42e0a67b00f553a0d9"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source preserves playlist-reference partial mutation, Undo missing playlist membership restoration, and external-file deletion followed by DB failure/process death as same-root F17 subcases",
+        "rank": 488,
+        "source_blob_sha": "b81550b7d31a27075a8e0a67e5e8e79b81a942fe"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source reconciles record-only, bulk, file-backed deletion and Undo relationship ownership under F17 while preserving BUG-HISTORY-DUPLICATE-IDENTITY-01 closed and BUG-KEYWORD-02 distinct",
+        "rank": 488,
+        "source_blob_sha": "b81550b7d31a27075a8e0a67e5e8e79b81a942fe"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 488,
+        "source_blob_sha": "b81550b7d31a27075a8e0a67e5e8e79b81a942fe"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level review was performed at the fixed CLEAN basis and independent execution was NOT EXECUTED",
+        "rank": 488,
+        "source_blob_sha": "b81550b7d31a27075a8e0a67e5e8e79b81a942fe"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-DATE-01",
+        "evidence": "source preserves minimal extractor failure erasure, null compatibility fallback becoming NONE, and terminal NO_DATE false-success as concrete subcases of the existing date-authority root",
+        "rank": 489,
+        "source_blob_sha": "6c47a9be4b1d24d582e95e5b0141d5bf7488185c"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DATE-01",
+        "evidence": "source refines the typed date lookup authority boundary and explicitly preserves BUG-DATE-02 / F16 as a distinct dependency-gated durable retry/resume root",
+        "rank": 489,
+        "source_blob_sha": "6c47a9be4b1d24d582e95e5b0141d5bf7488185c"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DATE-01",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 489,
+        "source_blob_sha": "6c47a9be4b1d24d582e95e5b0141d5bf7488185c"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level review was performed at the fixed CLEAN basis and independent execution was NOT EXECUTED",
+        "rank": 489,
+        "source_blob_sha": "6c47a9be4b1d24d582e95e5b0141d5bf7488185c"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source preserves timestamp-named one-shot identity, missing successor after success, startup reconciliation gap, cadence replacement and retry/no-second-chain semantics as consumers/subcases of the same cleanup scheduling root",
+        "rank": 490,
+        "source_blob_sha": "0b49e68c87be2b55f69e426c32c3e1c8991a5254"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source refines exactly-one recurring chain and calendar cadence ownership while preserving cleanup mutation semantics as out of scope",
+        "rank": 490,
+        "source_blob_sha": "0b49e68c87be2b55f69e426c32c3e1c8991a5254"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CLEANUP-01",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 490,
+        "source_blob_sha": "0b49e68c87be2b55f69e426c32c3e1c8991a5254"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level review was performed at the fixed CLEAN basis and independent execution was NOT EXECUTED",
+        "rank": 490,
+        "source_blob_sha": "0b49e68c87be2b55f69e426c32c3e1c8991a5254"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 441-490 is receipted"
+  }
+}
