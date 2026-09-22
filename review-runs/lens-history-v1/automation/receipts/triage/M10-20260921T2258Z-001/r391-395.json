@@ -1,0 +1,126 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M10-20260921T2258Z-001",
+  "stage": "MATERIALIZE_391_440",
+  "logical_rank_range": [
+    391,
+    440
+  ],
+  "microsegment_rank_range": [
+    391,
+    395
+  ],
+  "data_head": "59bddfaee6792b30478724521111a994c38514fa",
+  "complete_state_blob": "882af9eff293e727fc18c918cfd16519872177e1",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M10-20260921T2258Z-001/r391-395.json",
+    "blob_sha": "9a513e323075c961d66e76989f068f4f7074c6af"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "583a707e1fc6b1b07bb96f79d41d53cd6a4214f7",
+  "previous_triage_receipt": null,
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 391,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__download-archive-saf-authority-promotion.md",
+      "source_blob": "6a1e55d644a35a461ee82b9a3d0bd1747c31defd",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-DUPLICATE-03 as the existing historical P2 newly promoted at exact 9edd3e23 with P2 +1 and resulting P0 2 / P1 1 / P2 30. Keep provider authority distinct from cache and Terminal roots; independent runtime execution remains not executed."
+    },
+    {
+      "rank": 392,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__metadata-f14-closure.md",
+      "source_blob": "abfd56f2e3fc869cad5365ad15f8e2403064d20e",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve F14 FIXED-CLOSED only at exact 9edd3e23 with P1 -1 and resulting P0 2 / P1 1 / P2 29; keep F13 prerequisite semantics and execution provenance distinct."
+    },
+    {
+      "rank": 393,
+      "path": "review-runs/checkpoints/2026-09-11T163500Z__9edd3e23__checkpoint.md",
+      "source_blob": "e8d2f9aff0d39f059e8b9a7bf36f6de1d39cb951",
+      "independent_exception_triggers": [
+        "CONTRADICTORY_STATUS_LABELING",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve final-checkpoint contradiction: source-semantic F14 mechanism is fixed while canonical disposition remains OPEN because exact-SHA execution is not verified; count delta remains 0."
+    },
+    {
+      "rank": 394,
+      "path": "review-runs/checkpoints/2026-09-11T164000Z__9edd3e23__checkpoint.md",
+      "source_blob": "17af5c7e616a8533c6bb572dfed7fc54091999fd",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "CONTRADICTORY_STATUS_LABELING",
+        "PROVISIONAL_COUNTS",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind not verified. Preserve provisional P0 2 / P1 2 / P2 29 and source-semantic correction versus canonical OPEN pending exact-SHA execution."
+    },
+    {
+      "rank": 395,
+      "path": "review-runs/checkpoints/2026-09-11T162700Z__9edd3e23__checkpoint.md",
+      "source_blob": "c97faeb3fd477652548344e2d96ca0a39737787e",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Keep structural kind not verified and preserve bootstrap-era P0 2 / P1 3 / P2 25 as provisional historical context only; F14 closure and recount remain open here."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      391,
+      392,
+      393,
+      394,
+      395
+    ],
+    "materializer_flagged_exception_ranks": [
+      391,
+      392,
+      393,
+      394,
+      395
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
