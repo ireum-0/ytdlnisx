@@ -1,0 +1,120 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M10-20260921T2258Z-001",
+  "stage": "MATERIALIZE_391_440",
+  "logical_rank_range": [
+    391,
+    440
+  ],
+  "microsegment_rank_range": [
+    426,
+    430
+  ],
+  "data_head": "59bddfaee6792b30478724521111a994c38514fa",
+  "complete_state_blob": "882af9eff293e727fc18c918cfd16519872177e1",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M10-20260921T2258Z-001/r426-430.json",
+    "blob_sha": "222ca9fd3d19c837179fa82b7b00e265ef780b9f"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "583a707e1fc6b1b07bb96f79d41d53cd6a4214f7",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M10-20260921T2258Z-001/r421-425.json",
+    "blob_sha": "1e9f2d56114bb0324ea3106b14ed7c693f1364b7"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 426,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-thumbnail-current-basis-revalidation.md",
+      "source_blob": "26ae4832f28b75a77694aef15f1cdf41c7fbe3f0",
+      "independent_exception_triggers": [
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve existing P2 BUG-BACKUP-02 OPEN with count delta 0; keep thumbnail staging root distinct from capture, restore-wide and portable-ID backup roots."
+    },
+    {
+      "rank": 427,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-portable-id-current-basis-revalidation.md",
+      "source_blob": "b33b6be5d0c6faf4af8f93c68b709b416aad9dff",
+      "independent_exception_triggers": [
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve existing P2 BUG-BACKUP-06 OPEN with count delta 0 and downstream dependency boundaries for BUG-BACKUP-08/-05/-07."
+    },
+    {
+      "rank": 428,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-capture-current-basis-revalidation.md",
+      "source_blob": "5fd78d81e218cf7f463348f3d177f85c135978e9",
+      "independent_exception_triggers": [
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve existing P1 BUG-BACKUP-04 OPEN with count delta 0; capture failure subcases remain one root distinct from portable-ID and restore-wide roots."
+    },
+    {
+      "rank": 429,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__history-mutation-current-basis-revalidation.md",
+      "source_blob": "964b5926c549b1812faabafdbcdbf3adaa08d70e",
+      "independent_exception_triggers": [
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve existing P2 BUG-HISTORY-01 OPEN with count delta 0. Observe destructive-sync is another same-root consumer; keep duplicate-identity closure and BUG-KEYWORD-02 dependency distinct."
+    },
+    {
+      "rank": 430,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-capture-current-basis-carry-forward.md",
+      "source_blob": "57557895b41a52dcc1d1b7fb3fd65eacc67cbe4e",
+      "independent_exception_triggers": [
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve BUG-BACKUP-04 P1 OPEN carry-forward with count delta 0; no new semantic classification or unrelated-root closure is introduced."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      426,
+      427,
+      428,
+      429,
+      430
+    ],
+    "materializer_flagged_exception_ranks": [
+      426,
+      427,
+      428,
+      429,
+      430
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
