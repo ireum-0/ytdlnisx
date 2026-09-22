@@ -1,0 +1,108 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [441, 490],
+  "rank": 484,
+  "materializer_state_blob": "1faa4bb79bfe84ed5f26c2720d2e4ca6b9ab2f68",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r483.json",
+    "blob_sha": "2f1b97677a3a7c3b913330050ec6c42369a5d830"
+  },
+  "history": {
+    "commit_sha": "0a206815b3c6e8a17d592ef5a4d5f794b61a1c05",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=484"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [1, 2],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-11__aa1616a2__player-position-ordering-revalidation.md",
+        "status": "added",
+        "source_blob_sha": "cc6e80ca55be90bb377a7230d05797712268635e",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "cc6e80ca55be90bb377a7230d05797712268635e",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-11__aa1616a2__player-position-ordering-revalidation.md",
+    "status": "added",
+    "source_blob_sha": "cc6e80ca55be90bb377a7230d05797712268635e",
+    "frozen_blob_sha": "cc6e80ca55be90bb377a7230d05797712268635e",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "aa1616a2c7710b878c44949a5f74ad02c6706d8d",
+      "evidence": "source explicitly records Reviewed implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "source positively identifies BUG-PLAYER-01 ordered playback-position persistence revalidation, records existing-root/count reconciliation and a focused refinement of that root, and does not claim run-final checkpoint identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is excluded from cumulative final-checkpoint effectiveness"
+    },
+    "raw_audit_lens": {"state": "NOT_VERIFIED"},
+    "primary_deep_lens": {"state": "NOT_VERIFIED"},
+    "lens_selection_reason": {"state": "NOT_VERIFIED"},
+    "lens_coverage_current_sha": {"state": "NOT_VERIFIED"},
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {"state": "DIRECT", "value": "BUG-PLAYER-01"},
+      "finding_disposition": {"state": "DIRECT", "value": "existing P2 / OPEN; root reconfirmed"},
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0,
+        "evidence": "source explicitly records Count delta: 0 and canonical P0 3 / P1 3 / P2 25"
+      },
+      "modern_primary_detecting_lens": {"state": "NOT_VERIFIED"}
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id": "BUG-PLAYER-01",
+      "evidence": "source preserves out-of-order Room writes, completion-zero stale overwrite, lifecycle-scope cancellation and Activity recreation ordering as concrete consumers/subcases of the same playback-position persistence root"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-PLAYER-01",
+      "evidence": "source explicitly keeps the ordered persistence root distinct from the player timeline/index crash family and refines the required ordered/coalescing ownership boundary"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-PLAYER-01",
+      "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source-level review was performed at the fixed CLEAN basis and independent execution was NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {"state": "NOT_APPLICABLE", "reason": "new materialization range"},
+    "official_outputs_deferred": true
+  }
+}
