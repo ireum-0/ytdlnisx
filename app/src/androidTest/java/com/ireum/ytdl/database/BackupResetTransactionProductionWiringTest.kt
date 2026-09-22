@@ -302,6 +302,17 @@ class BackupResetTransactionProductionWiringTest {
         database.historyDao.insertAndGetIdRaw(existing)
         val admissionEntered = CountDownLatch(1)
         val releaseAdmission = CountDownLatch(1)
+        val phaseTimeline = mutableListOf<String>()
+        var cleanupWorkInfoSnapshot = "<not observed yet>"
+        fun recordPhase(phase: String, outcome: RestoreOutcome? = null) {
+            val restoreGate = runCatching { RestoreGate.isRestoreInProgress(context).toString() }
+                .getOrElse { "unavailable(${diagnosticError(it)})" }
+            val outcomeSummary = outcome?.let(::describeRestoreOutcome) ?: "<not returned>"
+            phaseTimeline +=
+                "$phase | RestoreGate=$restoreGate | lastCleanupWorkInfoSnapshot=$cleanupWorkInfoSnapshot | " +
+                    "RestoreOutcome=$outcomeSummary"
+        }
+
         CleanUpLeftoverDownloads.cleanupOverrideForTesting = {}
         CleanUpLeftoverDownloads.beforeCleanupAdmissionForTesting = {
             admissionEntered.countDown()
@@ -310,8 +321,21 @@ class BackupResetTransactionProductionWiringTest {
             }
         }
         CleanupScheduleCoordinator.initialDelayOverrideForTesting = 0L
-        assertTrue(CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY))
-        assertTrue(admissionEntered.await(10, TimeUnit.SECONDS))
+        val cleanupConfigured =
+            CleanupScheduleCoordinator.configure(context, CleanupSchedulePolicy.DAILY)
+        recordPhase("cleanup configured (accepted=$cleanupConfigured)")
+        assertTrue(
+            "cleanup configuration failed; timeline=${phaseTimeline.joinToString("\n")}",
+            cleanupConfigured,
+        )
+        val cleanupAdmissionReached = admissionEntered.await(10, TimeUnit.SECONDS)
+        assertTrue(
+            "cleanup worker did not reach controlled admission; timeline=" +
+                phaseTimeline.joinToString("\n"),
+            cleanupAdmissionReached,
+        )
+        cleanupWorkInfoSnapshot = captureCleanupWorkInfoSnapshot()
+        recordPhase("cleanup admission entered")
 
         val reset = async(Dispatchers.IO) {
             RestoreTransactionCoordinator.begin(
@@ -327,23 +351,180 @@ class BackupResetTransactionProductionWiringTest {
             while (!RestoreGate.isRestoreInProgress(context) && System.currentTimeMillis() < deadline) {
                 delay(10L)
             }
-            assertTrue(RestoreGate.isRestoreInProgress(context))
-            assertEquals(listOf(existing.url), database.historyDao.getAll().map { it.url })
+            val restoreGateActive = RestoreGate.isRestoreInProgress(context)
+            recordPhase("Restore gate observed active (active=$restoreGateActive)")
             assertTrue(
-                DownloadRepository(database)
-                    .startDownloadWorker(emptyList(), context)
-                    .isFailure,
+                "Restore gate was not active; timeline=${phaseTimeline.joinToString("\n")}",
+                restoreGateActive,
+            )
+            val historyWhileRestoreOwnsGate = database.historyDao.getAll().map { it.url }
+            assertEquals(
+                "old history changed before the Restore gate was released; " +
+                    "timeline=${phaseTimeline.joinToString("\n")}",
+                listOf(existing.url),
+                historyWhileRestoreOwnsGate,
+            )
+            val downloadAdmissionRejected = DownloadRepository(database)
+                .startDownloadWorker(emptyList(), context)
+                .isFailure
+            recordPhase(
+                "ordinary Download admission rejected (rejected=$downloadAdmissionRejected)",
+            )
+            assertTrue(
+                "ordinary Download admission was not rejected; " +
+                    "timeline=${phaseTimeline.joinToString("\n")}",
+                downloadAdmissionRejected,
             )
         } finally {
             releaseAdmission.countDown()
+            recordPhase("cleanup admission released")
         }
 
-        assertTrue(reset.await() is RestoreOutcome.Completed)
+        val outcome = reset.await()
+        recordPhase("Restore result returned", outcome)
+        val outcomeIsCompleted = outcome is RestoreOutcome.Completed
+        if (!outcomeIsCompleted) {
+            // Capture authoritative state before assertions or teardown can recover/retire it.
+            val diagnostics = captureBackupResetFailureDiagnostics(outcome)
+            cleanupWorkInfoSnapshot = diagnostics.cleanupWorkInfoSnapshot
+            recordPhase("diagnostic snapshot captured", outcome)
+            assertTrue(
+                "Restore must return Completed; outcome=${describeRestoreOutcome(outcome)}\n" +
+                    "${diagnostics.rendered}\n" +
+                    "ordered phase timeline:\n${phaseTimeline.joinToString("\n")}",
+                outcomeIsCompleted,
+            )
+        } else {
+            recordPhase("diagnostic snapshot captured (successful outcome)", outcome)
+        }
+        assertTrue(
+            "Restore must return Completed; outcome=${describeRestoreOutcome(outcome)}\n" +
+                "ordered phase timeline:\n${phaseTimeline.joinToString("\n")}",
+            outcomeIsCompleted,
+        )
         assertEquals(
             listOf("https://example.com/quiescence-imported"),
             database.historyDao.getAll().map { it.url },
         )
     }
+
+    private data class BackupResetFailureDiagnostics(
+        val cleanupWorkInfoSnapshot: String,
+        val rendered: String,
+    )
+
+    private suspend fun captureBackupResetFailureDiagnostics(
+        outcome: RestoreOutcome,
+    ): BackupResetFailureDiagnostics {
+        val restoreGate = runCatching { RestoreGate.isRestoreInProgress(context).toString() }
+            .getOrElse { "unavailable(${diagnosticError(it)})" }
+        val activePointer = File(RestoreOperationStore.root(context), "active.json")
+        val restoreStore = try {
+            val record = RestoreOperationStore.load(context)
+            if (record == null) {
+                "load=succeeded, record=<none>"
+            } else {
+                "load=succeeded, operationId=${record.journal.operationId}, " +
+                    "phase=${record.journal.phase}, lastError=${record.journal.lastError}, " +
+                    "quiescedWorkTags=${record.journal.quiescedWorkTags}"
+            }
+        } catch (error: Exception) {
+            "load=failed(${diagnosticError(error)})"
+        }
+        val historyUrls = try {
+            database.historyDao.getAll().map { it.url }.toString()
+        } catch (error: Exception) {
+            "unavailable(${diagnosticError(error)})"
+        }
+        val markerPresence = try {
+            preferences.contains("f11_reset_marker").toString()
+        } catch (error: Exception) {
+            "unavailable(${diagnosticError(error)})"
+        }
+        val markerValue = try {
+            preferences.all["f11_reset_marker"]
+        } catch (error: Exception) {
+            "unavailable(${diagnosticError(error)})"
+        }
+        val cleanupWorkInfo = captureCleanupWorkInfoSnapshot()
+        val rendered = buildString {
+            appendLine("RestoreOutcome=${describeRestoreOutcome(outcome)}")
+            appendLine("RestoreGate.isRestoreInProgress=$restoreGate")
+            appendLine("activePointer=${activePointer.absolutePath}; exists=${activePointer.exists()}")
+            appendLine("RestoreOperationStore=$restoreStore")
+            appendLine("historyUrls=$historyUrls")
+            appendLine(
+                "f11_reset_marker.present=$markerPresence; value=$markerValue; " +
+                    "valueType=${markerValue?.javaClass?.name ?: "<absent>"}",
+            )
+            appendLine("cleanupWorkInfoSnapshots=$cleanupWorkInfo")
+        }
+        return BackupResetFailureDiagnostics(cleanupWorkInfo, rendered)
+    }
+
+    private fun captureCleanupWorkInfoSnapshot(): String {
+        val workManager = WorkManager.getInstance(context)
+        val byTag = try {
+            renderCleanupWorkInfos(
+                "byTag(${CleanupScheduleCoordinator.TAG})",
+                workManager.getWorkInfosByTag(CleanupScheduleCoordinator.TAG)
+                    .get(3, TimeUnit.SECONDS),
+            )
+        } catch (error: Exception) {
+            "byTag(${CleanupScheduleCoordinator.TAG}) query failed: ${diagnosticError(error)}"
+        }
+        val byUniqueName = try {
+            renderCleanupWorkInfos(
+                "byUniqueWork(${CleanupScheduleCoordinator.WORK_NAME})",
+                workManager.getWorkInfosForUniqueWork(CleanupScheduleCoordinator.WORK_NAME)
+                    .get(3, TimeUnit.SECONDS),
+            )
+        } catch (error: Exception) {
+            "byUniqueWork(${CleanupScheduleCoordinator.WORK_NAME}) query failed: " +
+                diagnosticError(error)
+        }
+        return "$byTag; $byUniqueName"
+    }
+
+    private fun renderCleanupWorkInfos(source: String, workInfos: List<WorkInfo>): String {
+        val entries = workInfos.joinToString(prefix = "[", postfix = "]") { info ->
+            val lifecycle = when (info.state) {
+                WorkInfo.State.SUCCEEDED,
+                WorkInfo.State.FAILED,
+                WorkInfo.State.CANCELLED -> "FINISHED"
+                WorkInfo.State.ENQUEUED,
+                WorkInfo.State.RUNNING,
+                WorkInfo.State.BLOCKED -> "UNFINISHED"
+                else -> "UNKNOWN"
+            }
+            val occurrenceAt = info.inputData.getLong(
+                CleanupScheduleCoordinator.INPUT_OCCURRENCE_AT,
+                Long.MIN_VALUE,
+            ).let { if (it == Long.MIN_VALUE) "<absent>" else it.toString() }
+            "id=${info.id}, state=${info.state}, lifecycle=$lifecycle, tags=${info.tags.sorted()}, " +
+                "runAttemptCount=${info.runAttemptCount}, " +
+                "generation=${info.inputData.getString(CleanupScheduleCoordinator.INPUT_GENERATION)}, " +
+                "cadence=${info.inputData.getString(CleanupScheduleCoordinator.INPUT_CADENCE)}, " +
+                "occurrenceAt=$occurrenceAt"
+        }
+        return "$source=$entries"
+    }
+
+    private fun describeRestoreOutcome(outcome: RestoreOutcome): String = when (outcome) {
+        is RestoreOutcome.Completed -> "Completed(operationId=${outcome.operationId})"
+        is RestoreOutcome.RejectedBeforeOwnership ->
+            "RejectedBeforeOwnership(reason=${outcome.reason})"
+        is RestoreOutcome.RecoveryPending ->
+            "RecoveryPending(operationId=${outcome.operationId}, phase=${outcome.phase}, " +
+                "reason=${outcome.reason})"
+        is RestoreOutcome.CommittedReconciliationPending ->
+            "CommittedReconciliationPending(operationId=${outcome.operationId}, " +
+                "reason=${outcome.reason})"
+    }
+
+    private fun diagnosticError(error: Throwable): String =
+        "${error.javaClass.name}: ${error.message?.replace('\n', ' ')}"
+
     @Test
     fun roomFailureRollsBackAndFreshRecoveryCompletesTheSamePlan() = runBlocking {
         val existing = history(9L, "https://example.com/existing")
