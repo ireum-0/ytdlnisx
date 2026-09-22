@@ -1,0 +1,124 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M10-20260921T2258Z-001",
+  "stage": "MATERIALIZE_391_440",
+  "logical_rank_range": [
+    391,
+    440
+  ],
+  "rank": 428,
+  "materializer_state_blob": "c3506f2c379077a56003bbefd600076c764bb1ee",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "f8ecfa77cc39c0993e463e024e85d5132c6ff665",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r427.json",
+    "blob_sha": "74da623a4f19ac514e9e20a3bd76d4d17726886c"
+  },
+  "history": {
+    "commit_sha": "9b225fdf477bff596a5df64e88924ac908d8882d",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=428"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-capture-current-basis-revalidation.md",
+        "status": "added",
+        "source_blob_sha": "5fd78d81e218cf7f463348f3d177f85c135978e9",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "5fd78d81e218cf7f463348f3d177f85c135978e9",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-capture-current-basis-revalidation.md",
+    "status": "added",
+    "source_blob_sha": "5fd78d81e218cf7f463348f3d177f85c135978e9",
+    "frozen_blob_sha": "5fd78d81e218cf7f463348f3d177f85c135978e9",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9c5191c3539734fa1c9f1b63501def89f47b216a"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "explicit BUG-BACKUP-04 current-basis revalidation with verdict, count delta, root reconciliation and correction boundary"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL excluded from cumulative final effectiveness"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-BACKUP-04"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P1 / OPEN"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-BACKUP-04"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-BACKUP-04"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "independent execution is explicitly NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
