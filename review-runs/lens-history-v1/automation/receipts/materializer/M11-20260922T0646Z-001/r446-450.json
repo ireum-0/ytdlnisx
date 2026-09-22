@@ -1,0 +1,180 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "segment_range": [
+    446,
+    450
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r441-445.json",
+    "blob_sha": "eb6702c44503ec88a34adff7b30b3720068fc1b0"
+  },
+  "rank_receipts": [
+    {
+      "rank": 446,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r446.json",
+      "blob_sha": "2322d0c547e1960bb6588c2570df1321ddccc84d"
+    },
+    {
+      "rank": 447,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r447.json",
+      "blob_sha": "e190d50fa72923506efee210c13e083ca550e3d0"
+    },
+    {
+      "rank": 448,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r448.json",
+      "blob_sha": "d0ff3edb18ce5538e27b65526f90e8a9c0eadbf0"
+    },
+    {
+      "rank": 449,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r449.json",
+      "blob_sha": "1cafa46787a0f7b8936c37edecdf9ca3fbc5353d"
+    },
+    {
+      "rank": 450,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r450.json",
+      "blob_sha": "5491cc364a24b1ba6a4b66d3d00783550be0f061"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      446,
+      447,
+      448,
+      449,
+      450
+    ],
+    "triggers": [
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source revalidates ordinary runnable Download -> WorkManager accepted/recoverable ownership, preserves BUG-QUEUE-03 as same-root alias/subcase evidence, and distinguishes scheduler-specific and execution-recovery roots",
+        "rank": 446,
+        "source_blob_sha": "210512404dd5a96fdd25577a4cf610944a4bc653"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 2 / P1 3 / P2 25",
+        "rank": 446,
+        "source_blob_sha": "210512404dd5a96fdd25577a4cf610944a4bc653"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation execution was performed",
+        "rank": 446,
+        "source_blob_sha": "210512404dd5a96fdd25577a4cf610944a4bc653"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-KEYWORD-01",
+        "evidence": "source revalidates production-boundary authority/effect coverage, preserves separate keyword/Observe roots, and narrows the remaining blocker to bounded-retry exhaustion / terminal-result production evidence",
+        "rank": 447,
+        "source_blob_sha": "1926a0b9c2726387a56527be0d59ea8e0a3df516"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-KEYWORD-01",
+        "evidence": "source explicitly records count delta 0 and canonical P0 2 / P1 3 / P2 25",
+        "rank": 447,
+        "source_blob_sha": "1926a0b9c2726387a56527be0d59ea8e0a3df516"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "implementation-agent execution is reported as evidence, while independent execution is explicitly NOT EXECUTED",
+        "rank": 447,
+        "source_blob_sha": "1926a0b9c2726387a56527be0d59ea8e0a3df516"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "bounded retry exhaustion and terminal WorkManager-result production evidence remain incomplete; no source-level defect is established in that exhaustion branch",
+        "rank": 447,
+        "source_blob_sha": "1926a0b9c2726387a56527be0d59ea8e0a3df516"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-KEYWORD-HANDOFF-01",
+        "evidence": "source revalidates durable keyword-sync intent to WorkManager ownership, preserves the active F12 source-authority root as distinct, and separates managed Observe discovery ownership",
+        "rank": 448,
+        "source_blob_sha": "85a0abf3d850f835f872748d3d42e3ae8d19484b"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-KEYWORD-HANDOFF-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 2 / P1 3 / P2 25",
+        "rank": 448,
+        "source_blob_sha": "85a0abf3d850f835f872748d3d42e3ae8d19484b"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation execution was performed",
+        "rank": 448,
+        "source_blob_sha": "85a0abf3d850f835f872748d3d42e3ae8d19484b"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-METADATA-02",
+        "evidence": "source revalidates fresh metadata source-identity enforcement across FRESH_FIRST and CACHE_FIRST fallback, preserves BUG-METADATA-01 as a distinct dependency-blocked root, and distinguishes F3 SourceSnapshot authority",
+        "rank": 449,
+        "source_blob_sha": "f515462b159c9417f3c055e2466d12b9091a3c56"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-METADATA-02",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 2 / P1 3 / P2 25",
+        "rank": 449,
+        "source_blob_sha": "f515462b159c9417f3c055e2466d12b9091a3c56"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation execution was performed",
+        "rank": 449,
+        "source_blob_sha": "f515462b159c9417f3c055e2466d12b9091a3c56"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-SOURCE-IDENTITY-01",
+        "evidence": "source revalidates canonical USER Observe source ownership plus concurrent duplicate-prevention publication, and distinguishes closed BUG-OBSERVE-01, BUG-OBSERVE-HANDOFF-01, BUG-DOWNLOAD-HANDOFF-01 and command identity roots",
+        "rank": 450,
+        "source_blob_sha": "9f4f649fbbf5aa1ff7b6f48afd8e32babe2279b2"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-SOURCE-IDENTITY-01",
+        "evidence": "source explicitly records canonical blocker-count delta 0 and P0 2 / P1 3 / P2 25",
+        "rank": 450,
+        "source_blob_sha": "9f4f649fbbf5aa1ff7b6f48afd8e32babe2279b2"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "no independent Gradle/JVM/instrumentation execution was performed",
+        "rank": 450,
+        "source_blob_sha": "9f4f649fbbf5aa1ff7b6f48afd8e32babe2279b2"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 441-490 is receipted"
+  }
+}
