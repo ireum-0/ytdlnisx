@@ -1,0 +1,133 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "rank": 456,
+  "materializer_state_blob": "968b37011ba2047fb4b5cec3bf7713bbd59c6936",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r455.json",
+    "blob_sha": "b9b3f2f7f908de1ace7544a886ff2e2f1605281c"
+  },
+  "history": {
+    "commit_sha": "edff0aa8887c15aa9234c8a63c3270065fa4f46d",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=456"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-11__9c5191c3__observe-source-authority-closure.md",
+        "status": "added",
+        "source_blob_sha": "b9f8cf38a5924c62b628dba557b65181c82c3865",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "b9f8cf38a5924c62b628dba557b65181c82c3865",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-11__9c5191c3__observe-source-authority-closure.md",
+    "status": "added",
+    "source_blob_sha": "b9f8cf38a5924c62b628dba557b65181c82c3865",
+    "frozen_blob_sha": "b9f8cf38a5924c62b628dba557b65181c82c3865",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "9c5191c3539734fa1c9f1b63501def89f47b216a",
+      "evidence": "source explicitly records reviewed final SHA and independently verified implementation branch remote HEAD"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "source positively identifies BUG-OBSERVE-01 and a focused final production-boundary closure review, records finding closure/count/root reconciliation, and does not claim whole-review-run final checkpoint identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is excluded from cumulative final-checkpoint effectiveness"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OBSERVE-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P0 / FIXED-CLOSED"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": -1,
+        "evidence": "source explicitly records BUG-OBSERVE-01 closes exactly one existing P0 root and P0: 3 -> 2"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-OBSERVE-01",
+      "evidence": "source explicitly records CLEAN / P0 BUG-OBSERVE-01 FIXED-CLOSED at 9c5191c3"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-OBSERVE-01",
+      "evidence": "source explicitly records BUG-OBSERVE-01 closes exactly one existing P0 root and P0 3 -> 2, while P1 remains 3 and P2 remains 25"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-OBSERVE-01",
+      "evidence": "source reconciles the earlier b45eaa66 checkpoint, preserves separate keyword, Observe handoff and Observe source-identity roots, and advances the independently CLEAN review basis to 9c5191c3"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "implementation-agent execution evidence is accepted with explicit provenance while independent execution remains NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
