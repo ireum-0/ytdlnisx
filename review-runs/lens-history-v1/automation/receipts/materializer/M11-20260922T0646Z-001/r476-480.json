@@ -1,0 +1,222 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "segment_range": [
+    476,
+    480
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r471-475.json",
+    "blob_sha": "de9d2860b5e7dbf623f9aee7ee9131d9a648d738"
+  },
+  "rank_receipts": [
+    {
+      "rank": 476,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r476.json",
+      "blob_sha": "f8a2231555e1ed9eb92f8fcf5998a5d018551874"
+    },
+    {
+      "rank": 477,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r477.json",
+      "blob_sha": "de50b6112f43277d0263b3f2e6f7904716679da2"
+    },
+    {
+      "rank": 478,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r478.json",
+      "blob_sha": "f543218395d107245c4abc8547a8eb0c97cb4a36"
+    },
+    {
+      "rank": 479,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r479.json",
+      "blob_sha": "45146e211a24e3df7295456162a817f118df5036"
+    },
+    {
+      "rank": 480,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r480.json",
+      "blob_sha": "93893ec41fec980c4f89b216d04a47b5661d886a"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      476,
+      477,
+      478,
+      479,
+      480
+    ],
+    "triggers": [
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-CACHE-ROOT-01",
+        "evidence": "source preserves Download admission/artifact/retry-cleanup and Terminal admission/output/recovery as concrete same-root consumers of mutable cache-root generation authority",
+        "rank": 476,
+        "source_blob_sha": "2575265782000eb5764f5c403f6d85ec65d90835"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-CACHE-ROOT-01",
+        "evidence": "source revalidates mutable cache_path behavior across Download and Terminal execution/recovery generations under the same existing root",
+        "rank": 476,
+        "source_blob_sha": "2575265782000eb5764f5c403f6d85ec65d90835"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-CACHE-ROOT-01",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 476,
+        "source_blob_sha": "2575265782000eb5764f5c403f6d85ec65d90835"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level production wiring was reviewed at the fixed basis and independent execution was NOT EXECUTED",
+        "rank": 476,
+        "source_blob_sha": "2575265782000eb5764f5c403f6d85ec65d90835"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source explicitly preserves stale Error/Cancelled/Queued/Scheduled or batch snapshots as concrete consumers of the same destructive snapshot-authority root",
+        "rank": 477,
+        "source_blob_sha": "47df5b6668310fa2ed9cfcb84ecf6eac53e7c559"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source contrasts the stale delete-by-ID primitive with stronger retry snapshot CAS behavior and carries the typed destructive-precondition boundary forward under the existing root",
+        "rank": 477,
+        "source_blob_sha": "47df5b6668310fa2ed9cfcb84ecf6eac53e7c559"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 477,
+        "source_blob_sha": "47df5b6668310fa2ed9cfcb84ecf6eac53e7c559"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level production wiring was reviewed at the fixed basis and independent execution was NOT EXECUTED",
+        "rank": 477,
+        "source_blob_sha": "47df5b6668310fa2ed9cfcb84ecf6eac53e7c559"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-KEYWORD-HANDOFF-01",
+        "evidence": "source preserves save/setEnabled/syncNow durable-intent to WorkManager ownership paths plus restart/reconfiguration/revocation cases as concrete consumers of the same handoff root",
+        "rank": 478,
+        "source_blob_sha": "8cc029f7e6a83cc722d888357b4c3cfdbd29f0e8"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-KEYWORD-HANDOFF-01",
+        "evidence": "source revalidates explicit/manual apply-existing sync ownership while preserving managed Observe discovery and BUG-KEYWORD-01 semantic source/baseline correctness as distinct concerns",
+        "rank": 478,
+        "source_blob_sha": "8cc029f7e6a83cc722d888357b4c3cfdbd29f0e8"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-KEYWORD-HANDOFF-01",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 478,
+        "source_blob_sha": "8cc029f7e6a83cc722d888357b4c3cfdbd29f0e8"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "existing tests do not exercise WorkManager acceptance/process-death/startup reconstruction and independent execution was NOT EXECUTED",
+        "rank": 478,
+        "source_blob_sha": "8cc029f7e6a83cc722d888357b4c3cfdbd29f0e8"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly preserves cross-midnight window authority, end-boundary normalization, API 24-30 capability semantics, stale END consumer fencing and stale START consumer fencing as subcases/evidence of the same scheduler root",
+        "rank": 479,
+        "source_blob_sha": "68d4f7b78284d628023f0d8d2096969e7fc899ad"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source reconciles configured-window/platform-capability semantics and START/END consumer-generation authority under the already-counted scheduler root",
+        "rank": 479,
+        "source_blob_sha": "68d4f7b78284d628023f0d8d2096969e7fc899ad"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 479,
+        "source_blob_sha": "68d4f7b78284d628023f0d8d2096969e7fc899ad"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level production wiring was reviewed at the fixed basis and independent execution was NOT EXECUTED",
+        "rank": 479,
+        "source_blob_sha": "68d4f7b78284d628023f0d8d2096969e7fc899ad"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source explicitly separates the fixed destructive-absence part from a remaining same-root lifecycle-completion defect involving PARTIAL first-run baseline/runCount/endsAfterCount behavior",
+        "rank": 480,
+        "source_blob_sha": "8e084f8140ef2151c345ed4e5b3655c78d4aa0c6"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source reconciles SourceSnapshot authority, Observe lifecycle consumers and dependent AutomaticKeywordRuleSyncWorker behavior while preserving the latter within the existing keyword root",
+        "rank": 480,
+        "source_blob_sha": "8e084f8140ef2151c345ed4e5b3655c78d4aa0c6"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source records canonical minimum P0 3 / P1 3 / P2 25 and no new canonical root",
+        "rank": 480,
+        "source_blob_sha": "8e084f8140ef2151c345ed4e5b3655c78d4aa0c6"
+      },
+      {
+        "type": "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "evidence": "the immediately prior materialized ranks use implementation aa1616a2 while this final checkpoint explicitly freezes implementation fffb6b131a7b9cb35cf8a218b42863df9e332430",
+        "rank": 480,
+        "source_blob_sha": "8e084f8140ef2151c345ed4e5b3655c78d4aa0c6"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "independent JVM/instrumentation/emulator/device execution is explicitly NOT_VERIFIED",
+        "rank": 480,
+        "source_blob_sha": "8e084f8140ef2151c345ed4e5b3655c78d4aa0c6"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "verdict relies on source-level current production-path review; independent JVM/instrumentation/emulator/device execution is NOT_VERIFIED",
+        "rank": 480,
+        "source_blob_sha": "8e084f8140ef2151c345ed4e5b3655c78d4aa0c6"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 441-490 is receipted"
+  }
+}
