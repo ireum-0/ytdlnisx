@@ -1,0 +1,182 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M10-20260921T2258Z-001",
+  "stage": "MATERIALIZE_391_440",
+  "logical_rank_range": [
+    391,
+    440
+  ],
+  "segment_range": [
+    416,
+    420
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "f8ecfa77cc39c0993e463e024e85d5132c6ff665",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M10-20260921T2258Z-001/r411-415.json",
+    "blob_sha": "dce7ad08d880846556da021ec8d408d6ab821e04"
+  },
+  "rank_receipts": [
+    {
+      "rank": 416,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r416.json",
+      "blob_sha": "fa74d84643a49981db96b9e98592fd022f2de031"
+    },
+    {
+      "rank": 417,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r417.json",
+      "blob_sha": "fd9e4941673f8733223cbbe37d96d3b76813960d"
+    },
+    {
+      "rank": 418,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r418.json",
+      "blob_sha": "4ea10b7f65256cbdf322732f707c319df59bdf20"
+    },
+    {
+      "rank": 419,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r419.json",
+      "blob_sha": "10d491a6dcc8c1b8df3252ddad441f7140a175b3"
+    },
+    {
+      "rank": 420,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M10-20260921T2258Z-001/r420.json",
+      "blob_sha": "5712c5523f956a1cdbf47765dc06b8706de01806"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      416,
+      417,
+      418,
+      419,
+      420
+    ],
+    "triggers": [
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-LOCALADD-01",
+        "rank": 416,
+        "source_blob_sha": "fa9dbfaceec61d5704739bec67e217e40317f010"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LOCALADD-01",
+        "rank": 416,
+        "source_blob_sha": "fa9dbfaceec61d5704739bec67e217e40317f010"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "independent execution is explicitly NOT EXECUTED",
+        "rank": 416,
+        "source_blob_sha": "fa9dbfaceec61d5704739bec67e217e40317f010"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-KEYWORD-01",
+        "evidence": "source explicitly records FIXED-CLOSED",
+        "rank": 417,
+        "source_blob_sha": "51904bc2db489a0fc8f9de4e8a743ba502923edb"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-KEYWORD-01",
+        "evidence": "source explicitly records P1 3 -> 2 and resulting P0 2 / P1 2 / P2 25",
+        "rank": 417,
+        "source_blob_sha": "51904bc2db489a0fc8f9de4e8a743ba502923edb"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-KEYWORD-01",
+        "evidence": "source preserves F3 closure and keeps BUG-KEYWORD-HANDOFF-01 and BUG-KEYWORD-02 distinct",
+        "rank": 417,
+        "source_blob_sha": "51904bc2db489a0fc8f9de4e8a743ba502923edb"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "reported execution is implementation-agent evidence; independent execution is explicitly NOT EXECUTED",
+        "rank": 417,
+        "source_blob_sha": "51904bc2db489a0fc8f9de4e8a743ba502923edb"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-KEYWORD-01",
+        "rank": 418,
+        "source_blob_sha": "513f631e1bdffdb1f1f9149390f5ee4b62e18764"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "rank": 418,
+        "source_blob_sha": "513f631e1bdffdb1f1f9149390f5ee4b62e18764"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-KEYWORD-01",
+        "rank": 418,
+        "source_blob_sha": "513f631e1bdffdb1f1f9149390f5ee4b62e18764"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "rank": 419,
+        "source_blob_sha": "3ee38d86615108179fed7d54da0b68155291f084"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "rank": 419,
+        "source_blob_sha": "3ee38d86615108179fed7d54da0b68155291f084"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "rank": 419,
+        "source_blob_sha": "3ee38d86615108179fed7d54da0b68155291f084"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-KEYWORD-01",
+        "rank": 419,
+        "source_blob_sha": "3ee38d86615108179fed7d54da0b68155291f084"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint lacks positive whole-document structural identity recognized by document-identity-v1",
+        "rank": 420,
+        "source_blob_sha": "ddc6287913544ab614a277c856dbf2e7d89382f7"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional P0 2 / P1 3 / P2 25",
+        "rank": 420,
+        "source_blob_sha": "ddc6287913544ab614a277c856dbf2e7d89382f7"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "exact frozen SHA has no GitHub status/workflow evidence; repository and recent review execution evidence still require inspection",
+        "rank": 420,
+        "source_blob_sha": "ddc6287913544ab614a277c856dbf2e7d89382f7"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-KEYWORD-01",
+        "evidence": "whether exact-SHA execution evidence exists and is sufficient for closure remains unresolved in this checkpoint",
+        "rank": 420,
+        "source_blob_sha": "ddc6287913544ab614a277c856dbf2e7d89382f7"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 391-440 is receipted"
+  }
+}
