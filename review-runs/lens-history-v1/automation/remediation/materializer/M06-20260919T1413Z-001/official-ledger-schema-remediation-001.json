@@ -1,0 +1,206 @@
+{
+  "schema_version": "lens-history-v1-official-ledger-schema-remediation-run-v1",
+  "run_id": "M06-20260919T1413Z-001",
+  "logical_rank_range": [
+    231,
+    270
+  ],
+  "status": "REPLACEMENT_COMPLETE_PENDING_INDEPENDENT_REAUDIT",
+  "protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v3-official-ledger-schema.md",
+    "blob_sha": "4da52a9cea9c4d706d61dc14a0152048f2f2dc05"
+  },
+  "governing_schema": {
+    "path": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96"
+  },
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "original_materializer_state": {
+    "path": "review-runs/lens-history-v1/automation/materializer-state.json",
+    "blob_sha": "d700fa5f663c2ce95d30280ece084a1f86ae7cd2",
+    "data_head": "7189fbbefad1a5d187a96b077698c295aa8da599",
+    "start_progress_blob_sha": "6dd62519edf788db869c87eb9d001b393065781a"
+  },
+  "original_completed_progress": {
+    "path": "review-runs/lens-history-v1/materialization-progress.json",
+    "blob_sha": "3ec0c900d1e1e1b2d3c53962f4dff072f8c5adbd",
+    "records_before": 230,
+    "records_after": 270,
+    "newest_history_rank_materialized_through": 270
+  },
+  "current_hold_state": {
+    "path": "review-runs/lens-history-v1/automation/materializer-state.json",
+    "blob_sha": "0fe68f3d8363334ae3a415541f16700a63aeda7f",
+    "status": "HOLD",
+    "run_id": "M11-20260922T0646Z-001"
+  },
+  "canonical_audit": {
+    "path": "review-runs/lens-history-v1/automation/audits/M06-20260919T1413Z-001.json",
+    "blob_sha": "14300f725354253dbf48d9b40ed20239ee8ee4af",
+    "recorded_status": "PASS",
+    "recorded_unlock_allowed": true
+  },
+  "audit_invalidations": [
+    {
+      "path": "review-runs/lens-history-v1/automation/audits/remediation/M05-M10-pinned-schema-chain-invalidated-001.json",
+      "blob_sha": "21f1043f48ab11aed514ccb2098c4ab46660a84f"
+    }
+  ],
+  "trusted_previous_certification": {
+    "run_id": "M05-20260919T0449Z-001",
+    "role": "SUPERSEDING_REAUDIT",
+    "path": "review-runs/lens-history-v1/automation/audits/remediation/M05-20260919T0449Z-001-reaudit-001.json",
+    "blob_sha": "a7445af138f8f4c937014e156f7a787163a4ff47",
+    "commit_sha": "f5d91c5946069ba11721233b284b82656eee06c4",
+    "status": "PASS",
+    "unlock_allowed": true
+  },
+  "batches": [
+    {
+      "batch": "0027",
+      "historical_rank_range": [
+        231,
+        240
+      ],
+      "original_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0027-newest-231-240.jsonl",
+        "blob_sha": "324a68b3ddc0e81a5e24d6432aa5f22d19037810"
+      },
+      "replacement_ledger": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/official-ledger-schema/0027-replacement-001.jsonl",
+        "blob_sha": "24c9433505f32c151ac95b4a08084db33f5ea947"
+      },
+      "batch_manifest": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/official-ledger-schema/0027-replacement-001.json",
+        "blob_sha": "505449eafee50886b3ae936644a165f21b3b7298"
+      },
+      "full_schema_validation": {
+        "draft": "2020-12",
+        "status": "PASS",
+        "error_count": 0
+      },
+      "semantic_value_comparison": {
+        "status": "PASS",
+        "mismatch_count": 0
+      }
+    },
+    {
+      "batch": "0028",
+      "historical_rank_range": [
+        241,
+        250
+      ],
+      "original_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0028-newest-241-250.jsonl",
+        "blob_sha": "c3e937df647436a59bd5073258700e85b29bc7e6"
+      },
+      "replacement_ledger": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/official-ledger-schema/0028-replacement-001.jsonl",
+        "blob_sha": "a49c965ad86ddac31ff38b2d57a31efb7e71d66c"
+      },
+      "batch_manifest": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/official-ledger-schema/0028-replacement-001.json",
+        "blob_sha": "001484decb547b0306ffcc145669fa60b8401717"
+      },
+      "full_schema_validation": {
+        "draft": "2020-12",
+        "status": "PASS",
+        "error_count": 0
+      },
+      "semantic_value_comparison": {
+        "status": "PASS",
+        "mismatch_count": 0
+      }
+    },
+    {
+      "batch": "0029",
+      "historical_rank_range": [
+        251,
+        260
+      ],
+      "original_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0029-newest-251-260.jsonl",
+        "blob_sha": "23c2c50e5f31f58c9471a477f69f137f70d2687c"
+      },
+      "replacement_ledger": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/official-ledger-schema/0029-replacement-001.jsonl",
+        "blob_sha": "ddf56e9a21b2671b59e7f06967b80f6163e3cbbb"
+      },
+      "batch_manifest": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/official-ledger-schema/0029-replacement-001.json",
+        "blob_sha": "4658dec5f52ff6dd0f0a78b46fb780266c140ff7"
+      },
+      "full_schema_validation": {
+        "draft": "2020-12",
+        "status": "PASS",
+        "error_count": 0
+      },
+      "semantic_value_comparison": {
+        "status": "PASS",
+        "mismatch_count": 0
+      }
+    },
+    {
+      "batch": "0030",
+      "historical_rank_range": [
+        261,
+        270
+      ],
+      "original_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0030-newest-261-270.jsonl",
+        "blob_sha": "2edc479db87d94bc0b9ec4695114c736e066d0fd"
+      },
+      "replacement_ledger": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/official-ledger-schema/0030-replacement-001.jsonl",
+        "blob_sha": "2b26e2f94d3bedf035874a2a35b8704ac99cff78"
+      },
+      "batch_manifest": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M06-20260919T1413Z-001/official-ledger-schema/0030-replacement-001.json",
+        "blob_sha": "eb4412e3bf60a4babf58a966685a1fe184138b9d"
+      },
+      "full_schema_validation": {
+        "draft": "2020-12",
+        "status": "PASS",
+        "error_count": 0
+      },
+      "semantic_value_comparison": {
+        "status": "PASS",
+        "mismatch_count": 0
+      }
+    }
+  ],
+  "aggregate_validation": {
+    "record_count": 40,
+    "historical_rank_range": [
+      231,
+      270
+    ],
+    "original_state_value_schema_errors": 61,
+    "replacement_state_value_schema_errors": 0,
+    "semantic_value_mismatches": 0,
+    "record_count_and_order_unchanged": true,
+    "checkpoint_commit_file_binding_unchanged": true
+  },
+  "originals_immutable": true,
+  "changes_semantic_values": false,
+  "changes_history": false,
+  "changes_source_frozen_binding": false,
+  "changes_implementation_provenance": false,
+  "changes_schema_class": false,
+  "changes_checkpoint_kind": false,
+  "changes_effectiveness_eligibility": false,
+  "changes_lens_attribution": false,
+  "changes_effectiveness_metrics": false,
+  "changes_finding_attribution": false,
+  "changes_exception_detection": false,
+  "changes_progress": false,
+  "unlock_allowed": false,
+  "next_required_action": "Independent full-range re-audit of ranks 231-270 against the replacement ledgers using the M05 SUPERSEDING_REAUDIT as the trusted predecessor; only a valid append-only M06 SUPERSEDING_REAUDIT may restore M06 unlock authority."
+}
