@@ -1,0 +1,119 @@
+{
+  "schema_version": "lens-history-v1",
+  "validation_kind": "ledger_batch_validation",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "batch": {
+    "inventory": "review-runs/lens-history-v1/inventory-batches/0051-newest-471-480.jsonl",
+    "ledger": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema/0051-replacement-001.jsonl",
+    "historical_candidate_ledger": "review-runs/lens-history-v1/ledger-batches/0051-newest-471-480.jsonl",
+    "history_rank_from_newest": {
+      "first": 471,
+      "last": 480
+    },
+    "records": 10,
+    "internal_partitions": [
+      {
+        "first": 471,
+        "last": 475,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      },
+      {
+        "first": 476,
+        "last": 480,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      }
+    ]
+  },
+  "byte_identity": {
+    "inventory_git_blob_sha": {
+      "expected": "64f3f6ea88a4d72e7546e8f1ecf46107d3c95389",
+      "stored": "64f3f6ea88a4d72e7546e8f1ecf46107d3c95389",
+      "status": "MATCH"
+    },
+    "ledger_git_blob_sha": {
+      "expected": "3a645732cdf8108c8fd941d97342ae244cbb2373",
+      "stored": "3a645732cdf8108c8fd941d97342ae244cbb2373",
+      "status": "MATCH"
+    },
+    "historical_candidate_ledger_git_blob_sha": {
+      "expected": "1583cd18e829ab9c8c27d481e4faa60f5c2adf46",
+      "stored": "1583cd18e829ab9c8c27d481e4faa60f5c2adf46",
+      "status": "MATCH",
+      "authority": "HISTORICAL_SCHEMA_INVALID_ONLY"
+    }
+  },
+  "remediation_binding": {
+    "protocol_blob_sha": "4da52a9cea9c4d706d61dc14a0152048f2f2dc05",
+    "run_manifest_blob_sha": "aa381d5ff692c50bb577bbcf336aaf68ecbec7b6",
+    "batch_manifest_blob_sha": "5009936798f34b58f85dc0070c1323983c7a87a8",
+    "semantic_value_mismatches": 0
+  },
+  "source_provenance": {
+    "commit_detail_file_binding": "10/10 COMPLETE",
+    "frozen_tree_presence": "10/10 COMPLETE",
+    "source_to_frozen_blob_identity": "10/10 MATCH"
+  },
+  "schema_validation": {
+    "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "validator": "Draft 2020-12",
+    "records_checked": 10,
+    "valid_records": 10,
+    "invalid_records": 0,
+    "status": "PASS"
+  },
+  "classification_summary": {
+    "UNINSTRUMENTED": 10,
+    "LEGACY_AUDIT_LENS": 0,
+    "STRUCTURED_PROVISIONAL": 0,
+    "STRUCTURED_FINAL": 0,
+    "explicit_final_records": 1,
+    "explicit_intermediate_records": 0,
+    "verified_bootstrap_records": 0,
+    "substantive_non_final_records": 9,
+    "kind_not_verified_records": 0
+  },
+  "implementation_sha_summary": {
+    "ebc3a4f770a584a02f6ea2738dff9dd43e1fb267": 1,
+    "aa1616a2c7710b878c44949a5f74ad02c6706d8d": 8,
+    "fffb6b131a7b9cb35cf8a218b42863df9e332430": 1
+  },
+  "semantic_preservation": {
+    "material_status_transitions_preserved": true,
+    "same_root_residuals_preserved": true,
+    "ambiguous_kind_ranks": [],
+    "provisional_and_historical_only_states_preserved": true,
+    "converted_to_numeric_effectiveness": false,
+    "reason": "exact historical classification, status/count/root, provenance and execution-evidence states are transported from sealed M11 rank evidence; replacement projection removes only pinned-schema-prohibited stateValue diagnostic metadata"
+  },
+  "aggregate_reconciliation": {
+    "cumulative_eligible_structured_finals_in_batch": 0,
+    "aggregate_delta": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 0,
+      "rejected_candidates_with_proof": 0,
+      "not_verified_candidates": 0,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 0
+    },
+    "observed_measured_effectiveness_after_batch": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "status": "UNCHANGED_PASS"
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  }
+}
