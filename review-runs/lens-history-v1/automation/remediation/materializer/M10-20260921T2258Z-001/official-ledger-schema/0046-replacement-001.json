@@ -1,0 +1,159 @@
+{
+  "schema_version": "lens-history-v1-official-ledger-schema-remediation-batch-v1",
+  "run_id": "M10-20260921T2258Z-001",
+  "logical_batch_range": [
+    391,
+    440
+  ],
+  "batch": "0046",
+  "historical_rank_range": [
+    421,
+    430
+  ],
+  "protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v3-official-ledger-schema.md",
+    "blob_sha": "4da52a9cea9c4d706d61dc14a0152048f2f2dc05"
+  },
+  "original_ledger": {
+    "path": "review-runs/lens-history-v1/ledger-batches/0046-newest-421-430.jsonl",
+    "blob_sha": "c5a4a709deedce270a62ae7dc22b61881ed11cbe"
+  },
+  "replacement_ledger": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer/M10-20260921T2258Z-001/official-ledger-schema/0046-replacement-001.jsonl",
+    "blob_sha": "ee4c6243fa749e39b52d02402e076fe3ff8ded52"
+  },
+  "governing_schema": {
+    "path": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96"
+  },
+  "audit_invalidation": {
+    "path": "review-runs/lens-history-v1/automation/audits/remediation/M05-M10-pinned-schema-chain-invalidated-001.json",
+    "blob_sha": "21f1043f48ab11aed514ccb2098c4ab46660a84f"
+  },
+  "record_count": 10,
+  "ordered_historical_rank_range": [
+    421,
+    430
+  ],
+  "per_record_projection": [
+    {
+      "rank": 421,
+      "record_position": 1,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 422,
+      "record_position": 2,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 423,
+      "record_position": 3,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 424,
+      "record_position": 4,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 425,
+      "record_position": 5,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 426,
+      "record_position": 6,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 427,
+      "record_position": 7,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 428,
+      "record_position": 8,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 429,
+      "record_position": 9,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 430,
+      "record_position": 10,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    }
+  ],
+  "removed_prohibited_property_count": 15,
+  "full_schema_validation": {
+    "draft": "2020-12",
+    "status": "PASS",
+    "error_count": 0
+  },
+  "record_count_and_order_unchanged": true,
+  "checkpoint_commit_file_binding_unchanged": true,
+  "semantic_value_comparison": {
+    "status": "PASS",
+    "mismatch_count": 0
+  },
+  "changes_semantic_values": false,
+  "changes_history": false,
+  "changes_source_frozen_binding": false,
+  "changes_implementation_provenance": false,
+  "changes_schema_class": false,
+  "changes_checkpoint_kind": false,
+  "changes_effectiveness_eligibility": false,
+  "changes_lens_attribution": false,
+  "changes_effectiveness_metrics": false,
+  "changes_finding_attribution": false,
+  "changes_exception_detection": false,
+  "changes_progress": false
+}
