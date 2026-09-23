@@ -1,0 +1,175 @@
+{
+  "schema_version": "lens-history-v1-official-ledger-schema-remediation-batch-v1",
+  "run_id": "M11-20260922T0646Z-001",
+  "logical_batch_range": [
+    441,
+    490
+  ],
+  "batch": "0050",
+  "historical_rank_range": [
+    461,
+    470
+  ],
+  "protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v3-official-ledger-schema.md",
+    "blob_sha": "4da52a9cea9c4d706d61dc14a0152048f2f2dc05"
+  },
+  "original_ledger": {
+    "path": "review-runs/lens-history-v1/ledger-batches/0050-newest-461-470.jsonl",
+    "blob_sha": "8b2814bec0b68260de5bc4e18011c7c1f4be830d",
+    "authority": "historical_schema_invalid_candidate_only"
+  },
+  "replacement_ledger": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema/0050-replacement-001.jsonl",
+    "blob_sha": "529769d0e725d88b685876ec19ad2708bb98e978"
+  },
+  "governing_schema": {
+    "path": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96"
+  },
+  "current_hold_state": {
+    "path": "review-runs/lens-history-v1/automation/materializer-state.json",
+    "blob_sha": "0fe68f3d8363334ae3a415541f16700a63aeda7f",
+    "status": "HOLD",
+    "hold_class": "PINNED_SCHEMA_VALIDATION_CONTRADICTION"
+  },
+  "trusted_previous_certification": {
+    "run_id": "M10-20260921T2258Z-001",
+    "role": "SUPERSEDING_REAUDIT",
+    "path": "review-runs/lens-history-v1/automation/audits/remediation/M10-20260921T2258Z-001-reaudit-001.json",
+    "blob_sha": "d814efc316b69a7ceb093df6df2bb861c8f3e938",
+    "commit_sha": "415aea44d8aa6118f8fadae20d095395770b26b7",
+    "status": "PASS",
+    "unlock_allowed": true
+  },
+  "record_count": 10,
+  "ordered_historical_rank_range": [
+    461,
+    470
+  ],
+  "per_record_projection": [
+    {
+      "rank": 461,
+      "record_position": 1,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 462,
+      "record_position": 2,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 463,
+      "record_position": 3,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 464,
+      "record_position": 4,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 465,
+      "record_position": 5,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 466,
+      "record_position": 6,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 467,
+      "record_position": 7,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.reason",
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 468,
+      "record_position": 8,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "checkpoint.kind.evidence",
+        "implementation_sha.evidence",
+        "effectiveness_eligibility.reason"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 469,
+      "record_position": 9,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    },
+    {
+      "rank": 470,
+      "record_position": 10,
+      "projection": "PASS",
+      "removed_prohibited_properties": [
+        "implementation_sha.evidence"
+      ],
+      "semantic_value_changes": false
+    }
+  ],
+  "removed_prohibited_property_count": 19,
+  "full_schema_validation": {
+    "draft": "2020-12",
+    "status": "PASS",
+    "error_count": 0
+  },
+  "record_count_and_order_unchanged": true,
+  "checkpoint_commit_file_binding_unchanged": true,
+  "semantic_value_comparison": {
+    "status": "PASS",
+    "mismatch_count": 0
+  },
+  "changes_semantic_values": false,
+  "changes_history": false,
+  "changes_source_frozen_binding": false,
+  "changes_implementation_provenance": false,
+  "changes_schema_class": false,
+  "changes_checkpoint_kind": false,
+  "changes_effectiveness_eligibility": false,
+  "changes_lens_attribution": false,
+  "changes_effectiveness_metrics": false,
+  "changes_finding_attribution": false,
+  "changes_exception_detection": false,
+  "changes_progress": false
+}
