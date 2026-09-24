@@ -1,0 +1,255 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M13-20260924T0941Z-001",
+  "stage": "MATERIALIZE_541_590",
+  "logical_rank_range": [
+    541,
+    590
+  ],
+  "segment_range": [
+    571,
+    575
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "a120e3bdc35ecd67760258d2c11ccead53ffac7c",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M13-20260924T0941Z-001/r566-570.json",
+    "blob_sha": "3aab65a8526e758cf72e268ed7493487635fb9b6"
+  },
+  "rank_receipts": [
+    {
+      "rank": 571,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r571.json",
+      "blob_sha": "596e409b554134af7fed8477e89cb3f61cfb7cb5"
+    },
+    {
+      "rank": 572,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r572.json",
+      "blob_sha": "f1d6caaa1ea173389b7a403c0286d729fb8a260a"
+    },
+    {
+      "rank": 573,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r573.json",
+      "blob_sha": "efa761fcfbff4891e5f252cf5b61aabe3f3d15b3"
+    },
+    {
+      "rank": 574,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r574.json",
+      "blob_sha": "58f2022464315793e53aa6cf4e310694b8d89f9d"
+    },
+    {
+      "rank": 575,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r575.json",
+      "blob_sha": "438782d2efa801d00e255cecb8813eb9096b6b5e"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      571,
+      572,
+      573,
+      574,
+      575
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness checkpoint contains a NEW finding but lacks an allowed positive whole-document structural-kind marker",
+        "rank": 571,
+        "source_blob_sha": "45d39a7cb37d39300cd5987140c79b6c454dd0ea"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source explicitly labels NEW P2 — BUG-DOWNLOAD-HANDOFF-01",
+        "rank": 571,
+        "source_blob_sha": "45d39a7cb37d39300cd5987140c79b6c454dd0ea"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source explicitly changes canonical P2 count from 24 to 25 by adding one independent root",
+        "rank": 571,
+        "source_blob_sha": "45d39a7cb37d39300cd5987140c79b6c454dd0ea"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 571,
+        "source_blob_sha": "45d39a7cb37d39300cd5987140c79b6c454dd0ea"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 572,
+        "source_blob_sha": "a223fe885a022e19f90ae6b165f44f6678f107af"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-GROUP-TXN-01",
+        "evidence": "source explicitly labels NEW P2 — BUG-GROUP-TXN-01",
+        "rank": 572,
+        "source_blob_sha": "a223fe885a022e19f90ae6b165f44f6678f107af"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly records S8/S9 as additional consumer-generation subcases of existing BUG-SCHEDULE-01 with no additional count",
+        "rank": 572,
+        "source_blob_sha": "a223fe885a022e19f90ae6b165f44f6678f107af"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly changes P2 23 to P2 24 by adding BUG-GROUP-TXN-01 while keeping S8/S9 at +0",
+        "rank": 572,
+        "source_blob_sha": "a223fe885a022e19f90ae6b165f44f6678f107af"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source expands existing scheduler root with END/START consumer-generation subcases without creating a new root",
+        "rank": 572,
+        "source_blob_sha": "a223fe885a022e19f90ae6b165f44f6678f107af"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 572,
+        "source_blob_sha": "a223fe885a022e19f90ae6b165f44f6678f107af"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source explicitly labels NEW P2 — BUG-DOWNLOAD-HANDOFF-01 and disposition NEW / P2 / OPEN",
+        "rank": 573,
+        "source_blob_sha": "cb86194432bc9dc49e3717115e0f1b8adb14b2e7"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-HARDSUB-GENERATION-01",
+        "evidence": "source explicitly labels NEW P2 — BUG-HARDSUB-GENERATION-01 and disposition NEW / P2 / OPEN",
+        "rank": 573,
+        "source_blob_sha": "cb86194432bc9dc49e3717115e0f1b8adb14b2e7"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records preceding pinned-SHA P2 22 and confirmed minimum P2 24 after adding two distinct roots",
+        "rank": 573,
+        "source_blob_sha": "cb86194432bc9dc49e3717115e0f1b8adb14b2e7"
+      },
+      {
+        "type": "CHECKLIST_GAP_OR_CHANGE",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source records a checklist gap and proposed mandatory WorkManager producer handoff matrix",
+        "rank": 573,
+        "source_blob_sha": "cb86194432bc9dc49e3717115e0f1b8adb14b2e7"
+      },
+      {
+        "type": "CHECKLIST_GAP_OR_CHANGE",
+        "finding_id": "BUG-HARDSUB-GENERATION-01",
+        "evidence": "source records a checklist gap and proposed consumer-side generation validation plus atomic reservation requirements",
+        "rank": 573,
+        "source_blob_sha": "cb86194432bc9dc49e3717115e0f1b8adb14b2e7"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source preserves prior current-SHA inventory states absent source-driven change and records independent JVM/instrumentation/emulator/device execution as NOT_VERIFIED",
+        "rank": 573,
+        "source_blob_sha": "cb86194432bc9dc49e3717115e0f1b8adb14b2e7"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "checkpoint with new-root content lacks an allowed positive whole-document structural-kind marker",
+        "rank": 574,
+        "source_blob_sha": "02bd9a4f9b6c5016f8832eac78855b5793a301ca"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source explicitly records Disposition: NEW BUG-DOWNLOAD-HANDOFF-01, P2, OPEN",
+        "rank": 574,
+        "source_blob_sha": "02bd9a4f9b6c5016f8832eac78855b5793a301ca"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-HARDSUB-GENERATION-01",
+        "evidence": "source explicitly records Disposition: NEW BUG-HARDSUB-GENERATION-01, P2, OPEN",
+        "rank": 574,
+        "source_blob_sha": "02bd9a4f9b6c5016f8832eac78855b5793a301ca"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly adds two P2 roots to prior P2 22 and records provisional P2 24",
+        "rank": 574,
+        "source_blob_sha": "02bd9a4f9b6c5016f8832eac78855b5793a301ca"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels the gate and current minimum provisional",
+        "rank": 574,
+        "source_blob_sha": "02bd9a4f9b6c5016f8832eac78855b5793a301ca"
+      },
+      {
+        "type": "CHECKLIST_GAP_OR_CHANGE",
+        "evidence": "source records three checklist gaps/proposed changes covering producer enumeration, consumer generation validation, and atomic check-then-insert reservation",
+        "rank": 574,
+        "source_blob_sha": "02bd9a4f9b6c5016f8832eac78855b5793a301ca"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records independent JVM/instrumentation/device execution as NOT_VERIFIED and preserves prior fixed invariants absent regression evidence",
+        "rank": 574,
+        "source_blob_sha": "02bd9a4f9b6c5016f8832eac78855b5793a301ca"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A follow-up contains substantive existing-root evidence but lacks an allowed positive whole-document structural-kind marker",
+        "rank": 575,
+        "source_blob_sha": "4db6ac5f10355f1807c2f097eec4fa1b24d1d82d"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source explicitly adds HardSub as another absence-sensitive consumer of the same missing AUTHORITATIVE/PARTIAL/FAILED source-result contract under existing P0 F3",
+        "rank": 575,
+        "source_blob_sha": "4db6ac5f10355f1807c2f097eec4fa1b24d1d82d"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-01",
+        "evidence": "source explicitly broadens F3 acceptance to all absence-sensitive consumers rather than only Observe sync deletion",
+        "rank": 575,
+        "source_blob_sha": "4db6ac5f10355f1807c2f097eec4fa1b24d1d82d"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly states no new root is added and count remains P0 2 / P1 3 / P2 23",
+        "rank": 575,
+        "source_blob_sha": "4db6ac5f10355f1807c2f097eec4fa1b24d1d82d"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 575,
+        "source_blob_sha": "4db6ac5f10355f1807c2f097eec4fa1b24d1d82d"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 541-590 is receipted"
+  }
+}
