@@ -1,0 +1,241 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "segment_range": [
+    596,
+    600
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M14-20260924T1310Z-001/r591-595.json",
+    "blob_sha": "3819b9d51c158ce0307eaaf0a5f54eaf4028749d"
+  },
+  "rank_receipts": [
+    {
+      "rank": 596,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r596.json",
+      "blob_sha": "ae8097617d721657ba22935cb9394a2d563e6bb7"
+    },
+    {
+      "rank": 597,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r597.json",
+      "blob_sha": "b88acac9540674ba608eb94bcdea3bdae0b24364"
+    },
+    {
+      "rank": 598,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r598.json",
+      "blob_sha": "57bc77e01a4d92b1cd6b2796caaa4a42bb220e61"
+    },
+    {
+      "rank": 599,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r599.json",
+      "blob_sha": "71db1519424c1b4e439498d86e16bd2a8812449a"
+    },
+    {
+      "rank": 600,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r600.json",
+      "blob_sha": "778e55cb1f8fea1befb172fade23e89025eb615f"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      596,
+      597,
+      598,
+      599,
+      600
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 596,
+        "source_blob_sha": "64768d0aa62a17133452a5765740ae83118cfd8e"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source explicitly adds D4 as a same-root destructive snapshot/current-set mismatch subcase with no additional count",
+        "rank": 596,
+        "source_blob_sha": "64768d0aa62a17133452a5765740ae83118cfd8e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source explicitly identifies D4 as a scope extension of the existing root",
+        "rank": 596,
+        "source_blob_sha": "64768d0aa62a17133452a5765740ae83118cfd8e"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-CACHE-ROOT-01",
+        "evidence": "source explicitly labels New BUG-CACHE-ROOT-01 — CONFIRMED P2",
+        "rank": 596,
+        "source_blob_sha": "64768d0aa62a17133452a5765740ae83118cfd8e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records working independent recount P0 2 / P1 3 / P2 22",
+        "rank": 596,
+        "source_blob_sha": "64768d0aa62a17133452a5765740ae83118cfd8e"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records Independent execution: NOT EXECUTED and remains pinned to the fixed Review Basis",
+        "rank": 596,
+        "source_blob_sha": "64768d0aa62a17133452a5765740ae83118cfd8e"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint leaves a final exact-SHA recount and final checkpoint outstanding without an explicit supported structural kind",
+        "rank": 597,
+        "source_blob_sha": "9684de50e9d5c272f33a5e9b822310ff7000944e"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly says previously established P0/P1/P2 inventory remains under recount and is not yet finalized in this checkpoint",
+        "rank": 597,
+        "source_blob_sha": "9684de50e9d5c272f33a5e9b822310ff7000944e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly keeps cache-maintenance destructive authority as a provisional P2 candidate under independent verification",
+        "rank": 597,
+        "source_blob_sha": "9684de50e9d5c272f33a5e9b822310ff7000944e"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 598,
+        "source_blob_sha": "a89e29b7740ad3153cd9921b9e2f78810b0197e8"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source explicitly strengthens the already-counted root with D2 live DOWNLOAD_TEMP deletion and D3 live cache-import subcases",
+        "rank": 598,
+        "source_blob_sha": "a89e29b7740ad3153cd9921b9e2f78810b0197e8"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source explicitly says no new root is counted and D2/D3 extend the already-counted destructive snapshot root",
+        "rank": 598,
+        "source_blob_sha": "a89e29b7740ad3153cd9921b9e2f78810b0197e8"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records canonical working recount P0 2 / P1 3 / P2 21 with no new root counted here",
+        "rank": 598,
+        "source_blob_sha": "a89e29b7740ad3153cd9921b9e2f78810b0197e8"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records Independent execution: NOT EXECUTED and no Review Basis advancement",
+        "rank": 598,
+        "source_blob_sha": "a89e29b7740ad3153cd9921b9e2f78810b0197e8"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 599,
+        "source_blob_sha": "1adb8e24a421cadb50f76ecb8c6511d90c7a8225"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly adds scheduler S6 semantic namespace collision as same-root evidence with no extra P2 count",
+        "rank": 599,
+        "source_blob_sha": "1adb8e24a421cadb50f76ecb8c6511d90c7a8225"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly keeps S6 under already-counted BUG-SCHEDULE-01 and adds acceptance semantics without a new root",
+        "rank": 599,
+        "source_blob_sha": "1adb8e24a421cadb50f76ecb8c6511d90c7a8225"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "evidence": "source explicitly labels New P2 — BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+        "rank": 599,
+        "source_blob_sha": "1adb8e24a421cadb50f76ecb8c6511d90c7a8225"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records canonical working recount P0 2 / P1 3 / P2 21",
+        "rank": 599,
+        "source_blob_sha": "1adb8e24a421cadb50f76ecb8c6511d90c7a8225"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records Independent execution: NOT EXECUTED and no Review Basis advancement",
+        "rank": 599,
+        "source_blob_sha": "1adb8e24a421cadb50f76ecb8c6511d90c7a8225"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 600,
+        "source_blob_sha": "8c137d4e5701dfb439eb12b7e0118c0bb2da7fe7"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly retains additional scheduler subcases under already-counted BUG-SCHEDULE-01 with no additional count",
+        "rank": 600,
+        "source_blob_sha": "8c137d4e5701dfb439eb12b7e0118c0bb2da7fe7"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly expands scheduler acceptance semantics while preserving one root",
+        "rank": 600,
+        "source_blob_sha": "8c137d4e5701dfb439eb12b7e0118c0bb2da7fe7"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-KEYWORD-HANDOFF-01",
+        "evidence": "source explicitly labels New P2 — BUG-KEYWORD-HANDOFF-01",
+        "rank": 600,
+        "source_blob_sha": "8c137d4e5701dfb439eb12b7e0118c0bb2da7fe7"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records canonical working recount P0 2 / P1 3 / P2 20",
+        "rank": 600,
+        "source_blob_sha": "8c137d4e5701dfb439eb12b7e0118c0bb2da7fe7"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records Independent execution: NOT EXECUTED and no Review Basis advancement",
+        "rank": 600,
+        "source_blob_sha": "8c137d4e5701dfb439eb12b7e0118c0bb2da7fe7"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 591-640 is receipted"
+  }
+}
