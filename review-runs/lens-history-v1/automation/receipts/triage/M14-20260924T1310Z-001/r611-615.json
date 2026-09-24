@@ -1,0 +1,143 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "microsegment_rank_range": [
+    611,
+    615
+  ],
+  "data_head": "12afbf005b7b42b8dfac9916fce00ac430f76d0a",
+  "complete_state_blob": "6c8d02c4aa8a8740a4ade35eeec9837d49f35ba6",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M14-20260924T1310Z-001/r611-615.json",
+    "blob_sha": "0bf120c8226692f0afba3aca1b87f61bd903accd"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "cce619ab60ed6d1171177bef2fd9b7f1b7db60e0",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M14-20260924T1310Z-001/r606-610.json",
+    "blob_sha": "bcfa2de5b61a0ec2b2821c612f19e60a6b57005a"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 611,
+      "path": "review-runs/checkpoints/2026-09-10__c2294c87__track-a-history-undo.md",
+      "source_blob": "ca9ef8225369b77919e9fede31436aaf4460a1ed",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 612,
+      "path": "review-runs/checkpoints/2026-09-10T012430Z__09af51d9__checkpoint.md",
+      "source_blob": "518a3b536ef794029e28d1ae71329e1292305b6b",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 613,
+      "path": "review-runs/checkpoints/2026-09-10__09af51d9__independent-full-wave-review.md",
+      "source_blob": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 614,
+      "path": "review-runs/checkpoints/2026-09-10T003600Z__09af51d9__checkpoint.md",
+      "source_blob": "ead6cf4c5f5b3e1a6a0cec5fe909646063d7e43b",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 615,
+      "path": "review-runs/checkpoints/2026-09-10T003300Z__09af51d9__checkpoint.md",
+      "source_blob": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      611,
+      612,
+      613,
+      614,
+      615
+    ],
+    "materializer_flagged_exception_ranks": [
+      611,
+      612,
+      613,
+      614,
+      615
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
