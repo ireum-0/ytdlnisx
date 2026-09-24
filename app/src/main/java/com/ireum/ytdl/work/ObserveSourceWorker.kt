@@ -76,7 +76,11 @@ class ObserveSourceWorker(
         const val INPUT_HANDOFF_ID = "handoffId"
         const val INPUT_HANDOFF_REQUEST_ID = "handoffRequestId"
         const val INPUT_CONFIG_FINGERPRINT = "configFingerprint"
+        private const val TAG_CONFIGURATION_GENERATION_PREFIX = "observeConfigurationGeneration_"
         private const val OBS_DUP_LOG_TAG = "ObserveDuplicate"
+
+        fun configurationGenerationTag(generation: Long): String =
+            "$TAG_CONFIGURATION_GENERATION_PREFIX$generation"
 
         internal fun permitsDestructiveAbsenceReconciliation(
             authority: SourceSnapshot.Authority,

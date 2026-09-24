@@ -39,6 +39,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -172,6 +173,9 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
                     )
                     .build(),
             )
+            .addTag(
+                ObserveSourceWorker.configurationGenerationTag(oldSource.configurationGeneration),
+            )
             .build()
         WorkManager.getInstance(context)
             .enqueueUniqueWork("OBSERVE$sourceId", ExistingWorkPolicy.REPLACE, staleRequest)
@@ -197,6 +201,9 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
                     )
                     .build(),
             )
+            .addTag(
+                ObserveSourceWorker.configurationGenerationTag(currentSource.configurationGeneration),
+            )
             .build()
         WorkManager.getInstance(context)
             .enqueueUniqueWork("OBSERVE$sourceId", ExistingWorkPolicy.REPLACE, currentRequest)
@@ -205,10 +212,10 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
             WorkManager.getInstance(context).getWorkInfoById(currentRequest.id).get(20, TimeUnit.SECONDS),
         )
         assertEquals(WorkInfo.State.ENQUEUED, beforeRecovery.state)
-        assertEquals(currentSource.configurationGeneration, beforeRecovery.inputData.getLong(
-            ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION,
-            0L,
-        ))
+        assertTrue(
+            ObserveSourceWorker.configurationGenerationTag(currentSource.configurationGeneration) in
+                beforeRecovery.tags,
+        )
 
         WorkManagerHandoffRecovery.reconcile(context)
 
@@ -218,13 +225,12 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
         )
         assertEquals(WorkInfo.State.ENQUEUED, afterRecovery.state)
         assertEquals(beforeRecovery.id, afterRecovery.id)
-        assertEquals(
-            WorkInfo.State.CANCELLED,
-            requireNotNull(
-                WorkManager.getInstance(context)
-                    .getWorkInfoById(java.util.UUID.fromString(staleCarrier.requestId))
-                    .get(20, TimeUnit.SECONDS),
-            ).state,
+        // WorkManager may prune terminal WorkSpecs; an absent stale request cannot execute.
+        val staleWorkAfterRecovery = WorkManager.getInstance(context)
+            .getWorkInfoById(java.util.UUID.fromString(staleCarrier.requestId))
+            .get(20, TimeUnit.SECONDS)
+        assertTrue(
+            staleWorkAfterRecovery == null || staleWorkAfterRecovery.state == WorkInfo.State.CANCELLED,
         )
     }
 

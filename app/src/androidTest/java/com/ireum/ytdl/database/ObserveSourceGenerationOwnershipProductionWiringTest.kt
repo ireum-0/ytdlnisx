@@ -116,12 +116,10 @@ class ObserveSourceGenerationOwnershipProductionWiringTest {
             .get(10, TimeUnit.SECONDS)
             .single()
         assertEquals(before.id, after.id)
-        assertEquals(
-            current.configurationGeneration,
-            after.inputData.getLong(
-                com.ireum.ytdl.work.ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION,
-                -1L,
-            ),
+        assertTrue(
+            com.ireum.ytdl.work.ObserveSourceWorker.configurationGenerationTag(
+                current.configurationGeneration,
+            ) in after.tags,
         )
         assertEquals(androidx.work.WorkInfo.State.ENQUEUED, after.state)
     }

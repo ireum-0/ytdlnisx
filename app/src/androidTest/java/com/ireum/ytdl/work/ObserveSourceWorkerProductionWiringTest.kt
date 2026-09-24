@@ -220,10 +220,9 @@ class ObserveSourceWorkerProductionWiringTest {
                         .get(5, TimeUnit.SECONDS)
                         .firstOrNull { info ->
                             !info.state.isFinished &&
-                                info.inputData.getLong(
-                                    ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION,
-                                    -1L,
-                                ) == current.configurationGeneration
+                                ObserveSourceWorker.configurationGenerationTag(
+                                    current.configurationGeneration,
+                                ) in info.tags
                         }
                 }
                 if (matching != null) return@withTimeout matching

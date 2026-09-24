@@ -136,6 +136,9 @@ class ObserveRetryDecisionReceiver : BroadcastReceiver() {
                             .addTag("observeSources")
                             .addTag("observation_$sourceId")
                             .addTag(sourceId.toString())
+                            .addTag(
+                                ObserveSourceWorker.configurationGenerationTag(notificationGeneration),
+                            )
                             .setConstraints(Constraints.Builder().setRequiredNetworkType(networkType).build())
                             .setInputData(
                                 Data.Builder()

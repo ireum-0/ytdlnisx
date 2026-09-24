@@ -95,10 +95,10 @@ class ObserveSourcesRepository(
         val uniqueWork = workManager.getWorkInfosForUniqueWork("OBSERVE$sourceId")
             .get(RESTORE_SCHEDULER_ACCEPTANCE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         if (uniqueWork.any { info ->
-                info.id.toString() != legacyRequestId &&
+                    info.id.toString() != legacyRequestId &&
                     !info.state.isFinished &&
-                    info.inputData.getLong(ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION, 0L) ==
-                    current.configurationGeneration
+                    ObserveSourceWorker.configurationGenerationTag(current.configurationGeneration) in
+                        info.tags
             }
         ) return@withOrdinaryMutation true
         enqueueObservation(current, null) != null
@@ -340,6 +340,7 @@ class ObserveSourcesRepository(
             .addTag("observeSources")
             .addTag(item.id.toString())
             .addTag("observation_${item.id}")
+            .addTag(ObserveSourceWorker.configurationGenerationTag(item.configurationGeneration))
             .setConstraints(workConstraints)
             .setInitialDelay(initialDelay, TimeUnit.MILLISECONDS)
             .setInputData(inputData)

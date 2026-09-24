@@ -1345,6 +1345,9 @@ internal object WorkManagerHandoffRecovery {
                     .addTag("observeSources")
                     .addTag("observation_${carrier.sourceId}")
                     .addTag(carrier.sourceId.toString())
+                    .addTag(
+                        ObserveSourceWorker.configurationGenerationTag(carrier.sourceConfigurationGeneration),
+                    )
                     .setConstraints(
                         Constraints.Builder().setRequiredNetworkType(networkType).build()
                     )
