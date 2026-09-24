@@ -171,6 +171,8 @@ class ObserveSourceWorkerProductionWiringTest {
             runCount = 0,
             endsAfterCount = 1,
         )
+        val initial = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        assertEquals(0, initial.runCount)
         val waitingDownloadId = database.downloadDao.insertRaw(
             downloadTemplate().copy(
                 status = DownloadRepository.Status.WaitingForMembership.name,
@@ -185,8 +187,16 @@ class ObserveSourceWorkerProductionWiringTest {
         val persisted = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
         assertEquals(1, persisted.runCount)
         assertEquals(ObserveSourcesRepository.SourceStatus.STOPPED, persisted.status)
-        assertEquals(1, queuedItems.size)
-        assertEquals(listOf(waitingDownloadId), cancelledMembershipNotifications)
+        assertEquals(
+            listOf("https://youtu.be/template", "https://youtu.be/threshold"),
+            queuedItems.map { it.url },
+        )
+        // Requeue removes the waiting prompt, then end-count revocation also
+        // cancels the queued membership retry owned by the stopped source.
+        assertEquals(
+            listOf(waitingDownloadId, waitingDownloadId),
+            cancelledMembershipNotifications,
+        )
     }
 
     @Test
