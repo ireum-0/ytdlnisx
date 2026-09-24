@@ -1,0 +1,199 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "segment_range": [
+    536,
+    540
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M12-20260924T0353Z-001/r531-535.json",
+    "blob_sha": "86ccad5329622ee73a8039b8bad1c8af02985d08"
+  },
+  "rank_receipts": [
+    {
+      "rank": 536,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r536.json",
+      "blob_sha": "5122a0c0f42bb2e7299353a79a5aacc7b5042f07"
+    },
+    {
+      "rank": 537,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r537.json",
+      "blob_sha": "d140ff7dfe676269be45b7005e0085386944b150"
+    },
+    {
+      "rank": 538,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r538.json",
+      "blob_sha": "306a36765fb9bba12a96b2394b395edaee572d9b"
+    },
+    {
+      "rank": 539,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r539.json",
+      "blob_sha": "747149d4664e5dea4a3953f128862ae3ee29f415"
+    },
+    {
+      "rank": 540,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r540.json",
+      "blob_sha": "65c79b80ffd8b8c642f23387e9c631844db0690d"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      536,
+      537,
+      538,
+      539,
+      540
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint explicitly leaves final checkpoint/final gate summary as remaining work and has no supported structural kind",
+        "rank": 536,
+        "source_blob_sha": "722c6d7ae647099552bef85aecfbf8b455a8b102"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "evidence": "source explicitly marks P2-B7 complete producer finality FIXED on the exact implementation SHA; canonical root identity is not independently established in this document",
+        "rank": 536,
+        "source_blob_sha": "722c6d7ae647099552bef85aecfbf8b455a8b102"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source carries P0 3 / P1 3 / P2 26 as prior canonical minimum / provisional inventory",
+        "rank": 536,
+        "source_blob_sha": "722c6d7ae647099552bef85aecfbf8b455a8b102"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves semantic-fingerprint normalization/collision risk and adjacent producer cleanup/admission/recovery regression checks open",
+        "rank": 536,
+        "source_blob_sha": "722c6d7ae647099552bef85aecfbf8b455a8b102"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint describes setup and broad remaining review scope without an explicit structural kind",
+        "rank": 537,
+        "source_blob_sha": "bddd709ee67518a0fc679899472b95119df8e607"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source carries P0 3 / P1 3 / P2 26 as a carry-forward baseline pending current-SHA revalidation",
+        "rank": 537,
+        "source_blob_sha": "bddd709ee67518a0fc679899472b95119df8e607"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly states no current-SHA finding disposition is changed solely from the remediation commit message",
+        "rank": 537,
+        "source_blob_sha": "bddd709ee67518a0fc679899472b95119df8e607"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves P2-B7 end-to-end revalidation, adjacent open-root recount, and collateral regression search unresolved",
+        "rank": 537,
+        "source_blob_sha": "bddd709ee67518a0fc679899472b95119df8e607"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-LINK-INPUT-01",
+        "evidence": "source explicitly confirms BUG-LINK-INPUT-01 as NEW P2 / OPEN",
+        "rank": 538,
+        "source_blob_sha": "6d69cd6959f29fab99dfbae425400b3cd167cce7"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LINK-INPUT-01",
+        "evidence": "source explicitly reconciles prior P0 3 / P1 3 / P2 25 plus the new P2 root to P0 3 / P1 3 / P2 26",
+        "rank": 538,
+        "source_blob_sha": "6d69cd6959f29fab99dfbae425400b3cd167cce7"
+      },
+      {
+        "type": "CHECKLIST_GAP_OR_CHANGE",
+        "finding_id": "BUG-LINK-INPUT-01",
+        "evidence": "source records a checklist gap and a concrete external-input surface-to-durable-admission matrix change",
+        "rank": 538,
+        "source_blob_sha": "6d69cd6959f29fab99dfbae425400b3cd167cce7"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source states JVM/instrumentation/emulator/device execution remains NOT_VERIFIED",
+        "rank": 538,
+        "source_blob_sha": "6d69cd6959f29fab99dfbae425400b3cd167cce7"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint explicitly leaves a separate final checkpoint before verdict and has no supported structural kind",
+        "rank": 539,
+        "source_blob_sha": "617391390fa832a3d3954d17b654c51a8c0b2fa8"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source carries prior P0 3 / P1 3 / P2 25 only as review inventory and marks BUG-LINK-INPUT-01 provisional P2, not yet counted as confirmed",
+        "rank": 539,
+        "source_blob_sha": "617391390fa832a3d3954d17b654c51a8c0b2fa8"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly states older review disposition is not inherited without current-source proof",
+        "rank": 539,
+        "source_blob_sha": "617391390fa832a3d3954d17b654c51a8c0b2fa8"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves LinkUtil/WebUrlInput/result-to-download/queue/DownloadWorker chain, adjacent external-input surfaces, unresolved Master Plan families, and final branch-SHA recount open",
+        "rank": 539,
+        "source_blob_sha": "617391390fa832a3d3954d17b654c51a8c0b2fa8"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "document is titled Independent Track A checkpoint and contains a substantive new finding but lacks an allowed positive whole-document structural kind marker under document-identity-v1",
+        "rank": 540,
+        "source_blob_sha": "b138213a91ea01d356610430de0190ce7efd3624"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-LINK-INPUT-01",
+        "evidence": "source heading explicitly records NEW P2 — BUG-LINK-INPUT-01",
+        "rank": 540,
+        "source_blob_sha": "b138213a91ea01d356610430de0190ce7efd3624"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LINK-INPUT-01",
+        "evidence": "source explicitly records prior P0 2 / P1 3 / P2 26 plus one new distinct P2 root to P0 2 / P1 3 / P2 27",
+        "rank": 540,
+        "source_blob_sha": "b138213a91ea01d356610430de0190ce7efd3624"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly records Independent execution: NOT EXECUTED",
+        "rank": 540,
+        "source_blob_sha": "b138213a91ea01d356610430de0190ce7efd3624"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 491-540 is receipted"
+  }
+}
