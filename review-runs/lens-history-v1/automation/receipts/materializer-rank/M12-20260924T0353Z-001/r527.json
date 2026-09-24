@@ -1,0 +1,103 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "rank": 527,
+  "materializer_state_blob": "40b2bb881c53d10215ae33f4096e6b9d350157eb",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r526.json",
+    "blob_sha": "9cd5b0f037a5d00965131bd73e808cadd5e576b6"
+  },
+  "history": {
+    "commit_sha": "29140f479d7ed87bb73632407305c9279b9fb601",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=527"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10T202548Z__6763fb1b__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "ba2602ad05b77df5a929a008e7afe50dac1c735c",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "ba2602ad05b77df5a929a008e7afe50dac1c735c",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10T202548Z__6763fb1b__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "ba2602ad05b77df5a929a008e7afe50dac1c735c",
+    "frozen_blob_sha": "ba2602ad05b77df5a929a008e7afe50dac1c735c",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "6763fb1be188fb000b9e9a665c7b3fe349fd40ca",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic correctness review checkpoint with remaining full-path audit/final recount scope and no explicit supported whole-document structural kind field"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {}
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic correctness review checkpoint has remaining full-path audit and final recount scope without an explicit structural kind"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source records P0 3 / P1 3 / P2 26 as current provisional counts"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
