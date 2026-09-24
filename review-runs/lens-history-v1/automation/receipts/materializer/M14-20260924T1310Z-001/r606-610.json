@@ -1,0 +1,253 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "segment_range": [
+    606,
+    610
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M14-20260924T1310Z-001/r601-605.json",
+    "blob_sha": "366c8030986256b751ccb66186ad7a05642ec5d6"
+  },
+  "rank_receipts": [
+    {
+      "rank": 606,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r606.json",
+      "blob_sha": "cf3dff73385117489417e7e506e99ece88a462db"
+    },
+    {
+      "rank": 607,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r607.json",
+      "blob_sha": "8c56e32f556852b8b13eee9bed3ae58563959e47"
+    },
+    {
+      "rank": 608,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r608.json",
+      "blob_sha": "664d43630b4831c91e1235737176776567c260b7"
+    },
+    {
+      "rank": 609,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r609.json",
+      "blob_sha": "8e50cd64672edca587541933e518a127e3cc363a"
+    },
+    {
+      "rank": 610,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r610.json",
+      "blob_sha": "0cf1dbd6a21d1bba764125909b5d009c897504e1"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      606,
+      607,
+      608,
+      609,
+      610
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 606,
+        "source_blob_sha": "1788b8c8b8443dd1bf1589a6c0db26ac9e8c547a"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-METADATA-02/F13",
+        "evidence": "source explicitly records F13 / BUG-METADATA-02 — CONFIRMED OPEN P2 and adds F13 P2 in the recount",
+        "rank": 606,
+        "source_blob_sha": "1788b8c8b8443dd1bf1589a6c0db26ac9e8c547a"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-METADATA-01/F14",
+        "evidence": "source explicitly records F14 / BUG-METADATA-01 — CONFIRMED OPEN P1 and adds F14 P1 in the recount",
+        "rank": 606,
+        "source_blob_sha": "1788b8c8b8443dd1bf1589a6c0db26ac9e8c547a"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly starts from working P0 2 / P1 2 / P2 8 and records Add F13 P2 and F14 P1 -> P0 2 / P1 3 / P2 9",
+        "rank": 606,
+        "source_blob_sha": "1788b8c8b8443dd1bf1589a6c0db26ac9e8c547a"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "evidence": "source expands the working recount with F13 metadata source-identity and F14 stale full-row writer findings while retaining P2-B10 as a subcase of P2-B",
+        "rank": 606,
+        "source_blob_sha": "1788b8c8b8443dd1bf1589a6c0db26ac9e8c547a"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 606,
+        "source_blob_sha": "1788b8c8b8443dd1bf1589a6c0db26ac9e8c547a"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 607,
+        "source_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-OBSERVE-01/F3",
+        "evidence": "source explicitly records F3 / BUG-OBSERVE-01 — CONFIRMED OPEN P0",
+        "rank": 607,
+        "source_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-KEYWORD-01/F12",
+        "evidence": "source explicitly records F12 / BUG-KEYWORD-01 — CONFIRMED OPEN P1",
+        "rank": 607,
+        "source_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly corrects the preceding six-P2 scheduled checkpoint inventory and records canonical working P0 1 / P1 1 / P2 8",
+        "rank": 607,
+        "source_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "evidence": "source explicitly states the preceding six-P2 checkpoint is insufficient as a full remediation inventory and restores still-open Master Plan F3/F12 into the working inventory",
+        "rank": 607,
+        "source_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 607,
+        "source_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-B",
+        "evidence": "source explicitly states a material review-state correction and confirms P2-B remains open on the exact same implementation SHA",
+        "rank": 608,
+        "source_blob_sha": "fd22e0a324bcb807598d219cac1e02d9d3b172a0"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-C",
+        "evidence": "source explicitly states a material review-state correction and confirms P2-C remains open on the exact same implementation SHA",
+        "rank": 608,
+        "source_blob_sha": "fd22e0a324bcb807598d219cac1e02d9d3b172a0"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-J",
+        "evidence": "source explicitly states a material review-state correction and confirms P2-J remains open on the exact same implementation SHA",
+        "rank": 608,
+        "source_blob_sha": "fd22e0a324bcb807598d219cac1e02d9d3b172a0"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-K",
+        "evidence": "source explicitly states a material review-state correction and confirms P2-K remains open on the exact same implementation SHA",
+        "rank": 608,
+        "source_blob_sha": "fd22e0a324bcb807598d219cac1e02d9d3b172a0"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records Final P-count P0 0 / P1 0 / P2 6",
+        "rank": 608,
+        "source_blob_sha": "fd22e0a324bcb807598d219cac1e02d9d3b172a0"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "evidence": "source explicitly says the preceding scheduled verdict counted only P2-L/F20 and P2-M/F21 and corrects that review state by restoring P2-B/C/J/K",
+        "rank": 608,
+        "source_blob_sha": "fd22e0a324bcb807598d219cac1e02d9d3b172a0"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records runtime JVM/instrumentation/emulator/device execution as NOT_VERIFIED while relying on current-source tracing and one exact upstream yt-dlp source basis only for P2-B",
+        "rank": 608,
+        "source_blob_sha": "fd22e0a324bcb807598d219cac1e02d9d3b172a0"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint is provisional and lacks an explicit supported structural kind",
+        "rank": 609,
+        "source_blob_sha": "f158e108339886efb81c6b72a19b8e2cb90c6530"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly states Provisional verdict NOT_CLEAN, P0 0 / P1 0 / P2 6",
+        "rank": 609,
+        "source_blob_sha": "f158e108339886efb81c6b72a19b8e2cb90c6530"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly enumerates the six current open P2 findings supporting the provisional P2 6 recount",
+        "rank": 609,
+        "source_blob_sha": "f158e108339886efb81c6b72a19b8e2cb90c6530"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records independent runtime execution remains NOT_VERIFIED and leaves final status/evidence recount for later",
+        "rank": 609,
+        "source_blob_sha": "f158e108339886efb81c6b72a19b8e2cb90c6530"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 610,
+        "source_blob_sha": "d4a9b94456c33eeeb1b7f828ceda48d6223e6c1e"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "P2-B",
+        "evidence": "source explicitly classifies P2-B10 as a confirmed additional subcase of existing P2-B global archive authority",
+        "rank": 610,
+        "source_blob_sha": "d4a9b94456c33eeeb1b7f828ceda48d6223e6c1e"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "P2-B",
+        "evidence": "source explicitly expands P2-B closure to cover both temporal authority B8 and semantic archive-identity authority without creating a second root",
+        "rank": 610,
+        "source_blob_sha": "d4a9b94456c33eeeb1b7f828ceda48d6223e6c1e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "P2-B10",
+        "evidence": "source explicitly states no new finding count / no additional P2 count",
+        "rank": 610,
+        "source_blob_sha": "d4a9b94456c33eeeb1b7f828ceda48d6223e6c1e"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 610,
+        "source_blob_sha": "d4a9b94456c33eeeb1b7f828ceda48d6223e6c1e"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 591-640 is receipted"
+  }
+}
