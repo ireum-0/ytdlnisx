@@ -1,0 +1,204 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "data_head": "12afbf005b7b42b8dfac9916fce00ac430f76d0a",
+  "complete_state_blob": "6c8d02c4aa8a8740a4ade35eeec9837d49f35ba6",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "3819b9d51c158ce0307eaaf0a5f54eaf4028749d",
+    "4a9712ffb25fca66dfb8516ddf1cea427a3f3ab8",
+    "366c8030986256b751ccb66186ad7a05642ec5d6",
+    "cb7659ba5dc04fcc38d64205e5a175c92bf9ae55",
+    "0bf120c8226692f0afba3aca1b87f61bd903accd",
+    "5daaed5f78c8405c01e04a332a62f8ea4849cd91",
+    "84f8b5c655a0f089e7ded4e0215fb7bdbdd0a7dc",
+    "c4538385271809453f269bd9b4e2aa6824022933",
+    "8ebcfcb4e92bddd032542c402bc7dca817a95380",
+    "7e96ce5b20c6178a3710826129e1ca755938301a"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M14-20260924T1310Z-001-materialization-591-640.json",
+    "blob_sha": "e7229bbac4c57c688ee0c9215f1f74f78b588f90",
+    "status": "PASS",
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches": 0,
+    "official_ledger_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        591,
+        595
+      ],
+      "blob_sha": "058ffeacc38f1fcee048fcd4257f858f83ad6c05"
+    },
+    {
+      "range": [
+        596,
+        600
+      ],
+      "blob_sha": "1f024b0dd6be2879619df60e530869ce9f64ac02"
+    },
+    {
+      "range": [
+        601,
+        605
+      ],
+      "blob_sha": "9cabb29d0441b75f5cb727d3fa662f5c4e3eaf01"
+    },
+    {
+      "range": [
+        606,
+        610
+      ],
+      "blob_sha": "bcfa2de5b61a0ec2b2821c612f19e60a6b57005a"
+    },
+    {
+      "range": [
+        611,
+        615
+      ],
+      "blob_sha": "634eb047863bbd12263685c9adaa75bf9cd401a3"
+    },
+    {
+      "range": [
+        616,
+        620
+      ],
+      "blob_sha": "7883f69dddafbb95711cb4074b8ab8f2047d5146"
+    },
+    {
+      "range": [
+        621,
+        625
+      ],
+      "blob_sha": "57796bd9d537a7cf88ce44b445a0a886f4037558"
+    },
+    {
+      "range": [
+        626,
+        630
+      ],
+      "blob_sha": "21f5dcf7b63d1624b9330cf281e047bb22a31734"
+    },
+    {
+      "range": [
+        631,
+        635
+      ],
+      "blob_sha": "abda5e4a6b74596b510fd26c7b92e68f2dcbe423"
+    },
+    {
+      "range": [
+        636,
+        640
+      ],
+      "blob_sha": "f226e860b7872ff3ade7ac0701bd0f477074c17e"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "cce619ab60ed6d1171177bef2fd9b7f1b7db60e0",
+  "materializer_exception_rank_count": 50,
+  "independent_exception_ranks": [
+    591,
+    592,
+    593,
+    594,
+    595,
+    596,
+    597,
+    598,
+    599,
+    600,
+    601,
+    602,
+    603,
+    604,
+    605,
+    606,
+    607,
+    608,
+    609,
+    610,
+    611,
+    612,
+    613,
+    614,
+    615,
+    616,
+    617,
+    618,
+    619,
+    620,
+    621,
+    622,
+    623,
+    624,
+    625,
+    626,
+    627,
+    628,
+    629,
+    630,
+    631,
+    632,
+    633,
+    634,
+    635,
+    636,
+    637,
+    638,
+    639,
+    640
+  ],
+  "independent_exception_rank_count": 50,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "preservation_packets": [
+    {
+      "topic": "chronology_and_root_boundaries",
+      "rank_range": [
+        591,
+        640
+      ],
+      "requirement": "Preserve each receipt's exact historical status/count/root-boundary decision without backward normalization or duplicate-root creation."
+    },
+    {
+      "topic": "fail_closed_and_execution_provenance",
+      "rank_range": [
+        591,
+        640
+      ],
+      "requirement": "Preserve NOT_VERIFIED structural/runtime states and keep source semantics, implementation-agent evidence, hosted status evidence, and independent execution distinct."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_591_640": true,
+    "triage_correction_applied": false,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
