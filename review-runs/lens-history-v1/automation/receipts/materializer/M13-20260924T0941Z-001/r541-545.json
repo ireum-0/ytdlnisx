@@ -1,0 +1,190 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M13-20260924T0941Z-001",
+  "stage": "MATERIALIZE_541_590",
+  "logical_rank_range": [
+    541,
+    590
+  ],
+  "segment_range": [
+    541,
+    545
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "a120e3bdc35ecd67760258d2c11ccead53ffac7c",
+  "previous_aggregate_receipt": null,
+  "rank_receipts": [
+    {
+      "rank": 541,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r541.json",
+      "blob_sha": "bfa4d12939f91b8ca9539b1816f4aae8eded2b21"
+    },
+    {
+      "rank": 542,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r542.json",
+      "blob_sha": "b35dde8982bb4f552a871c3fe861917feff83101"
+    },
+    {
+      "rank": 543,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r543.json",
+      "blob_sha": "7fa06240e8af12d82698ef7d46907a0fe388b5d4"
+    },
+    {
+      "rank": 544,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r544.json",
+      "blob_sha": "76a3dc193c0356bcb365a560a439b2183839974b"
+    },
+    {
+      "rank": 545,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r545.json",
+      "blob_sha": "08b50f8f56965cb981d34032671800b82512bd3f"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      541,
+      542,
+      543,
+      544,
+      545
+    ],
+    "triggers": [
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-UNDO-PLAYLIST-01",
+        "evidence": "source explicitly performs canonical count reconciliation for an already-deduplicated History alias/root boundary",
+        "rank": 541,
+        "source_blob_sha": "f19309834e26c26861c414bb9d7b8ca99f8cf9c4"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-UNDO-PLAYLIST-01",
+        "evidence": "source corrects inherited working count P2 25 to P2 26 after identifying a duplicate subtraction",
+        "rank": 541,
+        "source_blob_sha": "f19309834e26c26861c414bb9d7b8ca99f8cf9c4"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 541,
+        "source_blob_sha": "f19309834e26c26861c414bb9d7b8ca99f8cf9c4"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "evidence": "source states the Observe edit/update identity subcase remains real but is subsumed by an existing Observe semantic-identity / duplicate-admission root and is not double-counted",
+        "rank": 542,
+        "source_blob_sha": "13e7a6b0e866ca46674eb3d0502719e6d0cd3d78"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source reconciles with the immediately preceding current-SHA checkpoint and preserves canonical P0 3 / P1 3 / P2 25 with no count delta",
+        "rank": 542,
+        "source_blob_sha": "13e7a6b0e866ca46674eb3d0502719e6d0cd3d78"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source heading explicitly labels Final provisional P0/P1/P2 while preserving P0 3 / P1 3 / P2 25",
+        "rank": 542,
+        "source_blob_sha": "13e7a6b0e866ca46674eb3d0502719e6d0cd3d78"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source states JVM/instrumentation/emulator/device execution remains NOT_VERIFIED",
+        "rank": 542,
+        "source_blob_sha": "13e7a6b0e866ca46674eb3d0502719e6d0cd3d78"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has remaining review/recount/final-checkpoint work and no explicit supported structural kind",
+        "rank": 543,
+        "source_blob_sha": "890cde89ba39a22512b0de3196c640492ea1fda8"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source carries P0 3 / P1 3 / P2 25 only as a starting point subject to current-source revalidation",
+        "rank": 543,
+        "source_blob_sha": "890cde89ba39a22512b0de3196c640492ea1fda8"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly refuses to auto-promote older-basis Observe disposition and records JVM/instrumentation/emulator/device execution NOT_VERIFIED",
+        "rank": 543,
+        "source_blob_sha": "890cde89ba39a22512b0de3196c640492ea1fda8"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves Observe update identity root relation and additional Master Plan invariant search open",
+        "rank": 543,
+        "source_blob_sha": "890cde89ba39a22512b0de3196c640492ea1fda8"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "document is titled fixed-basis follow-up rather than an allowed positive whole-document kind marker under document-identity-v1",
+        "rank": 544,
+        "source_blob_sha": "05b470894624bbf723a04e22f229ef03924db818"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-SOURCE-IDENTITY-01",
+        "evidence": "source contains an explicit Root reconciliation section binding the update-path evidence to the existing root",
+        "rank": 544,
+        "source_blob_sha": "05b470894624bbf723a04e22f229ef03924db818"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-OBSERVE-SOURCE-IDENTITY-01",
+        "evidence": "source explicitly confirms the update-path subcase and extends acceptance to INSERT and UPDATE mutation boundaries",
+        "rank": 544,
+        "source_blob_sha": "05b470894624bbf723a04e22f229ef03924db818"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-SOURCE-IDENTITY-01",
+        "evidence": "source explicitly records count delta 0 and canonical count P0 2 / P1 3 / P2 25",
+        "rank": 544,
+        "source_blob_sha": "05b470894624bbf723a04e22f229ef03924db818"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 544,
+        "source_blob_sha": "05b470894624bbf723a04e22f229ef03924db818"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source heading explicitly labels Final provisional P0/P1/P2 while confirming minimum P0 3 / P1 3 / P2 25",
+        "rank": 545,
+        "source_blob_sha": "9279054b71ed8541024e025560807f38e8a62f3d"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "evidence": "source lists representative current-SHA confirmations of existing open roots, including source-completeness, backup capture/restore, metadata stale-write, stale Observe generation, and title-only destructive History duplicate grouping",
+        "rank": 545,
+        "source_blob_sha": "9279054b71ed8541024e025560807f38e8a62f3d"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source states independent JVM/instrumentation/emulator/device behavior remains NOT_VERIFIED",
+        "rank": 545,
+        "source_blob_sha": "9279054b71ed8541024e025560807f38e8a62f3d"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 541-590 is receipted"
+  }
+}
