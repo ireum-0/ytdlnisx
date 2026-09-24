@@ -1,0 +1,132 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M13-20260924T0941Z-001",
+  "stage": "MATERIALIZE_541_590",
+  "logical_rank_range": [
+    541,
+    590
+  ],
+  "rank": 586,
+  "materializer_state_blob": "f69cfb1aaa6047bcc8575f767840ca2bbc918018",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "a120e3bdc35ecd67760258d2c11ccead53ffac7c",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r585.json",
+    "blob_sha": "d676911ca8b9d9bf65b3c56b8069ea339e59d59a"
+  },
+  "history": {
+    "commit_sha": "1472a1b7fdbd1d6ab8bebc202263425381e7c486",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=586"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10__c2294c87__false-positive-scope-audit.md",
+        "status": "added",
+        "source_blob_sha": "0391976928ad61120b14a45eb8402bcf686330ba",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "0391976928ad61120b14a45eb8402bcf686330ba",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10__c2294c87__false-positive-scope-audit.md",
+    "status": "added",
+    "source_blob_sha": "0391976928ad61120b14a45eb8402bcf686330ba",
+    "frozen_blob_sha": "0391976928ad61120b14a45eb8402bcf686330ba",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "NOT_VERIFIED",
+      "reason": "source explicitly records a Fixed Review Basis SHA but does not label it as implementation SHA/frozen implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "document identifies itself as a false-positive/scope audit, not as an allowed finding/addendum/reconciliation/scope-expansion record or run-final checkpoint under document-identity-v1"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": "BUG-HISTORY-UNDO-PLAYLIST-01",
+          "disposition": "duplicate count removed; treated as F17 BUG-HISTORY-01 evidence, not a separate root"
+        },
+        {
+          "finding_id": "BUG-LOCALADD-HANDOFF-01",
+          "disposition": "root retained P2 with narrower proven scope wording"
+        }
+      ],
+      "count_delta": {
+        "state": "DIRECT",
+        "value": -1,
+        "evidence": "source explicitly corrects working P2 count from 27 to 26 by removing the duplicate History Undo playlist root while retaining LocalAdd"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "false-positive/scope audit is not an allowed positive structural-kind marker under document-identity-v1"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-HISTORY-UNDO-PLAYLIST-01",
+      "evidence": "source explicitly removes this as a duplicate semantic root and preserves it as F17 BUG-HISTORY-01 evidence"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-LOCALADD-HANDOFF-01",
+      "evidence": "source explicitly corrects the LocalAdd root scope wording while retaining the root at P2"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly changes reported P2 27 to corrected distinct P2 26 by removing one duplicate count"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source records source-semantic confirmation only and INDEPENDENT EXECUTION: NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
