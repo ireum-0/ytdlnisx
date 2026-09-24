@@ -1,0 +1,176 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "segment_range": [
+    631,
+    635
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M14-20260924T1310Z-001/r626-630.json",
+    "blob_sha": "c4538385271809453f269bd9b4e2aa6824022933"
+  },
+  "rank_receipts": [
+    {
+      "rank": 631,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r631.json",
+      "blob_sha": "a19e243e7a07b7b81d4cc6f1bdf54313288ccfdb"
+    },
+    {
+      "rank": 632,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r632.json",
+      "blob_sha": "cc3492f65c78e9b53952ba4ae2e67e2d841ed857"
+    },
+    {
+      "rank": 633,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r633.json",
+      "blob_sha": "30b07d34dc7bd2ac6b936cdcdb86450f2f00aa96"
+    },
+    {
+      "rank": 634,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r634.json",
+      "blob_sha": "07884b5ea0dd870315b8fc3c99a42d0c120d2fa6"
+    },
+    {
+      "rank": 635,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r635.json",
+      "blob_sha": "bb2e47a1739d393dde59d8c8e371c9f42f25f179"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      631,
+      632,
+      633,
+      634,
+      635
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind",
+        "rank": 631,
+        "source_blob_sha": "70156cfa759a598321643e77679806b2854b09da"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 4 pending full production-path retrace",
+        "rank": 631,
+        "source_blob_sha": "70156cfa759a598321643e77679806b2854b09da"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly leaves Terminal native generation carrier, ordinary History post-commit crash window, provider commit/source-retirement re-entry, F19 duplicate canonical identity, and adjacent-consumer violations for independent re-proof",
+        "rank": 631,
+        "source_blob_sha": "70156cfa759a598321643e77679806b2854b09da"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source carries prior open-finding inventory only as hypotheses for independent re-proof and says upstream-dependent claims remain NOT_VERIFIED until rechecked",
+        "rank": 631,
+        "source_blob_sha": "70156cfa759a598321643e77679806b2854b09da"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final P0 0 / P1 0 / P2 4 and no new P0/P1/P2 finding or severity/disposition/status change",
+        "rank": 632,
+        "source_blob_sha": "142aef6ff6b93833f3cd572676b5f6dcc5f3d094"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source labels the final finding count provisional/final and preserves four existing OPEN P2s",
+        "rank": 632,
+        "source_blob_sha": "142aef6ff6b93833f3cd572676b5f6dcc5f3d094"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records independent JVM/emulator/device execution NOT_VERIFIED because the exact SHA has zero combined status contexts and zero Actions workflow runs",
+        "rank": 632,
+        "source_blob_sha": "142aef6ff6b93833f3cd572676b5f6dcc5f3d094"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind",
+        "rank": 633,
+        "source_blob_sha": "c64eb7cbefa656f5ace501f3e2c5e9e7a4181512"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 4 with four existing OPEN P2s and no new material finding or disposition/severity change so far",
+        "rank": 633,
+        "source_blob_sha": "c64eb7cbefa656f5ace501f3e2c5e9e7a4181512"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source leaves exact implementation GitHub status/workflow evidence and final branch recount for later and uses upstream semantics only for fail-closed uncertainty modeling",
+        "rank": 633,
+        "source_blob_sha": "c64eb7cbefa656f5ace501f3e2c5e9e7a4181512"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind",
+        "rank": 634,
+        "source_blob_sha": "0b75be599b3c56d8665d8b44330ea67a6e56267c"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 0 / P1 0 / P2 4 provisional pending this run's full-path recount",
+        "rank": 634,
+        "source_blob_sha": "0b75be599b3c56d8665d8b44330ea67a6e56267c"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly leaves all four existing P2s, adjacent Master Plan violations, and exact-SHA status/workflow execution evidence for independent recount/review",
+        "rank": 634,
+        "source_blob_sha": "0b75be599b3c56d8665d8b44330ea67a6e56267c"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source carries prior pinned semantics for opaque provider UNKNOWN while saying full current recount remains pending",
+        "rank": 634,
+        "source_blob_sha": "0b75be599b3c56d8665d8b44330ea67a6e56267c"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final P0 0 / P1 0 / P2 4, New P0/P1/P2 none, Status changes none, and no material change from the prior independent verdict",
+        "rank": 635,
+        "source_blob_sha": "cb878ba9ab9d2daa97ae4e2de368163ab26ca95d"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source labels the final severity provisional/final while preserving four OPEN P2 findings",
+        "rank": 635,
+        "source_blob_sha": "cb878ba9ab9d2daa97ae4e2de368163ab26ca95d"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records independent JVM/emulator/device execution NOT_VERIFIED because exact implementation SHA has zero combined-status contexts and zero Actions workflow runs",
+        "rank": 635,
+        "source_blob_sha": "cb878ba9ab9d2daa97ae4e2de368163ab26ca95d"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 591-640 is receipted"
+  }
+}
