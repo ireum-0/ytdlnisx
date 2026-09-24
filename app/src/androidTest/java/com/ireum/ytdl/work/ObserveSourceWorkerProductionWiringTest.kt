@@ -73,10 +73,12 @@ class ObserveSourceWorkerProductionWiringTest {
             context = ApplicationProvider.getApplicationContext()
             workManager = WorkManager.getInstance(context)
             workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+            WorkManagerHandoffRecovery.clearForTesting()
             database = Room.inMemoryDatabaseBuilder(context, DBManager::class.java)
                 .addTypeConverter(Converters())
                 .allowMainThreadQueries()
                 .build()
+            WorkManagerHandoffRecovery.databaseForTesting = database
             preferences = PreferenceManager.getDefaultSharedPreferences(context)
             hadDuplicateMode = preferences.contains("prevent_duplicate_downloads")
             previousDuplicateMode = preferences.getString("prevent_duplicate_downloads", null)
@@ -109,6 +111,7 @@ class ObserveSourceWorkerProductionWiringTest {
     fun tearDown() {
         runBlocking {
             workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+            WorkManagerHandoffRecovery.clearForTesting()
         ObserveSourceWorkerEffectTestHooks.clearForTesting()
         ObserveSourcesRepository.beforeFinalEffectForTesting = null
         ObserveSourcesRepository.afterDurableStopBeforeCancellationForTesting = null
@@ -138,6 +141,15 @@ class ObserveSourceWorkerProductionWiringTest {
 
         val persisted = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
         assertEquals(1, persisted.runCount)
+        val recurrence = requireNotNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.OBSERVE_RECURRENCE,
+                sourceId.toString(),
+            ),
+        )
+        assertEquals(sourceId, recurrence.sourceId)
+        assertEquals(persisted.configurationGeneration, recurrence.sourceConfigurationGeneration)
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE, recurrence.state)
         assertTrue(persisted.ignoredLinks.isEmpty())
         assertTrue(persisted.alreadyProcessedLinks.contains(LinkUtil.canonicalYoutubeVideoUrlOrSelf(newUrl)))
         assertEquals(1, queuedItems.size)

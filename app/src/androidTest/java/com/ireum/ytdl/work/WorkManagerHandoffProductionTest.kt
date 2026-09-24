@@ -6,6 +6,7 @@ import androidx.lifecycle.MutableLiveData
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.preference.PreferenceManager
 import androidx.work.ExistingWorkPolicy
 import androidx.work.Operation
 import androidx.work.OneTimeWorkRequest
@@ -13,7 +14,15 @@ import androidx.work.impl.utils.futures.SettableFuture
 import com.google.common.util.concurrent.ListenableFuture
 import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.enums.DownloadType
+import com.ireum.ytdl.database.models.AudioPreferences
+import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.database.models.Format
+import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
+import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
+import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -28,6 +37,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.Collections
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
@@ -38,6 +48,7 @@ class WorkManagerHandoffProductionTest {
     private val workNames = Collections.synchronizedList(mutableListOf<String>())
     private val policies = Collections.synchronizedList(mutableListOf<ExistingWorkPolicy>())
     private val cancelledRequestIds = Collections.synchronizedList(mutableListOf<String>())
+    private val requests = Collections.synchronizedList(mutableListOf<OneTimeWorkRequest>())
 
     @Before
     fun setUp() {
@@ -50,11 +61,13 @@ class WorkManagerHandoffProductionTest {
         WorkManagerHandoffRecovery.databaseForTesting = database
         WorkManagerHandoffRecovery.workInfoOverrideForTesting = { null }
         WorkManagerHandoffRecovery.cancelUniqueWorkOverrideForTesting = {}
-        WorkManagerHandoffRecovery.enqueueOverrideForTesting = { name, policy, _ ->
+        WorkManagerHandoffRecovery.enqueueOverrideForTesting = { name, policy, request ->
             workNames += name
             policies += policy
+            requests += request
             ControlledOperation().also { operations += it }
         }
+        ObserveSourcesRepository.beforeFinalEffectForTesting = null
     }
 
     @After
@@ -65,6 +78,8 @@ class WorkManagerHandoffProductionTest {
         workNames.clear()
         policies.clear()
         cancelledRequestIds.clear()
+        requests.clear()
+        ObserveSourcesRepository.beforeFinalEffectForTesting = null
     }
 
     @Test
@@ -317,6 +332,135 @@ class WorkManagerHandoffProductionTest {
         assertNull(database.workManagerHandoffCarrierDao.get(handoffId))
     }
 
+    @Test
+    fun observeRecurrenceStagesExactDurableRequestBeforeOperationAcceptance(): Unit = runBlocking {
+        val carrier = stageObserveRecurrence(801L)
+        val current = requireNotNull(database.observeSourcesDao.getByIDOrNull(801L))
+        assertEquals(1, current.runCount)
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE, carrier.state)
+        assertEquals(801L, carrier.sourceId)
+        assertEquals(current.configurationGeneration, carrier.sourceConfigurationGeneration)
+        assertTrue(
+            "recurrence should be durably enqueued before its scheduled time",
+            carrier.notBeforeAt > System.currentTimeMillis(),
+        )
+
+        val attempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, carrier.handoffId)
+        val operation = awaitOperation()
+        val request = requests.single()
+        assertFalse(attempt.isCompleted)
+        assertEquals(carrier.requestId, request.id.toString())
+        assertEquals("OBSERVE801", workNames.single())
+        assertEquals(ExistingWorkPolicy.REPLACE, policies.single())
+        assertEquals(801L, request.workSpec.input.getLong(ObserveSourceWorker.INPUT_SOURCE_ID, 0L))
+        assertEquals(
+            current.configurationGeneration,
+            request.workSpec.input.getLong(ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION, 0L),
+        )
+        assertEquals(
+            carrier.handoffId,
+            request.workSpec.input.getString(ObserveSourceWorker.INPUT_RECURRENCE_HANDOFF_ID),
+        )
+        assertEquals(
+            carrier.requestId,
+            request.workSpec.input.getString(ObserveSourceWorker.INPUT_RECURRENCE_REQUEST_ID),
+        )
+        assertTrue(request.workSpec.initialDelay > 0L)
+        assertTrue("observeSources" in request.tags)
+        assertTrue(
+            ObserveSourceWorker.configurationGenerationTag(current.configurationGeneration) in request.tags,
+        )
+        assertEquals(
+            WorkManagerHandoffCarrier.PENDING_ENQUEUE,
+            database.workManagerHandoffCarrierDao.get(carrier.handoffId)?.state,
+        )
+
+        operation.succeed()
+        assertTrue(withTimeout(2_000L) { attempt.await() }.accepted)
+        assertEquals(
+            WorkManagerHandoffCarrier.ACCEPTED,
+            database.workManagerHandoffCarrierDao.get(carrier.handoffId)?.state,
+        )
+    }
+
+    @Test
+    fun observeRecurrenceOperationFailureRetainsRetryableDebtAcrossRecovery(): Unit = runBlocking {
+        val carrier = stageObserveRecurrence(802L)
+        val attempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, carrier.handoffId)
+        val operation = awaitOperation()
+
+        operation.fail(IllegalStateException("recurrence enqueue acceptance failed"))
+        assertEquals(
+            WorkManagerHandoffRecovery.OutcomeKind.RETRYING,
+            withTimeout(2_000L) { attempt.await() }.kind,
+        )
+        val retryable = requireNotNull(database.workManagerHandoffCarrierDao.get(carrier.handoffId))
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE, retryable.state)
+        assertEquals(carrier.handoffId, retryable.generationId)
+        assertEquals(carrier.sourceId, retryable.sourceId)
+        assertEquals(carrier.sourceConfigurationGeneration, retryable.sourceConfigurationGeneration)
+        assertEquals(1, retryable.attempt)
+        assertTrue(retryable.requestId.isNotBlank())
+        assertTrue(retryable.requestId != carrier.requestId)
+
+        val retryRequestId = retryable.requestId
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = { null }
+        WorkManagerHandoffRecovery.enqueueOverrideForTesting = { _, _, request ->
+            requests += request
+            ControlledOperation().also { operations += it }
+        }
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        val recoveredOperation = withTimeout(5_000L) {
+            while (operations.isEmpty()) delay(5L)
+            operations.removeAt(0)
+        }
+        val recoveredRequest = requests.last()
+        assertEquals(retryRequestId, recoveredRequest.id.toString())
+        assertTrue(recoveredRequest.workSpec.initialDelay > 0L)
+        recoveredOperation.succeed()
+        withTimeout(2_000L) {
+            while (database.workManagerHandoffCarrierDao.get(carrier.handoffId)?.state !=
+                WorkManagerHandoffCarrier.ACCEPTED
+            ) {
+                delay(5L)
+            }
+        }
+        val recovered = requireNotNull(database.workManagerHandoffCarrierDao.get(carrier.handoffId))
+        assertEquals(WorkManagerHandoffCarrier.ACCEPTED, recovered.state)
+        assertEquals(retryRequestId, recovered.requestId)
+        assertEquals(1, recovered.attempt)
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+    }
+
+    @Test
+    fun acceptedObserveRecurrenceWithMissingWorkInfoRetainsExactOwnerOnRestart(): Unit = runBlocking {
+        val carrier = stageObserveRecurrence(803L)
+        val attempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, carrier.handoffId)
+        awaitOperation().succeed()
+        assertTrue(withTimeout(2_000L) { attempt.await() }.accepted)
+        val accepted = requireNotNull(database.workManagerHandoffCarrierDao.get(carrier.handoffId))
+        assertEquals(WorkManagerHandoffCarrier.ACCEPTED, accepted.state)
+
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = { null }
+        val enqueueCountBeforeRecovery = requests.size
+        WorkManagerHandoffRecovery.enqueueOverrideForTesting = { _, _, request ->
+            requests += request
+            ControlledOperation().also { operations += it }
+        }
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        val recovered = requireNotNull(database.workManagerHandoffCarrierDao.get(carrier.handoffId))
+        assertEquals(WorkManagerHandoffCarrier.ACCEPTED, recovered.state)
+        assertEquals(accepted.requestId, recovered.requestId)
+        assertEquals(enqueueCountBeforeRecovery, requests.size)
+    }
+
     private suspend fun lateAcceptedSchedulerRequestIsRevoked(boundary: String) {
         val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
             context,
@@ -361,6 +505,78 @@ class WorkManagerHandoffProductionTest {
             }
         }
         return requireNotNull(operation)
+    }
+
+    private suspend fun stageObserveRecurrence(sourceId: Long): WorkManagerHandoffCarrier {
+        val now = System.currentTimeMillis()
+        val template = DownloadItem(
+            id = 0L,
+            url = "https://example.com/observe-$sourceId",
+            title = "",
+            author = "",
+            thumb = "",
+            duration = "",
+            type = DownloadType.video,
+            format = Format(),
+            container = "",
+            downloadSections = "",
+            allFormats = mutableListOf(),
+            downloadPath = "",
+            website = "",
+            downloadSize = "",
+            playlistTitle = "",
+            audioPreferences = AudioPreferences(),
+            videoPreferences = VideoPreferences(),
+            extraCommands = "",
+            customFileNameTemplate = "",
+            SaveThumb = false,
+            status = "Queued",
+            downloadStartTime = 0L,
+            logID = null,
+        )
+        database.observeSourcesDao.insert(
+            ObserveSourcesItem(
+                id = sourceId,
+                name = "observe source $sourceId",
+                url = "https://example.com/observe-$sourceId",
+                downloadItemTemplate = template,
+                everyNr = 1,
+                everyCategory = ObserveSourcesRepository.EveryCategory.HOUR,
+                everyTime = now,
+                weeklyConfig = null,
+                monthlyConfig = null,
+                status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+                startsTime = now + TimeUnit.DAYS.toMillis(2),
+                endsDate = 0L,
+                endsAfterCount = 0,
+                runCount = 0,
+                getOnlyNewUploads = false,
+                retryMissingDownloads = false,
+                ignoredLinks = mutableListOf(),
+                alreadyProcessedLinks = mutableListOf(),
+                syncWithSource = false,
+            ),
+        )
+        val source = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        val result = RestoreMutationAdmission.withOrdinaryMutation(context) {
+            WorkManagerHandoffRecovery.commitObserveRunAndStageRecurrence(
+                context = context,
+                item = source.copy(
+                    runCount = 1,
+                    runHistory = mutableListOf("completed run"),
+                ),
+                revoke = false,
+                recurrenceHandoffId = "",
+                recurrenceRequestId = "",
+            )
+        }
+        assertTrue(result.committed)
+        return requireNotNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.OBSERVE_RECURRENCE,
+                sourceId.toString(),
+            ),
+        )
     }
 
     private class ControlledOperation : Operation {

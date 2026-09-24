@@ -983,6 +983,14 @@ object RestoreTransactionCoordinator {
                         System.currentTimeMillis(),
                     )
                 }
+                if (data.observeSources != null ||
+                    "observeSources" in record.journal.quiescedWorkTags.orEmpty()
+                ) {
+                    db.workManagerHandoffCarrierDao.markSupersededForKinds(
+                        listOf(WorkManagerHandoffCarrier.OBSERVE_RECURRENCE),
+                        System.currentTimeMillis(),
+                    )
+                }
                 data.queued?.let {
                     clearDownloadCategory { db.downloadDao.deleteQueued() }
                 }

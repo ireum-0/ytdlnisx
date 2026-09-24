@@ -20,6 +20,7 @@ import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.database.models.LowQualityRedownloadPhase
+import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.models.observeSources.ObservationPurposes
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
@@ -982,6 +983,22 @@ class BackupResetTransactionProductionWiringTest {
             managedKeywordSource(109L, conditionKey),
         )
         assertTrue(sourceId > 0L)
+        val source = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        val priorRecurrence = WorkManagerHandoffCarrier(
+            handoffId = "f11-observe-recurrence-$sourceId",
+            kind = WorkManagerHandoffCarrier.OBSERVE_RECURRENCE,
+            generationId = "f11-observe-recurrence-$sourceId",
+            requestId = "f11-observe-request-$sourceId",
+            uniqueWorkName = "OBSERVE$sourceId",
+            state = WorkManagerHandoffCarrier.ACCEPTED,
+            sourceId = sourceId,
+            sourceConfigurationGeneration = source.configurationGeneration,
+            boundary = sourceId.toString(),
+            notBeforeAt = System.currentTimeMillis() + 300_000L,
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis(),
+        )
+        assertTrue(database.workManagerHandoffCarrierDao.insert(priorRecurrence) != -1L)
 
         val outcome = RestoreTransactionCoordinator.begin(
             context,
@@ -994,6 +1011,20 @@ class BackupResetTransactionProductionWiringTest {
             ),
         )
         assertTrue(outcome is RestoreOutcome.Completed)
+        assertEquals(
+            WorkManagerHandoffCarrier.SUPERSEDED,
+            database.workManagerHandoffCarrierDao.get(priorRecurrence.handoffId)?.state,
+        )
+        assertNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.OBSERVE_RECURRENCE,
+                sourceId.toString(),
+            ),
+        )
+        database.workManagerHandoffCarrierDao.deleteExact(
+            priorRecurrence.handoffId,
+            priorRecurrence.requestId,
+        )
         assertEquals(
             1,
             unfinishedWork("OBSERVE$sourceId").size,

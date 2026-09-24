@@ -76,6 +76,8 @@ class ObserveSourceWorker(
         const val INPUT_HANDOFF_ID = "handoffId"
         const val INPUT_HANDOFF_REQUEST_ID = "handoffRequestId"
         const val INPUT_CONFIG_FINGERPRINT = "configFingerprint"
+        const val INPUT_RECURRENCE_HANDOFF_ID = "observeRecurrenceHandoffId"
+        const val INPUT_RECURRENCE_REQUEST_ID = "observeRecurrenceRequestId"
         private const val TAG_CONFIGURATION_GENERATION_PREFIX = "observeConfigurationGeneration_"
         private const val OBS_DUP_LOG_TAG = "ObserveDuplicate"
 
@@ -216,7 +218,12 @@ class ObserveSourceWorker(
         item.runInProgress = false
         item.currentRunStatus = ""
 
-        val finish = repo.finishRunAndSchedule(item, revoke = isFinished)
+        val finish = repo.finishRunAndSchedule(
+            item = item,
+            revoke = isFinished,
+            recurrenceHandoffId = inputData.getString(INPUT_RECURRENCE_HANDOFF_ID).orEmpty(),
+            recurrenceRequestId = inputData.getString(INPUT_RECURRENCE_REQUEST_ID).orEmpty(),
+        )
         if (!finish.committed) return Result.success()
         if (isFinished) {
             item.status = ObserveSourcesRepository.SourceStatus.STOPPED
@@ -276,6 +283,8 @@ class ObserveSourceWorker(
         if (expectedGeneration <= 0L) return reconcileLegacyObservationRequest(sourceID)
         val handoffId = inputData.getString(INPUT_HANDOFF_ID).orEmpty()
         val handoffRequestId = inputData.getString(INPUT_HANDOFF_REQUEST_ID).orEmpty()
+        val recurrenceHandoffId = inputData.getString(INPUT_RECURRENCE_HANDOFF_ID).orEmpty()
+        val recurrenceRequestId = inputData.getString(INPUT_RECURRENCE_REQUEST_ID).orEmpty()
         return try {
             val dbManager = ObserveSourceWorkerEffectTestHooks.dbManagerForTesting
                 ?: DBManager.getInstance(context)
@@ -308,6 +317,15 @@ class ObserveSourceWorker(
             if (item.status != ObserveSourcesRepository.SourceStatus.ACTIVE ||
                 item.configurationGeneration != expectedGeneration
             ) return Result.success()
+            if (recurrenceHandoffId.isNotBlank() || recurrenceRequestId.isNotBlank()) {
+                if (!WorkManagerHandoffRecovery.isCurrentObserveRecurrenceRequest(
+                    context = context,
+                    handoffId = recurrenceHandoffId,
+                    requestId = recurrenceRequestId,
+                    sourceId = sourceID,
+                    sourceConfigurationGeneration = expectedGeneration,
+                )) return Result.success()
+            }
             finishRunAndSchedule(
                 repo = repo,
                 item = item,
@@ -327,6 +345,8 @@ class ObserveSourceWorker(
         val expectedGeneration = inputData.getLong(INPUT_CONFIGURATION_GENERATION, 0L)
         if (sourceID == 0L) return Result.success()
         if (expectedGeneration <= 0L) return reconcileLegacyObservationRequest(sourceID)
+        val recurrenceHandoffId = inputData.getString(INPUT_RECURRENCE_HANDOFF_ID).orEmpty()
+        val recurrenceRequestId = inputData.getString(INPUT_RECURRENCE_REQUEST_ID).orEmpty()
         val confirmedCanonicalUrl = inputData.getString(INPUT_CONFIRMED_URL)?.let(::canonicalUrl)
         val confirmationDecision = inputData.getString(INPUT_CONFIRMATION_DECISION).orEmpty()
         val handoffId = inputData.getString(INPUT_HANDOFF_ID).orEmpty()
@@ -366,6 +386,15 @@ class ObserveSourceWorker(
         ) {
             if (handoffId.isNotBlank()) resolveConfirmedRetry(handoffId, handoffRequestId)
             return Result.success()
+        }
+        if (recurrenceHandoffId.isNotBlank() || recurrenceRequestId.isNotBlank()) {
+            if (!WorkManagerHandoffRecovery.isCurrentObserveRecurrenceRequest(
+                context = context,
+                handoffId = recurrenceHandoffId,
+                requestId = recurrenceRequestId,
+                sourceId = sourceID,
+                sourceConfigurationGeneration = expectedGeneration,
+            )) return Result.success()
         }
         if (
             handoffId.isNotBlank() &&

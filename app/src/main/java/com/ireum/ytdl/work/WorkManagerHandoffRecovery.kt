@@ -22,6 +22,7 @@ import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
+import com.ireum.ytdl.util.Extensions.calculateNextTimeForObserving
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -73,6 +74,14 @@ internal object WorkManagerHandoffRecovery {
             get() = kind == OutcomeKind.SUPERSEDED
     }
 
+    internal data class ObserveRunCommit(
+        val committed: Boolean,
+        val recurrenceHandoffId: String? = null,
+        val revokedMembershipDownloadIds: List<Long> = emptyList(),
+        val currentOwnerHandoffId: String? = null,
+        val supersededHandoffId: String? = null,
+    )
+
     private const val TAG = "WorkManagerHandoffRecovery"
     private const val START_WORK_NAME = "scheduled_download_start"
     private const val END_WORK_NAME = "scheduled_download_end"
@@ -111,6 +120,183 @@ internal object WorkManagerHandoffRecovery {
 
     @Volatile
     internal var cancelWorkByIdOperationOverrideForTesting: ((String) -> Operation)? = null
+
+    /**
+     * Commits worker-owned runtime state and its ordinary recurring successor
+     * debt atomically. The caller holds ordinary mutation admission; no
+     * WorkManager operation is awaited while this transaction/authority is held.
+     */
+    internal suspend fun commitObserveRunAndStageRecurrence(
+        context: Context,
+        item: ObserveSourcesItem,
+        revoke: Boolean,
+        recurrenceHandoffId: String,
+        recurrenceRequestId: String,
+    ): ObserveRunCommit {
+        val appContext = context.applicationContext
+        val hasHandoffId = recurrenceHandoffId.isNotBlank()
+        val hasRequestId = recurrenceRequestId.isNotBlank()
+        if (hasHandoffId != hasRequestId || RestoreGate.isRestoreInProgress(appContext)) {
+            return ObserveRunCommit(committed = false)
+        }
+
+        val db = database(appContext)
+        val carrierDao = db.workManagerHandoffCarrierDao
+        val boundary = item.id.toString()
+        val result = db.withTransaction {
+            if (RestoreGate.isRestoreInProgress(appContext)) {
+                return@withTransaction ObserveRunCommit(committed = false)
+            }
+            val currentSource = db.observeSourcesDao.getByIDOrNull(item.id)
+                ?: return@withTransaction ObserveRunCommit(committed = false)
+            if (currentSource.status != ObserveSourcesRepository.SourceStatus.ACTIVE ||
+                currentSource.configurationGeneration != item.configurationGeneration
+            ) {
+                return@withTransaction ObserveRunCommit(committed = false)
+            }
+
+            val outstanding = carrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.OBSERVE_RECURRENCE,
+                boundary,
+            )
+            if (hasHandoffId &&
+                (outstanding?.handoffId != recurrenceHandoffId ||
+                    outstanding.requestId != recurrenceRequestId ||
+                    outstanding.sourceId != item.id ||
+                    outstanding.sourceConfigurationGeneration != item.configurationGeneration)
+            ) {
+                return@withTransaction ObserveRunCommit(committed = false)
+            }
+
+            if (revoke) {
+                val revokedIds = db.observeSourcesDao.finishAndRevokeAndCancelWaitingIfGeneration(item)
+                    ?: return@withTransaction ObserveRunCommit(committed = false)
+                carrierDao.deleteOutstandingForBoundary(
+                    WorkManagerHandoffCarrier.OBSERVE_RECURRENCE,
+                    boundary,
+                )
+                return@withTransaction ObserveRunCommit(
+                    committed = true,
+                    revokedMembershipDownloadIds = revokedIds,
+                    supersededHandoffId = outstanding?.handoffId,
+                )
+            }
+
+            val updated = db.observeSourcesDao.updateRuntimeIfGeneration(
+                id = item.id,
+                expectedGeneration = item.configurationGeneration,
+                runCount = item.runCount,
+                ignoredLinks = item.ignoredLinks,
+                alreadyProcessedLinks = item.alreadyProcessedLinks,
+                runHistory = item.runHistory,
+                runInProgress = item.runInProgress,
+                currentRunStatus = item.currentRunStatus,
+                retryPromptedLinks = item.retryPromptedLinks,
+                observedLinks = item.observedLinks,
+            )
+            if (updated != 1) return@withTransaction ObserveRunCommit(committed = false)
+
+            val sourceAfterRuntime = db.observeSourcesDao.getByIDOrNull(item.id)
+                ?.takeIf {
+                    it.status == ObserveSourcesRepository.SourceStatus.ACTIVE &&
+                        it.configurationGeneration == item.configurationGeneration
+                }
+                ?: return@withTransaction ObserveRunCommit(committed = false)
+            val ownerAfterRuntime = carrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.OBSERVE_RECURRENCE,
+                boundary,
+            )
+
+            if (!hasHandoffId && ownerAfterRuntime != null &&
+                ownerAfterRuntime.sourceId == item.id &&
+                ownerAfterRuntime.sourceConfigurationGeneration == item.configurationGeneration
+            ) {
+                return@withTransaction ObserveRunCommit(
+                    committed = true,
+                    currentOwnerHandoffId = ownerAfterRuntime.handoffId,
+                )
+            }
+
+            var supersededHandoffId: String? = null
+            if (ownerAfterRuntime != null) {
+                supersededHandoffId = ownerAfterRuntime.handoffId
+                if (hasHandoffId) {
+                    carrierDao.deleteExact(ownerAfterRuntime.handoffId, ownerAfterRuntime.requestId)
+                } else {
+                    carrierDao.markSuperseded(
+                        ownerAfterRuntime.handoffId,
+                        ownerAfterRuntime.requestId,
+                        System.currentTimeMillis(),
+                    )
+                }
+            }
+
+            val handoffId = UUID.randomUUID().toString()
+            val now = System.currentTimeMillis()
+            val carrier = WorkManagerHandoffCarrier(
+                handoffId = handoffId,
+                kind = WorkManagerHandoffCarrier.OBSERVE_RECURRENCE,
+                generationId = handoffId,
+                requestId = UUID.randomUUID().toString(),
+                uniqueWorkName = "OBSERVE${item.id}",
+                sourceId = item.id,
+                sourceConfigurationGeneration = item.configurationGeneration,
+                boundary = boundary,
+                notBeforeAt = sourceAfterRuntime.calculateNextTimeForObserving(),
+                createdAt = now,
+                updatedAt = now,
+            )
+            check(carrierDao.insert(carrier) != -1L) {
+                "Observe recurrence carrier already exists: $handoffId"
+            }
+            ObserveRunCommit(
+                committed = true,
+                recurrenceHandoffId = handoffId,
+                supersededHandoffId = supersededHandoffId,
+            )
+        }
+
+        if (result.committed) {
+            val key = boundaryKey(WorkManagerHandoffCarrier.OBSERVE_RECURRENCE, boundary)
+            when {
+                result.recurrenceHandoffId != null ->
+                    latestGenerationByBoundary[key] = result.recurrenceHandoffId
+                result.currentOwnerHandoffId != null ->
+                    latestGenerationByBoundary[key] = result.currentOwnerHandoffId
+                revoke -> latestGenerationByBoundary[key] = CANCELLED_GENERATION
+            }
+            result.supersededHandoffId?.let { oldId ->
+                retryJobs.remove(oldId)?.cancel()
+                attemptJobs.remove(oldId)?.cancel()
+            }
+        }
+        return result
+    }
+
+    internal suspend fun isCurrentObserveRecurrenceRequest(
+        context: Context,
+        handoffId: String,
+        requestId: String,
+        sourceId: Long,
+        sourceConfigurationGeneration: Long,
+    ): Boolean {
+        if (handoffId.isBlank() || requestId.isBlank() || RestoreGate.isRestoreInProgress(context)) {
+            return false
+        }
+        val carrier = database(context).workManagerHandoffCarrierDao.get(handoffId)
+            ?: return false
+        return carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE &&
+            carrier.requestId == requestId &&
+            carrier.sourceId == sourceId &&
+            carrier.sourceConfigurationGeneration == sourceConfigurationGeneration &&
+            carrier.state in setOf(
+                WorkManagerHandoffCarrier.PENDING_ENQUEUE,
+                WorkManagerHandoffCarrier.ACCEPTED,
+            ) &&
+            isCurrentObserveRecurrenceAuthority(context, carrier) &&
+            isDurablyCurrentRetainedCarrier(context, carrier) &&
+            isCurrentGeneration(carrier)
+    }
 
     const val EXTRA_HANDOFF_ID = "workManagerHandoffId"
 
@@ -578,7 +764,8 @@ internal object WorkManagerHandoffRecovery {
 
     private fun retainsCarrierUntilWorkerTerminal(kind: String): Boolean =
         kind == WorkManagerHandoffCarrier.SCHEDULE_START ||
-            kind == WorkManagerHandoffCarrier.SCHEDULE_END
+            kind == WorkManagerHandoffCarrier.SCHEDULE_END ||
+            kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE
     private suspend fun reconcileSuperseded(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
@@ -602,8 +789,15 @@ internal object WorkManagerHandoffRecovery {
         carrier: WorkManagerHandoffCarrier,
     ) {
         if (RestoreGate.isRestoreInProgress(context)) return
-        if (retireStaleObserveRetryCarrier(context, carrier)) return
+        if (retireStaleObserveCarrier(context, carrier)) return
         if (!isCurrentGeneration(carrier)) return
+        if (!isCurrentObserveExecutionAuthority(context, carrier) ||
+            (carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE &&
+                !isDurablyCurrentRetainedCarrier(context, carrier))
+        ) {
+            retireStaleObserveCarrier(context, carrier)
+            return
+        }
         val workInfo = workInfo(context, carrier.requestId)
         if (carrier.state == WorkManagerHandoffCarrier.ACCEPTED) {
             when {
@@ -613,6 +807,10 @@ internal object WorkManagerHandoffRecovery {
                 }
                 carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD &&
                     workInfo?.state in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED) -> {
+                    retryAfterFailure(context, carrier, null)
+                }
+                carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE &&
+                    workInfo?.state?.isFinished == true -> {
                     retryAfterFailure(context, carrier, null)
                 }
                 retainsCarrierUntilWorkerTerminal(carrier.kind) && workInfo == null -> {
@@ -632,6 +830,12 @@ internal object WorkManagerHandoffRecovery {
                     }
                 }
             }
+            return
+        }
+        if (carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE &&
+            workInfo?.state == WorkInfo.State.SUCCEEDED
+        ) {
+            retryAfterFailure(context, carrier, null)
             return
         }
         when (workInfo?.state) {
@@ -696,7 +900,7 @@ internal object WorkManagerHandoffRecovery {
         return true
     }
 
-    private suspend fun isDurablyCurrentSchedulerCarrier(
+    private suspend fun isDurablyCurrentRetainedCarrier(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
     ): Boolean {
@@ -716,6 +920,29 @@ internal object WorkManagerHandoffRecovery {
         return source.status == ObserveSourcesRepository.SourceStatus.ACTIVE &&
             source.configurationGeneration == carrier.sourceConfigurationGeneration &&
             observeConfigFingerprint(source) == carrier.configFingerprint
+    }
+
+    private suspend fun isCurrentObserveRecurrenceAuthority(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+    ): Boolean {
+        if (carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RECURRENCE) return true
+        val source = database(context).observeSourcesDao.getByIDOrNull(carrier.sourceId) ?: return false
+        return carrier.boundary == carrier.sourceId.toString() &&
+            carrier.uniqueWorkName == "OBSERVE${carrier.sourceId}" &&
+            source.status == ObserveSourcesRepository.SourceStatus.ACTIVE &&
+            source.configurationGeneration == carrier.sourceConfigurationGeneration
+    }
+
+    private suspend fun isCurrentObserveExecutionAuthority(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+    ): Boolean = when (carrier.kind) {
+        WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD ->
+            isCurrentObserveRetryAuthority(context, carrier)
+        WorkManagerHandoffCarrier.OBSERVE_RECURRENCE ->
+            isCurrentObserveRecurrenceAuthority(context, carrier)
+        else -> true
     }
 
     /** Retires a stale exact request without ever cancelling a newer unique-work owner. */
@@ -740,6 +967,36 @@ internal object WorkManagerHandoffRecovery {
         return stale
     }
 
+    private suspend fun retireStaleObserveRecurrenceCarrier(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+    ): Boolean {
+        if (carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RECURRENCE) return false
+        val stale = withCarrierMutation(context, null) {
+            if (isCurrentObserveRecurrenceAuthority(context, carrier) &&
+                isDurablyCurrentRetainedCarrier(context, carrier)
+            ) {
+                false
+            } else {
+                database(context).workManagerHandoffCarrierDao.markSuperseded(
+                    carrier.handoffId,
+                    carrier.requestId,
+                    System.currentTimeMillis(),
+                )
+                true
+            }
+        }
+        if (stale) reconcileSuperseded(context, carrier)
+        return stale
+    }
+
+    private suspend fun retireStaleObserveCarrier(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+        authority: RestoreReconciliationAuthority? = null,
+    ): Boolean = retireStaleObserveRetryCarrier(context, carrier, authority) ||
+        retireStaleObserveRecurrenceCarrier(context, carrier)
+
     private suspend fun performAttempt(
         context: Context,
         handoffId: String,
@@ -751,10 +1008,14 @@ internal object WorkManagerHandoffRecovery {
             scheduleRetry(context, handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING)
         }
-        if (retireStaleObserveRetryCarrier(context, carrier, authority)) {
+        if (retireStaleObserveCarrier(context, carrier, authority)) {
             return EnqueueOutcome(OutcomeKind.SUPERSEDED)
         }
-        if (!isCurrentGeneration(carrier)) {
+        if (!isCurrentGeneration(carrier) ||
+            !isCurrentObserveExecutionAuthority(context, carrier) ||
+            (retainsCarrierUntilWorkerTerminal(carrier.kind) &&
+                !isDurablyCurrentRetainedCarrier(context, carrier))
+        ) {
             return EnqueueOutcome(OutcomeKind.SUPERSEDED)
         }
         if (carrier.state != WorkManagerHandoffCarrier.PENDING_ENQUEUE) {
@@ -767,7 +1028,9 @@ internal object WorkManagerHandoffRecovery {
             )
         }
         val remainingDelay = carrier.notBeforeAt - System.currentTimeMillis()
-        if (remainingDelay > 0L && authority == null) {
+        if (remainingDelay > 0L && authority == null &&
+            carrier.kind != WorkManagerHandoffCarrier.OBSERVE_RECURRENCE
+        ) {
             scheduleRetry(context, handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING)
         }
@@ -786,8 +1049,8 @@ internal object WorkManagerHandoffRecovery {
                 val operation = RestoreMutationAdmission.withOrdinaryMutation(context) {
                     if (!schedulerAuthorityAvailable(context, null) ||
                         !isCurrentGeneration(carrier) ||
-                        !isCurrentObserveRetryAuthority(context, carrier) ||
-                        !isDurablyCurrentSchedulerCarrier(context, carrier)
+                        !isCurrentObserveExecutionAuthority(context, carrier) ||
+                        !isDurablyCurrentRetainedCarrier(context, carrier)
                     ) {
                         null
                     } else {
@@ -813,13 +1076,10 @@ internal object WorkManagerHandoffRecovery {
                     RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
                     if (!schedulerAuthorityAvailable(context, authority) ||
                         !isCurrentGeneration(carrier) ||
-                        !isCurrentObserveRetryAuthority(context, carrier)
+                        !isCurrentObserveExecutionAuthority(context, carrier) ||
+                        (retainsCarrierUntilWorkerTerminal(carrier.kind) &&
+                            !isDurablyCurrentRetainedCarrier(context, carrier))
                     ) {
-                        if (isCurrentGeneration(carrier) &&
-                            !isCurrentObserveRetryAuthority(context, carrier)
-                        ) {
-                            dao.deleteExact(carrier.handoffId, carrier.requestId)
-                        }
                         null
                     } else {
                         val operation = enqueueUniqueWork(
@@ -837,7 +1097,7 @@ internal object WorkManagerHandoffRecovery {
                 }
             }
             if (result == null && schedulerAuthorityAvailable(context, authority) &&
-                retireStaleObserveRetryCarrier(context, carrier, authority)
+                retireStaleObserveCarrier(context, carrier, authority)
             ) {
                 return EnqueueOutcome(OutcomeKind.SUPERSEDED)
             }
@@ -863,7 +1123,8 @@ internal object WorkManagerHandoffRecovery {
             (
                 RestoreGate.isRestoreInProgress(context) ||
                     !isCurrentGeneration(carrier) ||
-                    !isDurablyCurrentSchedulerCarrier(context, carrier)
+                    !isCurrentObserveExecutionAuthority(context, carrier) ||
+                    !isDurablyCurrentRetainedCarrier(context, carrier)
                 )
         ) {
             revokeStaleRequest(context, carrier.requestId)
@@ -876,11 +1137,19 @@ internal object WorkManagerHandoffRecovery {
                 if (!isCurrentGeneration(carrier)) {
                     return@withCarrierMutation null
                 }
-                if (!isCurrentObserveRetryAuthority(context, carrier)) {
-                    dao.deleteExact(carrier.handoffId, carrier.requestId)
+                if (!isCurrentObserveExecutionAuthority(context, carrier)) {
+                    if (carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
+                        dao.deleteExact(carrier.handoffId, carrier.requestId)
+                    } else if (retainsCarrierUntilWorkerTerminal(carrier.kind)) {
+                        dao.markSuperseded(
+                            carrier.handoffId,
+                            carrier.requestId,
+                            System.currentTimeMillis(),
+                        )
+                    }
                     return@withCarrierMutation null
                 }
-                if (schedulerCarrier && !isDurablyCurrentSchedulerCarrier(context, carrier)) {
+                if (schedulerCarrier && !isDurablyCurrentRetainedCarrier(context, carrier)) {
                     return@withCarrierMutation null
                 }
                 val accepted = dao.markAccepted(
@@ -893,7 +1162,10 @@ internal object WorkManagerHandoffRecovery {
                     if (
                         current == null ||
                         current.requestId != carrier.requestId ||
-                        !isCurrentGeneration(carrier)
+                        !isCurrentGeneration(carrier) ||
+                        !isCurrentObserveExecutionAuthority(context, carrier) ||
+                        (schedulerCarrier &&
+                            !isDurablyCurrentRetainedCarrier(context, carrier))
                     ) {
                         null
                     } else {
@@ -953,19 +1225,29 @@ internal object WorkManagerHandoffRecovery {
             scheduleRetry(context, carrier.handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING, failure)
         }
-        if (retireStaleObserveRetryCarrier(context, carrier, authority)) {
+        if (retireStaleObserveCarrier(context, carrier, authority)) {
             return EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
         }
 
         val existingWork = workInfo(context, carrier.requestId)
         if (existingWork != null &&
-            existingWork.state !in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED)
+            existingWork.state !in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED) &&
+            !(carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE &&
+                existingWork.state.isFinished)
         ) {
             val outcome = try {
                 withCarrierMutation(context, authority) {
                     val dao = database(context).workManagerHandoffCarrierDao
-                    if (!isCurrentObserveRetryAuthority(context, carrier)) {
-                        dao.deleteExact(carrier.handoffId, carrier.requestId)
+                    if (!isCurrentObserveExecutionAuthority(context, carrier)) {
+                        if (carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
+                            dao.deleteExact(carrier.handoffId, carrier.requestId)
+                        } else if (retainsCarrierUntilWorkerTerminal(carrier.kind)) {
+                            dao.markSuperseded(
+                                carrier.handoffId,
+                                carrier.requestId,
+                                System.currentTimeMillis(),
+                            )
+                        }
                         return@withCarrierMutation EnqueueOutcome(
                             OutcomeKind.SUPERSEDED,
                             failure,
@@ -974,7 +1256,7 @@ internal object WorkManagerHandoffRecovery {
                     if (
                         !isCurrentGeneration(carrier) ||
                         (retainsCarrierUntilWorkerTerminal(carrier.kind) &&
-                            !isDurablyCurrentSchedulerCarrier(context, carrier))
+                            !isDurablyCurrentRetainedCarrier(context, carrier))
                     ) {
                         return@withCarrierMutation EnqueueOutcome(
                             OutcomeKind.SUPERSEDED,
@@ -1021,7 +1303,7 @@ internal object WorkManagerHandoffRecovery {
                 }
                 throw blocked
             }
-            if (outcome.superseded) retireStaleObserveRetryCarrier(context, carrier, authority)
+            if (outcome.superseded) retireStaleObserveCarrier(context, carrier, authority)
             return outcome
         }
 
@@ -1033,14 +1315,26 @@ internal object WorkManagerHandoffRecovery {
                         OutcomeKind.SUPERSEDED,
                         failure,
                     )
-                if (!isCurrentObserveRetryAuthority(context, carrier)) {
-                    dao.deleteExact(carrier.handoffId, carrier.requestId)
+                if (!isCurrentObserveExecutionAuthority(context, carrier)) {
+                    if (carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD) {
+                        dao.deleteExact(carrier.handoffId, carrier.requestId)
+                    } else if (retainsCarrierUntilWorkerTerminal(carrier.kind)) {
+                        dao.markSuperseded(
+                            carrier.handoffId,
+                            carrier.requestId,
+                            System.currentTimeMillis(),
+                        )
+                    }
                     return@withCarrierMutation EnqueueOutcome(
                         OutcomeKind.SUPERSEDED,
                         failure,
                     )
                 }
-                if (current.requestId != carrier.requestId || !isCurrentGeneration(carrier)) {
+                if (current.requestId != carrier.requestId ||
+                    !isCurrentGeneration(carrier) ||
+                    (retainsCarrierUntilWorkerTerminal(carrier.kind) &&
+                        !isDurablyCurrentRetainedCarrier(context, carrier))
+                ) {
                     return@withCarrierMutation EnqueueOutcome(
                         OutcomeKind.SUPERSEDED,
                         failure,
@@ -1076,7 +1370,7 @@ internal object WorkManagerHandoffRecovery {
             }
             throw blocked
         }
-        if (outcome.superseded) retireStaleObserveRetryCarrier(context, carrier, authority)
+        if (outcome.superseded) retireStaleObserveCarrier(context, carrier, authority)
         if (outcome.kind == OutcomeKind.RETRYING) {
             scheduleRetry(context, carrier.handoffId, authority)
         }
@@ -1096,7 +1390,13 @@ internal object WorkManagerHandoffRecovery {
                 } ?: return@launch
                 if (carrier.state != WorkManagerHandoffCarrier.PENDING_ENQUEUE) return@launch
 
-                val waitForSchedule = carrier.notBeforeAt - System.currentTimeMillis()
+                val waitForSchedule = if (
+                    carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE
+                ) {
+                    0L
+                } else {
+                    carrier.notBeforeAt - System.currentTimeMillis()
+                }
                 if (waitForSchedule > 0L) {
                     delay(waitForSchedule)
                 } else if (firstAttempt) {
@@ -1356,6 +1656,40 @@ internal object WorkManagerHandoffRecovery {
                     .build()
             }
 
+            WorkManagerHandoffCarrier.OBSERVE_RECURRENCE -> {
+                val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+                val networkType = if (preferences.getBoolean("metered_networks", true)) {
+                    NetworkType.CONNECTED
+                } else {
+                    NetworkType.UNMETERED
+                }
+                val observeInput = Data.Builder()
+                    .putLong(ObserveSourceWorker.INPUT_SOURCE_ID, carrier.sourceId)
+                    .putLong(
+                        ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION,
+                        carrier.sourceConfigurationGeneration,
+                    )
+                    .putString(ObserveSourceWorker.INPUT_RECURRENCE_HANDOFF_ID, carrier.handoffId)
+                    .putString(ObserveSourceWorker.INPUT_RECURRENCE_REQUEST_ID, carrier.requestId)
+                    .build()
+                OneTimeWorkRequestBuilder<ObserveSourceWorker>()
+                    .setId(requestId)
+                    .addTag("observeSources")
+                    .addTag("observation_${carrier.sourceId}")
+                    .addTag(carrier.sourceId.toString())
+                    .addTag(
+                        ObserveSourceWorker.configurationGenerationTag(
+                            carrier.sourceConfigurationGeneration,
+                        ),
+                    )
+                    .setConstraints(
+                        Constraints.Builder().setRequiredNetworkType(networkType).build(),
+                    )
+                    .setInputData(observeInput)
+                    .setInitialDelay(initialDelay, TimeUnit.MILLISECONDS)
+                    .build()
+            }
+
             else -> error("Unknown WorkManager handoff kind ${carrier.kind}")
         }
     }
@@ -1416,8 +1750,13 @@ internal object WorkManagerHandoffRecovery {
     private fun boundaryLock(kind: String, boundary: String): Any =
         boundaryLocks.getOrPut(boundaryKey(kind, boundary)) { Any() }
 
-    private fun isCurrentGeneration(carrier: WorkManagerHandoffCarrier): Boolean =
-        latestGenerationByBoundary[boundaryKey(carrier.kind, carrier.boundary)]
+    private fun isCurrentGeneration(carrier: WorkManagerHandoffCarrier): Boolean {
+        // Recurrence authority is the exact durable owner plus source
+        // generation. A process-local map can lag a committed transaction if
+        // its worker is cancelled before this process refreshes the map.
+        if (carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE) return true
+        return latestGenerationByBoundary[boundaryKey(carrier.kind, carrier.boundary)]
             ?.let { it == carrier.handoffId }
             ?: true
+    }
 }

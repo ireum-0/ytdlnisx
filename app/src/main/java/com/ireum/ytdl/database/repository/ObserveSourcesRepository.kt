@@ -18,6 +18,7 @@ import com.ireum.ytdl.database.dao.ObserveSourcesDao
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.util.Extensions.calculateNextTimeForObserving
 import com.ireum.ytdl.work.ObserveSourceWorker
+import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import kotlinx.coroutines.flow.Flow
 import java.util.concurrent.TimeUnit
 
@@ -221,33 +222,38 @@ class ObserveSourcesRepository(
     suspend fun finishRunAndSchedule(
         item: ObserveSourcesItem,
         revoke: Boolean,
+        recurrenceHandoffId: String = "",
+        recurrenceRequestId: String = "",
     ): FinishRunResult {
         beforeFinalEffectForTesting?.invoke(
             FinalEffect.SUCCESSOR_PUBLICATION,
             item.id,
             item.configurationGeneration,
         )
-        return withOrdinaryMutation {
-        val revokedMembershipDownloadIds = if (revoke) {
-            observeSourcesDao.finishAndRevokeAndCancelWaitingIfGeneration(item)
-                ?: return@withOrdinaryMutation FinishRunResult(committed = false)
-        } else {
-            if (updateRuntime(item) != 1) {
-                return@withOrdinaryMutation FinishRunResult(committed = false)
+        val appContext = context?.applicationContext
+            ?: return FinishRunResult(committed = false)
+        var recurrenceToConverge: String? = null
+        val result = withOrdinaryMutation {
+            val commit = WorkManagerHandoffRecovery.commitObserveRunAndStageRecurrence(
+                context = appContext,
+                item = item,
+                revoke = revoke,
+                recurrenceHandoffId = recurrenceHandoffId,
+                recurrenceRequestId = recurrenceRequestId,
+            )
+            if (!commit.committed) return@withOrdinaryMutation FinishRunResult(committed = false)
+            if (revoke) {
+                cancelObservationTaskByIDInternal(item.id)
+            } else {
+                recurrenceToConverge = commit.recurrenceHandoffId ?: commit.currentOwnerHandoffId
             }
-            emptyList()
-        }
-        if (revoke) {
-            cancelObservationTaskByIDInternal(item.id)
-            return@withOrdinaryMutation FinishRunResult(
+            FinishRunResult(
                 committed = true,
-                revokedMembershipDownloadIds = revokedMembershipDownloadIds,
+                revokedMembershipDownloadIds = commit.revokedMembershipDownloadIds,
             )
         }
-        val current = observeSourcesDao.getByIDOrNull(item.id)
-            ?: return@withOrdinaryMutation FinishRunResult(committed = false)
-        FinishRunResult(committed = enqueueObservation(current, null) != null)
-        }
+        recurrenceToConverge?.let { WorkManagerHandoffRecovery.ensureConvergence(appContext, it) }
+        return result
     }
 
     fun cancelObservationTaskByID(id: Long) {
