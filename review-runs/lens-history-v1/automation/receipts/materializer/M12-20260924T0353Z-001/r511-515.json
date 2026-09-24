@@ -1,0 +1,181 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "segment_range": [
+    511,
+    515
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M12-20260924T0353Z-001/r506-510.json",
+    "blob_sha": "830726e8f4b63a06dcf7995a7c46f21105f34160"
+  },
+  "rank_receipts": [
+    {
+      "rank": 511,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r511.json",
+      "blob_sha": "891c0a1bbd3b3d964f33457dcf6aa831258a7fb4"
+    },
+    {
+      "rank": 512,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r512.json",
+      "blob_sha": "65ae22cb532c86a822258bf09839346f8142d47c"
+    },
+    {
+      "rank": 513,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r513.json",
+      "blob_sha": "fea912ddd0f61c0e2cc8919bd144a84dcdff39a4"
+    },
+    {
+      "rank": 514,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r514.json",
+      "blob_sha": "a5209fb4760edbf5c44cbcb17df5ebae3dbc3553"
+    },
+    {
+      "rank": 515,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r515.json",
+      "blob_sha": "6eb50a49e0224c22a8136f2b581018f17df92bd3"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      511,
+      512,
+      513,
+      514,
+      515
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "focused correction-boundary checkpoint has no explicit supported structural kind and does not fit the deterministic document-identity-v1 positive marker set without inference",
+        "rank": 511,
+        "source_blob_sha": "89c203473a2c6a84b36b8d4026411c68a64074e6"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly defines the root/alias boundary against F17 BUG-HISTORY-01 and stabilizes the minimal correction scope",
+        "rank": 511,
+        "source_blob_sha": "89c203473a2c6a84b36b8d4026411c68a64074e6"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly records root-count delta 0 and P0 3 / P1 3 / P2 26",
+        "rank": 511,
+        "source_blob_sha": "89c203473a2c6a84b36b8d4026411c68a64074e6"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records independent source/structural review executed but independent JVM/instrumentation/device execution NOT EXECUTED",
+        "rank": 511,
+        "source_blob_sha": "89c203473a2c6a84b36b8d4026411c68a64074e6"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "completed identity review contains final-disposition language but no explicit supported structural kind field",
+        "rank": 512,
+        "source_blob_sha": "30e4e7499dd75767fe2e73bf867b702e5c1bbd62"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly performs canonical handoff/count reconciliation and restores an omitted distinct History duplicate-identity root",
+        "rank": 512,
+        "source_blob_sha": "30e4e7499dd75767fe2e73bf867b702e5c1bbd62"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly changes canonical P2 count from 25 to 26, delta +1",
+        "rank": 512,
+        "source_blob_sha": "30e4e7499dd75767fe2e73bf867b702e5c1bbd62"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source confirms provider-local documentId namespace collision as a +0 subfinding under existing BUG-LOCALADD-01",
+        "rank": 512,
+        "source_blob_sha": "30e4e7499dd75767fe2e73bf867b702e5c1bbd62"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves the Share global result-table/session-isolation candidate and Youtuber restored visible-child-ID runtime effect unverified",
+        "rank": 512,
+        "source_blob_sha": "30e4e7499dd75767fe2e73bf867b702e5c1bbd62"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records independent source/structural review executed but independent JVM/instrumentation/device execution NOT EXECUTED",
+        "rank": 512,
+        "source_blob_sha": "30e4e7499dd75767fe2e73bf867b702e5c1bbd62"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly confirms the canonical inventory remains P0 3 / P1 3 / P2 26 with no new root, subfinding, or status change",
+        "rank": 513,
+        "source_blob_sha": "6d995c122dc766c2ef9039e9004a79b4b3c5760c"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has remaining final recount/checkpoint scope and no explicit structural kind",
+        "rank": 514,
+        "source_blob_sha": "7190e7b0a4af754ce81d4f31f910c5ce93862b9e"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly preserves P0 3 / P1 3 / P2 26 with no status change or new root/subfinding",
+        "rank": 514,
+        "source_blob_sha": "7190e7b0a4af754ce81d4f31f910c5ce93862b9e"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "runtime/emulator/device behavior remains NOT_VERIFIED and final exact-SHA/governance recount is still pending",
+        "rank": 514,
+        "source_blob_sha": "7190e7b0a4af754ce81d4f31f910c5ce93862b9e"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic run-bootstrap correctness review checkpoint lacks an explicit structural kind",
+        "rank": 515,
+        "source_blob_sha": "3e205f33ffff38ff172dc3e815e4ec39c7293b09"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source carries P0 3 / P1 3 / P2 26 only as prior inventory pending current-source revalidation where touched",
+        "rank": 515,
+        "source_blob_sha": "3e205f33ffff38ff172dc3e815e4ec39c7293b09"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves LocalAdd, Observe, ordinary Download handoff and other identity/async/suppression candidates for full current-source traversal and final recount",
+        "rank": 515,
+        "source_blob_sha": "3e205f33ffff38ff172dc3e815e4ec39c7293b09"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 491-540 is receipted"
+  }
+}
