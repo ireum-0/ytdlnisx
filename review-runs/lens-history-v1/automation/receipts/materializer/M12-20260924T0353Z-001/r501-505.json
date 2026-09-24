@@ -1,0 +1,206 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "segment_range": [
+    501,
+    505
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M12-20260924T0353Z-001/r496-500.json",
+    "blob_sha": "351dcc853a25e4e7170451c8e515002f3be8cece"
+  },
+  "rank_receipts": [
+    {
+      "rank": 501,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r501.json",
+      "blob_sha": "bcd5fcc4765ed68ab23691d32b89dd9c47225d42"
+    },
+    {
+      "rank": 502,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r502.json",
+      "blob_sha": "3ea92f60cfba995d7c9834fcd50d517cbc0b3b8a"
+    },
+    {
+      "rank": 503,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r503.json",
+      "blob_sha": "3461e0df42337258b85edbf2ed6f8ba3ddb3cfff"
+    },
+    {
+      "rank": 504,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r504.json",
+      "blob_sha": "c8696e1c0c73be45347e3b44bc8cfa925bee433f"
+    },
+    {
+      "rank": 505,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r505.json",
+      "blob_sha": "76899a6c723c5c501b24b41674bd1d167ce91e3a"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      501,
+      502,
+      503,
+      504,
+      505
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint records a provisional closure candidate and remaining review scope without an explicit structural kind field",
+        "rank": 501,
+        "source_blob_sha": "3278ca49e2ad67a6a3f8d5ed6a0ce4b6d103b4ef"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source records P0 3 / P1 3 / P2 25 only if current closure survives final surrounding regression review; prior count was 26",
+        "rank": 501,
+        "source_blob_sha": "3278ca49e2ad67a6a3f8d5ed6a0ce4b6d103b4ef"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source labels the disposition FIXED candidate and explicitly leaves surrounding regression review, recount, fresh-ref recount, and final checkpoint outstanding",
+        "rank": 501,
+        "source_blob_sha": "3278ca49e2ad67a6a3f8d5ed6a0ce4b6d103b4ef"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves generic coarse-equivalence regression pending a concrete extractor-semantic counterexample and keeps F17 as a separate pre-existing root",
+        "rank": 501,
+        "source_blob_sha": "3278ca49e2ad67a6a3f8d5ed6a0ce4b6d103b4ef"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has provisional findings and remaining scope but no explicit structural kind",
+        "rank": 502,
+        "source_blob_sha": "6391be9f99149f516a34d00b3578f08bcbdd8d27"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly records canonical carry-forward minimum pending current-SHA revalidation as P0 3 / P1 3 / P2 26",
+        "rank": 502,
+        "source_blob_sha": "6391be9f99149f516a34d00b3578f08bcbdd8d27"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source states the fragment subcase may be fixed but root closure is not yet established and requires full current consumer/authority-effect trace",
+        "rank": 502,
+        "source_blob_sha": "6391be9f99149f516a34d00b3578f08bcbdd8d27"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves fragment conservatism, query/path normalization, replacement-source identity and destructive grouping/retained-row relation semantics as open review questions",
+        "rank": 502,
+        "source_blob_sha": "6391be9f99149f516a34d00b3578f08bcbdd8d27"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "source is explicitly a reconciliation record but also states 'Verdict: NOT_CLEAN / REVIEW COMPLETE / CORRECTION BOUNDARY STABLE', leaving the document-identity-v1 non-final condition not safely derivable",
+        "rank": 503,
+        "source_blob_sha": "6ece97afe12f2e88b77022316f8f2e0a9f73dca2"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "title and body explicitly identify a History duplicate identity fragment reconciliation and refine the already-counted root",
+        "rank": 503,
+        "source_blob_sha": "6ece97afe12f2e88b77022316f8f2e0a9f73dca2"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source confirms fragment-sensitive generic WEB_URL identity collapse as a concrete destructive false-positive equivalence within the existing root",
+        "rank": 503,
+        "source_blob_sha": "6ece97afe12f2e88b77022316f8f2e0a9f73dca2"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly records Canonical blocker-count delta: +0 and preserves P0 3 / P1 3 / P2 26",
+        "rank": 503,
+        "source_blob_sha": "6ece97afe12f2e88b77022316f8f2e0a9f73dca2"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly labels a new P2 subfinding within the existing root: fragment-distinct supported generic URLs can collapse into one destructive duplicate key",
+        "rank": 504,
+        "source_blob_sha": "14a8ea32d74bf8b9de2a6452130822f0811aaeb5"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly states canonical count delta is 0 and preserves P0 3 / P1 3 / P2 26",
+        "rank": 504,
+        "source_blob_sha": "14a8ea32d74bf8b9de2a6452130822f0811aaeb5"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves independent JVM/instrumentation/emulator/device execution NOT_VERIFIED and records an open repair constraint around fragment-preserving conservative identity",
+        "rank": 504,
+        "source_blob_sha": "14a8ea32d74bf8b9de2a6452130822f0811aaeb5"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has remaining review scope and no explicit supported whole-document structural kind marker",
+        "rank": 505,
+        "source_blob_sha": "4584ced85ef56dd5a8c1a765e966d3733c007d39"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly confirms a same-root P2 subfinding where fragment-distinct supported generic URLs collapse to one destructive key",
+        "rank": 505,
+        "source_blob_sha": "4584ced85ef56dd5a8c1a765e966d3733c007d39"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly states canonical count delta 0 and preserves P0 3 / P1 3 / P2 26",
+        "rank": 505,
+        "source_blob_sha": "4584ced85ef56dd5a8c1a765e966d3733c007d39"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source labels the severity inventory and new P2 subfinding provisional pending final recount/checkpoint",
+        "rank": 505,
+        "source_blob_sha": "4584ced85ef56dd5a8c1a765e966d3733c007d39"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves independent execution NOT_VERIFIED and requires final recount/final checkpoint before verdict",
+        "rank": 505,
+        "source_blob_sha": "4584ced85ef56dd5a8c1a765e966d3733c007d39"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 491-540 is receipted"
+  }
+}
