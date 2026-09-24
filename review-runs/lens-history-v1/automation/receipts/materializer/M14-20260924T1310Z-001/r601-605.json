@@ -1,0 +1,280 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "segment_range": [
+    601,
+    605
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M14-20260924T1310Z-001/r596-600.json",
+    "blob_sha": "4a9712ffb25fca66dfb8516ddf1cea427a3f3ab8"
+  },
+  "rank_receipts": [
+    {
+      "rank": 601,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r601.json",
+      "blob_sha": "53810d9ee3fe4f4d96d5fb5d2af649c839ad5333"
+    },
+    {
+      "rank": 602,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r602.json",
+      "blob_sha": "76c739dc3b56a1d0e7479a560e97788cc22ba749"
+    },
+    {
+      "rank": 603,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r603.json",
+      "blob_sha": "613c522ded6b934ee24448e429c0832b2afbbb2e"
+    },
+    {
+      "rank": 604,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r604.json",
+      "blob_sha": "4eba8ae56a81701e13082a9500d12750a1580c66"
+    },
+    {
+      "rank": 605,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r605.json",
+      "blob_sha": "c89929e2b16de40ba89b68e946975a96fb9c463d"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      601,
+      602,
+      603,
+      604,
+      605
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 601,
+        "source_blob_sha": "295cfcd8c84cd1a6cf04944943188e0371edfbc5"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly labels New P2 — BUG-SCHEDULE-01",
+        "rank": 601,
+        "source_blob_sha": "295cfcd8c84cd1a6cf04944943188e0371edfbc5"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly records a second scheduling subcase under the same scheduling-authority root",
+        "rank": 601,
+        "source_blob_sha": "295cfcd8c84cd1a6cf04944943188e0371edfbc5"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-OBSERVE-HANDOFF-01",
+        "evidence": "source explicitly labels New P2 — BUG-OBSERVE-HANDOFF-01",
+        "rank": 601,
+        "source_blob_sha": "295cfcd8c84cd1a6cf04944943188e0371edfbc5"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records canonical working recount P0 2 / P1 3 / P2 19",
+        "rank": 601,
+        "source_blob_sha": "295cfcd8c84cd1a6cf04944943188e0371edfbc5"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records Independent execution: NOT EXECUTED and no Review Basis advancement",
+        "rank": 601,
+        "source_blob_sha": "295cfcd8c84cd1a6cf04944943188e0371edfbc5"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 602,
+        "source_blob_sha": "d0552efb4e93ee119ce9278f1c63ab0b82866400"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-CLEANUP-01/F10",
+        "evidence": "source explicitly records F10 OPEN P2 as a newly completed disposition in this pass",
+        "rank": 602,
+        "source_blob_sha": "d0552efb4e93ee119ce9278f1c63ab0b82866400"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-DATE-01/F15",
+        "evidence": "source explicitly records F15 OPEN P2 as a newly completed disposition in this pass",
+        "rank": 602,
+        "source_blob_sha": "d0552efb4e93ee119ce9278f1c63ab0b82866400"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-DATE-02/F16",
+        "evidence": "source explicitly records F16 OPEN P2 as a newly completed disposition in this pass",
+        "rank": 602,
+        "source_blob_sha": "d0552efb4e93ee119ce9278f1c63ab0b82866400"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-BACKUP-04/F4",
+        "evidence": "source explicitly rejects the concurrent NOT_VERIFIED treatment and independently completes F4 as OPEN P1",
+        "rank": 602,
+        "source_blob_sha": "d0552efb4e93ee119ce9278f1c63ab0b82866400"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-BACKUP-03/F11",
+        "evidence": "source explicitly rejects the concurrent NOT_VERIFIED treatment and independently completes F11 as OPEN P0",
+        "rank": 602,
+        "source_blob_sha": "d0552efb4e93ee119ce9278f1c63ab0b82866400"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records canonical working recount P0 2 / P1 3 / P2 17",
+        "rank": 602,
+        "source_blob_sha": "d0552efb4e93ee119ce9278f1c63ab0b82866400"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "evidence": "source explicitly reconciles against concurrent checkpoint P0 1 / P1 2 / P2 9 and declines to adopt it as semantic authority",
+        "rank": 602,
+        "source_blob_sha": "d0552efb4e93ee119ce9278f1c63ab0b82866400"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records Independent execution: NOT EXECUTED and keeps the fixed Review Basis because the next implementation correction boundary was independently NOT_CLEAN",
+        "rank": 602,
+        "source_blob_sha": "d0552efb4e93ee119ce9278f1c63ab0b82866400"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final provisional severity recount P0 1 / P1 2 / P2 9 and states it is an independently substantiated current-run count",
+        "rank": 603,
+        "source_blob_sha": "f02e635ea8d44bdef28ddfa44fade08891ea026f"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels the severity recount final provisional and excludes F4/F11 from the count because current-source proof was incomplete",
+        "rank": 603,
+        "source_blob_sha": "f02e635ea8d44bdef28ddfa44fade08891ea026f"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-BACKUP-04/F4",
+        "evidence": "source explicitly records F4 / BUG-BACKUP-04 NOT_VERIFIED in this run and requires a dedicated backup/Reset full-path pass",
+        "rank": 603,
+        "source_blob_sha": "f02e635ea8d44bdef28ddfa44fade08891ea026f"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-BACKUP-03/F11",
+        "evidence": "source explicitly records F11 / BUG-BACKUP-03 NOT_VERIFIED in this run and requires a dedicated backup/Reset full-path pass",
+        "rank": 603,
+        "source_blob_sha": "f02e635ea8d44bdef28ddfa44fade08891ea026f"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source retains prior current-SHA Download/duplicate/local/player dispositions because implementation SHA and cited production paths are unchanged, while prior yt-dlp archive timing was not freshly refetched and instrumentation/device execution remains NOT_VERIFIED",
+        "rank": 603,
+        "source_blob_sha": "f02e635ea8d44bdef28ddfa44fade08891ea026f"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint retains final recount/final-checkpoint work and lacks an explicit supported structural kind",
+        "rank": 604,
+        "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels the current P0/P1/P2 section provisional and says prior six P2 findings remain queued for current-run recount",
+        "rank": 604,
+        "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-OBSERVE-01/F3",
+        "evidence": "source records F3 / BUG-OBSERVE-01 OPEN among the restored findings after independent current-source revalidation",
+        "rank": 604,
+        "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-KEYWORD-01/F12",
+        "evidence": "source records F12 / BUG-KEYWORD-01 OPEN among the restored findings after independent current-source revalidation",
+        "rank": 604,
+        "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-METADATA-02/F13",
+        "evidence": "source records F13 / BUG-METADATA-02 OPEN among the restored findings after independent current-source revalidation",
+        "rank": 604,
+        "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-METADATA-01/F14",
+        "evidence": "source records F14 / BUG-METADATA-01 OPEN among the restored findings after independent current-source revalidation",
+        "rank": 604,
+        "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly leaves F4, F11, F17, F18 and the prior P2 B/C/J/K/L/M recount pending current-source adjudication",
+        "rank": 604,
+        "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly says review-branch candidate checkpoints were not adopted as evidence and claims were revalidated against production SHA",
+        "rank": 604,
+        "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint is provisional and lacks an explicit supported structural kind",
+        "rank": 605,
+        "source_blob_sha": "a0114c3857e6ef32b93a5bb5a73fbc2e143d2067"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly carries previous independently reproduced open set P0 0 / P1 0 / P2 6 pending full current-source recount",
+        "rank": 605,
+        "source_blob_sha": "a0114c3857e6ef32b93a5bb5a73fbc2e143d2067"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly records metadata F13/F14 and older F3/F4/F11/F12/F17/F18 claims as not yet adopted and requiring pinned-production revalidation",
+        "rank": 605,
+        "source_blob_sha": "a0114c3857e6ef32b93a5bb5a73fbc2e143d2067"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source treats the newest review/remediation metadata checkpoint only as candidate inventory, says prior closure claims will be revalidated rather than inherited, and keeps upstream semantics NOT_VERIFIED until fetched",
+        "rank": 605,
+        "source_blob_sha": "a0114c3857e6ef32b93a5bb5a73fbc2e143d2067"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 591-640 is receipted"
+  }
+}
