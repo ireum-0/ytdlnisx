@@ -1,0 +1,111 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "rank": 631,
+  "materializer_state_blob": "57535e794a7962b74dbe89ebab2bec1c5b424b85",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r630.json",
+    "blob_sha": "5af870aa610c0a74cd370d44fd82a0a8443f0f51"
+  },
+  "history": {
+    "commit_sha": "c24da2340f9191d0344e27c8471921aa1df90732",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=631"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-09T192230Z__8de0e0f8__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "70156cfa759a598321643e77679806b2854b09da",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "70156cfa759a598321643e77679806b2854b09da",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-09T192230Z__8de0e0f8__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "70156cfa759a598321643e77679806b2854b09da",
+    "frozen_blob_sha": "70156cfa759a598321643e77679806b2854b09da",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "8de0e0f8aa7c0f4294c41b4b6e958acf53a778fa",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic Independent correctness review checkpoint records bootstrap/re-proof scope and remaining review work but lacks an explicit or rule-allowed positive structural kind"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {}
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 4 pending full production-path retrace"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "source explicitly leaves Terminal native generation carrier, ordinary History post-commit crash window, provider commit/source-retirement re-entry, F19 duplicate canonical identity, and adjacent-consumer violations for independent re-proof"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source carries prior open-finding inventory only as hypotheses for independent re-proof and says upstream-dependent claims remain NOT_VERIFIED until rechecked"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
