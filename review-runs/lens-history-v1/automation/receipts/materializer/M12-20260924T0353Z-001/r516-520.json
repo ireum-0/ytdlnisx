@@ -1,0 +1,205 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "segment_range": [
+    516,
+    520
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M12-20260924T0353Z-001/r511-515.json",
+    "blob_sha": "dfa561333e505cbba8011ade65b9e304d64d3379"
+  },
+  "rank_receipts": [
+    {
+      "rank": 516,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r516.json",
+      "blob_sha": "82f8b1afadc1a0966c2b58daf292b8726ddf5e24"
+    },
+    {
+      "rank": 517,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r517.json",
+      "blob_sha": "5619dd06d545ea7acf66dec88854e82badb11722"
+    },
+    {
+      "rank": 518,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r518.json",
+      "blob_sha": "22d5659338c5a909a05842a51ab2bc253329d8c6"
+    },
+    {
+      "rank": 519,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r519.json",
+      "blob_sha": "89224eb2a968e1140af92b61196455045b0ce3da"
+    },
+    {
+      "rank": 520,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r520.json",
+      "blob_sha": "ffdfe9cb09c53f2c016416b4d46cafbe3ba5a329"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      516,
+      517,
+      518,
+      519,
+      520
+    ],
+    "triggers": [
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source confirms provider-local documentId namespace collision as a new P2 subfinding under the existing root",
+        "rank": 516,
+        "source_blob_sha": "8e880c1fa0dbe38dbf818395ac301c8e181c8e86"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source explicitly preserves canonical P0 3 / P1 3 / P2 26 with root delta 0",
+        "rank": 516,
+        "source_blob_sha": "8e880c1fa0dbe38dbf818395ac301c8e181c8e86"
+      },
+      {
+        "type": "CHECKLIST_GAP_OR_CHANGE",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source explicitly records a checklist gap for namespace provenance of opaque identifiers and a proposed adversarial sibling/provider checklist change",
+        "rank": 516,
+        "source_blob_sha": "8e880c1fa0dbe38dbf818395ac301c8e181c8e86"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source states independent JVM/instrumentation/emulator/device execution remains NOT_VERIFIED",
+        "rank": 516,
+        "source_blob_sha": "8e880c1fa0dbe38dbf818395ac301c8e181c8e86"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has provisional finding state and remaining final reconciliation scope without an explicit structural kind",
+        "rank": 517,
+        "source_blob_sha": "b1e7f4330eb930d556a11953afc34409110bbb6d"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source records provider-local documentId collision as a new P2 subfinding under the existing root",
+        "rank": 517,
+        "source_blob_sha": "b1e7f4330eb930d556a11953afc34409110bbb6d"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source carries canonical P0 3 / P1 3 / P2 26 while the new subfinding awaits final candidate-rejection/root reconciliation",
+        "rank": 517,
+        "source_blob_sha": "b1e7f4330eb930d556a11953afc34409110bbb6d"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves final candidate-rejection re-proof and final pinned-SHA/root inventory reconciliation outstanding",
+        "rank": 517,
+        "source_blob_sha": "b1e7f4330eb930d556a11953afc34409110bbb6d"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has provisional gate and remaining review scope without explicit structural kind",
+        "rank": 518,
+        "source_blob_sha": "62dea0a13bc0e9ef3d2a20a4ea4ad7edd12269e9"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source carries prior canonical minimum P0 3 / P1 3 / P2 26 pending this run's recount",
+        "rank": 518,
+        "source_blob_sha": "62dea0a13bc0e9ef3d2a20a4ea4ad7edd12269e9"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves LocalAdd scheduler handoff/durable-payload semantics and additional unrelated authority paths open for independent sampling/recount",
+        "rank": 518,
+        "source_blob_sha": "62dea0a13bc0e9ef3d2a20a4ea4ad7edd12269e9"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-LOCALADD-HANDOFF-01",
+        "evidence": "source explicitly adopts scheduled LocalAdd locator-to-payload durability evidence into the already-counted handoff root",
+        "rank": 519,
+        "source_blob_sha": "fcaa5e3c011e0a08ae358d98388826d28e68ef87"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-HANDOFF-01",
+        "evidence": "source confirms payload locator durability and pending-session durability as concrete same-root subcases",
+        "rank": 519,
+        "source_blob_sha": "fcaa5e3c011e0a08ae358d98388826d28e68ef87"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LOCALADD-HANDOFF-01",
+        "evidence": "source explicitly records root-count delta 0 and P0 3 / P1 3 / P2 25 at this checkpoint",
+        "rank": 519,
+        "source_blob_sha": "fcaa5e3c011e0a08ae358d98388826d28e68ef87"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly preserves Share global-result-table and Youtuber restored-ID candidates as NOT_VERIFIED rather than adopting them",
+        "rank": 519,
+        "source_blob_sha": "fcaa5e3c011e0a08ae358d98388826d28e68ef87"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 519,
+        "source_blob_sha": "fcaa5e3c011e0a08ae358d98388826d28e68ef87"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-OBSERVE-HANDOFF-01",
+        "evidence": "source explicitly performs canonical severity reconciliation for the already-counted Observe generation-ownership root",
+        "rank": 520,
+        "source_blob_sha": "f5c859d0f76c50fb0ecf2dcf6c10487d15579604"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-OBSERVE-HANDOFF-01",
+        "evidence": "source explicitly reclassifies severity from P2 to P0 based on a freshly revalidated destructive stale-generation path",
+        "rank": 520,
+        "source_blob_sha": "f5c859d0f76c50fb0ecf2dcf6c10487d15579604"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-OBSERVE-HANDOFF-01",
+        "evidence": "source records severity transfer P0 +1 / P2 -1, root-count delta 0, producing P0 3 / P1 3 / P2 25",
+        "rank": 520,
+        "source_blob_sha": "f5c859d0f76c50fb0ecf2dcf6c10487d15579604"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 520,
+        "source_blob_sha": "f5c859d0f76c50fb0ecf2dcf6c10487d15579604"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 491-540 is receipted"
+  }
+}
