@@ -1,0 +1,123 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M13-20260924T0941Z-001",
+  "stage": "MATERIALIZE_541_590",
+  "logical_rank_range": [
+    541,
+    590
+  ],
+  "microsegment_rank_range": [
+    586,
+    590
+  ],
+  "data_head": "6c0c26ac340d33d496d24abddec74b1632bbeb65",
+  "complete_state_blob": "4521ed8636a1fda32616b0a896fdeff1bfa305e1",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M13-20260924T0941Z-001/r586-590.json",
+    "blob_sha": "56cb9ec2c471ba3094c75567d122fd482e46b92d"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "de1b33ae6849f22196d67c274bb3fb47a3939ab8",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M13-20260924T0941Z-001/r581-585.json",
+    "blob_sha": "7344204850bd00d3023ae01ccdeaa4839a7b2823"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 586,
+      "path": "review-runs/checkpoints/2026-09-10__c2294c87__false-positive-scope-audit.md",
+      "source_blob": "0391976928ad61120b14a45eb8402bcf686330ba",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 587,
+      "path": "review-runs/checkpoints/2026-09-10T043200Z__09af51d9__checkpoint.md",
+      "source_blob": "e4bf8758f7352bddb5f22872dc9edee5a8d74231",
+      "independent_exception_triggers": [
+        "EXPLICIT_NEW_FINDING",
+        "COUNT_RECONCILIATION",
+        "CHECKLIST_GAP_OR_CHANGE",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 588,
+      "path": "review-runs/checkpoints/2026-09-10T042136Z__09af51d9__checkpoint.md",
+      "source_blob": "9da3249b9cd53f8732614ee7523b4846aaf3c50a",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 589,
+      "path": "review-runs/checkpoints/2026-09-10__c2294c87__terminal-localadd-handoff.md",
+      "source_blob": "0f2955ff8432270029f358499e86dee9f1b19a64",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "EXPLICIT_NEW_FINDING",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 590,
+      "path": "review-runs/checkpoints/2026-09-10__c2294c87__playlist-relation-transaction-authority.md",
+      "source_blob": "5a8d0817dd446fb628a2273f51587b1604960e5b",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "EXPLICIT_NEW_FINDING",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      586,
+      587,
+      588,
+      589,
+      590
+    ],
+    "materializer_flagged_exception_ranks": [
+      586,
+      587,
+      588,
+      589,
+      590
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
