@@ -1,0 +1,137 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M13-20260924T0941Z-001",
+  "stage": "MATERIALIZE_541_590",
+  "logical_rank_range": [
+    541,
+    590
+  ],
+  "rank": 560,
+  "materializer_state_blob": "65ca1b0d184036dd901b233e9d277589bba7a82f",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "a120e3bdc35ecd67760258d2c11ccead53ffac7c",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r559.json",
+    "blob_sha": "e0de8b333102229e924cef14d4f69e0af6832f14"
+  },
+  "history": {
+    "commit_sha": "1e5ad023ade7ca2557e65452c1729c52384132a4",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=560"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10T092900Z__1a3f7d2c__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "3defa4a9cc568e9d264f75d344e5e2c838bb8b33",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "3defa4a9cc568e9d264f75d344e5e2c838bb8b33",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10T092900Z__1a3f7d2c__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "3defa4a9cc568e9d264f75d344e5e2c838bb8b33",
+    "frozen_blob_sha": "3defa4a9cc568e9d264f75d344e5e2c838bb8b33",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "1a3f7d2c81f79454426e42b394d3328cfb7683d3",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source title explicitly states Independent correctness review — final checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-DUPLICATE-ADMISSION-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "NEW P2 / OPEN"
+      },
+      "confirmed_residual": {
+        "state": "DIRECT",
+        "value": "duplicate prevention uses per-worker stale snapshots and non-unique id=0 inserts, so concurrent producers can both publish semantically duplicate runnable Download rows without a shared atomic admission boundary"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 1,
+        "evidence": "source explicitly states prior P2 25 plus one independently confirmed NEW root equals P2 26"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+      "evidence": "source explicitly labels NEW P2 — BUG-DUPLICATE-ADMISSION-01 and NEW / P2 / OPEN"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+      "evidence": "source explicitly reconciles prior current-SHA P2 25 plus one new root to P2 26"
+    },
+    {
+      "type": "CHECKLIST_GAP_OR_CHANGE",
+      "finding_id": "BUG-DUPLICATE-ADMISSION-01",
+      "evidence": "source includes Checklist gap and Proposed checklist change requiring shared atomic/durable duplicate admission across competing producers"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source records independent JVM/instrumentation/emulator/device execution as NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
