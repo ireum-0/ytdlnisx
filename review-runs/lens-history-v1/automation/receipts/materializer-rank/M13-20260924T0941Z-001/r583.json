@@ -1,0 +1,147 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M13-20260924T0941Z-001",
+  "stage": "MATERIALIZE_541_590",
+  "logical_rank_range": [
+    541,
+    590
+  ],
+  "rank": 583,
+  "materializer_state_blob": "03426e72ce228e03f83548debad934d8c7f53e6e",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "a120e3bdc35ecd67760258d2c11ccead53ffac7c",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r582.json",
+    "blob_sha": "14b46c5f869720a479eeccda41be25e630cb02ea"
+  },
+  "history": {
+    "commit_sha": "90edcc91e6e290e3e01c5a7a5ebfd7c2fe64571c",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=583"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10T053700Z__1a3f7d2c__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "c2356eca7f4733e8cc6739dfb9c35845d1aaed1f",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "c2356eca7f4733e8cc6739dfb9c35845d1aaed1f",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10T053700Z__1a3f7d2c__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "c2356eca7f4733e8cc6739dfb9c35845d1aaed1f",
+    "frozen_blob_sha": "c2356eca7f4733e8cc6739dfb9c35845d1aaed1f",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "1a3f7d2c81f79454426e42b394d3328cfb7683d3",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic correctness review checkpoint records provisional dispositions and leaves final recount/stability/final checkpoint work outstanding without an explicit supported whole-document structural kind"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": "P2-K",
+          "disposition": "FIXED"
+        },
+        {
+          "finding_id": "P2-C",
+          "disposition": "FIXED for canonical same-source provider-create replay root"
+        },
+        {
+          "finding_id": "P2-J",
+          "disposition": "FIXED for ordinary committed-History primary-success authority root"
+        },
+        {
+          "finding_id": "P2-B/B11",
+          "disposition": "new current-wave OPEN subfinding under existing P2-B; count delta 0"
+        }
+      ]
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic correctness review checkpoint has remaining final recount/stability/final-checkpoint work and lacks an explicit supported structural kind"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly labels current dispositions provisional and says final recount is in progress"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-K",
+      "evidence": "source explicitly records P2-K FIXED at this exact SHA"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-C",
+      "evidence": "source explicitly records P2-C FIXED for canonical same-source provider-create replay root"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-J",
+      "evidence": "source explicitly records P2-J FIXED for ordinary committed-History primary-success authority root"
+    },
+    {
+      "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id": "P2-B",
+      "evidence": "source explicitly confirms residual B5/B10/B11 and states B7/no-output finality remains under review"
+    },
+    {
+      "type": "CHECKLIST_GAP_OR_CHANGE",
+      "finding_id": "P2-B/B11",
+      "evidence": "source identifies B11 as a remediation-introduced durability ordering defect under existing P2-B without adding a canonical root"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
