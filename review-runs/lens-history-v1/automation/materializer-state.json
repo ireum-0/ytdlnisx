@@ -47,22 +47,31 @@
       "path": "review-runs/lens-history-v1/automation/receipts/materializer/M13-20260924T0941Z-001/r546-550.json",
       "blob_sha": "a9bff2459b0e2561efa21965fa10b306280bce42",
       "corrections": []
+    },
+    {
+      "range": [
+        551,
+        555
+      ],
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M13-20260924T0941Z-001/r551-555.json",
+      "blob_sha": "cfcb1b6b1525c36059e760f765a29dfa6c0c2f58",
+      "corrections": []
     }
   ],
   "rank_evidence_provenance": {
     "completed_rank_range": [
       541,
-      550
+      555
     ],
-    "receipt_count": 10,
+    "receipt_count": 15,
     "last_rank_receipt": {
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r550.json",
-      "blob_sha": "02bb412073f3cc054411bb4080839187de3cdf87"
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r555.json",
+      "blob_sha": "dbde7386c19ab88dce26cb67428930f3f2a240a2"
     }
   },
   "corrections": [],
   "materializer_remediations": [],
-  "next_rank": 551,
+  "next_rank": 556,
   "in_progress_exception_ranks": [
     541,
     542,
@@ -73,7 +82,12 @@
     547,
     548,
     549,
-    550
+    550,
+    551,
+    552,
+    553,
+    554,
+    555
   ],
   "resume_safe": true,
   "materialization_outputs": {
